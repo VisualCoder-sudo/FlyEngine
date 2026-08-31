@@ -1,0 +1,302 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\aabb.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\arena_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\bitset.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\block_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\body.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\broad_phase.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\capsule.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\compound.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\constraint_graph.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact_solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\convex_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\core.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\distance.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\distance_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\dynamic_tree.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\height_field.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\hull.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\id_pool.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\island.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\math_functions.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mesh.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mesh_contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\motor_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mover.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_for.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\physics_world.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\prismatic_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_replay.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\world_snapshot.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\revolute_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\scheduler.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sensor.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\shape.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\simd.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver_set.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sphere.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\spherical_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\table.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\timer.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\triangle_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\types.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\weld_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\wheel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\aabb.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\algorithm.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\arena_allocator.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\bitset.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\block_allocator.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\body.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\broad_phase.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\compound.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\constraint_graph.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact_solver.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\container.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\core.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\ctz.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\id_pool.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\island.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\joint.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\manifold.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\math_internal.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_for.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\physics_world.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\platform.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\qsort.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_ops.inl">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_replay.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\world_snapshot.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\scheduler.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sensor.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\shape.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\simd.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver_set.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\table.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\verstable.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\base.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\box3d.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\collision.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\config.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\constants.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\id.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\math_functions.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\types.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\box3d.natvis">
+      <Filter>src</Filter>
+    </Natvis>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{F0AC7CC7-7D02-3F26-ACE5-C70F3489EC46}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\box3d">
+      <UniqueIdentifier>{EFE1DACC-AD0F-3E92-B920-92CBAAF4CA45}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{2FCB991B-EADE-3589-AC8E-7F69C5220F62}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

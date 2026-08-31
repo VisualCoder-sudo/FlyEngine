@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/raylib/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/raylib/raylib/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/raylib/raylib/external/glfw/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/raylib/raylib/external/glfw/src/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/cmake_install.cmake",
+		"C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

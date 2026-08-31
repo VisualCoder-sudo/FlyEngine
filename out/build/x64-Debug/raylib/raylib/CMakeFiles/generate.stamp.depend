@@ -1,0 +1,20 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/CPack.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/CPackComponent.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/FindOpenGL.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/FindPackageMessage.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Modules/GNUInstallDirs.cmake
+C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-4.3/Templates/CPackConfig.cmake.in
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/CompileDefinitions.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/GlfwImport.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/InstallConfigurations.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/JoinPaths.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/LibraryConfigurations.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/LibraryPathToLinkerFlags.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/PackConfigurations.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/PopulateConfigVariablesLocally.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/raylib-config-version.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/cmake/raylib-config.cmake
+C:/Users/Maksym/Downloads/flyengine/raylib/raylib.pc.in
+C:/Users/Maksym/Downloads/flyengine/raylib/src/CMakeLists.txt

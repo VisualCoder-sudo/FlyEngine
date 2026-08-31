@@ -1,0 +1,426 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0F45D4B8-7375-33AB-B836-9611FF0E082C}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>box3d</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">box3d.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">box3dd</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">box3d.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">box3d</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">box3d.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">box3d</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">box3d.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">box3d</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <DisableSpecificWarnings>4820;5045;4061;4711;4710</DisableSpecificWarnings>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <SuppressStartupBanner></SuppressStartupBanner>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DisableSpecificWarnings>4820;5045;4061;4711;4710</DisableSpecificWarnings>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <SuppressStartupBanner></SuppressStartupBanner>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DisableSpecificWarnings>4820;5045;4061;4711;4710</DisableSpecificWarnings>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <SuppressStartupBanner></SuppressStartupBanner>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4820;5045;4061;4711;4710</DisableSpecificWarnings>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <SuppressStartupBanner></SuppressStartupBanner>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;B3_ENABLE_ASSERT;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;B3_ENABLE_ASSERT;PLATFORM_DESKTOP;GRAPHICS_API_OPENGL_21;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\..\include;C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src;C:\Users\Maksym\Downloads\flyengine\extern\box3d\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/Users/Maksym/Downloads/flyengine/extern/box3d/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/Maksym/Downloads/flyengine -BC:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug --check-stamp-file C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\BasicConfigVersion-SameMajorVersion.cmake.in;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\CMakePackageConfigHelpers.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\GNUInstallDirs.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\WriteBasicConfigVersionFile.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/Users/Maksym/Downloads/flyengine/extern/box3d/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/Maksym/Downloads/flyengine -BC:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug --check-stamp-file C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\BasicConfigVersion-SameMajorVersion.cmake.in;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\CMakePackageConfigHelpers.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\GNUInstallDirs.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\WriteBasicConfigVersionFile.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/Users/Maksym/Downloads/flyengine/extern/box3d/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/Maksym/Downloads/flyengine -BC:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug --check-stamp-file C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\BasicConfigVersion-SameMajorVersion.cmake.in;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\CMakePackageConfigHelpers.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\GNUInstallDirs.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\WriteBasicConfigVersionFile.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/Users/Maksym/Downloads/flyengine/extern/box3d/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/Maksym/Downloads/flyengine -BC:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug --check-stamp-file C:/Users/Maksym/Downloads/flyengine/out/build/x64-Debug/extern/box3d/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\BasicConfigVersion-SameMajorVersion.cmake.in;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\CMakePackageConfigHelpers.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\GNUInstallDirs.cmake;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\share\cmake-4.3\Modules\WriteBasicConfigVersionFile.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\extern\box3d\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\aabb.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\aabb.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\algorithm.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\arena_allocator.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\arena_allocator.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\bitset.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\bitset.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\block_allocator.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\block_allocator.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\body.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\body.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\broad_phase.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\broad_phase.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\capsule.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\compound.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\compound.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\constraint_graph.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\constraint_graph.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact_solver.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\contact_solver.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\container.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\convex_manifold.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\core.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\core.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\ctz.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\distance.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\distance_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\dynamic_tree.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\height_field.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\hull.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\id_pool.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\id_pool.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\island.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\island.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\joint.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\joint.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\manifold.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\manifold.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\math_functions.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\math_internal.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mesh.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mesh_contact.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\motor_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\mover.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_for.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_for.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\parallel_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\physics_world.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\physics_world.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\platform.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\prismatic_joint.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\qsort.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_ops.inl" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_replay.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\recording_replay.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\world_snapshot.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\world_snapshot.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\revolute_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\scheduler.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\scheduler.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sensor.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sensor.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\shape.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\shape.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\simd.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\simd.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver_set.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\solver_set.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\sphere.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\spherical_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\table.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\table.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\timer.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\triangle_manifold.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\types.c" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\verstable.h" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\weld_joint.c" />
+    <ClCompile Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\wheel_joint.c" />
+    <Natvis Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\src\box3d.natvis">
+    </Natvis>
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\base.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\box3d.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\collision.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\config.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\constants.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\id.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\math_functions.h" />
+    <ClInclude Include="C:\Users\Maksym\Downloads\flyengine\extern\box3d\include\box3d\types.h" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\Users\Maksym\Downloads\flyengine\out\build\x64-Debug\ZERO_CHECK.vcxproj">
+      <Project>{0F2D7593-BBF0-3FEB-B4E9-B41E59738A05}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

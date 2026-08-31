@@ -1,0 +1,2 @@
+[1/2] Building CXX object CMakeFiles\Flyengine.dir\src\ScriptEditor.cpp.obj
+[2/2] Linking CXX executable Flyengine.exe
