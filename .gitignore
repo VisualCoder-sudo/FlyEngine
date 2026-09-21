@@ -30,9 +30,9 @@ opencode.json
 
 # --- Python venv (root is a venv home) ---
 venv/
-Scripts/
-Lib/
-pyvenv.cfg
+/Scripts/
+/Lib/
+/pyvenv.cfg
 __pycache__/
 
 # --- Runtime / generated caches ---
@@ -52,3 +52,21 @@ Desktop.ini
 *.bak
 *.new
 *.orig
+
+# --- ScriptingSDK dotnet build output ---
+/ScriptingSDK/FlyScript/bin/
+/ScriptingSDK/FlyScript/obj/
+
+# --- Machine-specific scratch build scripts ---
+/rebuild_debug.bat
+/build_check.bat
+/_ninja_inc.bat
+/run_ninja_atomic.bat
+/run_ninja_gate.bat
+/do_shadow_build.bat
+/city_full_atomic.bat
+/city_gate_atomic.bat
+/city_gate_retry.bat
+/build_log.txt
+/build_out.txt
+/build_output.txt
