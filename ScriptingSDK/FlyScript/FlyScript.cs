@@ -78,6 +78,13 @@ namespace FlyScript
 
         public static Id64 Self => GetSelf();
 
+        [LibraryImport("Flyengine", EntryPoint = "FlyNative_BindSelf")]
+        private static partial void BindSelfImpl(ulong handle);
+
+        // The C# host calls this around each per-object script coroutine tick so
+        // GameObject.Self resolves to the object the script is attached to.
+        public static void BindSelf(Id64 handle) => BindSelfImpl(handle.Value);
+
         // ---- Vec3 properties ----
         [LibraryImport("Flyengine", EntryPoint = "FlyNative_GetPosition")]
         [return: MarshalAs(UnmanagedType.I2)]

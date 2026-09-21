@@ -217,15 +217,22 @@ void LoadTextureCache() {
         if (p3 == std::string::npos) continue;
         
         std::string path = line.substr(0, p1);
+        if (path.empty()) continue;
         std::string hash = line.substr(p1 + 1, p2 - p1 - 1);
         std::string mtimeStr = line.substr(p2 + 1, p3 - p2 - 1);
         std::string sizeStr = line.substr(p3 + 1);
         
         TextureCacheEntry entry;
         entry.hash = hash;
-        entry.mtime = fs::file_time_type(std::chrono::duration_cast<fs::file_time_type::duration>(
-            std::chrono::seconds(std::stoll(mtimeStr))));
-        entry.size = std::stoull(sizeStr);
+        try {
+            entry.mtime = fs::file_time_type(std::chrono::duration_cast<fs::file_time_type::duration>(
+                std::chrono::seconds(std::stoll(mtimeStr))));
+            entry.size = std::stoull(sizeStr);
+        } catch (...) {
+            // Malformed/corrupt cache line (e.g. non-numeric mtime/size after a
+            // hand edit or a partial write) must not abort the whole load.
+            continue;
+        }
         g_textureCache[path] = entry;
     }
 }
@@ -449,8 +456,10 @@ static void DecrementRef(const std::string& relPath) {
     it->second--;
     if (it->second <= 0) {
         UnloadGPUTexture(relPath);
-        std::string absPath = (fs::path(g_projectDir) / relPath).generic_string();
-        DeleteFileIfExists(absPath);
+        // Note: we do NOT delete the file from disk here. The refcount can
+        // point at a hash-canonicalized path that is an original user asset
+        // (see VerifyAndRebuild), so deleting on refcount-zero could destroy
+        // project files. GPU texture and bookkeeping only.
         for (auto hit = g_hashToPath.begin(); hit != g_hashToPath.end(); ++hit) {
             if (hit->second == relPath) {
                 g_hashToPath.erase(hit);

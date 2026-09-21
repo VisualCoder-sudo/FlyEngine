@@ -95,7 +95,16 @@ unsigned long long FlyNative_FindObject_Impl(const char* name) {
 }
 
 unsigned long long FlyNative_GetSelf_Impl(void) {
-    return 0; // self is bound per-coroutine by the C# host; returned elsewhere
+    if (ScriptRuntime* rt = ActiveRuntime()) {
+        return MakeHandle(rt->GetScriptSelf());
+    }
+    return 0;
+}
+
+void FlyNative_BindSelf_Impl(unsigned long long handle) {
+    if (ScriptRuntime* rt = ActiveRuntime()) {
+        rt->SetScriptSelf(Resolve(handle));
+    }
 }
 
 // ---- vec3 getters ----
@@ -466,7 +475,11 @@ __declspec(dllexport) void FlyNative_Print(const char* text) {
 __declspec(dllexport) unsigned long long FlyNative_FindObject(const char* name) {
     __try { return impl::FlyNative_FindObject_Impl(name); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
-__declspec(dllexport) unsigned long long FlyNative_GetSelf(void) { __try { return impl::FlyNative_GetSelf_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+__declspec(dllexport) unsigned long long FlyNative_GetSelf(void) {
+    __try { return impl::FlyNative_GetSelf_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+__declspec(dllexport) void FlyNative_BindSelf(unsigned long long handle) {
+    __try { impl::FlyNative_BindSelf_Impl(handle); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+}
 
 } // extern "C"
-} // namespace

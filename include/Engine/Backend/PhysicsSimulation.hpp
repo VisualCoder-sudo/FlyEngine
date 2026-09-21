@@ -43,6 +43,10 @@ public:
     void SetBodyAngularVelocity(ScatteredObject* object, Vector3 velocity);
 
     void SpawnBodyForObject(ScatteredObject* obj);
+    // Removes the physical body for an object that is being destroyed. Must be
+    // called before the ScatteredObject is freed so bodyMap/bodyToObject never
+    // hold dangling pointers (the editor can delete objects mid-play).
+    void RemoveObject(ScatteredObject* obj);
 
     b3JointId CreateRevoluteJoint(ScatteredObject* a, ScatteredObject* b, Vector3 anchor);
     b3JointId CreateDistanceJoint(ScatteredObject* a, ScatteredObject* b, Vector3 anchorA, Vector3 anchorB);

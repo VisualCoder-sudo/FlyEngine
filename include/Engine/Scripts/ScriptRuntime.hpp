@@ -66,6 +66,12 @@ public:
     bool IsSimPlaying() const { return isPlaying; }
     void SetSimPlaying(bool playing);
 
+    // The per-coroutine "self" object, bound by the C# host right before a
+    // script's Run() advances so GameObject.Self resolves to the object the
+    // script is attached to. Null for standalone scripts and between frames.
+    void SetScriptSelf(ScatteredObject* obj) { scriptSelf = obj; }
+    ScatteredObject* GetScriptSelf() const { return scriptSelf; }
+
     // Parses a console/script assignment "<prop> = <rhs>" onto one object,
     // routing physics-coupled properties to the simulation when playing.
     // Returns false and fills outError on failure.
@@ -115,6 +121,7 @@ private:
     std::vector<StandaloneScript> standaloneScripts;
     std::vector<ScatteredObject*> playCreatedObjects;
     bool isPlaying = false;
+    ScatteredObject* scriptSelf = nullptr;
 };
 
 // Global play-state hook: phys::Simulation calls it (with the new play state)

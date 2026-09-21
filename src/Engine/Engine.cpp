@@ -7,6 +7,7 @@
 #include "../../include/Terrain/BasicTerrain.hpp"
 #include "../../include/Terrain/Water/WaterBody.hpp"
 #include <algorithm>
+#include <cmath>
 
 Engine::Engine(int width, int height, const std::string& title, int targetFPS) {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -162,7 +163,10 @@ void Engine::Draw() {
 }
 void Engine::Run() {
     while (!WindowShouldClose()) {
-        float dt = GetFrameTime();
+        // Clamp the frame delta so a hitch (window drag, modal hang, debugger
+        // break, tab switch) can't push physics/simulation into a multi-second
+        // jump that destabilizes the fixed-step integrator.
+        float dt = fminf(GetFrameTime(), MAX_FRAME_DT);
         Update(dt);
         Draw();
     }

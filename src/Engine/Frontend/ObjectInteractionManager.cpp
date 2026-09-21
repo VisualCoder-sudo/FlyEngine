@@ -443,6 +443,13 @@ void ObjectInteractionManager::RemoveObjectFromScene(ScatteredObject* target) {
         objects.erase(it);
     }
 
+    // Detach any live physics body before the entity is freed below; bodyMap
+    // is keyed on the raw ScatteredObject*, so leaving it would dangle and
+    // crash the next fixed step when objects are deleted mid-play.
+    if (physicsSim) {
+        physicsSim->RemoveObject(target);
+    }
+
     // Remove entity from engine (this frees/deletes memory)
     engine.RemoveEntity(target);
 

@@ -1710,8 +1710,16 @@ bool City::WriteToStream(std::ostream& out) const {
 }
 
 bool City::ReadFromStream(std::istream& in) {
+    // Caps keep malformed/corrupt payloads from causing huge allocations or
+    // out-of-range indexing downstream (RebuildAll and the geometry builders
+    // assume the graph is consistent).
+    constexpr size_t kMaxNameLen = 4096;
+    constexpr size_t kMaxNodes = 100000;
+    constexpr size_t kMaxEdges = 200000;
+
     size_t nameLen = 0;
     if (!(in >> nameLen)) return false;
+    if (nameLen > kMaxNameLen) return false;
     in.ignore();
     if (nameLen > 0) {
         name.resize(nameLen);
@@ -1739,19 +1747,48 @@ bool City::ReadFromStream(std::istream& in) {
     } else {
         try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
     }
+
+    p.gridX = std::clamp(p.gridX, 2, 64);
+    p.gridZ = std::clamp(p.gridZ, 2, 64);
+    p.cellSize = std::clamp(p.cellSize, 1.0f, 1000.0f);
+    p.lanes = std::clamp(p.lanes, 1, 8);
+    p.noiseOctaves = std::clamp(p.noiseOctaves, 1, 16);
+    p.cornerRadius = std::clamp(p.cornerRadius, 0.0f, 100.0f);
     params = p;
 
-    edges.resize(edgeCount);
-    for (size_t i = 0; i < edgeCount; i++)
-        if (!(in >> edges[i].a >> edges[i].b >> edges[i].lanes)) return false;
+    if (edgeCount > kMaxEdges) return false;
+    if (edgeCount > 0) edges.resize(edgeCount);
+    for (size_t i = 0; i < edgeCount; i++) {
+        int a = 0, b = 0, lanes = 0;
+        if (!(in >> a >> b >> lanes)) return false;
+        edges[i].a = a;
+        edges[i].b = b;
+        edges[i].lanes = std::clamp(lanes, 0, 8);
+    }
 
     size_t nodeCount = 0;
     if (!(in >> nodeCount)) return false;
-    nodes.resize(nodeCount);
+    if (nodeCount > kMaxNodes) return false;
+    if (nodeCount > 0) nodes.resize(nodeCount);
     for (size_t i = 0; i < nodeCount; i++) {
+        float x = 0.0f, y = 0.0f;
         int boundary = 0;
-        if (!(in >> nodes[i].pos.x >> nodes[i].pos.y >> boundary)) return false;
+        if (!(in >> x >> y >> boundary)) return false;
+        nodes[i].pos.x = x;
+        nodes[i].pos.y = y;
         nodes[i].boundary = (boundary != 0);
+    }
+
+    if (in.fail()) return false;
+
+    // Validate every edge's endpoints against the actual node count; out-of-range
+    // indices would corrupt the planar graph and crash the face extraction.
+    for (const RoadEdge& e : edges) {
+        if (e.a < 0 || e.b < 0 || (size_t)e.a >= nodeCount || (size_t)e.b >= nodeCount) {
+            edges.clear();
+            nodes.clear();
+            return false;
+        }
     }
 
     RebuildAll();

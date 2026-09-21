@@ -139,7 +139,13 @@ namespace FlyScript
                     var inst = kv.Value;
                     try
                     {
-                        if (!inst.Tick(DeltaTime))
+                        // Bind the object this script runs on so GameObject.Self
+                        // resolves correctly; clear it again (even on failure) so
+                        // later ticks don't see a stale self.
+                        Native.BindSelf(inst.Target.Handle);
+                        bool ticked = inst.Tick(DeltaTime);
+                        Native.BindSelf(Id64.None);
+                        if (!ticked)
                         {
                             Native.Log($"[FlyScript] '{inst.TypeName}' (id={kv.Key}) finished (Run() returned/yield break).");
                             toRemove.Add(kv.Key);
@@ -147,6 +153,7 @@ namespace FlyScript
                     }
                     catch (Exception ex)
                     {
+                        Native.BindSelf(Id64.None);
                         ScriptDiagnostics.ReportFailure($"'{inst.TypeName}' (id={kv.Key}) tick", ex);
                         toRemove.Add(kv.Key);
                     }

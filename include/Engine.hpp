@@ -11,6 +11,10 @@
 // Create one, AddEntity() whatever you want in the world, call Run().
 class Engine {
 public:
+    // Largest per-frame time delta fed to entities (seconds). Prevents a long
+    // stall from exploding physics sub-stepping / script dt.
+    static constexpr float MAX_FRAME_DT = 0.05f;
+
     Engine(int width, int height, const std::string& title, int targetFPS = 180);
     ~Engine();
 

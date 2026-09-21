@@ -315,6 +315,15 @@ void Simulation::CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId) {
     shapeDef.baseMaterial.friction = friction;
     shapeDef.baseMaterial.restitution = restBase;
 
+    // Honor the per-object canCollide toggle (properties panel / script
+    // GameObject.canCollide). Zeroing both filter bits keeps the body in the
+    // world (gravity, joints, transforms still work) but it collides with
+    // nothing and nothing collides with it.
+    if (!obj->canCollide) {
+        shapeDef.filter.categoryBits = 0;
+        shapeDef.filter.maskBits = 0;
+    }
+
     switch (accuracy) {
         case pcoll::CollisionAccuracy::Box: {
             if (obj->GetShapeType() == ShapeType::Sphere) {
@@ -447,6 +456,23 @@ void Simulation::SpawnBodyForObject(ScatteredObject* obj) {
     rec.startAngVel = Vector3Zero();
     rec.wasAnchored = anchored;
     bodyMap[obj] = rec;
+}
+
+void Simulation::RemoveObject(ScatteredObject* obj) {
+    if (!obj) return;
+
+    auto it = bodyMap.find(obj);
+    if (it != bodyMap.end()) {
+        if (world && b3Body_IsValid(it->second.bodyId)) {
+            b3DestroyBody(it->second.bodyId);
+        }
+        bodyMap.erase(it);
+    }
+
+    bodyToObject.erase(
+        std::remove_if(bodyToObject.begin(), bodyToObject.end(),
+                       [obj](const std::pair<b3BodyId, ScatteredObject*>& p) { return p.second == obj; }),
+        bodyToObject.end());
 }
 
 void Simulation::StopPlay() {
