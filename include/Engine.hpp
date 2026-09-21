@@ -5,7 +5,7 @@
 #include <string>
 
 #include "raylib.h"
-#include "Entity.hpp"
+#include "Engine/Backend/Entity.hpp"
 
 // Very small wrapper around a Raylib window + game loop.
 // Create one, AddEntity() whatever you want in the world, call Run().
@@ -27,6 +27,19 @@ public:
     std::vector<std::unique_ptr<Entity>>& GetEntities() { return entities; }
 
     void Run();
+
+    // Advance exactly one frame manually (Update + Draw). Used by the headless-ish
+    // water stress harness so per-stage timings can be sampled deterministically.
+    void StepFrame(float deltaTime);
+
+    // When true, Draw() records per-pass GPU/thick-pass wall times on each frame
+    // (ms). Default off; the stress harness turns it on.
+    bool timingEnabled = false;
+    double lastShadowMs = 0.0;
+    double lastReflectionMs = 0.0;
+    double lastOpaqueMs = 0.0;
+    double lastTransparentMs = 0.0;
+    double last2DMs = 0.0;
 
 private:
     void Update(float deltaTime);

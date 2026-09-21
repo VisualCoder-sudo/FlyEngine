@@ -1,21 +1,29 @@
-#include "Engine.hpp"
-#include "Benchmark.hpp"
-#include "CameraController.hpp"
-#include "ObjectInteractionManager.hpp"
-#include "PhysicsSimulation.hpp"
-#include "Flyscript.hpp"
-#include "ProjectManager.hpp"
-#include "ui.hpp"
-#include "CrashReporter.hpp"
-#include "TextureManager.hpp"
-#include "Terrain.hpp"
-#include "BasicTerrain.hpp"
-#include "WaterBody.hpp"
+#include "../include/Engine.hpp"
+#include "../include/Engine/Backend/Benchmark.hpp"
+#include "../include/Engine/Backend/CameraController.hpp"
+#include "../include/Engine/Frontend/ObjectInteractionManager.hpp"
+#include "../include/Engine/Backend/PhysicsSimulation.hpp"
+#include "../include/Engine/Scripts/CoreCLRHost.hpp"
+#include "../include/Engine/Scripts/ScriptCompiler.hpp"
+#include "../include/Engine/Frontend/ProjectManager.hpp"
+#include "../include/Engine/Frontend/ui.hpp"
+#include "../include/Engine/Backend/CrashReporter.hpp"
+#include "../include/Engine/Backend/TextureManager.hpp"
+#include "../include/Terrain/Terrain.hpp"
+#include "../include/Terrain/BasicTerrain.hpp"
+#include "../include/Terrain/Water/WaterBody.hpp"
+#include "../include/Terrain/Water/WaterStressTest.hpp"
 #include "raylib.h"
 
 #include <array>
+#include <exception>
 #include <memory>
 #include <vector>
+#include <filesystem>
+
+#include <crtdbg.h>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -133,9 +141,20 @@ void RunEditor(const project::Info& info) {
     ObjectInteractionManager* interactionMgrPtr = interactionMgr.get();
     engine.AddEntity(std::move(interactionMgr));
 
-    auto runtime = std::make_unique<flyscript::Runtime>(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
-    flyscript::SetRuntime(runtime.get());
-    engine.AddEntity(std::move(runtime));
+    // Compile the project's C# scripts into Scripts/FlyScript.dll before the
+    // CLR boots. If the build fails (e.g. no dotnet SDK), Initialize below
+    // falls back to any pre-existing FlyScript.dll.
+    scriptCompiler::EnsureBuilt(info.path);
+
+    // CoreCLR host for C# scripting (runs as an Entity, gets Update called each frame).
+    auto coreClrHost = std::make_unique<CoreCLRHost>();
+    CoreCLRHost* coreClrHostPtr = coreClrHost.get();
+    if (coreClrHost->Initialize(info.path)) {
+        ui::LogAlways("CoreCLR host initialized for project: %s", info.path.c_str());
+        engine.AddEntity(std::move(coreClrHost));
+    } else {
+        ui::LogAlways("CoreCLR host initialization failed (C# scripting disabled): %s", coreClrHost->GetError().c_str());
+    }
 
     project::Info loaded = info;
 
@@ -156,6 +175,16 @@ void RunEditor(const project::Info& info) {
     terrain::Terrain* loadedTerrain = nullptr;
     if (!project::OpenProjectFile(info.path, engine, rawObjectPtrs, sceneModels, loaded, &simRef, &loadedTerrain)) {
         ui::LogAlways("Could not open project '%s'. Starting empty.", info.path.c_str());
+    }
+
+    // Bind the loaded world into the script runtime so FlyNative_* and standalone
+    // scripts can read/mutate it. Safe even when the CLR failed to load: the
+    // runtime still owns the script list and world services for the editor UI.
+    if (coreClrHostPtr) {
+        coreClrHostPtr->BindWorld(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
+        // Make every IScript type in the compiled assembly show up in the
+        // explorer's SCRIPTS group (and run on Play), not just saved entries.
+        coreClrHostPtr->SyncStandaloneScripts();
     }
     
     // If terrain was loaded, set it up with editor
@@ -186,13 +215,64 @@ int main(int argc, char* argv[]) {
 
     crashreporter::Install();
 
+#ifdef _DEBUG
+    // Route MSVC debug assertions to the console (visible in the IDE run
+    // panel) instead of blocking on a modal dialog; the SEH crash handler
+    // never sees these, so this is the only way to capture them.
+    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
+
+    std::set_terminate([] {
+        if (std::exception_ptr ep = std::current_exception()) {
+            try {
+                std::rethrow_exception(ep);
+            } catch (const std::exception& e) {
+                crashreporter::LogFatal(e.what());
+            } catch (...) {
+                crashreporter::LogFatal("unknown C++ exception");
+            }
+        } else {
+            crashreporter::LogFatal("terminate called without an active exception");
+        }
+        std::abort();
+    });
+
+    // Headless-style water system stress test — bypasses the splash screen and
+    // project manager entirely:
+    //   Flyengine.exe --testwater [objectCount] [frames]
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--testwater") {
+            watertest::Run(argc, argv);
+            return 0;
+        }
+    }
+
     ShowSplashWindow(3.0f);
 
     if (argc > 1) {
+        // ReadProjectHeader expects a project FOLDER, not a .flyproj file.
+        // If given a .flyproj file, use its parent directory.
+        std::string arg = argv[1];
+        fs::path p(arg);
+        if (p.extension() == ".flyproj") {
+            p = p.parent_path();
+        }
+        // If parent_path is empty (bare filename), use current directory
+        if (p.empty()) {
+            p = fs::current_path();
+        }
+        std::string projectFolder = p.string();
         project::Info info;
-        if (project::ReadProjectHeader(argv[1], info)) {
+        if (project::ReadProjectHeader(projectFolder, info)) {
             project::SetCurrentProject(info);
             RunEditor(info);
+        } else {
+            ui::LogAlways("ERROR: ReadProjectHeader failed for folder: %s", projectFolder.c_str());
         }
         return 0;
     }

@@ -1,0 +1,54 @@
+# --- Build output ---
+out/
+cmake-build-debug/
+build/
+CMakeCache.txt
+CMakeFiles/
+ninja.exe
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.a
+*.o
+*.dll
+*.def
+*.tlog
+*.recipe
+*.lastbuildstate
+*.idb
+
+# --- IDE / editor state ---
+.vs/
+.vscode/
+.idea/
+opencode.json
+*.user
+*.suo
+*.slnx
+
+# --- Python venv (root is a venv home) ---
+venv/
+Scripts/
+Lib/
+pyvenv.cfg
+__pycache__/
+
+# --- Runtime / generated caches ---
+.shader_cache/
+.texture_gpu_cache.json
+.texture_cache.json
+crashlog.txt
+road_shader_status.txt
+*.log
+
+# --- Windows / misc ---
+NUL
+Thumbs.db
+Desktop.ini
+
+# --- Stray debug artifacts ---
+*.bak
+*.new
+*.orig

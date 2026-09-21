@@ -1,0 +1,16 @@
+FLYENGINE_PROJECT 1
+Name = "GroupCrashTest"
+Template = "Blank"
+Created = 0
+Modified = 0
+---SCENE---
+SIMPLE_ENGINE_BUILD 7
+3
+0 "Cube 1" 0 0.75 0 1.5 1.5 1.5 0 0 0 0 0 0 100 150 255 255 1 0 0 0 0 0 0 0 1 0
+
+0 "Cube 2" 3 0.75 0 1.5 1.5 1.5 0 0 0 0 0 0 150 100 255 255 1 0 0 0 0 0 0 0 1 0
+
+0 "Cube 3" -3 0.75 0 1.5 1.5 1.5 0 0 0 0 0 0 255 200 100 255 1 0 0 0 0 0 0 0 1 0
+
+0
+0

@@ -29,6 +29,8 @@ out vec3 viewDir;
 out vec2 texCoord;
 out float heightOffset;
 out float noiseValue;
+flat out vec2 vsCamXZ;
+out float fragDist;
 
 // 12 gradient vectors — must match CPU WaterNoise.cpp exactly.
 const vec3 grad3[12] = vec3[12](
@@ -141,6 +143,10 @@ void main() {
     vec4 worldPos4 = wModel * vec4(localPos, 1.0);
     vec2 worldXZ = worldPos4.xz;
 
+    // Fragment distance from the camera (symmetric in azimuth) — used for a
+    // reflection distance fade that does not depend on screen position.
+    fragDist = distance(cameraPos, worldPos4.xyz);
+
     vec3 noisePos = vec3((worldXZ.x - flowOffset.x) * frequency,
                          timeY,
                          (worldXZ.y - flowOffset.y) * frequency);
@@ -170,6 +176,7 @@ void main() {
     vec3 localNormal = normalize(vec3(-(hR - hL) / (2.0 * eps), 1.0, -(hU - hD) / (2.0 * eps)));
 
     worldPos = worldPos4.xyz;
+    vsCamXZ = cameraPos.xz;
 
     mat3 normalMatrix = mat3(transpose(inverse(wModel)));
     worldNormal = normalize(normalMatrix * localNormal);
