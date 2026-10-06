@@ -238,9 +238,9 @@ bool InsetPolygon(const std::vector<Vector2>& poly, float d,
         float cr = d1.x * d2.y - d1.y * d2.x;
         if (fabsf(cr) < 1e-4f) {
             // Nearly parallel: average the two single-edge offsets.
-            out[i] = Vector2Scale(Vector2Add(Vector2Add(poly[i], Vector2Scale(edgeNorm[i], d)),
-                                             Vector2Scale(edgeNorm[(i + 1) % n], d)),
-                                  0.5f);
+            // (Collinear vertices are the norm on a regular grid.) Offset the vertex itself.
+            out[i] = Vector2Add(poly[(i + 1) % n],
+                                Vector2Scale(Vector2Add(edgeNorm[i], edgeNorm[(i + 1) % n]), 0.5f * d));
         } else {
             Vector2 w = Vector2Subtract(o2, o1);
             float t1 = (w.x * d2.y - w.y * d2.x) / cr;

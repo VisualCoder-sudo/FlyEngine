@@ -1,0 +1,356 @@
+/* Copyright (c) 2020-2026 The Khronos Group Inc.
+ * Copyright (c) 2020-2026 Valve Corporation
+ * Copyright (c) 2020-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "image_utils.h"
+#include "containers/range.h"
+#include "utils/math_utils.h"
+#include "generated/vk_extension_helper.h"
+
+#include <algorithm>
+#include <sstream>
+#include <array>
+
+#include <vulkan/vk_enum_string_helper.h>
+#include <vulkan/utility/vk_format_utils.h>
+#include <vulkan/vulkan_core.h>
+#include <vulkan/utility/vk_struct_helper.hpp>
+
+uint32_t GetEffectiveLevelCount(const VkImageSubresourceRange& subresource_range, uint32_t total_level_count) {
+    uint32_t level_count = subresource_range.levelCount;
+    if (level_count == VK_REMAINING_MIP_LEVELS) {
+        if (total_level_count > subresource_range.baseMipLevel) {
+            level_count = total_level_count - subresource_range.baseMipLevel;
+        } else {  // invalid mip range which should be caught by validation
+            level_count = 0;
+        }
+    }
+    return level_count;
+}
+
+uint32_t GetEffectiveLayerCount(const VkImageSubresourceRange& subresource_range, uint32_t total_layer_count) {
+    uint32_t layer_count = subresource_range.layerCount;
+    if (layer_count == VK_REMAINING_ARRAY_LAYERS) {
+        if (total_layer_count > subresource_range.baseArrayLayer) {
+            layer_count = total_layer_count - subresource_range.baseArrayLayer;
+        } else {  // invalid array layer range which should be caught by validation
+            layer_count = 0;
+        }
+    }
+    return layer_count;
+}
+
+// Returns the effective extent of an image subresource, adjusted for mip level and array depth.
+VkExtent3D GetEffectiveExtent(uint32_t mip_levels, VkExtent3D extent, VkFormat format, VkImageCreateFlags2KHR flags,
+                              VkImageType image_type, uint32_t array_layers, VkImageAspectFlags aspect_mask, uint32_t mip_level,
+                              bool layer_only) {
+    // Return zero extent if mip level doesn't exist
+    if (mip_level >= mip_levels) {
+        return VkExtent3D{0, 0, 0};
+    }
+
+    // If multi-plane, adjust per-plane extent
+    if (vkuFormatIsMultiplane(format)) {
+        VkExtent2D divisors = vkuFindMultiplaneExtentDivisors(format, static_cast<VkImageAspectFlagBits>(aspect_mask));
+        extent.width /= divisors.width;
+        extent.height /= divisors.height;
+    }
+
+    // Mip Maps
+    {
+        const uint32_t corner = (flags & VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV) ? 1 : 0;
+        const uint32_t min_size = 1 + corner;
+        const uint32_t round_up_nudge = corner ? static_cast<uint32_t>((1 << mip_level) - 1) : 0u;
+
+        if (extent.width != 0) {
+            extent.width = (extent.width + round_up_nudge) >> mip_level;
+            extent.width = std::max({min_size, extent.width});
+        }
+        if (extent.height != 0) {
+            extent.height = (extent.height + round_up_nudge) >> mip_level;
+            extent.height = std::max({min_size, extent.height});
+        }
+        if (extent.depth != 0) {
+            extent.depth = (extent.depth + round_up_nudge) >> mip_level;
+            extent.depth = std::max({min_size, extent.depth});
+        }
+    }
+
+    // Image arrays have an effective z extent that isn't diminished by mip level
+    // Some cases (https://gitlab.khronos.org/vulkan/vulkan/-/issues/4819) we want only 1 layer's extent
+    if (VK_IMAGE_TYPE_3D != image_type && !layer_only) {
+        extent.depth = array_layers;
+    }
+
+    return extent;
+}
+
+// Currently only used by the testing framework
+VkExtent3D GetEffectiveExtent(const VkImageCreateInfo& ci, const VkImageAspectFlags aspect_mask, const uint32_t mip_level) {
+    return GetEffectiveExtent(ci.mipLevels, ci.extent, ci.format, ci.flags, ci.imageType, ci.arrayLayers, aspect_mask, mip_level,
+                              false);
+}
+
+std::optional<VkImageUsageFlags2KHR> GetImageStencilUsageFlags(const void* pNext) {
+    if (const auto stencil_usage_2 = vku::FindStructInPNextChain<VkImageStencilUsage2CreateInfoKHR>(pNext)) {
+        return stencil_usage_2->stencilUsage;
+    } else if (const auto stencil_usage = vku::FindStructInPNextChain<VkImageStencilUsageCreateInfo>(pNext)) {
+        return stencil_usage->stencilUsage;
+    }
+    return std::nullopt;
+}
+
+std::optional<VkImageUsageFlags2KHR> GetImageViewUsageFlags(const VkImageViewCreateInfo& create_info) {
+    if (const auto usage_create_info_2 = vku::FindStructInPNextChain<VkImageViewUsage2CreateInfoKHR>(create_info.pNext)) {
+        return usage_create_info_2->usage;
+    } else if (const auto usage_create_info = vku::FindStructInPNextChain<VkImageViewUsageCreateInfo>(create_info.pNext)) {
+        return usage_create_info->usage;
+    }
+    return std::nullopt;
+}
+
+// Returns true if [x, x + x_size) and [y, y + y_size) overlap
+bool RangesIntersect(int64_t x, uint64_t x_size, int64_t y, uint64_t y_size) {
+    auto intersection = GetRangeIntersection(x, x_size, y, y_size);
+    return intersection.non_empty();
+}
+
+// Implements the vkspec.html#formats-size-compatibility section of the spec
+bool AreFormatsSizeCompatible(VkFormat a, VkFormat b, VkImageAspectFlags aspect_mask) {
+    const bool is_a_a8 = a == VK_FORMAT_A8_UNORM;
+    const bool is_b_a8 = b == VK_FORMAT_A8_UNORM;
+    if ((is_a_a8 && !is_b_a8) || (!is_a_a8 && is_b_a8)) {
+        return false;
+    }
+
+    const bool is_a_depth_stencil = vkuFormatIsDepthOrStencil(a);
+    const bool is_b_depth_stencil = vkuFormatIsDepthOrStencil(b);
+    if (is_a_depth_stencil && !is_b_depth_stencil) {
+        return vkuFormatIsDepthStencilWithColorSizeCompatible(b, a, aspect_mask);
+    } else if (!is_a_depth_stencil && is_b_depth_stencil) {
+        return vkuFormatIsDepthStencilWithColorSizeCompatible(a, b, aspect_mask);
+    } else if (is_a_depth_stencil && is_b_depth_stencil) {
+        return a == b;
+    }
+
+    // Color formats are considered compatible if their texel block size in bytes is the same
+    return vkuFormatTexelBlockSize(a) == vkuFormatTexelBlockSize(b);
+}
+
+std::string DescribeFormatsSizeCompatible(VkFormat a, VkFormat b) {
+    std::ostringstream ss;
+    const bool is_a_a8 = a == VK_FORMAT_A8_UNORM;
+    const bool is_b_a8 = b == VK_FORMAT_A8_UNORM;
+    if ((is_a_a8 && !is_b_a8) || (!is_a_a8 && is_b_a8)) {
+        ss << string_VkFormat(a) << " and " << string_VkFormat(b)
+           << " either both need to be VK_FORMAT_A8_UNORM or neither of them";
+        return ss.str();
+    }
+
+    const bool is_a_depth_stencil = vkuFormatIsDepthOrStencil(a);
+    const bool is_b_depth_stencil = vkuFormatIsDepthOrStencil(b);
+    if (is_a_depth_stencil && is_b_depth_stencil) {
+        ss << string_VkFormat(a) << " and " << string_VkFormat(b)
+           << " are both depth/stencil, therefor they must be the exact same format";
+    } else if (is_a_depth_stencil || is_b_depth_stencil) {
+        if (is_a_depth_stencil && !is_b_depth_stencil) {
+            ss << string_VkFormat(a) << " is a depth/stencil and " << string_VkFormat(b) << " is color";
+        } else if (!is_a_depth_stencil && is_b_depth_stencil) {
+            ss << string_VkFormat(a) << " is a color and " << string_VkFormat(b) << " is depth/stencil";
+        }
+        ss << " (this is only allowed with a certain set of formats during image copy with VK_KHR_maintenance8)";
+    } else {
+        ss << string_VkFormat(a) << " has a texel block size of " << vkuFormatTexelBlockSize(a) << " while " << string_VkFormat(b)
+           << " has a texel block size of " << vkuFormatTexelBlockSize(b);
+    }
+    return ss.str();
+}
+
+uint32_t GetVertexInputFormatSize(VkFormat format) {
+    // Vertex input attributes use VkFormat, but only to make use of how they define sizes, things such as
+    // depth/multi-plane/compressed will never be used here because they would mean nothing. So we can ensure these are "standard"
+    // color formats being used. This function is a wrapper to make it more clear of the intent.
+    return vkuFormatTexelBlockSize(format);
+}
+
+uint32_t GetTexelBufferFormatSize(VkFormat format) {
+    // The spec says "If format is a block-compressed format, then bufferFeatures must not support any features for the format"
+    // For Texel Buffers, we can assume the texel blocks are a 1x1x1 extent
+    // See https://gitlab.khronos.org/vulkan/vulkan/-/issues/4155 for more details
+    return vkuFormatTexelBlockSize(format);
+}
+
+// Used to get the VkExternalFormatANDROID without having to use ifdef in logic
+// Result of zero is same of not having pNext struct
+uint64_t GetExternalFormat(const void* pNext) {
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+    if (pNext) {
+        const auto* external_format = vku::FindStructInPNextChain<VkExternalFormatANDROID>(pNext);
+        if (external_format) {
+            return external_format->externalFormat;
+        }
+    }
+#endif
+    (void)pNext;
+    return 0;
+}
+
+// vkspec.html#formats-planes-image-aspect
+bool IsValidPlaneAspect(VkFormat format, VkImageAspectFlags aspect_mask) {
+    const uint32_t planes = vkuFormatPlaneCount(format);
+    constexpr VkImageAspectFlags valid_planes =
+        VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT;
+
+    if (((aspect_mask & valid_planes) == aspect_mask) && (aspect_mask != 0)) {
+        if ((planes == 3) || ((planes == 2) && ((aspect_mask & VK_IMAGE_ASPECT_PLANE_2_BIT) == 0))) {
+            return true;
+        }
+    }
+    return false;  // Expects calls to make sure it is a multi-planar format
+}
+
+bool IsOnlyOneValidPlaneAspect(VkFormat format, VkImageAspectFlags aspect_mask) {
+    const bool multiple_bits = aspect_mask != 0 && !IsPowerOfTwo(aspect_mask);
+    return !multiple_bits && IsValidPlaneAspect(format, aspect_mask);
+}
+
+bool IsMultiplePlaneAspect(VkImageAspectFlags aspect_mask) {
+    // If checking for multiple planes, there will already be another check if valid for plane count
+    constexpr VkImageAspectFlags valid_planes =
+        VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT;
+    const VkImageAspectFlags planes = aspect_mask & valid_planes;
+    return planes != 0 && !IsPowerOfTwo(planes);
+}
+
+bool IsAnyPlaneAspect(VkImageAspectFlags aspect_mask) {
+    constexpr VkImageAspectFlags valid_planes =
+        VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT;
+    return (aspect_mask & valid_planes) != 0;
+}
+
+// TODO: this function does not check if the image is disjoint, is it an issue?
+VkImageAspectFlags NormalizeAspectMask(VkImageAspectFlags aspect_mask, VkFormat format) {
+    // For multiplanar formats and disjoint image the IMAGE_ASPECT_COLOR is equivalent
+    // to adding the aspect of the individual planes.
+    if (vkuFormatIsMultiplane(format) && (aspect_mask & VK_IMAGE_ASPECT_COLOR_BIT) != 0) {
+        aspect_mask &= ~VK_IMAGE_ASPECT_COLOR_BIT;
+        aspect_mask |= (VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT);
+        if (vkuFormatPlaneCount(format) > 2) {
+            aspect_mask |= VK_IMAGE_ASPECT_PLANE_2_BIT;
+        }
+    }
+    return aspect_mask;
+}
+
+bool IsImageLayoutReadOnly(VkImageLayout layout) {
+    constexpr std::array read_only_layouts = {
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+    };
+    return std::any_of(read_only_layouts.begin(), read_only_layouts.end(),
+                       [layout](const VkImageLayout read_only_layout) { return layout == read_only_layout; });
+}
+
+bool IsImageLayoutDepthOnly(VkImageLayout layout) {
+    constexpr std::array depth_only_layouts = {VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};
+    return std::any_of(depth_only_layouts.begin(), depth_only_layouts.end(),
+                       [layout](const VkImageLayout read_only_layout) { return layout == read_only_layout; });
+}
+
+bool IsImageLayoutDepthReadOnly(VkImageLayout layout) {
+    constexpr std::array read_only_layouts = {
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+    };
+    return std::any_of(read_only_layouts.begin(), read_only_layouts.end(),
+                       [layout](const VkImageLayout read_only_layout) { return layout == read_only_layout; });
+}
+
+bool IsImageLayoutStencilOnly(VkImageLayout layout) {
+    constexpr std::array depth_only_layouts = {VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL,
+                                               VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL};
+    return std::any_of(depth_only_layouts.begin(), depth_only_layouts.end(),
+                       [layout](const VkImageLayout read_only_layout) { return layout == read_only_layout; });
+}
+
+bool IsImageLayoutStencilReadOnly(VkImageLayout layout) {
+    constexpr std::array read_only_layouts = {
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+    };
+    return std::any_of(read_only_layouts.begin(), read_only_layouts.end(),
+                       [layout](const VkImageLayout read_only_layout) { return layout == read_only_layout; });
+}
+
+bool IsDepthSliceView(VkImageType imageType, VkImageCreateFlags2KHR imageCreateFlags, VkImageViewType view_type) {
+    constexpr VkImageCreateFlags2KHR depth_slice_view_flags =
+        VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+
+    const bool image_supports_depth_slice_view = imageType == VK_IMAGE_TYPE_3D && (imageCreateFlags & depth_slice_view_flags) != 0;
+
+    return image_supports_depth_slice_view && (view_type == VK_IMAGE_VIEW_TYPE_2D || view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+}
+
+bool CanTransitionDepthSlices(const DeviceExtensions& extensions, VkImageType imageType, VkImageCreateFlags2KHR imageCreateFlags) {
+    return IsExtEnabled(extensions.vk_khr_maintenance9) && imageType == VK_IMAGE_TYPE_3D &&
+           (imageCreateFlags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) != 0;
+}
+
+// Compatibility is defined in Vulkan spec Table 2 "Image Type and Image View Type Compatibility
+// Requirements" (VkImageViewType), as enforced by VUID-VkImageViewCreateInfo-image 01003/01004/06723/06728.
+// See https://docs.vulkan.org/spec/latest/chapters/resources.html#VkImageViewType for more details.
+bool IsImageViewTypeCompatibleWithImageType(const DeviceExtensions& extensions, VkImageViewType view_type, VkImageType image_type,
+                                            VkImageCreateFlags2KHR image_flags) {
+    switch (image_type) {
+        case VK_IMAGE_TYPE_1D:
+            return (view_type == VK_IMAGE_VIEW_TYPE_1D || view_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY);
+
+        case VK_IMAGE_TYPE_2D:
+            if (view_type == VK_IMAGE_VIEW_TYPE_2D || view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) {
+                return true;
+            }
+            if (view_type == VK_IMAGE_VIEW_TYPE_CUBE || view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+                return (image_flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0;
+            }
+            return false;
+
+        case VK_IMAGE_TYPE_3D:
+            if (view_type == VK_IMAGE_VIEW_TYPE_3D) {
+                return true;
+            }
+            if (IsExtEnabled(extensions.vk_khr_maintenance1) && view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) {
+                return (image_flags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) != 0;
+            }
+            if (IsExtEnabled(extensions.vk_khr_maintenance1) && IsExtEnabled(extensions.vk_ext_image_2d_view_of_3d) &&
+                view_type == VK_IMAGE_VIEW_TYPE_2D) {
+                return ((image_flags & VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT) != 0 ||
+                        (image_flags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) != 0);
+            }
+            return false;
+
+        default:
+            return false;
+    }
+}

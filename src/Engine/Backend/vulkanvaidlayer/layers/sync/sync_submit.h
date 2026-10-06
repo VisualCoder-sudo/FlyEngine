@@ -1,0 +1,418 @@
+/*
+ * Copyright (c) 2019-2026 Valve Corporation
+ * Copyright (c) 2019-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+#include "sync/sync_command_buffer.h"
+#include "state_tracker/queue_state.h"
+#include "containers/small_vector.h"
+#include "containers/range_map.h"
+
+namespace vvl {
+class CommandBuffer;
+class Semaphore;
+}  // namespace vvl
+
+namespace syncval {
+
+struct PresentedImage;
+class QueueBatchContext;
+class QueueState;
+class SyncValidator;
+
+using BatchContextPtr = std::shared_ptr<QueueBatchContext>;
+using CommandBufferConstPtr = std::shared_ptr<const vvl::CommandBuffer>;
+
+struct AcquiredImage {
+    std::shared_ptr<const vvl::Image> image;
+    subresource_adapter::ImageRangeGenerator generator;
+
+    // Tag of the image acquire operation
+    ResourceUsageTag acquire_tag;
+
+    // Last present before the acquire operation above.
+    // kInvalidTag if the image has never been presented
+    ResourceUsageTag present_tag;
+
+    AcquiredImage() = default;
+    AcquiredImage(const PresentedImage& presented, ResourceUsageTag acquire_tag);
+};
+
+// Information associated with a semaphore signal
+struct SignalInfo {
+    // QueueSubmit signal
+    SignalInfo(const std::shared_ptr<const vvl::Semaphore>& semaphore_state, const BatchContextPtr& batch,
+               const SyncExecScope& exec_scope, uint64_t timeline_value);
+
+    // SignalSemaphore signal
+    SignalInfo(const std::shared_ptr<const vvl::Semaphore>& semaphore_state, uint64_t timeline_value);
+
+    // AcquireNextImage signal
+    SignalInfo(const std::shared_ptr<const vvl::Semaphore>& semaphore_state, const PresentedImage& presented,
+               ResourceUsageTag acquire_tag);
+
+    // Signaled semaphore. Not null.
+    std::shared_ptr<const vvl::Semaphore> semaphore_state;
+
+    // Batch from the signal's first scope. It is null for a host signal (vkSignalSemaphore)
+    std::shared_ptr<QueueBatchContext> batch;
+
+    // Use the first_scope.exec_scope_accesses for the first access scope of non-host signals.
+    // first_scope.queue is kQueueIdInvalid for a host signal (vkSignalSemaphore)
+    SemaphoreScope first_scope;
+
+    // Value signaled by a timeline semaphore
+    uint64_t timeline_value = 0;
+
+    // Swapchain specific signal info.
+    // Batch field is the batch of the last present for the acquired image.
+    // The AcquiredImage further limits the scope of the resolve operation, and the "barrier" will also
+    // be special case (updating "PRESENTED" write with "ACQUIRE" read, as well as setting the barrier).
+    //
+    // NOTE: shared_ptr is used here as a memory saver. AcquiredImage is 224 bytes at the time
+    // of writing and is not used in the queue submit signals. If we optimize ImageRangeGenerator
+    // memory usage then shared_ptr can be replaced by std::optional to avoid allocation.
+    std::shared_ptr<AcquiredImage> acquired_image;
+};
+
+// When the timeline wait is resolved, the previous signals can be removed
+struct RemoveTimelineSignalsRequest {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+
+    // Remove all signals with a value *less than* this threshold (should not touch signals with equal value).
+    uint64_t signal_threshold_value = 0;
+
+    // NOTE: it's possible to have multiple queues with signals that match the wait value.
+    // The specification defines that exactly one signal resolves the wait, and in the presence
+    // of multiple such signals the implementation may choose any of them. It's the application
+    // responsibility to be careful and not to create a race condition in such a scenario.
+    //
+    // The queue that signaled the resolving signal. Only the signals signaled by this queue should be processed.
+    QueueId queue = 0;
+};
+
+// The requests to update SyncValidator's registry of binary/timeline signals.
+// They are collected during validation phase and are applied in the record phase.
+struct SignalsUpdate {
+    vvl::unordered_map<VkSemaphore, SignalInfo> binary_signal_requests;
+    vvl::unordered_set<VkSemaphore> binary_unsignal_requests;
+
+    vvl::unordered_map<VkSemaphore, std::vector<SignalInfo>> timeline_signals;
+    std::vector<RemoveTimelineSignalsRequest> remove_timeline_signals_requests;
+
+    // Register submission batch signals.
+    // Return true if at least one timeline signal was registered
+    bool RegisterSignals(const BatchContextPtr& batch, const vvl::span<const VkSemaphoreSubmitInfo>& submit_signals);
+
+    // Return resolving binary signal. Empty result in the case of a validation error
+    std::optional<SignalInfo> OnBinaryWait(VkSemaphore semaphore);
+
+    // Return resolving timeline signal. Empty result if it is a wait-before-signal
+    std::optional<SignalInfo> OnTimelineWait(VkSemaphore semaphore, uint64_t wait_value);
+
+    SignalsUpdate(const SyncValidator& sync_validator) : sync_validator_(sync_validator) {}
+
+  private:
+    void OnBinarySignal(const vvl::Semaphore& semaphore_state, const BatchContextPtr& batch,
+                        const VkSemaphoreSubmitInfo& submit_signal);
+    // Return false if signal is invalid (non-increasing value)
+    bool OnTimelineSignal(const vvl::Semaphore& semaphore_state, const BatchContextPtr& batch,
+                          const VkSemaphoreSubmitInfo& submit_signal);
+
+  private:
+    const SyncValidator& sync_validator_;
+};
+
+struct FenceHostSyncPoint {
+    QueueId queue_id = kQueueIdInvalid;
+
+    ResourceUsageTag tag = 0;
+
+    // The state of queue_id synchronization with other queues at the
+    // moment this fence was specified in the submit command.
+    // Check also QueueBatchContext::queue_sync_tag_ documentation.
+    std::vector<ResourceUsageTag> queue_sync_tags;
+
+    // Used when queue is not specified (invalid queue id value)
+    AcquiredImage acquired;
+};
+
+struct TimelineHostSyncPoint {
+    QueueId queue_id = 0;
+    ResourceUsageTag tag = 0;
+    uint64_t timeline_value = 0;
+};
+
+struct PresentedImageRecord {
+    ResourceUsageTag tag;  // the global tag at presentation
+    uint32_t image_index;
+    uint32_t swapchain_index;
+    std::shared_ptr<const vvl::Image> image;
+};
+
+struct PresentedImage : public PresentedImageRecord {
+    std::shared_ptr<QueueBatchContext> batch;
+    ImageRangeGen range_gen;
+
+    PresentedImage() = default;
+    PresentedImage(const vvl::Swapchain& swapchain, std::shared_ptr<QueueBatchContext> batch, uint32_t image_index,
+                   uint32_t swapchain_index, ResourceUsageTag present_tag);
+    PresentedImage(const vvl::Swapchain& swapchain, uint32_t at_index);
+
+    void SetImage(const vvl::Swapchain& swapchain, uint32_t at_index);
+    void UpdateMemoryAccess(SyncAccessIndex usage, ResourceUsageTag tag, AccessContext& access_context, SyncFlags flags = 0) const;
+};
+using PresentedImages = std::vector<PresentedImage>;
+
+// Store references to ResourceUsageRecords with global tag range within a batch
+class BatchAccessLog {
+  public:
+    struct BatchRecord {
+        const QueueState* queue_state = nullptr;
+        uint64_t submit_index = 0;
+        uint32_t batch_index = 0;
+        uint32_t cb_index = 0;
+        ResourceUsageTag base_tag = 0;
+    };
+
+    struct AccessRecord {
+        const BatchRecord* batch;
+        const ResourceUsageRecord* record;
+        const DebugNameProvider* debug_name_provider;
+        bool IsValid() const { return batch && record; }
+    };
+
+    struct CBSubmitLog : DebugNameProvider {
+      public:
+        CBSubmitLog() = default;
+        CBSubmitLog(const CBSubmitLog& batch) = default;
+        CBSubmitLog(CBSubmitLog&& other) = default;
+        CBSubmitLog& operator=(const CBSubmitLog& other) = default;
+        CBSubmitLog& operator=(CBSubmitLog&& other) = default;
+        CBSubmitLog(const BatchRecord& batch, std::shared_ptr<const CommandBufferSet> cbs, std::shared_ptr<const AccessLog> log);
+        CBSubmitLog(const BatchRecord& batch, const CommandBufferContext& cb, const std::vector<std::string>& initial_label_stack);
+        size_t Size() const { return log_->size(); }
+        AccessRecord GetAccessRecord(ResourceUsageTag tag) const;
+
+        // DebugNameProvider
+        std::string GetDebugRegionName(const ResourceUsageRecord& record) const override;
+
+      private:
+        BatchRecord batch_;
+        std::shared_ptr<const CommandBufferSet> cbs_;
+        std::shared_ptr<const AccessLog> log_;
+        // label stack at the point when command buffer is submitted to the queue
+        std::vector<std::string> initial_label_stack_;
+    };
+
+    void Import(const BatchRecord& batch, const CommandBufferContext& cb_context,
+                const std::vector<std::string>& initial_label_stack);
+    void Import(const BatchAccessLog& other);
+    void Insert(const BatchRecord& batch, const ResourceUsageRange& range, std::shared_ptr<const AccessLog> log);
+
+    void Trim(const ResourceUsageTagSet& used);
+    // AccessRecord lookup is based on global tags
+    AccessRecord GetAccessRecord(ResourceUsageTag tag) const;
+    BatchAccessLog() {}
+
+  private:
+    using CBSubmitLogRangeMap = sparse_container::range_map<ResourceUsageTag, CBSubmitLog>;
+    CBSubmitLogRangeMap log_map_;
+};
+
+// Batch that has wait-before-signal dependencies.
+struct UnresolvedBatch {
+    BatchContextPtr batch;
+    vvl::Func submit_func = vvl::Func::Empty;
+    uint64_t submit_index = 0;
+    uint32_t batch_index = 0;
+    std::vector<CommandBufferConstPtr> command_buffers;
+
+    // Waits-before-signals that prevent this batch from being resolved.
+    // When the wait is resolved it is removed from this list and the batch
+    // from the resolving signal is stored in resolved_dependencies array.
+    std::vector<VkSemaphoreSubmitInfo> unresolved_waits;
+
+    // The batches from the resolved dependencies. They are used for async validaton.
+    // This includes the batches from the resolved waits and also the last batch
+    // (prior batch on the same queue).
+    std::vector<BatchContextPtr> resolved_dependencies;
+
+    // Signals to signal when all the waits are resolved.
+    std::vector<VkSemaphoreSubmitInfo> signals;
+
+    // Queue's label stack at the beginning of this batch
+    std::vector<std::string> label_stack;
+};
+
+// Track the last synchronized presentation operation for each swapchain.
+// "Presentation is synchronized" means that we re-acquired previously
+// presented image and this batch context directly or indirectly waits for
+// the semaphore signaled by the acquire command.
+struct LastSynchronizedPresent {
+    small_vector<std::pair<VkSwapchainKHR, ResourceUsageTag>, 1> per_swapchain;
+
+    void Update(VkSwapchainKHR swapchain, ResourceUsageTag present_tag);
+    void Merge(const LastSynchronizedPresent& other);
+    void OnDestroySwapchain(VkSwapchainKHR swapchain);
+};
+
+// Queue state used by synchronization validation.
+// Contains the last batch and the list of unresolved batches.
+class QueueState {
+  public:
+    QueueState(const std::shared_ptr<vvl::Queue>& queue, QueueId id) : queue_(queue), id_(id) {}
+
+    const vvl::Queue* GetQueue() const { return queue_.get(); }
+    QueueId GetQueueId() const { return id_; }
+    uint64_t ReserveSubmitId() { return submit_index_++; }
+
+    const LastSynchronizedPresent& GetLastSynchronizedPresent() const;
+
+    BatchContextPtr LastBatch() const { return last_batch_; }
+    void SetLastBatch(BatchContextPtr&& last);
+
+    std::vector<UnresolvedBatch>& UnresolvedBatches() { return unresolved_batches_; }
+
+  private:
+    std::shared_ptr<vvl::Queue> queue_;
+    QueueId id_ = 0;
+    uint64_t submit_index_ = 0;
+
+    // The last batch represents memory accesses currently tracked on the queue (contains AccessContext).
+    // It includes accesses from all previously submitted batches that do not have any unresolved waits
+    BatchContextPtr last_batch_;
+
+    // The first batch in the unresolved batches list is always due to the wait-before-signal dependency.
+    // All subsequent batches from the same queue must also be stored here because they can't be processed
+    // until the wait-before-signal dependency is resolved (respect submission order). When the first batch
+    // is resolved, we start processing other queued batches until we encoutner a batch with unresolved
+    // wait-before-signal (it becomes the new head of the list) or the list is empty.
+    std::vector<UnresolvedBatch> unresolved_batches_;
+};
+
+class QueueBatchContext final : public ResourceUsageInfoProvider, public std::enable_shared_from_this<QueueBatchContext> {
+  public:
+    class PresentResourceRecord : public AlternateResourceUsage::RecordBase {
+      public:
+        using Base_ = AlternateResourceUsage::RecordBase;
+        Base_::Record MakeRecord() const override;
+        ~PresentResourceRecord() override {}
+        PresentResourceRecord(const PresentedImageRecord& presented) : presented_(presented) {}
+        vvl::Func GetCommand() const override { return vvl::Func::vkQueuePresentKHR; }
+        VkSwapchainKHR GetSwapchainHandle() const override;
+
+      private:
+        PresentedImageRecord presented_;
+    };
+
+    class AcquireResourceRecord : public AlternateResourceUsage::RecordBase {
+      public:
+        using Base_ = AlternateResourceUsage::RecordBase;
+        Base_::Record MakeRecord() const override;
+        AcquireResourceRecord(const PresentedImageRecord& presented, ResourceUsageTag tag, vvl::Func command)
+            : presented_(presented), acquire_tag_(tag), command_(command) {}
+        vvl::Func GetCommand() const override { return command_; }
+        VkSwapchainKHR GetSwapchainHandle() const override;
+
+      private:
+        PresentedImageRecord presented_;
+        ResourceUsageTag acquire_tag_;
+        vvl::Func command_;
+    };
+
+    QueueBatchContext(const SyncValidator& sync_state, const QueueState& queue_state);
+    QueueBatchContext(const SyncValidator& sync_state);
+    QueueBatchContext() = delete;
+    ~QueueBatchContext();
+    void Trim();
+
+    ResourceUsageInfo GetResourceUsageInfo(ResourceUsageTagEx tag_ex) const override;
+
+    VkQueueFlags GetQueueFlags() const { return queue_state_->GetQueue()->GetQueueFlags(); }
+    QueueId GetQueueId() const;
+    SyncEnvironment& GetSyncEnvironment() { return environment_; }
+    const SyncEnvironment& GetSyncEnvironment() const { return environment_; }
+    SyncEventsContext& GetEventsContext() { return events_context_; }
+
+    ResourceUsageRange GetTagRange() const { return tag_range_; }
+    const std::vector<ResourceUsageTag>& GetQueueSyncTags() const { return queue_sync_tag_; }
+
+    ResourceUsageTag SetupBatchTags(uint32_t tag_count);
+    void ResetEventsContext() { events_context_.Clear(); }
+
+    // For Submit
+    std::vector<BatchContextPtr> ResolveSubmitWaits(vvl::span<const VkSemaphoreSubmitInfo> wait_semaphores,
+                                                    std::vector<VkSemaphoreSubmitInfo>& unresolved_waits,
+                                                    SignalsUpdate& signals_update);
+
+    bool ValidateSubmit(const std::vector<CommandBufferConstPtr>& command_buffers, uint64_t submit_index, uint32_t batch_index,
+                        std::vector<std::string>& current_label_stack, const Location& submit_loc);
+
+    // For Present
+    std::vector<BatchContextPtr> ResolvePresentWaits(vvl::span<const VkSemaphore> wait_semaphores,
+                                                     const PresentedImages& presented_images, SignalsUpdate& signals_update);
+    bool DoQueuePresentValidate(const Location& loc, vvl::span<const VkSwapchainKHR> swapchains,
+                                const PresentedImages& presented_images);
+    void DoPresentOperations(const PresentedImages& presented_images);
+    void LogPresentOperations(const PresentedImages& presented_images, uint64_t submit_index);
+
+    // For Acquire
+    void SetupAccessContext(const PresentedImage& presented);
+    void DoAcquireOperation(const PresentedImage& presented);
+    void LogAcquireOperation(const PresentedImage& presented, vvl::Func command);
+
+    template <typename Predicate>
+    void ApplyPredicatedWait(Predicate& predicate, const LastSynchronizedPresent& last_synchronized_present);
+    void ApplyTaggedWait(QueueId queue_id, ResourceUsageTag tag, const LastSynchronizedPresent& last_synchronized_present);
+    void ApplyDeviceWait(const LastSynchronizedPresent& last_synchronized_present);
+    void ApplyAcquireWait(const AcquiredImage& acquired);
+    void OnResourceDestroyed(const AccessRange& resource_range);
+
+    [[nodiscard]] std::vector<BatchContextPtr> RegisterAsyncContexts(const std::vector<BatchContextPtr>& batches_resolved);
+    void ResolveLastBatch(const BatchContextPtr& last_batch);
+
+    void ResolveSubmitSemaphoreWait(const SignalInfo& signal_info, VkPipelineStageFlags2 wait_mask);
+    void ImportTags(const QueueBatchContext& from);
+
+    const AccessContext& GetAccessContext() const { return access_context_; }
+    AccessContext& GetAccessContext() { return access_context_; }
+
+  public:
+    LastSynchronizedPresent last_synchronized_present;
+
+  private:
+    const QueueState* GetQueueState() const { return queue_state_; }
+    void ResolvePresentSemaphoreWait(const SignalInfo& signal_info, const PresentedImages& presented_images);
+
+  private:
+    const SyncValidator& sync_state_;
+    const QueueState* queue_state_ = nullptr;
+    ResourceUsageRange tag_range_ = ResourceUsageRange(0, 0);  // Range of tags referenced by cbs_referenced
+
+    AccessContext access_context_;
+    SyncEventsContext events_context_;
+    SyncEnvironment environment_;
+
+    BatchAccessLog batch_log_;
+
+    // Indexed by queue id. Each element stores the tag location of the last synchronization
+    // (via semaphores) between this batch's queue and the corresponding queue. Stores zero
+    // if there was no synchronization with that queue.
+    std::vector<ResourceUsageTag> queue_sync_tag_;
+};
+
+}  // namespace syncval

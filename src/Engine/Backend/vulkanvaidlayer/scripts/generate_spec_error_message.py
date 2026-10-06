@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+# Copyright (c) 2015-2026 The Khronos Group Inc.
+# Copyright (c) 2015-2026 Valve Corporation
+# Copyright (c) 2015-2026 LunarG, Inc.
+# Copyright (c) 2015-2026 Google Inc.
+# Copyright (c) 2023-2026 RasterGrid Kft.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+import sys
+import json
+import argparse
+import re
+import html
+import unicodedata
+from collections import defaultdict
+from collections import OrderedDict
+
+class ValidationJSON:
+    def __init__(self, filename : str):
+        self.filename = filename
+        self.explicit_vuids = set()
+        self.implicit_vuids = set()
+        self.all_vuids = set()
+        self.vuid_db = defaultdict(list) # Maps VUID string to list of json-data dicts
+        self.api_version = "0.0.0"
+
+        # A set of specific regular expression substitutions needed to clean up VUID text
+        self.regex_dict = {}
+        self.regex_dict[re.compile(r'<sup>(.*?)</sup>')] = r'^\1'
+        self.regex_dict[re.compile(r'<.*?>|&(amp;)+lt;|&(amp;)+gt;')] = ""
+        self.regex_dict[re.compile(r'\\\(codeSize \\over 4\\\)')] = "(codeSize/4)"
+        self.regex_dict[re.compile(r'\\\(\\lceil\{\\mathit\{rasterizationSamples} \\over 32}\\rceil\\\)')] = "(rasterizationSamples/32)"
+        self.regex_dict[re.compile(r'\\\(\\left\\lceil{\\frac{maxFramebufferWidth}{minFragmentDensityTexelSize_{width}}}\\right\\rceil\\\)')] = "the ceiling of maxFramebufferWidth/minFragmentDensityTexelSize.width"
+        self.regex_dict[re.compile(r'\\\(\\left\\lceil{\\frac{maxFramebufferHeight}{minFragmentDensityTexelSize_{height}}}\\right\\rceil\\\)')] = "the ceiling of maxFramebufferHeight/minFragmentDensityTexelSize.height"
+        self.regex_dict[re.compile(r'\\\(\\left\\lceil{\\frac{width}{maxFragmentDensityTexelSize_{width}}}\\right\\rceil\\\)')] = "the ceiling of width/maxFragmentDensityTexelSize.width"
+        self.regex_dict[re.compile(r'\\\(\\left\\lceil{\\frac{height}{maxFragmentDensityTexelSize_{height}}}\\right\\rceil\\\)')] = "the ceiling of height/maxFragmentDensityTexelSize.height"
+        self.regex_dict[re.compile(r'\\\(\\textrm\{codeSize} \\over 4\\\)')] = "(codeSize/4)"
+
+        # Regular expression for characters outside ascii range
+        self.unicode_regex = re.compile(r'[^\x00-\x7f]')
+        # Mapping from unicode char to ascii approximation
+        self.unicode_dict = {
+            '\u002b' : '+',  # PLUS SIGN
+            '\u00b4' : "'",  # ACUTE ACCENT
+            '\u200b' : '',   # ZERO WIDTH SPACE
+            '\u2018' : "'",  # LEFT SINGLE QUOTATION MARK
+            '\u2019' : "'",  # RIGHT SINGLE QUOTATION MARK
+            '\u201c' : '"',  # LEFT DOUBLE QUOTATION MARK
+            '\u201d' : '"',  # RIGHT DOUBLE QUOTATION MARK
+            '\u2026' : '...',# HORIZONTAL ELLIPSIS
+            '\u2032' : "'",  # PRIME
+            '\u2192' : '->', # RIGHTWARDS ARROW
+            '\u2308' : 'ceil(', # LEFT CEILING (⌈)
+            '\u2309' : ')', # RIGHT CEILING (⌉)
+            '\u230a' : 'floor(', # LEFT FLOOR (⌊)
+            '\u230b' : ')', # RIGHT FLOOR (⌋)
+            '\u00d7' : 'x', # MULTIPLICATION SIGN (×)
+            '\u2264' : '<=', # LESS-THAN OR EQUAL TO (≤)
+            '\u2208' : 'E', # ELEMENT OF (∈)
+        }
+
+    def sanitize(self, text, location):
+        # Strip leading/trailing whitespace
+        text = text.strip()
+        # Apply regex text substitutions
+        for regex, replacement in self.regex_dict.items():
+            text = re.sub(regex, replacement, text)
+        # Un-escape html entity codes, ie &#XXXX;
+        text = html.unescape(text)
+        # Apply unicode substitutions
+        for unicode in self.unicode_regex.findall(text):
+            try:
+                # Replace known chars
+                text = text.replace(unicode, self.unicode_dict[unicode])
+            except KeyError:
+                # Strip and warn on unrecognized chars
+                text = text.replace(unicode, '')
+                name = unicodedata.name(unicode, 'UNKNOWN')
+                print('Warning: Unknown unicode character \\u{:04x} ({}) at {}'.format(ord(unicode), name, location))
+        return text
+
+    def isExplicitVUID(self, vuid: str):
+         vuid_number = vuid[-5:]
+         # explicit end in 5 numeric chars
+         return vuid_number.isdecimal()
+
+    def dedup(self):
+        unique_explicit_vuids = {}
+        for item in sorted(self.explicit_vuids):
+            key = item[-5:]
+            unique_explicit_vuids[key] = item
+
+        self.explicit_vuids = set(list(unique_explicit_vuids.values()))
+        self.all_vuids = self.explicit_vuids | self.implicit_vuids
+
+    def parse(self):
+        self.json_dict = {}
+        if not os.path.isfile(self.filename):
+            print(f'Error: {self.filename} is not a valid file')
+            sys.exit(-1)
+
+        json_file = open(self.filename, 'r', encoding='utf-8')
+        self.json_dict = json.load(json_file, object_pairs_hook=OrderedDict)
+        json_file.close()
+
+        if len(self.json_dict) == 0:
+            print(f'Error: cant load {self.filename}')
+            sys.exit(-1)
+
+        version = self.json_dict['version info']
+        self.api_version = version['api version']
+
+        # Parse vuid from json into local databases
+        validation = self.json_dict['validation']
+        for api_name in validation.keys():
+            api_dict = validation[api_name]
+            if (len(api_dict.keys()) > 1):
+                print('There use to be muliple keys here, now it should only be "core". If others are added, need to update code accordingly')
+                sys.exit(-1)
+
+            for ventry in api_dict["core"]:
+                vuid_string = ventry['vuid']
+                html_page = ventry['page']
+                if (self.isExplicitVUID(vuid_string)):
+                    self.explicit_vuids.add(vuid_string)
+                    vtype = 'explicit'
+                else:
+                    self.implicit_vuids.add(vuid_string)
+                    vtype = 'implicit'
+
+                vuid_text = self.sanitize(ventry['text'], vuid_string)
+
+                self.vuid_db[vuid_string].append({
+                    'api' : api_name,
+                    'type': vtype,
+                    'text': vuid_text,
+                    'page': html_page
+                })
+
+        self.all_vuids = self.explicit_vuids | self.implicit_vuids
+
+        duplicate_vuids = set({v for v in self.vuid_db if len(self.vuid_db[v]) > 1})
+        if len(duplicate_vuids) > 0:
+            print("Warning: duplicate VUIDs found in validusage.json")
+
+
+# These VUs are huge because they are just listing every possible option that is valid.
+# The size of these make these VU error messages more harmful to print then helpful
+oversized_vus = {
+    'VUID-VkColorBlendEquationEXT-colorBlendOp-07361' : 'colorBlendOp and alphaBlendOp must not be a VkBlendOp from VK_EXT_blend_operation_advanced',
+    'VUID-VkDeviceCreateInfo-pNext-pNext' : 'Each pNext member of any structure (including this one) in the pNext chain must be either NULL or a pointer to a valid struct for extending VkDeviceCreateInfo',
+    'VUID-VkImageCreateInfo-pNext-pNext' : 'Each pNext member of any structure (including this one) in the pNext chain must be either NULL or a pointer to a valid struct for extending VkImageCreateInfo',
+    'VUID-VkGraphicsPipelineCreateInfo-pNext-pNext' : 'Each pNext member of any structure (including this one) in the pNext chain must be either NULL or a pointer to a valid struct for extending VkGraphicsPipelineCreateInfo',
+    'VUID-VkMemoryAllocateInfo-pNext-pNext' : 'Each pNext member of any structure (including this one) in the pNext chain must be either NULL or a pointer to a valid struct for extending VkMemoryAllocateInfo',
+    'VUID-VkPhysicalDeviceProperties2-pNext-pNext' : 'Each pNext member of any structure (including this one) in the pNext chain must be either NULL or a pointer to a valid struct for extending VkPhysicalDeviceProperties2',
+    'VUID-RuntimeSpirv-OpCooperativeMatrixMulAddKHR-10060' : 'For OpCooperativeMatrixMulAddKHR, the operands must match a supported VkCooperativeMatrixPropertiesKHR',
+    'VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163' : 'For OpTypeCooperativeMatrixKHR, if the cooperativeMatrixFlexibleDimensions feature is not enabled, the component type, scope, number of rows, and number of columns must match one of the matrices in any of the supported VkCooperativeMatrixPropertiesKHR',
+    'VUID-RuntimeSpirv-OpTypeCooperativeMatrixMulAddNV-10059' : 'For OpTypeCooperativeMatrixMulAddNV, the operands must match a supported VkCooperativeMatrixPropertiesNV',
+    'VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensions-10165' : 'For OpTypeCooperativeMatrixKHR, if the cooperativeMatrixFlexibleDimensions feature is enabled, the component type, scope, number of rows, and number of columns must match either one of the matrices in one of the supported VkCooperativeMatrixPropertiesKHR or VkCooperativeMatrixFlexibleDimensionsPropertiesNV',
+    'VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensions-10166' : 'For OpCooperativeMatrixMulAddKHR, if the cooperativeMatrixFlexibleDimensions feature is enabled, the operands must match either one of the supported VkCooperativeMatrixPropertiesKHR or VkCooperativeMatrixFlexibleDimensionsPropertiesNV',
+    'VUID-RuntimeSpirv-pNext-09921' : 'The pConstants in the data graph pipeline must satisfy all constraints',
+    'VUID-RuntimeSpirv-pNext-09923' : 'The pResourceInfos in the data graph pipeline must satisfy all constraints',
+    'VUID-RuntimeSpirv-cooperativeMatrixProperties2-13382' : 'For OpTypeCooperativeMatrixKHR, the component type, scope, number of rows, and number of columns do not match the values returned from vkGetPhysicalDeviceCooperativeMatrixProperties2EXT',
+    'VUID-RuntimeSpirv-cooperativeMatrixProperties2-13383' : 'For OpCooperativeMatrixMulAddKHR the operands do not match the values returned from vkGetPhysicalDeviceCooperativeMatrixProperties2EXT',
+    'VUID-vkCmdBuildAccelerationStructuresIndirectKHR-micromap-11629' : 'When updating an acceleration structure that was neither deserialized nor built with micromap update flags, any triangle geometry originally using an opacity micromap must include that exact same micromap handle in its update configuration',
+    'VUID-vkCmdBuildAccelerationStructuresKHR-micromap-11629' : 'When updating an acceleration structure that was neither deserialized nor built with micromap update flags, any triangle geometry originally using an opacity micromap must include that exact same micromap handle in its update configuration',
+    'VUID-VkBindImageMemoryInfo-memory-02629' : 'Dedicated memory bound to an image with aliasing enabled must start at offset zero and belong to the original image or a dimensionally smaller clone with matching parameters',
+    'VUID-vkBindImageMemory-memory-02629' : 'Dedicated memory bound to an image with aliasing enabled must start at offset zero and belong to the original image or a dimensionally smaller clone with matching parameters',
+    'VUID-VkClusterAccelerationStructureCommandsInfoNV-input-12317' : 'For triangle cluster build operations, all destination buffer addresses (implicit or array-based, direct or indirect) must be aligned to clusterByteAlignment',
+    'VUID-VkClusterAccelerationStructureCommandsInfoNV-input-12318' : 'For triangle cluster template build operations, all destination buffer addresses (implicit or array-based, direct or indirect) must be aligned to clusterTemplateByteAlignment',
+    'VUID-VkClusterAccelerationStructureCommandsInfoNV-input-12319' : 'For triangle cluster instantiation operations, all destination buffer addresses (implicit or array-based, direct or indirect) must be aligned to clusterByteAlignment',
+    'VUID-vkCmdBuildAccelerationStructuresIndirectKHR-micromap-11628' : 'When updating a deserialized acceleration structure built without the micromap update flag, any triangle geometry originally using an opacity micromap must include a micromap handle deserialized from the original build data',
+    'VUID-vkCmdBuildAccelerationStructuresKHR-micromap-11628' : 'When updating a deserialized acceleration structure built without the micromap update flag, any triangle geometry originally using an opacity micromap must include a micromap handle deserialized from the original build data',
+    'VUID-VkPipelineColorBlendAttachmentState-advancedBlendAllOperations-01409' : 'If VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT::advancedBlendAllOperations is VK_FALSE, then colorBlendOp must not be invalid',
+    'VUID-VkRenderPassPerformanceCountersByRegionBeginInfoARM-pCounterAddresses-11817' : 'Each address in pCounterAddresses must point to a buffer with enough contiguous space to hold the region-aligned, row-strided performance counter data for the given rendering area',
+    'VUID-VkSubmitInfo-pCommandBufferInfos-09942' : 'When submitting command buffers created for foreign data graph engines, all wait and signal semaphores must use external handle types explicitly supported by those engines for the command pool queue family',
+    'VUID-VkSubmitInfo2-pCommandBufferInfos-09933' : 'When submitting command buffers created for foreign data graph engines, all wait and signal semaphores must use external handle types explicitly supported by those engines for the command pool queue family',
+    'VUID-vkCmdDecodeVideoKHR-None-10403' : 'If the bound video session was created with the video codec operation VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR, then there must be a bound video session parameters object if any of the conditions are not met',
+    'VUID-vkCmdDecodeVideoKHR-StdVideoH265SequenceParameterSet-07161' : 'For H.265 decoding, the bound session parameters must include a Sequence Parameter Set (SPS) matching the VPS and SPS IDs in pDecodeInfo, unless valid inline SPS parameters are provided',
+    'VUID-vkCmdDecodeVideoKHR-StdVideoH265PictureParameterSet-07162' : 'For H.265 decoding, the bound session parameters must include a Picture Parameter Set (PPS) matching the VPS, SPS, and PPS IDs in pDecodeInfo, unless valid inline PPS parameters are provided',
+    'VUID-vkCmdDispatchDataGraphARM-nodeType-09981' : 'Optical flow data graph pipelines require all accessed image subresources to be in their connection-specified layout, unless unifiedImageLayouts is enabled (allowing GENERAL layout)',
+    'VUID-vkCmdDispatchDataGraphARM-pNext-09952' : 'For foreign data graph processing pipelines, all session-bound memory must use export handle types supported by the foreign engines for the command pool queue family',
+    'VUID-vkCmdDispatchDataGraphARM-pipeline-09940' : 'For foreign data graph processing pipelines, all accessed tensor descriptors must be bound to memory allocated with export handle types supported by the foreign engines for the command pool queue family',
+}
+
+def GenerateSpecErrorMessage(api : str, valid_usage_json : str, out_dir : str):
+    val_json = ValidationJSON(valid_usage_json)
+    val_json.parse()
+
+    out = []
+    out.append(f'''// *** THIS FILE IS GENERATED - DO NOT EDIT ***
+// See {os.path.basename(__file__)} for modifications
+// Based on Vulkan specification version: {val_json.api_version}
+
+/***************************************************************************
+ *
+ * Copyright (c) 2016-2026 Google Inc.
+ * Copyright (c) 2016-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ****************************************************************************/
+#pragma once
+
+#include "containers/custom_containers.h"
+#include <string_view>
+
+// Mapping from VUID string to the corresponding spec text
+struct vuid_info {{
+    const std::string_view spec_text;
+    const std::string_view url_id;
+}};
+
+const vvl::unordered_map<std::string_view, vuid_info>& GetVuidMap();
+''')
+
+    out_file = os.path.join(out_dir, 'vk_validation_error_messages.h')
+    with open(out_file, 'w', newline='\n', encoding='utf-8') as file:
+        file.write("".join(out))
+
+    out = []
+    out.append(f'''// *** THIS FILE IS GENERATED - DO NOT EDIT ***
+// See {os.path.basename(__file__)} for modifications
+// Based on Vulkan specification version: {val_json.api_version}
+
+/***************************************************************************
+ *
+ * Copyright (c) 2016-2026 Google Inc.
+ * Copyright (c) 2016-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ****************************************************************************/
+
+#include "vk_validation_error_messages.h"
+#include <cstdint>
+#include <iterator>
+
+// clang-format off
+''')
+
+    vuid_list = list(val_json.all_vuids)
+    vuid_list.sort()
+    pages = sorted({val_json.vuid_db[vuid][0]['page'] for vuid in vuid_list})
+    page_index = {page: index for index, page in enumerate(pages)}
+
+    # The table is plain C data on purpose. It used to be a std::array<std::pair<std::string_view, vuid_info>>, whose
+    # ~27k initializers (constructor overload resolution and constant evaluation for every element) took the compiler
+    # ~18 seconds, making this the slowest file of the project.
+    out.append('''
+namespace {
+
+// Spec page each VUID is documented on
+constexpr std::string_view kVuidPages[] = {
+''')
+    for page in pages:
+        out.append(f'    "{page}",\n')
+    out.append('''};
+
+struct VuidEntry {
+    const char* vuid;
+    const char* spec_text;
+    uint16_t vuid_length;
+    uint16_t spec_text_length;
+    uint8_t page;  // index into kVuidPages
+};
+
+const VuidEntry kVuidEntries[] = {
+''')
+    for vuid in vuid_list:
+        db_entry = val_json.vuid_db[vuid][0]
+        html_page = db_entry['page']
+
+        db_text = db_entry['text'].strip()
+        html_remove_tags = re.compile(r'<.*?>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});')
+        db_text = re.sub(html_remove_tags, '', db_text)
+        # In future we could use the `/n` to add new lines to a pretty print in the console
+        db_text = db_text.replace('\n', ' ')
+        # Remove multiple whitespaces
+        db_text = re.sub(' +', ' ', db_text)
+        # Override for large VU text messages
+        if vuid in oversized_vus:
+            db_text = oversized_vus[vuid]
+
+        # If hit this warning, likely should be added to oversized_vus
+        if (len(db_text) > 800):
+            print(f'Warning: {vuid} has a large message ({len(db_text)})')
+
+        # Escape quotes and backslashes when generating C strings for source code (after measuring the real length)
+        escaped_text = db_text.replace('\\', '\\\\').replace('"', '\\"')
+        out.append(f'    {{"{vuid}", "{escaped_text}", {len(vuid)}, {len(db_text)}, {page_index[html_page]}}},\n')
+        # For multiply-defined VUIDs, include versions with extension appended
+        if len(val_json.vuid_db[vuid]) > 1:
+            print(f'Warning: Found a duplicate VUID: {vuid}')
+
+    out.append('''};
+
+}  // namespace
+
+const vvl::unordered_map<std::string_view, vuid_info>& GetVuidMap() {
+    static const vvl::unordered_map<std::string_view, vuid_info> vuid_map = [] {
+        vvl::unordered_map<std::string_view, vuid_info> map;
+        map.reserve(std::size(kVuidEntries));
+        for (const VuidEntry& entry : kVuidEntries) {
+            map.emplace(std::string_view(entry.vuid, entry.vuid_length),
+                        vuid_info{std::string_view(entry.spec_text, entry.spec_text_length), kVuidPages[entry.page]});
+        }
+        return map;
+    }();
+    return vuid_map;
+}
+''')
+
+    out_file = os.path.join(out_dir, 'vk_validation_error_messages.cpp')
+    with open(out_file, 'w', newline='\n', encoding='utf-8') as file:
+        file.write("".join(out))
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('json_file', help="registry file 'validusage.json'")
+    parser.add_argument('out_dir', help="directory to generate to")
+    parser.add_argument('-api',
+                        default='vulkan',
+                        choices=['vulkan'],
+                        help='Specify API name to use')
+    args = parser.parse_args(sys.argv[1:])
+    GenerateSpecErrorMessage(args.api, args.json_file, args.out_dir)

@@ -1,0 +1,171 @@
+/* Copyright (c) 2024-2026 The Khronos Group Inc.
+ * Copyright (c) 2024-2026 Valve Corporation
+ * Copyright (c) 2024-2026 LunarG, Inc.
+ * Modifications Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+#include "shader_stage_state.h"
+
+#include "state_tracker/shader_module.h"
+#include "utils/descriptor_utils.h"
+#include <vulkan/utility/vk_safe_struct.hpp>
+#include "containers/container_utils.h"
+
+// Common for both Pipeline and Shader Object
+void GetActiveSlots(ActiveSlotMap& active_slots, const std::shared_ptr<const spirv::EntryPoint>& entrypoint) {
+    if (!entrypoint) {
+        return;
+    }
+    // Capture descriptor uses for the pipeline
+    for (const auto& variable : entrypoint->resource_interface_variables) {
+        // While validating shaders capture which slots are used by the pipeline
+        DescriptorRequirement entry;
+        entry.variable = &variable;
+        entry.revalidate_hash = variable.descriptor_hash;
+        active_slots[variable.decorations.set].emplace(variable.decorations.binding, entry);
+    }
+}
+
+// Used by pipeline
+ActiveSlotMap GetActiveSlots(const std::vector<ShaderStageState>& stage_states) {
+    ActiveSlotMap active_slots;
+    for (const auto& stage : stage_states) {
+        GetActiveSlots(active_slots, stage.entrypoint);
+    }
+    return active_slots;
+}
+
+// Used by Shader Object
+ActiveSlotMap GetActiveSlots(const std::shared_ptr<const spirv::EntryPoint>& entrypoint) {
+    ActiveSlotMap active_slots;
+    GetActiveSlots(active_slots, entrypoint);
+    return active_slots;
+}
+
+uint32_t GetMaxActiveSlot(const ActiveSlotMap& active_slots) {
+    uint32_t max_active_slot = 0;
+    for (const auto& entry : active_slots) {
+        max_active_slot = std::max(max_active_slot, entry.first);
+    }
+    return max_active_slot;
+}
+
+const char* ShaderStageState::GetPName() const {
+    return (pipeline_create_info) ? pipeline_create_info->pName : shader_object_create_info->pName;
+}
+
+VkShaderStageFlagBits ShaderStageState::GetStage() const {
+    return (pipeline_create_info) ? pipeline_create_info->stage : shader_object_create_info->stage;
+}
+
+vku::safe_VkSpecializationInfo* ShaderStageState::GetSpecializationInfo() const {
+    return (pipeline_create_info) ? pipeline_create_info->pSpecializationInfo : shader_object_create_info->pSpecializationInfo;
+}
+
+const void* ShaderStageState::GetPNext() const {
+    return (pipeline_create_info) ? pipeline_create_info->pNext : shader_object_create_info->pNext;
+}
+
+// vkspec.html#shaders-varying-subgroup-size
+bool ShaderStageState::AllowsVaryingSubgroupSize() const {
+    if (pipeline_create_info) {
+        return (pipeline_create_info->flags & VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT) != 0;
+    } else if (shader_object_create_info) {
+        return (shader_object_create_info->flags & VK_SHADER_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT_EXT) != 0;
+    }
+    return false;
+}
+
+// vkspec.html#shaders-full-subgroups
+bool ShaderStageState::RequiresFullSubgroup() const {
+    if (pipeline_create_info) {
+        return (pipeline_create_info->flags & VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT) != 0;
+    } else if (shader_object_create_info) {
+        return (shader_object_create_info->flags & VK_SHADER_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT) != 0;
+    }
+    return false;
+}
+
+ShaderStageState::Heap ShaderStageState::GetHeapInfo(bool descriptor_heap_mode) {
+    Heap result;
+    if (!descriptor_heap_mode || !entrypoint || !spirv_state) {
+        return result;
+    }
+    result.descriptor_heap_mode = true;
+
+    const auto mapping_info = vku::FindStructInPNextChain<VkShaderDescriptorSetAndBindingMappingInfoEXT>(GetPNext());
+    if (!mapping_info && !spirv_state->static_data_.has_descriptor_heap) {
+        return result;  // if not using heaps at all
+    }
+
+    for (const spirv::ResourceInterfaceVariable& resource_variable : entrypoint->resource_interface_variables) {
+        if (resource_variable.is_resource_heap) {
+            result.uses_resource_heap = true;
+            continue;
+        } else if (resource_variable.is_sampler_heap) {
+            result.uses_sampler_heap = true;
+            continue;
+        } else if (!mapping_info || resource_variable.IsHeap()) {
+            continue;
+        }
+
+        const bool potential_resource = (!resource_variable.is_sampler);
+        const bool potential_sampler = (resource_variable.is_sampler || resource_variable.is_combined_image_sampler);
+
+        for (uint32_t i = 0; i < mapping_info->mappingCount; i++) {
+            const auto& mapping = mapping_info->pMappings[i];
+            if (!IsResourceVariableInMapping(mapping, resource_variable)) {
+                continue;
+            }
+
+            if (mapping.source != VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT) {
+                result.uses_push_data = true;
+            }
+
+            if (IsValueIn(mapping.source, {VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+                                           VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT,
+                                           VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_EXT,
+                                           VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_ARRAY_EXT,
+                                           VK_DESCRIPTOR_MAPPING_SOURCE_RESOURCE_HEAP_DATA_EXT,
+                                           VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_SHADER_RECORD_INDEX_EXT})) {
+                // might be both with combined image sampler
+                if (potential_resource) {
+                    result.uses_resource_heap = true;
+                }
+                if (potential_sampler) {
+                    result.uses_sampler_heap = true;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+ShaderStageState::ShaderStageState(const vku::safe_VkPipelineShaderStageCreateInfo* pipeline_create_info,
+                                   const vku::safe_VkShaderCreateInfoEXT* shader_object_create_info,
+                                   const vvl::DescriptorSetLayoutList* descriptor_set_layouts,
+                                   std::shared_ptr<const vvl::ShaderModule> module_state,
+                                   std::shared_ptr<const spirv::Module> spirv_state, const VkPipelineLayout pipeline_layout,
+                                   bool descriptor_heap_mode)
+    : module_state(module_state),
+      spirv_state(spirv_state),
+      pipeline_create_info(pipeline_create_info),
+      shader_object_create_info(shader_object_create_info),
+      descriptor_set_layouts(descriptor_set_layouts),
+      pipeline_layout(pipeline_layout),
+      entrypoint(spirv_state ? spirv_state->FindEntrypoint(GetPName(), GetStage()) : nullptr),
+      heap(GetHeapInfo(descriptor_heap_mode)) {}

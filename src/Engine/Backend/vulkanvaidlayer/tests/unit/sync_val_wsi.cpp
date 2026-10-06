@@ -1,0 +1,279 @@
+/* Copyright (c) 2026 The Khronos Group Inc.
+ * Copyright (c) 2026 Valve Corporation
+ * Copyright (c) 2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "sync_val_tests.h"
+
+struct NegativeSyncValWsi : public VkSyncValTest {};
+
+// Wrap FAIL:
+//  * DRY for common messages
+//  * for test stability reasons sometimes cleanup code is required *prior* to the return hidden in FAIL
+//  * result_arg_ *can* (should) have side-effect, but is referenced exactly once
+//  * label_ must be converitble to bool, and *should* *not* have side-effects
+//    * "{}" or ";" are valid clean_ values for noop
+#define REQUIRE_SUCCESS(result_arg_, label_)                            \
+    {                                                                   \
+        const VkResult result_ = (result_arg_);                         \
+        if (result_ != VK_SUCCESS) {                                    \
+            {                                                           \
+                m_device->Wait();                                       \
+            }                                                           \
+            if (bool(label_)) {                                         \
+                FAIL() << string_VkResult(result_) << ": " << (label_); \
+            } else {                                                    \
+                FAIL() << string_VkResult(result_);                     \
+            }                                                           \
+        }                                                               \
+    }
+
+TEST_F(NegativeSyncValWsi, DISABLED_PresentAcquire) {
+    TEST_DESCRIPTION("Try destroying a swapchain presentable image with vkDestroyImage");
+
+    AddSurfaceExtension();
+    RETURN_IF_SKIP(InitSyncValFramework());
+    RETURN_IF_SKIP(InitState());
+    RETURN_IF_SKIP(InitSwapchain());
+
+    const std::vector<VkImage> images = m_swapchain.GetImages();
+    std::vector<bool> image_used(images.size(), false);
+    vkt::Fence fence(*m_device);
+
+    // Loop through the indices until we find one we are reusing...
+    // When fence is non-null this can timeout so we need to track results
+    // Acquire can always timeout, so we need to track results
+    auto acquire_used_image_semaphore = [this, &image_used, &images](const vkt::Semaphore& sem, uint32_t& index) {
+        VkResult result = VK_SUCCESS;
+        while (true) {
+            index = m_swapchain.AcquireNextImage(sem, kWaitTimeout, &result);
+            if ((result != VK_SUCCESS) || image_used[index]) break;
+
+            m_command_buffer.Begin();
+            m_command_buffer.TransitionLayout(images[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            m_command_buffer.End();
+            m_default_queue->Submit(m_command_buffer, vkt::Wait(sem));
+            m_device->Wait();
+
+            result = m_default_queue->Present(m_swapchain, index, vkt::no_semaphore);
+            if (result != VK_SUCCESS) break;
+            image_used[index] = true;
+        }
+        return result;
+    };
+    auto acquire_used_image_fence = [this, &image_used, &images](const vkt::Fence& fence, uint32_t& index) {
+        VkResult result = VK_SUCCESS;
+        while (true) {
+            index = m_swapchain.AcquireNextImage(fence, kWaitTimeout, &result);
+            if ((result != VK_SUCCESS) || image_used[index]) break;
+
+            result = fence.Wait(kWaitTimeout);
+            fence.Reset();
+
+            m_command_buffer.Begin();
+            m_command_buffer.TransitionLayout(images[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            m_command_buffer.End();
+            m_default_queue->SubmitAndWait(m_command_buffer);
+
+            m_default_queue->Present(m_swapchain, index, vkt::no_semaphore);
+
+            if (result != VK_SUCCESS) break;
+            image_used[index] = true;
+        }
+        return result;
+    };
+
+    uint32_t acquired_index = 0;
+    REQUIRE_SUCCESS(acquire_used_image_fence(fence, acquired_index), "acquire_used_image");
+
+    m_command_buffer.Begin();
+    m_command_buffer.TransitionLayout(images[acquired_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    m_command_buffer.End();
+
+    // Look for errors between the acquire and first use...
+    // No sync operations...
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-WRITE-AFTER-PRESENT");
+    fence.Wait(kWaitTimeout);
+    m_default_queue->Submit(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+
+    // Sync operations that should ignore present operations
+    m_device->Wait();
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-WRITE-AFTER-PRESENT");
+    m_default_queue->Submit(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+
+    // Finally we wait for the fence associated with the acquire
+    REQUIRE_SUCCESS(vk::WaitForFences(*m_device, 1, &fence.handle(), VK_TRUE, kWaitTimeout), "WaitForFences");
+    fence.Reset();
+    m_default_queue->Submit(m_command_buffer);
+    m_device->Wait();
+
+    // Release the image back to the present engine, so we don't run out
+    m_default_queue->Present(m_swapchain, acquired_index, vkt::no_semaphore);  // present without fence can't timeout
+
+    vkt::Semaphore sem(*m_device);
+    REQUIRE_SUCCESS(acquire_used_image_semaphore(sem, acquired_index), "acquire_used_image");
+
+    // The wait mask doesn't match the operations in the command buffer
+    VkImageMemoryBarrier image_barrier = vku::InitStructHelper();
+    image_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    image_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    image_barrier.image = images[acquired_index];
+    image_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    m_command_buffer.Begin();
+    m_command_buffer.Barrier(image_barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    m_command_buffer.End();
+
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-WRITE-AFTER-READ");
+    m_default_queue->Submit(m_command_buffer, vkt::Wait(sem, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT));
+    m_errorMonitor->VerifyFound();
+
+    // Now then wait mask matches the operations in the command buffer
+    m_default_queue->Submit(m_command_buffer, vkt::Wait(sem, VK_PIPELINE_STAGE_TRANSFER_BIT));
+
+    // Try presenting without waiting for the ILT to finish
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-PRESENT-AFTER-WRITE");
+    m_default_queue->Present(m_swapchain, acquired_index, vkt::no_semaphore);  // present without fence can't timeout
+    m_errorMonitor->VerifyFound();
+
+    // Let the ILT complete, and the release the image back
+    m_device->Wait();
+    m_default_queue->Present(m_swapchain, acquired_index, vkt::no_semaphore);  // present without fence can't timeout
+
+    REQUIRE_SUCCESS(acquire_used_image_fence(fence, acquired_index), "acquire_used_index");
+    REQUIRE_SUCCESS(fence.Wait(kWaitTimeout), "WaitForFences");
+
+    m_command_buffer.Begin();
+    m_command_buffer.TransitionLayout(images[acquired_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    m_command_buffer.End();
+
+    fence.Reset();
+    m_default_queue->Submit(m_command_buffer, vkt::Signal(sem));
+
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-PRESENT-AFTER-WRITE");
+    m_default_queue->Present(m_swapchain, acquired_index, vkt::no_semaphore);  // present without fence can't timeout
+    m_errorMonitor->VerifyFound();
+
+    m_default_queue->Present(m_swapchain, acquired_index, sem);  // present without fence can't timeout
+    m_device->Wait();
+}
+
+TEST_F(NegativeSyncValWsi, PresentDoesNotWaitForSubmit2) {
+    TEST_DESCRIPTION("Present does not specify semaphore to wait for submit.");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddSurfaceExtension();
+    AddRequiredFeature(vkt::Feature::synchronization2);
+    RETURN_IF_SKIP(InitSyncValFramework());
+    RETURN_IF_SKIP(InitState());
+    RETURN_IF_SKIP(InitSwapchain());
+    const vkt::Semaphore acquire_semaphore(*m_device);
+    const vkt::Semaphore submit_semaphore(*m_device);
+    const auto swapchain_images = m_swapchain.GetImages();
+    const uint32_t image_index = m_swapchain.AcquireNextImage(acquire_semaphore, kWaitTimeout);
+
+    VkImageMemoryBarrier2 layout_transition = vku::InitStructHelper();
+    layout_transition.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    layout_transition.srcAccessMask = 0;
+    layout_transition.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    layout_transition.dstAccessMask = 0;
+    layout_transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    layout_transition.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    layout_transition.image = swapchain_images[image_index];
+    layout_transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    m_command_buffer.Begin();
+    m_command_buffer.Barrier(layout_transition);
+    m_command_buffer.End();
+
+    m_default_queue->Submit2(m_command_buffer, vkt::Wait(acquire_semaphore, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+                             vkt::Signal(submit_semaphore, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT));
+
+    // DO NOT wait for submit. This should generate present after write (ILT) harard.
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-PRESENT-AFTER-WRITE");
+    m_default_queue->Present(m_swapchain, image_index, vkt::no_semaphore);
+    m_errorMonitor->VerifyFound();
+    m_device->Wait();
+}
+
+TEST_F(NegativeSyncValWsi, PresentDoesNotWaitForSubmit) {
+    TEST_DESCRIPTION("Present does not specify semaphore to wait for submit.");
+    AddSurfaceExtension();
+    RETURN_IF_SKIP(InitSyncValFramework());
+    RETURN_IF_SKIP(InitState());
+    RETURN_IF_SKIP(InitSwapchain());
+    const vkt::Semaphore acquire_semaphore(*m_device);
+    const vkt::Semaphore submit_semaphore(*m_device);
+    const auto swapchain_images = m_swapchain.GetImages();
+    const uint32_t image_index = m_swapchain.AcquireNextImage(acquire_semaphore, kWaitTimeout);
+
+    VkImageMemoryBarrier layout_transition = vku::InitStructHelper();
+    layout_transition.srcAccessMask = 0;
+    layout_transition.dstAccessMask = 0;
+
+    layout_transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    layout_transition.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    layout_transition.image = swapchain_images[image_index];
+    layout_transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    m_command_buffer.Begin();
+    m_command_buffer.Barrier(layout_transition, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+    m_command_buffer.End();
+
+    m_default_queue->Submit(m_command_buffer, vkt::Wait(acquire_semaphore, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+                            vkt::Signal(submit_semaphore));
+
+    // DO NOT wait for submit. This should generate present after write (ILT) harard.
+    m_errorMonitor->SetDesiredError("SYNC-HAZARD-PRESENT-AFTER-WRITE");
+    m_default_queue->Present(m_swapchain, image_index, vkt::no_semaphore);
+    m_errorMonitor->VerifyFound();
+    m_device->Wait();
+}
+
+TEST_F(NegativeSyncValWsi, LayoutTransitionDoesNotWaitForAcquire) {
+    TEST_DESCRIPTION("Ensure error message does not suggest to synchronize with VK_PIPELINE_STAGE_2_NONE");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddSurfaceExtension();
+    AddRequiredFeature(vkt::Feature::synchronization2);
+    RETURN_IF_SKIP(InitSyncVal());
+    RETURN_IF_SKIP(InitSwapchain());
+
+    const vkt::Semaphore acquire_semaphore(*m_device);
+    const auto swapchain_images = m_swapchain.GetImages();
+    const uint32_t image_index = m_swapchain.AcquireNextImage(acquire_semaphore, kWaitTimeout);
+
+    VkImageMemoryBarrier2 layout_transition = vku::InitStructHelper();
+    layout_transition.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    layout_transition.srcAccessMask = VK_ACCESS_2_NONE;
+    layout_transition.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    layout_transition.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+    layout_transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    layout_transition.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    layout_transition.image = swapchain_images[image_index];
+    layout_transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    m_command_buffer.Begin();
+    m_command_buffer.Barrier(layout_transition);
+    m_command_buffer.End();
+
+    // NOTE: Currently c++ regex does not support well checking absense of substring.
+    // Instead check that new version of message is used (that we know does not have VK_PIPELINE_STAGE_2_NONE);
+    m_errorMonitor->SetDesiredErrorRegex("SYNC-HAZARD-WRITE-AFTER-READ",
+                                         "but layout transition does not synchronize with these stages");
+    m_default_queue->Submit(m_command_buffer, vkt::Wait(acquire_semaphore, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT));
+    m_errorMonitor->VerifyFound();
+    m_device->Wait();
+}

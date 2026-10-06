@@ -1,0 +1,1524 @@
+/*
+ * Copyright (c) 2015-2016, 2020-2026 The Khronos Group Inc.
+ * Copyright (c) 2015-2016, 2020-2026 Valve Corporation
+ * Copyright (c) 2015-2016, 2020-2026 LunarG, Inc.
+ * Copyright (C) 2025 Arm Limited.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include <cassert>
+#include <vector>
+#include <optional>
+
+#include "containers/span.h"
+#include "containers/limits.h"
+#include "generated/vk_function_pointers.h"
+#include "state_tracker/surface_type.h"
+#include "utils/cast_utils.h"
+#include "test_common.h"
+
+namespace vkt {
+
+class PhysicalDevice;
+class Device;
+class Queue;
+class DeviceMemory;
+class Fence;
+class Semaphore;
+class Event;
+class QueryPool;
+class Buffer;
+class BufferView;
+class Image;
+class ImageView;
+class DepthStencilView;
+class PipelineCache;
+class Pipeline;
+class PipelineDelta;
+class Sampler;
+class DescriptorSetLayout;
+class PipelineLayout;
+class DescriptorSetPool;
+class DescriptorSet;
+class CommandBuffer;
+class CommandPool;
+class Swapchain;
+class IndirectCommandsLayout;
+class IndirectExecutionSet;
+class Tensor;
+
+std::vector<VkLayerProperties> GetGlobalLayers();
+std::vector<VkExtensionProperties> GetGlobalExtensions();
+std::vector<VkExtensionProperties> GetGlobalExtensions(const char *pLayerName);
+
+namespace internal {
+
+template <typename T>
+class Handle {
+  public:
+    const T &handle() const noexcept { return handle_; }
+    T &handle() noexcept { return handle_; }
+    bool initialized() const noexcept { return (handle_ != T{}); }
+
+    operator T() const noexcept { return handle(); }
+
+    void SetName(VkDevice device, VkObjectType object_type, const char *name) {
+        VkDebugUtilsObjectNameInfoEXT name_info = vku::InitStructHelper();
+        name_info.objectType = object_type;
+        name_info.objectHandle = CastToUint64(handle_);
+        name_info.pObjectName = name;
+        vk::SetDebugUtilsObjectNameEXT(device, &name_info);
+    }
+
+  protected:
+    typedef T handle_type;
+
+    explicit Handle() noexcept : handle_{} {}
+    explicit Handle(T handle) noexcept : handle_(handle) {}
+
+    // handles are non-copyable
+    Handle(const Handle &) = delete;
+    Handle &operator=(const Handle &) = delete;
+
+    // handles can be moved out
+    Handle(Handle &&src) noexcept : handle_{src.handle_} { src.handle_ = {}; }
+    Handle &operator=(Handle &&src) noexcept {
+        handle_ = src.handle_;
+        src.handle_ = {};
+        return *this;
+    }
+
+    void init(T handle) noexcept {
+        assert(!initialized());
+        handle_ = handle;
+    }
+
+  protected:
+    T handle_;
+};
+
+template <typename T>
+class NonDispHandle : public Handle<T> {
+  protected:
+    explicit NonDispHandle() noexcept : Handle<T>(), dev_handle_(VK_NULL_HANDLE) {}
+    explicit NonDispHandle(VkDevice dev, T handle) noexcept : Handle<T>(handle), dev_handle_(dev) {}
+
+    NonDispHandle(NonDispHandle &&src) noexcept : Handle<T>(std::move(src)) {
+        dev_handle_ = src.dev_handle_;
+        src.dev_handle_ = VK_NULL_HANDLE;
+    }
+    NonDispHandle &operator=(NonDispHandle &&src) noexcept {
+        Handle<T>::operator=(std::move(src));
+        dev_handle_ = src.dev_handle_;
+        src.dev_handle_ = VK_NULL_HANDLE;
+        return *this;
+    }
+
+    const VkDevice &device() const noexcept { return dev_handle_; }
+
+    void init(VkDevice dev, T handle) noexcept {
+        assert(!Handle<T>::initialized() && dev_handle_ == VK_NULL_HANDLE);
+        Handle<T>::init(handle);
+        dev_handle_ = dev;
+    }
+
+    void SetDevice(VkDevice device) { dev_handle_ = device; }
+
+    void Destroy() noexcept { dev_handle_ = VK_NULL_HANDLE; }
+
+  public:
+    void SetName(VkObjectType object_type, const char *name) { Handle<T>::SetName(dev_handle_, object_type, name); }
+
+  private:
+    VkDevice dev_handle_;
+};
+
+}  // namespace internal
+   //
+class Instance {
+  public:
+    Instance(const VkInstanceCreateInfo &info) { Init(info); }
+    void Init(const VkInstanceCreateInfo &info);
+
+    ~Instance() noexcept { Destroy(); }
+    void Destroy() noexcept;
+
+    VkInstance Handle() const { return handle_; }
+
+    Instance(Instance &&src) noexcept : handle_{src.handle_} { src.handle_ = {}; }
+    Instance &operator=(Instance &&src) noexcept {
+        handle_ = src.handle_;
+        src.handle_ = {};
+        return *this;
+    }
+
+  private:
+    VkInstance handle_{};
+};
+
+class PhysicalDevice : public internal::Handle<VkPhysicalDevice> {
+  public:
+    explicit PhysicalDevice(VkPhysicalDevice phy)
+        : Handle(phy),
+          properties_(Properties()),
+          limits_(properties_.limits),
+          memory_properties_(MemoryProperties()),
+          queue_properties_(QueueProperties()) {}
+
+    void SetName(VkDevice device, const char *name) {
+        Handle<VkPhysicalDevice>::SetName(device, VK_OBJECT_TYPE_PHYSICAL_DEVICE, name);
+    }
+    VkPhysicalDeviceFeatures Features() const;
+
+    bool SetMemoryType(const uint32_t type_bits, VkMemoryAllocateInfo *info, const VkMemoryPropertyFlags properties,
+                       const VkMemoryPropertyFlags forbid = 0, const VkMemoryHeapFlags heapFlags = 0) const;
+
+    // vkEnumerateDeviceExtensionProperties()
+    std::vector<VkExtensionProperties> Extensions(const char *pLayerName = nullptr) const;
+
+    // vkEnumerateLayers()
+    std::vector<VkLayerProperties> Layers() const;
+
+    const VkPhysicalDeviceProperties properties_;
+    const VkPhysicalDeviceLimits limits_;
+    const VkPhysicalDeviceMemoryProperties memory_properties_;
+    const std::vector<VkQueueFamilyProperties> queue_properties_;
+
+  private:
+    VkPhysicalDeviceProperties Properties() const;
+    std::vector<VkQueueFamilyProperties> QueueProperties() const;
+    VkPhysicalDeviceMemoryProperties MemoryProperties() const;
+};
+
+class QueueCreateInfoArray {
+  private:
+    std::vector<VkDeviceQueueCreateInfo> queue_info_;
+    std::vector<std::vector<float>> queue_priorities_;
+
+  public:
+    QueueCreateInfoArray(const std::vector<VkQueueFamilyProperties> &queue_props, bool all_queue_count = false);
+    size_t Size() const { return queue_info_.size(); }
+    const VkDeviceQueueCreateInfo *Data() const { return queue_info_.data(); }
+};
+
+class Device : public internal::Handle<VkDevice> {
+  public:
+    explicit Device(VkPhysicalDevice phy, const VkDeviceCreateInfo &info) : target_api_version_(VK_API_VERSION_1_0), physical_device_(phy) { Init(info); }
+    explicit Device(VkPhysicalDevice phy, std::vector<const char *> &extension_names, VkPhysicalDeviceFeatures *features = nullptr,
+                    void *create_device_pnext = nullptr, bool all_queue_count = false,
+                    uint32_t target_api_version = VK_API_VERSION_1_0)
+        : target_api_version_(target_api_version), physical_device_(phy) {
+        Init(extension_names, features, create_device_pnext, all_queue_count);
+    }
+
+    ~Device() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateDevice()
+    void Init(const VkDeviceCreateInfo &info);
+    void Init(std::vector<const char *> &extensions, VkPhysicalDeviceFeatures *features = nullptr,
+              void *create_device_pnext = nullptr, bool all_queue_count = false);  // all queues, all extensions, etc
+
+    void SetName(const char *name) { Handle<VkDevice>::SetName(handle_, VK_OBJECT_TYPE_DEVICE, name); }
+    const PhysicalDevice &Physical() const { return physical_device_; }
+
+    std::vector<const char *> GetEnabledExtensions() { return enabled_extensions_; }
+    bool IsEnabledExtension(const char *extension) const;
+    const VkPhysicalDeviceFeatures &GetFeatures() const { return features_; }
+
+    const std::vector<Queue *> &QueuesWithGraphicsCapability() const { return queues_[GRAPHICS]; }
+    const std::vector<Queue *> &QueuesWithComputeCapability() const { return queues_[COMPUTE]; }
+    const std::vector<Queue *> &QueuesWithTransferCapability() const { return queues_[TRANSFER]; }
+    const std::vector<Queue *> &QueuesWithSparseCapability() const { return queues_[SPARSE]; }
+    const std::vector<Queue *> &QueuesWithDataGraphCapability() const { return queues_[DATA_GRAPH]; }
+
+    using QueueFamilyQueues = std::vector<std::unique_ptr<Queue>>;
+    const QueueFamilyQueues &QueuesFromFamily(uint32_t queue_family) const;
+
+    // Queue family that has "with" capabilities and optionally without "without" capabilities.
+    std::optional<uint32_t> QueueFamily(VkQueueFlags with, VkQueueFlags without = 0) const;
+
+    // Queue family that does not have "without" capabilities
+    std::optional<uint32_t> QueueFamilyWithoutCapabilities(VkQueueFlags without) const;
+    Queue *QueueWithoutCapabilities(VkQueueFlags without) const;
+
+    // Dedicated compute queue family: has compute but no graphics
+    std::optional<uint32_t> ComputeOnlyQueueFamily() const;
+    Queue *ComputeOnlyQueue() const;
+
+    // Dedicated transfer queue family: has transfer but no graphics/compute
+    std::optional<uint32_t> TransferOnlyQueueFamily() const;
+    Queue *TransferOnlyQueue() const;
+
+    // Compute or transfer
+    std::optional<uint32_t> NonGraphicsQueueFamily() const;
+    Queue *NonGraphicsQueue() const;
+
+    uint32_t graphics_queue_node_index_ = vvl::kNoIndex32;
+    const uint32_t target_api_version_;
+
+    const PhysicalDevice physical_device_;
+
+    struct Format {
+        VkFormat format;
+        VkImageTiling tiling;
+        VkFlags features;
+    };
+
+    VkFormatFeatureFlags2 FormatFeaturesLinear(VkFormat format) const;
+    VkFormatFeatureFlags2 FormatFeaturesOptimal(VkFormat format) const;
+    VkFormatFeatureFlags2 FormatFeaturesBuffer(VkFormat format) const;
+
+    // vkDeviceWaitIdle()
+    void Wait() const;
+
+    // vkWaitForFences()
+    VkResult Wait(const std::vector<const Fence *> &fences, bool wait_all, uint64_t timeout);
+    VkResult Wait(const Fence &fence) { return Wait(std::vector<const Fence *>(1, &fence), true, (uint64_t)-1); }
+
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, uint32_t count, const VkDescriptorImageInfo *image_info);
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, uint32_t count,
+                                                   const VkDescriptorBufferInfo *buffer_info);
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, uint32_t count, const VkBufferView *buffer_views);
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, const std::vector<VkDescriptorImageInfo> &image_info);
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, const std::vector<VkDescriptorBufferInfo> &buffer_info);
+    static VkWriteDescriptorSet WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                   VkDescriptorType type, const std::vector<VkBufferView> &buffer_views);
+
+  private:
+    enum QueueCapabilityIndex {
+        GRAPHICS = 0,
+        COMPUTE = 1,
+        TRANSFER = 2,
+        SPARSE = 3,
+        VIDEO_DECODE = 4,
+        VIDEO_ENCODE = 5,
+        DATA_GRAPH = 6,
+        QUEUE_CAPABILITY_COUNT = 7,
+    };
+
+    void InitQueues(const VkDeviceCreateInfo &info);
+
+    std::vector<const char *> enabled_extensions_;
+    VkPhysicalDeviceFeatures features_;
+    std::vector<QueueFamilyQueues> queue_families_;
+    std::vector<Queue *> queues_[QUEUE_CAPABILITY_COUNT];
+};
+
+class DeviceMemory : public internal::NonDispHandle<VkDeviceMemory> {
+  public:
+    DeviceMemory() = default;
+    DeviceMemory(const Device &dev, const VkMemoryAllocateInfo &info) { Init(dev, info); }
+    ~DeviceMemory() noexcept;
+    void Destroy() noexcept;
+    DeviceMemory &operator=(DeviceMemory &&) = default;
+
+    // vkAllocateMemory()
+    // Fails the test when allocation is unsuccessful
+    void Init(const Device &dev, const VkMemoryAllocateInfo &info);
+    // Does not fail the test when allocation is unsuccessful and instead returns error code
+    VkResult TryInit(const Device &dev, const VkMemoryAllocateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkDeviceMemory>::SetName(VK_OBJECT_TYPE_DEVICE_MEMORY, name); }
+
+    // vkMapMemory()
+    const void *Map(VkFlags flags) const;
+    void *Map(VkFlags flags);
+    const void *Map() const { return Map(0); }
+    void *Map() { return Map(0); }
+
+    // vkUnmapMemory()
+    void Unmap() const;
+
+    static VkMemoryAllocateInfo GetResourceAllocInfo(const Device &dev, const VkMemoryRequirements &reqs,
+                                                     VkMemoryPropertyFlags mem_props, void *alloc_info_pnext = nullptr);
+
+  private:
+    VkMemoryAllocateInfo memory_allocate_info_{};
+};
+
+class Fence : public internal::NonDispHandle<VkFence> {
+  public:
+    Fence() = default;
+    Fence(const Device &dev, const VkFenceCreateFlags flags = 0) { Init(dev, flags); }
+    Fence(const Device &dev, const VkFenceCreateInfo &info) { Init(dev, info); }
+    Fence(Fence &&rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    Fence &operator=(Fence &&) noexcept;
+    ~Fence() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateFence()
+    void Init(const Device &dev, const VkFenceCreateInfo &info);
+    void Init(const Device &dev, const VkFenceCreateFlags flags = 0);
+    void SetName(const char *name) { NonDispHandle<VkFence>::SetName(VK_OBJECT_TYPE_FENCE, name); }
+
+    // vkGetFenceStatus()
+    VkResult GetStatus() const { return vk::GetFenceStatus(device(), handle()); }
+    VkResult Wait(uint64_t timeout) const;
+
+    VkResult Reset() const;
+
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    VkResult ExportHandle(HANDLE &win32_handle, VkExternalFenceHandleTypeFlagBits handle_type);
+    VkResult ImportHandle(HANDLE win32_handle, VkExternalFenceHandleTypeFlagBits handle_type, VkFenceImportFlags flags = 0);
+#endif
+    VkResult ExportHandle(int &fd_handle, VkExternalFenceHandleTypeFlagBits handle_type);
+    VkResult ImportHandle(int fd_handle, VkExternalFenceHandleTypeFlagBits handle_type, VkFenceImportFlags flags = 0);
+};
+
+inline const Fence no_fence;
+
+class Semaphore : public internal::NonDispHandle<VkSemaphore> {
+  public:
+    Semaphore() = default;
+    Semaphore(const Device &dev, VkSemaphoreType type = VK_SEMAPHORE_TYPE_BINARY, uint64_t initial_value = 0);
+    Semaphore(const Device &dev, const VkSemaphoreCreateInfo &info) { Init(dev, info); }
+    Semaphore(Semaphore &&rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    Semaphore &operator=(Semaphore &&) noexcept;
+    ~Semaphore() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateSemaphore()
+    void Init(const Device &dev, const VkSemaphoreCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkSemaphore>::SetName(VK_OBJECT_TYPE_SEMAPHORE, name); }
+
+    VkResult Wait(uint64_t value, uint64_t timeout);
+    VkResult WaitKHR(uint64_t value, uint64_t timeout);
+    VkResult Signal(uint64_t value);
+    VkResult SignalKHR(uint64_t value);
+    uint64_t GetCounterValue(bool use_khr = false) const;
+
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    VkResult ExportHandle(HANDLE &win32_handle, VkExternalSemaphoreHandleTypeFlagBits handle_type);
+    VkResult ImportHandle(HANDLE win32_handle, VkExternalSemaphoreHandleTypeFlagBits handle_type, VkSemaphoreImportFlags flags = 0);
+#endif
+    VkResult ExportHandle(int &fd_handle, VkExternalSemaphoreHandleTypeFlagBits handle_type);
+    VkResult ImportHandle(int fd_handle, VkExternalSemaphoreHandleTypeFlagBits handle_type, VkSemaphoreImportFlags flags = 0);
+};
+
+inline const Semaphore no_semaphore;  // equivalent to vkt::Semaphore{}
+
+class Event : public internal::NonDispHandle<VkEvent> {
+  public:
+    Event() = default;
+    Event(const Device& dev) { Init(dev, CreateInfo(0)); }
+    Event(const Device& dev, const VkEventCreateInfo& info) { Init(dev, info); }
+    ~Event() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateEvent()
+    void Init(const Device& dev, const VkEventCreateInfo& info);
+    void SetName(const char* name) { NonDispHandle<VkEvent>::SetName(VK_OBJECT_TYPE_EVENT, name); }
+
+    VkResult GetStatus() const;
+    void Set();
+    void Reset();
+
+    static VkEventCreateInfo CreateInfo(VkFlags flags);
+};
+
+struct Wait {
+    const Semaphore &semaphore;
+    VkPipelineStageFlags2 stage_mask;
+
+    explicit Wait(const Semaphore &semaphore, VkPipelineStageFlags2 stage_mask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+        : semaphore(semaphore), stage_mask(stage_mask) {}
+};
+
+struct Signal {
+    const Semaphore &semaphore;
+    VkPipelineStageFlags2 stage_mask;
+
+    explicit Signal(const Semaphore &semaphore, VkPipelineStageFlags2 stage_mask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+        : semaphore(semaphore), stage_mask(stage_mask) {}
+};
+
+struct TimelineWait {
+    const Semaphore &semaphore;
+    uint64_t value;
+    VkPipelineStageFlags2 stage_mask;
+
+    explicit TimelineWait(const Semaphore &semaphore, uint64_t value,
+                          VkPipelineStageFlags2 stage_mask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+        : semaphore(semaphore), value(value), stage_mask(stage_mask) {}
+};
+
+struct TimelineSignal {
+    const Semaphore &semaphore;
+    uint64_t value;
+    VkPipelineStageFlags2 stage_mask;
+
+    explicit TimelineSignal(const Semaphore &semaphore, uint64_t value,
+                            VkPipelineStageFlags2 stage_mask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+        : semaphore(semaphore), value(value), stage_mask(stage_mask) {}
+};
+
+class Queue : public internal::Handle<VkQueue> {
+  public:
+    explicit Queue(VkQueue queue, uint32_t index) : Handle(queue), family_index(index) {}
+    void SetName(const Device &device, const char *name) { Handle<VkQueue>::SetName(device, VK_OBJECT_TYPE_QUEUE, name); }
+
+    // vkQueueSubmit()
+    VkResult Submit(const CommandBuffer &cmd, const Fence &fence = no_fence);
+    VkResult Submit(const std::vector<VkCommandBuffer> &cmds, const Fence &fence = no_fence);
+
+    VkResult Submit(const CommandBuffer &cmd, const Wait &wait, const Fence &fence = no_fence);
+    VkResult Submit(const CommandBuffer &cmd, const Signal &signal, const Fence &fence = no_fence);
+    VkResult Submit(const CommandBuffer &cmd, const Wait &wait, const Signal &signal, const Fence &fence = no_fence);
+
+    VkResult Submit(const CommandBuffer &cmd, const TimelineWait &wait, const Fence &fence = no_fence);
+    VkResult Submit(const CommandBuffer &cmd, const TimelineSignal &signal, const Fence &fence = no_fence);
+    VkResult Submit(const CommandBuffer &cmd, const TimelineWait &wait, const TimelineSignal &signal,
+                    const Fence &fence = no_fence);
+
+    // vkQueueSubmit2()
+    VkResult Submit2(const CommandBuffer &cmd, const Fence &fence = no_fence, bool use_khr = false);
+    VkResult Submit2(const std::vector<VkCommandBuffer> &cmds, const Fence &fence = no_fence, bool use_khr = false);
+
+    VkResult Submit2(const CommandBuffer &cmd, const Wait &wait, const Fence &fence = no_fence, bool use_khr = false);
+    VkResult Submit2(const CommandBuffer &cmd, const Signal &signal, const Fence &fence = no_fence, bool use_khr = false);
+    VkResult Submit2(const CommandBuffer &cmd, const Wait &wait, const Signal &signal, const Fence &fence = no_fence,
+                     bool use_khr = false);
+
+    VkResult Submit2(const CommandBuffer &cmd, const TimelineWait &wait, const Fence &fence = no_fence, bool use_khr = false);
+    VkResult Submit2(const CommandBuffer &cmd, const TimelineSignal &signal, const Fence &fence = no_fence, bool use_khr = false);
+    VkResult Submit2(const CommandBuffer &cmd, const TimelineWait &wait, const TimelineSignal &signal,
+                     const Fence &fence = no_fence, bool use_khr = false);
+
+    VkResult Submit2(const CommandBuffer &cmd, const Wait &wait, const TimelineSignal &signal, const Fence &fence = no_fence);
+    VkResult Submit2(const CommandBuffer &cmd, const TimelineWait &wait, const Signal &signal, const Fence &fence = no_fence);
+
+    // vkQueuePresentKHR()
+    VkResult Present(const Swapchain &swapchain, uint32_t image_index, const Semaphore &wait_semaphore,
+                     void *present_info_pnext = nullptr);
+
+    // vkQueueWaitIdle()
+    VkResult Wait();
+
+    // Common combo for most GPU-AV test
+    void SubmitAndWait(const CommandBuffer &cmd) {
+        Submit(cmd);
+        Wait();
+    }
+
+    const uint32_t family_index;
+};
+
+class QueryPool : public internal::NonDispHandle<VkQueryPool> {
+  public:
+    QueryPool() = default;
+    QueryPool(const Device &dev, const VkQueryPoolCreateInfo &info) { Init(dev, info); }
+    QueryPool(const Device &dev, VkQueryType query_type, uint32_t query_count) {
+        VkQueryPoolCreateInfo info = CreateInfo(query_type, query_count);
+        Init(dev, info);
+    }
+    ~QueryPool() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateQueryPool()
+    void Init(const Device &dev, const VkQueryPoolCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkQueryPool>::SetName(VK_OBJECT_TYPE_QUERY_POOL, name); }
+
+    // vkGetQueryPoolResults()
+    VkResult Results(uint32_t first, uint32_t count, size_t size, void *data, size_t stride);
+
+    static VkQueryPoolCreateInfo CreateInfo(VkQueryType type, uint32_t slot_count, VkQueryPoolCreateFlags create_flags = 0);
+};
+
+struct NoMemT {};
+static constexpr NoMemT no_mem{};
+struct DeviceAddressT {};
+static constexpr DeviceAddressT device_address{};
+struct SetLayoutT {};
+static constexpr SetLayoutT set_layout{};
+
+class Buffer : public internal::NonDispHandle<VkBuffer> {
+  public:
+    explicit Buffer() : NonDispHandle(), create_info_(vku::InitStruct<decltype(create_info_)>()) {}
+    explicit Buffer(const Device &dev, const VkBufferCreateInfo &info, VkMemoryPropertyFlags mem_props = 0,
+                    void *alloc_info_pnext = nullptr) {
+        Init(dev, info, mem_props, alloc_info_pnext);
+    }
+    explicit Buffer(const Device &dev, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_props = 0,
+                    void *alloc_info_pnext = nullptr) {
+        Init(dev, size, usage, mem_props, alloc_info_pnext);
+    }
+    explicit Buffer(const Device &dev, const VkBufferCreateInfo &info, NoMemT) { InitNoMemory(dev, info); }
+
+    // Various spots need a host visible buffer they can call GetBufferDeviceAddress on
+    explicit Buffer(const Device &dev, VkDeviceSize size, VkBufferUsageFlags usage, DeviceAddressT) {
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;  // always add
+        VkMemoryAllocateFlagsInfo allocate_flag_info = vku::InitStructHelper();
+        allocate_flag_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        Init(dev, CreateInfo(size, usage), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+             &allocate_flag_info);
+    }
+
+    explicit Buffer(const Device& dev, VkDeviceSize size, VkBufferUsageFlags2CreateInfo usage_ci, DeviceAddressT) {
+        usage_ci.usage |= VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT;
+        VkMemoryAllocateFlagsInfo allocate_flag_info = vku::InitStructHelper();
+        allocate_flag_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        Init(dev, CreateInfo(size, 0, {}, &usage_ci), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+             &allocate_flag_info);
+    }
+
+    Buffer(Buffer &&rhs) noexcept;
+    Buffer &operator=(Buffer &&rhs) noexcept;
+    ~Buffer() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateBuffer()
+    void Init(const Device &dev, const VkBufferCreateInfo &info, VkMemoryPropertyFlags mem_props = 0,
+              void *alloc_info_pnext = nullptr);
+    void Init(const Device &dev, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_props = 0,
+              void *alloc_info_pnext = nullptr, const vvl::span<uint32_t> &queue_families = {}) {
+        Init(dev, CreateInfo(size, usage, queue_families), mem_props, alloc_info_pnext);
+    }
+    void InitNoMemory(const Device &dev, const VkBufferCreateInfo &info);
+
+    void SetName(const char *name) { NonDispHandle<VkBuffer>::SetName(VK_OBJECT_TYPE_BUFFER, name); }
+
+    // get the internal memory
+    const DeviceMemory &Memory() const { return internal_mem_; }
+    DeviceMemory &Memory() { return internal_mem_; }
+
+    // vkGetObjectMemoryRequirements()
+    VkMemoryRequirements MemoryRequirements() const;
+
+    // Allocate and bind memory
+    // The assumption that this object was created in no_mem configuration
+    void AllocateAndBindMemory(const Device &dev, VkMemoryPropertyFlags mem_props = 0, void *alloc_info_pnext = nullptr);
+
+    // Bind to existing memory object
+    void BindMemory(const DeviceMemory &mem, VkDeviceSize mem_offset);
+
+    const VkBufferCreateInfo &CreateInfo() const { return create_info_; }
+    static VkBufferCreateInfo CreateInfo(VkDeviceSize size, VkFlags usage, const vvl::span<uint32_t> &queue_families = {},
+                                         void *create_info_pnext = nullptr);
+
+    VkBufferMemoryBarrier BufferMemoryBarrier(VkFlags output_mask, VkFlags input_mask, VkDeviceSize offset,
+                                              VkDeviceSize size) const {
+        VkBufferMemoryBarrier barrier = vku::InitStructHelper();
+        barrier.buffer = handle();
+        barrier.srcAccessMask = output_mask;
+        barrier.dstAccessMask = input_mask;
+        barrier.offset = offset;
+        barrier.size = size;
+        if (create_info_.sharingMode == VK_SHARING_MODE_CONCURRENT) {
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        }
+        return barrier;
+    }
+
+    VkBufferMemoryBarrier2 BufferMemoryBarrier(VkPipelineStageFlags2KHR src_stage, VkPipelineStageFlags2KHR dst_stage,
+                                               VkAccessFlags2KHR src_access, VkAccessFlags2KHR dst_access, VkDeviceSize offset,
+                                               VkDeviceSize size) const {
+        VkBufferMemoryBarrier2 barrier = vku::InitStructHelper();
+        barrier.buffer = handle();
+        barrier.srcStageMask = src_stage;
+        barrier.dstStageMask = dst_stage;
+        barrier.srcAccessMask = src_access;
+        barrier.dstAccessMask = dst_access;
+        barrier.offset = offset;
+        barrier.size = size;
+        if (create_info_.sharingMode == VK_SHARING_MODE_CONCURRENT) {
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        }
+        return barrier;
+    }
+
+    [[nodiscard]] VkDeviceAddress Address() const;
+    [[nodiscard]] VkDeviceAddressRangeEXT AddressRange() const;
+    [[nodiscard]] VkStridedDeviceAddressRangeKHR StridedAddressRange(VkDeviceSize stride = 0) const;
+
+  private:
+    VkBufferCreateInfo create_info_;
+    DeviceMemory internal_mem_;
+};
+
+class BufferView : public internal::NonDispHandle<VkBufferView> {
+  public:
+    BufferView() = default;
+    BufferView(const Device &dev, const VkBufferViewCreateInfo &info) { Init(dev, info); }
+    BufferView(const Device &dev, VkBuffer buffer, VkFormat format, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE) {
+        VkBufferViewCreateInfo buffer_view_ci = CreateInfo(buffer, format, offset, range);
+        Init(dev, buffer_view_ci);
+    }
+    ~BufferView() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateBufferView()
+    void Init(const Device &dev, const VkBufferViewCreateInfo &info);
+    static VkBufferViewCreateInfo CreateInfo(VkBuffer buffer, VkFormat format, VkDeviceSize offset = 0,
+                                             VkDeviceSize range = VK_WHOLE_SIZE);
+    void SetName(const char *name) { NonDispHandle<VkBufferView>::SetName(VK_OBJECT_TYPE_BUFFER_VIEW, name); }
+};
+
+inline VkBufferViewCreateInfo BufferView::CreateInfo(VkBuffer buffer, VkFormat format, VkDeviceSize offset, VkDeviceSize range) {
+    VkBufferViewCreateInfo info = vku::InitStructHelper();
+    info.flags = VkFlags(0);
+    info.buffer = buffer;
+    info.format = format;
+    info.offset = offset;
+    info.range = range;
+    return info;
+}
+
+class Image : public internal::NonDispHandle<VkImage> {
+  public:
+    explicit Image() : NonDispHandle() {}
+    explicit Image(const Device &dev, const VkImageCreateInfo &info, VkMemoryPropertyFlags mem_props = 0,
+                   void *alloc_info_pnext = nullptr);
+    explicit Image(const Device &dev, uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage);
+    explicit Image(const Device &dev, const VkImageCreateInfo &info, NoMemT);
+    explicit Image(const Device &dev, const VkImageCreateInfo &info, SetLayoutT);
+
+    Image(Image &&rhs) noexcept;
+    Image &operator=(Image &&rhs) noexcept;
+
+    ~Image() noexcept;
+    void Destroy() noexcept;
+
+    void Init(const Device &dev, const VkImageCreateInfo &info, VkMemoryPropertyFlags mem_props = 0,
+              void *alloc_info_pnext = nullptr);
+    void Init(const Device &dev, uint32_t width, uint32_t height, uint32_t mip_levels, VkFormat format, VkImageUsageFlags usage);
+    void InitNoMemory(const Device &dev, const VkImageCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkImage>::SetName(VK_OBJECT_TYPE_IMAGE, name); }
+
+    static VkImageCreateInfo ImageCreateInfo2D(uint32_t width, uint32_t height, uint32_t mip_levels, uint32_t layers,
+                                               VkFormat format, VkImageUsageFlags usage,
+                                               VkImageTiling requested_tiling = VK_IMAGE_TILING_OPTIMAL,
+                                               const vvl::span<uint32_t> &queue_families = {});
+
+    static bool IsCompatible(const Device &dev, VkImageUsageFlags usages, VkFormatFeatureFlags2 features);
+
+    // get the internal memory
+    const DeviceMemory &Memory() const { return internal_mem_; }
+    DeviceMemory &Memory() { return internal_mem_; }
+
+    // vkGetObjectMemoryRequirements()
+    VkMemoryRequirements MemoryRequirements() const;
+
+    // Allocate and bind memory
+    // The assumption that this object was created in no_mem configuration
+    void AllocateAndBindMemory(const Device &dev, VkMemoryPropertyFlags mem_props = 0, void *alloc_info_pnext = nullptr);
+
+    // Bind to existing memory object
+    void BindMemory(const DeviceMemory &mem, VkDeviceSize mem_offset);
+
+    uint32_t Width() const { return create_info_.extent.width; }
+    uint32_t Height() const { return create_info_.extent.height; }
+    VkFormat Format() const { return create_info_.format; }
+    VkImageUsageFlags Usage() const { return create_info_.usage; }
+
+    VkImageMemoryBarrier LayoutTransitionBarrier(VkImageLayout old_layout, VkImageLayout new_layout,
+                                                 const VkImageSubresourceRange& range) const;
+
+    const VkImageCreateInfo &CreateInfo() const { return create_info_; }
+
+    VkImageSubresourceRange SubresourceRange(VkImageAspectFlags aspect_mask) const {
+        return VkImageSubresourceRange{aspect_mask, 0, create_info_.mipLevels, 0, create_info_.arrayLayers};
+    }
+
+    static VkImageAspectFlags AspectMask(VkFormat format);
+
+    // Performs image layout transition by specifying old layout as VK_IMAGE_LAYOUT_UNDEFINED (more precisely
+    // VkImageCreateInfo::initialLayout).
+    // Can be used for initial layout transition or when the previous layout is not important for testing purposes.
+    void SetLayout(CommandBuffer &cmd_buf, VkImageLayout image_layout);
+    // This overload does queue submit and waits for layout transition to finish.
+    void SetLayout(VkImageLayout image_layout);
+
+    // This overload does queue submit and waits for layout transition to finish.
+    void TransitionLayout(VkImageLayout old_layout, VkImageLayout new_layout);
+
+    VkImageViewCreateInfo BasicViewCreatInfo(VkImageAspectFlags aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT) const;
+    ImageView CreateView(VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, void *pNext = nullptr) const;
+    ImageView CreateView(VkImageViewType type, uint32_t baseMipLevel = 0, uint32_t levelCount = VK_REMAINING_MIP_LEVELS,
+                         uint32_t baseArrayLayer = 0, uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS,
+                         VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
+
+  private:
+    // We need this to do ImageView and SetLayout actions
+    const Device *device_ = nullptr;
+
+    VkImageCreateInfo create_info_;
+
+    DeviceMemory internal_mem_;
+};
+
+class ImageView : public internal::NonDispHandle<VkImageView> {
+  public:
+    explicit ImageView() = default;
+    explicit ImageView(const Device &dev, const VkImageViewCreateInfo &info) { Init(dev, info); }
+    ImageView(ImageView &&rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    ImageView &operator=(ImageView &&src) noexcept {
+        this->~ImageView();
+        this->NonDispHandle::operator=(std::move(src));
+        return *this;
+    }
+    ~ImageView() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateImageView()
+    void Init(const Device &dev, const VkImageViewCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkImageView>::SetName(VK_OBJECT_TYPE_IMAGE_VIEW, name); }
+};
+
+class AccelerationStructureNV : public internal::NonDispHandle<VkAccelerationStructureNV> {
+  public:
+    explicit AccelerationStructureNV(const Device &dev, const VkAccelerationStructureCreateInfoNV &info, bool init_memory = true) {
+        Init(dev, info, init_memory);
+    }
+    ~AccelerationStructureNV() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateAccelerationStructureNV
+    void Init(const Device &dev, const VkAccelerationStructureCreateInfoNV &info, bool init_memory = true);
+    void SetName(const char *name) {
+        NonDispHandle<VkAccelerationStructureNV>::SetName(VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_NV, name);
+    }
+    // vkGetAccelerationStructureMemoryRequirementsNV()
+    VkMemoryRequirements2 MemoryRequirements() const;
+    VkMemoryRequirements2 BuildScratchMemoryRequirements() const;
+
+    uint64_t OpaqueHandle() const { return opaque_handle_; }
+
+    const VkAccelerationStructureInfoNV &Info() const { return info_; }
+
+    [[nodiscard]] Buffer CreateScratchBuffer(const Device &device, VkBufferCreateInfo *pCreateInfo = nullptr,
+                                             bool buffer_device_address = false) const;
+
+  private:
+    VkAccelerationStructureInfoNV info_;
+    DeviceMemory memory_;
+    uint64_t opaque_handle_;
+};
+
+class ShaderModule : public internal::NonDispHandle<VkShaderModule> {
+  public:
+    ShaderModule() = default;
+    ShaderModule(const Device &dev, const VkShaderModuleCreateInfo &info) { Init(dev, info); }
+    ShaderModule(ShaderModule &&rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    ShaderModule &operator=(ShaderModule &&rhs) noexcept;
+    ~ShaderModule() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateShaderModule()
+    void Init(const Device &dev, const VkShaderModuleCreateInfo &info);
+    VkResult InitTry(const Device &dev, const VkShaderModuleCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkShaderModule>::SetName(VK_OBJECT_TYPE_SHADER_MODULE, name); }
+
+    static VkShaderModuleCreateInfo CreateInfo(size_t code_size, const uint32_t *code, VkFlags flags);
+};
+
+class ShaderEXT : public internal::NonDispHandle<VkShaderEXT> {
+  public:
+    ShaderEXT() = default;
+    ShaderEXT(const Device& dev, VkShaderEXT shader) { NonDispHandle::init(dev, shader); }
+    ShaderEXT(const Device& dev, const VkShaderCreateInfoEXT& info) { Init(dev, info); }
+    ShaderEXT(const Device& dev, const VkShaderStageFlagBits stage, const std::vector<uint32_t>& spv,
+              const VkDescriptorSetLayout* descriptorSetLayout = nullptr, const VkPushConstantRange* pushConstRange = nullptr);
+    ShaderEXT(const Device& dev, const VkShaderStageFlagBits stage, const char* code,
+              const VkDescriptorSetLayout* descriptorSetLayout = nullptr, const VkPushConstantRange* pushConstRange = nullptr);
+    ShaderEXT(const Device& dev, const VkShaderStageFlagBits stage, const std::vector<uint8_t>& binary,
+              const VkDescriptorSetLayout* descriptorSetLayout = nullptr, const VkPushConstantRange* pushConstRange = nullptr);
+    ~ShaderEXT() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateShaderModule()
+    void Init(const Device& dev, const VkShaderCreateInfoEXT& info);
+    VkResult InitTry(const Device &dev, const VkShaderCreateInfoEXT &info);
+    void SetName(const char *name) { NonDispHandle<VkShaderEXT>::SetName(VK_OBJECT_TYPE_SHADER_EXT, name); }
+};
+
+class PipelineCache : public internal::NonDispHandle<VkPipelineCache> {
+  public:
+    PipelineCache() = default;
+    PipelineCache(const Device &dev, const VkPipelineCacheCreateInfo &info) { Init(dev, info); }
+    ~PipelineCache() noexcept;
+    void Destroy() noexcept;
+
+    void Init(const Device &dev, const VkPipelineCacheCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkPipelineCache>::SetName(VK_OBJECT_TYPE_PIPELINE_CACHE, name); }
+};
+
+class Pipeline : public internal::NonDispHandle<VkPipeline> {
+  public:
+    Pipeline() = default;
+    Pipeline(const Device &dev, const VkGraphicsPipelineCreateInfo &info) { Init(dev, info); }
+    Pipeline(const Device &dev, const VkGraphicsPipelineCreateInfo &info, const VkPipeline basePipeline) {
+        Init(dev, info, basePipeline);
+    }
+    Pipeline(const Device &dev, const VkComputePipelineCreateInfo &info) { Init(dev, info); }
+    Pipeline(const Device &dev, const VkRayTracingPipelineCreateInfoKHR &info) { Init(dev, info); }
+    Pipeline(const Device &dev, const VkDataGraphPipelineCreateInfoARM &info) { Init(dev, info); }
+    Pipeline(const Device& dev, const std::vector<VkPipeline>& libraries, VkPipelineLayout layout,
+             VkRenderPass render_pass = VK_NULL_HANDLE, VkPipelineCreateFlags flags = 0);
+    ~Pipeline() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateGraphicsPipeline()
+    void Init(const Device &dev, const VkGraphicsPipelineCreateInfo &info);
+    // vkCreateGraphicsPipelineDerivative()
+    void Init(const Device &dev, const VkGraphicsPipelineCreateInfo &info, const VkPipeline basePipeline);
+    // vkCreateComputePipeline()
+    void Init(const Device &dev, const VkComputePipelineCreateInfo &info);
+    // vkCreateRayTracingPipelinesKHR
+    void Init(const Device &dev, const VkRayTracingPipelineCreateInfoKHR &info);
+    // vkCreateRayTracingPipelinesKHR with deferredOperation
+    void InitDeferred(const Device &dev, const VkRayTracingPipelineCreateInfoKHR &info, VkDeferredOperationKHR deferred_op);
+    // vkCreateDataGraphPipelinesARM
+    void Init(const Device &dev, const VkDataGraphPipelineCreateInfoARM &info);
+    // vkLoadPipeline()
+    void Init(const Device &dev, size_t size, const void *data);
+    // vkLoadPipelineDerivative()
+    void Init(const Device &dev, size_t size, const void *data, VkPipeline basePipeline);
+
+    // vkCreateGraphicsPipeline with error return
+    VkResult InitTry(const Device &dev, const VkGraphicsPipelineCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkPipeline>::SetName(VK_OBJECT_TYPE_PIPELINE, name); }
+};
+
+class PipelineLayout : public internal::NonDispHandle<VkPipelineLayout> {
+  public:
+    PipelineLayout() noexcept : NonDispHandle() {}
+    PipelineLayout(const Device &dev, VkPipelineLayoutCreateInfo &info, const std::vector<const DescriptorSetLayout *> &layouts) {
+        Init(dev, info, layouts);
+    }
+    PipelineLayout(const Device &dev, VkPipelineLayoutCreateInfo &info) { Init(dev, info); }
+    PipelineLayout(const Device &dev, const std::vector<const DescriptorSetLayout *> &layouts = {},
+                   const std::vector<VkPushConstantRange> &push_constant_ranges = {},
+                   VkPipelineLayoutCreateFlags flags = static_cast<VkPipelineLayoutCreateFlags>(0)) {
+        VkPipelineLayoutCreateInfo info = vku::InitStructHelper();
+        info.flags = flags;
+        info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
+        info.pPushConstantRanges = push_constant_ranges.data();
+
+        Init(dev, info, layouts);
+    }
+    ~PipelineLayout() noexcept;
+    void Destroy() noexcept;
+
+    // Move constructor for Visual Studio 2013
+    PipelineLayout(PipelineLayout &&src) noexcept : NonDispHandle(std::move(src)){};
+
+    PipelineLayout &operator=(PipelineLayout &&src) noexcept {
+        this->~PipelineLayout();
+        this->NonDispHandle::operator=(std::move(src));
+        return *this;
+    };
+
+    // vCreatePipelineLayout()
+    void Init(const Device &dev, VkPipelineLayoutCreateInfo &info, const std::vector<const DescriptorSetLayout *> &layouts);
+    void Init(const Device &dev, VkPipelineLayoutCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkPipelineLayout>::SetName(VK_OBJECT_TYPE_PIPELINE_LAYOUT, name); }
+};
+
+class Sampler : public internal::NonDispHandle<VkSampler> {
+  public:
+    Sampler() = default;
+    Sampler(const Device &dev, const VkSamplerCreateInfo &info) { Init(dev, info); }
+    ~Sampler() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateSampler()
+    void Init(const Device &dev, const VkSamplerCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkSampler>::SetName(VK_OBJECT_TYPE_SAMPLER, name); }
+};
+
+class DescriptorSetLayout : public internal::NonDispHandle<VkDescriptorSetLayout> {
+  public:
+    DescriptorSetLayout() = default;
+    DescriptorSetLayout(const Device &dev, const VkDescriptorSetLayoutCreateInfo &info) { Init(dev, info); }
+    DescriptorSetLayout(const Device &dev, const std::vector<VkDescriptorSetLayoutBinding> &descriptor_set_bindings = {},
+                        VkDescriptorSetLayoutCreateFlags flags = 0, void *pNext = nullptr) {
+        VkDescriptorSetLayoutCreateInfo info = vku::InitStructHelper(pNext);
+        info.flags = flags;
+        info.bindingCount = static_cast<uint32_t>(descriptor_set_bindings.size());
+        info.pBindings = descriptor_set_bindings.data();
+        Init(dev, info);
+    }
+    DescriptorSetLayout(const Device &dev, const VkDescriptorSetLayoutBinding &descriptor_set_binding,
+                        VkDescriptorSetLayoutCreateFlags flags = 0, void *pNext = nullptr) {
+        VkDescriptorSetLayoutCreateInfo info = vku::InitStructHelper(pNext);
+        info.flags = flags;
+        info.bindingCount = 1;
+        info.pBindings = &descriptor_set_binding;
+        Init(dev, info);
+    }
+    ~DescriptorSetLayout() noexcept;
+    void Destroy() noexcept;
+
+    DescriptorSetLayout(DescriptorSetLayout &&src) noexcept : NonDispHandle(std::move(src)){};
+
+    DescriptorSetLayout &operator=(DescriptorSetLayout &&src) noexcept {
+        Destroy();
+        this->NonDispHandle::operator=(std::move(src));
+        return *this;
+    }
+
+    // vkCreateDescriptorSetLayout()
+    void Init(const Device &dev, const VkDescriptorSetLayoutCreateInfo &info);
+
+    // vkGetDescriptorSetLayoutSizeEXT
+    VkDeviceSize GetDescriptorBufferSize() const;
+    // vkGetDescriptorSetLayoutBindingOffsetEXT
+    VkDeviceSize GetDescriptorBufferBindingOffset(uint32_t binding) const;
+};
+
+class DescriptorPool : public internal::NonDispHandle<VkDescriptorPool> {
+  public:
+    DescriptorPool() = default;
+    DescriptorPool(const Device &dev, const VkDescriptorPoolCreateInfo &info) { Init(dev, info); }
+    ~DescriptorPool() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateDescriptorPool()
+    void Init(const Device &dev, const VkDescriptorPoolCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkDescriptorPool>::SetName(VK_OBJECT_TYPE_DESCRIPTOR_POOL, name); }
+
+    // vkResetDescriptorPool()
+    void Reset();
+
+    bool GetDynamicUsage() { return dynamic_usage_; }
+
+    template <typename PoolSizes>
+    static VkDescriptorPoolCreateInfo CreateInfo(VkDescriptorPoolCreateFlags flags, uint32_t max_sets, const PoolSizes &pool_sizes);
+
+  private:
+    // Track whether this pool's usage is VK_DESCRIPTOR_POOL_USAGE_DYNAMIC
+    bool dynamic_usage_;
+};
+
+template <typename PoolSizes>
+inline VkDescriptorPoolCreateInfo DescriptorPool::CreateInfo(VkDescriptorPoolCreateFlags flags, uint32_t max_sets,
+                                                             const PoolSizes &pool_sizes) {
+    VkDescriptorPoolCreateInfo info = vku::InitStructHelper();
+    info.flags = flags;
+    info.maxSets = max_sets;
+    info.poolSizeCount = pool_sizes.size();
+    info.pPoolSizes = (info.poolSizeCount) ? pool_sizes.data() : nullptr;
+    return info;
+}
+
+class DescriptorSet : public internal::NonDispHandle<VkDescriptorSet> {
+  public:
+    ~DescriptorSet() noexcept;
+    void Destroy() noexcept;
+
+    explicit DescriptorSet() : NonDispHandle() {}
+    explicit DescriptorSet(const Device &dev, DescriptorPool *pool, VkDescriptorSet set) : NonDispHandle(dev, set) {
+        containing_pool_ = pool;
+    }
+    void SetName(const char *name) { NonDispHandle<VkDescriptorSet>::SetName(VK_OBJECT_TYPE_DESCRIPTOR_SET, name); }
+
+  private:
+    DescriptorPool *containing_pool_;
+};
+
+class DescriptorUpdateTemplate : public internal::NonDispHandle<VkDescriptorUpdateTemplate> {
+  public:
+    ~DescriptorUpdateTemplate() noexcept;
+    void Destroy() noexcept;
+
+    explicit DescriptorUpdateTemplate() : NonDispHandle() {}
+    explicit DescriptorUpdateTemplate(const Device &dev, const VkDescriptorUpdateTemplateCreateInfo &info) { Init(dev, info); }
+    void Init(const Device &dev, const VkDescriptorUpdateTemplateCreateInfo &info);
+    void SetName(const char *name) {
+        NonDispHandle<VkDescriptorUpdateTemplate>::SetName(VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE, name);
+    }
+};
+
+class CommandPool : public internal::NonDispHandle<VkCommandPool> {
+  public:
+    ~CommandPool() noexcept;
+    void Destroy() noexcept;
+
+    explicit CommandPool() : NonDispHandle() {}
+    explicit CommandPool(const Device &dev, const VkCommandPoolCreateInfo &info) { Init(dev, info); }
+    explicit CommandPool(const Device &dev, uint32_t queue_family_index, VkCommandPoolCreateFlags flags = 0);
+    void Init(const Device &dev, const VkCommandPoolCreateInfo &info);
+    void Init(const Device &dev, uint32_t queue_family_index, VkCommandPoolCreateFlags flags = 0);
+    void SetName(const char *name) { NonDispHandle<VkCommandPool>::SetName(VK_OBJECT_TYPE_COMMAND_POOL, name); }
+
+    CommandPool(CommandPool&& rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    CommandPool& operator=(CommandPool&& rhs) noexcept;
+};
+
+class CommandBuffer : public internal::Handle<VkCommandBuffer> {
+  public:
+    ~CommandBuffer() noexcept;
+    void Destroy() noexcept;
+
+    explicit CommandBuffer() : Handle() {}
+    CommandBuffer(const Device& dev, const VkCommandBufferAllocateInfo& info) { Init(dev, info); }
+    CommandBuffer(const Device& dev, const CommandPool& pool, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+        Init(dev, pool, level);
+    }
+    CommandBuffer(CommandBuffer&& rhs) noexcept;
+    CommandBuffer& operator=(CommandBuffer&& rhs) noexcept;
+
+    // vkAllocateCommandBuffers()
+    void Init(const Device &dev, const VkCommandBufferAllocateInfo &info);
+    void Init(const Device &dev, const CommandPool &pool, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+    void SetName(const Device &device, const char *name) {
+        Handle<VkCommandBuffer>::SetName(device, VK_OBJECT_TYPE_COMMAND_BUFFER, name);
+    }
+
+    // vkBeginCommandBuffer()
+    void Begin(const VkCommandBufferBeginInfo *info);
+    void Begin(VkCommandBufferUsageFlags flags);
+    void Begin() { Begin(0u); }
+
+    // vkEndCommandBuffer()
+    // vkResetCommandBuffer()
+    void End();
+    void Reset(VkCommandBufferResetFlags flags);
+    void Reset() { Reset(VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT); }
+
+    static VkCommandBufferAllocateInfo CreateInfo(VkCommandPool const &pool);
+
+    void BeginRenderPass(const VkRenderPassBeginInfo &info, VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+    void BeginRenderPass(VkRenderPass rp, VkFramebuffer fb, uint32_t render_area_width = 1, uint32_t render_area_height = 1,
+                         uint32_t clear_count = 0, const VkClearValue *clear_values = nullptr,
+                         VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+    void NextSubpass(VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+    void EndRenderPass();
+    void BeginRendering(const VkRenderingInfo &renderingInfo);
+    void BeginRenderingColor(const VkImageView imageView, VkRect2D render_area);
+    void EndRendering();
+
+    void PushDataEXT(uint32_t offset, size_t size, const void* address);
+
+    void BindShadersEXT(const vkt::ShaderEXT& vert_shader, const vkt::ShaderEXT& frag_shader);
+    void BindShadersEXT(const vkt::ShaderEXT& vert_shader, const vkt::ShaderEXT& geom_shader, const vkt::ShaderEXT& frag_shader);
+    void BindShadersEXT(const vkt::ShaderEXT& vert_shader, const vkt::ShaderEXT& tesc_shader, const vkt::ShaderEXT& tese_shader,
+                        const vkt::ShaderEXT& frag_shader);
+    void BindShadersEXT(const vkt::ShaderEXT& vert_shader, const vkt::ShaderEXT& tesc_shader, const vkt::ShaderEXT& tese_shader,
+                        const vkt::ShaderEXT& geom_shader, const vkt::ShaderEXT& frag_shader);
+    void BindCompShaderEXT(const vkt::ShaderEXT& comp_shader);
+    void BindMeshShadersEXT(const vkt::ShaderEXT& mesh_shader, const vkt::ShaderEXT& frag_shader);
+    void BindMeshShadersEXT(const vkt::ShaderEXT& task_shader, const vkt::ShaderEXT& mesh_shader,
+                            const vkt::ShaderEXT& frag_shader);
+
+    void BeginVideoCoding(const VkVideoBeginCodingInfoKHR& beginInfo);
+    void ControlVideoCoding(const VkVideoCodingControlInfoKHR &controlInfo);
+    void DecodeVideo(const VkVideoDecodeInfoKHR &decodeInfo);
+    void EncodeVideo(const VkVideoEncodeInfoKHR &encodeInfo);
+    void EndVideoCoding(const VkVideoEndCodingInfoKHR &endInfo);
+
+    void ResetEvent(const Event& event, VkPipelineStageFlags stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    void SetEvent(const Event& event, VkPipelineStageFlags src_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    void WaitEvent(const Event& event, VkPipelineStageFlags src_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                   VkPipelineStageFlags dst_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    void WaitEvent(const Event& event, VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                   const VkMemoryBarrier& memory_barrier);
+    void WaitEvent(const Event& event, VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                   const VkBufferMemoryBarrier& buffer_barrier);
+    void WaitEvent(const Event& event, VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                   const VkImageMemoryBarrier& image_barrier);
+
+    void ResetEvent2(const Event& event, VkPipelineStageFlags2 stage_mask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    void SetEvent2(const Event& event, const VkMemoryBarrier2& memory_barrier);
+    void WaitEvent2(const Event& event, const VkMemoryBarrier2& memory_barrier);
+
+    void Copy(const Buffer& src, const Buffer& dst);
+    void ExecuteCommands(const CommandBuffer& secondary);
+    void ExecuteCommands(const std::vector<VkCommandBuffer>& secondaries);
+
+    void Barrier(VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                 const VkBufferMemoryBarrier& buffer_barrier, VkDependencyFlags dependency_flags = 0);
+    void Barrier(VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask, const VkMemoryBarrier& barrier,
+                 VkDependencyFlags dependency_flags = 0);
+    void ExecutionBarrier(VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                          VkDependencyFlags dependency_flags = 0);
+
+    void Barrier(const VkMemoryBarrier2 &barrier, VkDependencyFlags dependency_flags = 0);
+    void Barrier(const VkBufferMemoryBarrier2 &buffer_barrier, VkDependencyFlags dependency_flags = 0);
+    void Barrier(const VkImageMemoryBarrier2 &image_barrier, VkDependencyFlags dependency_flags = 0);
+    void Barrier(const VkDependencyInfo &dep_info);
+
+    void BarrierKHR(const VkMemoryBarrier2 &barrier, VkDependencyFlags dependency_flags = 0);
+    void BarrierKHR(const VkBufferMemoryBarrier2 &buffer_barrier, VkDependencyFlags dependency_flags = 0);
+    void BarrierKHR(const VkImageMemoryBarrier2 &image_barrier, VkDependencyFlags dependency_flags = 0);
+    void BarrierKHR(const VkDependencyInfo &dep_info);
+
+    void Barrier(const VkImageMemoryBarrier& image_barrier, VkPipelineStageFlags src_stage_mask,
+                 VkPipelineStageFlags dst_stage_mask, VkDependencyFlags dependency_flags = 0);
+
+    // Synchronize image accesses. Do not transition image layout
+    void ImageBarrier(const vkt::Image& image, VkImageLayout current_layout);
+
+    void TransitionLayout(const vkt::Image& image, VkImageLayout old_layout, VkImageLayout new_layout);
+
+    // Used when vkt:Image is not available, for example, for swapchain images
+    void TransitionLayout(const VkImage image, VkImageLayout old_layout, VkImageLayout new_layout,
+                          const VkImageSubresourceRange& subresource_range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+
+    void FullMemoryBarrier();
+
+  private:
+    VkDevice dev_handle_;
+    VkCommandPool cmd_pool_;
+};
+
+// shortcut to vkt::CommandBuffer{}. Useful in submit helpers: queue->submit(vkt::no_cmd, ...)
+inline const CommandBuffer no_cmd;
+
+class RenderPass : public internal::NonDispHandle<VkRenderPass> {
+  public:
+    RenderPass() = default;
+    // vkCreateRenderPass()
+    RenderPass(const Device &dev, const VkRenderPassCreateInfo &info) { Init(dev, info); }
+    // vkCreateRenderPass2()
+    RenderPass(const Device &dev, const VkRenderPassCreateInfo2 &info) { Init(dev, info); }
+    ~RenderPass() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateRenderPass()
+    void Init(const Device &dev, const VkRenderPassCreateInfo &info);
+    // vkCreateRenderPass2()
+    void Init(const Device &dev, const VkRenderPassCreateInfo2 &info);
+    void SetName(const char *name) { NonDispHandle<VkRenderPass>::SetName(VK_OBJECT_TYPE_RENDER_PASS, name); }
+};
+
+class Framebuffer : public internal::NonDispHandle<VkFramebuffer> {
+  public:
+    Framebuffer() = default;
+    Framebuffer(const Device &dev, const VkFramebufferCreateInfo &info) { Init(dev, info); }
+    // The most common case, anything outside of this should create there own VkFramebufferCreateInfo
+    Framebuffer(const Device &dev, VkRenderPass rp, uint32_t attchment_count, const VkImageView *attchments, uint32_t width = 32,
+                uint32_t height = 32) {
+        VkFramebufferCreateInfo info = vku::InitStructHelper();
+        info.renderPass = rp;
+        info.attachmentCount = attchment_count;
+        info.pAttachments = attchments;
+        info.width = width;
+        info.height = height;
+        info.layers = 1;
+        Init(dev, info);
+    }
+    ~Framebuffer() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateFramebuffer()
+    void Init(const Device &dev, const VkFramebufferCreateInfo &info);
+    void SetName(const char *name) { NonDispHandle<VkFramebuffer>::SetName(VK_OBJECT_TYPE_FRAMEBUFFER, name); }
+};
+
+class SamplerYcbcrConversion : public internal::NonDispHandle<VkSamplerYcbcrConversion> {
+  public:
+    SamplerYcbcrConversion() = default;
+    SamplerYcbcrConversion(const Device &dev, VkFormat format) { Init(dev, DefaultConversionInfo(format)); }
+    SamplerYcbcrConversion(const Device &dev, const VkSamplerYcbcrConversionCreateInfo &info) { Init(dev, info); }
+    ~SamplerYcbcrConversion() noexcept;
+    void Destroy() noexcept;
+
+    void Init(const Device &dev, const VkSamplerYcbcrConversionCreateInfo &info);
+    void SetName(const char *name) {
+        NonDispHandle<VkSamplerYcbcrConversion>::SetName(VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION, name);
+    }
+    VkSamplerYcbcrConversionInfo ConversionInfo();
+
+    static VkSamplerYcbcrConversionCreateInfo DefaultConversionInfo(VkFormat format);
+};
+
+inline VkBufferCreateInfo Buffer::CreateInfo(VkDeviceSize size, VkFlags usage, const vvl::span<uint32_t> &queue_families,
+                                             void *create_info_pnext) {
+    VkBufferCreateInfo info = vku::InitStructHelper(create_info_pnext);
+    info.size = size;
+    info.usage = usage;
+
+    if (queue_families.size() > 1) {
+        info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        info.queueFamilyIndexCount = static_cast<uint32_t>(queue_families.size());
+        info.pQueueFamilyIndices = queue_families.data();
+    }
+
+    return info;
+}
+
+class Tensor : public internal::NonDispHandle<VkTensorARM> {
+  public:
+    explicit Tensor();
+    explicit Tensor(const Device &dev, const bool is_copy_tensor = false);
+    explicit Tensor(const Device &dev, const VkTensorDescriptionARM &desc);
+    explicit Tensor(const Device &dev, const VkTensorCreateInfoARM &info);
+    ~Tensor() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateTensor()
+    void InitNoMem(const Device &dev, const VkTensorCreateInfoARM &info);
+
+    const VkMemoryRequirements2 &GetMemoryReqs();
+    void BindToMem(VkFlags required_flags = 0, VkFlags forbidden_flags = 0);
+    VkFormat Format() const { return description_.format; }
+    uint32_t DimensionCount() const { return description_.dimensionCount; }
+    const VkTensorDescriptionARM &Description() const { return description_; }
+
+  private:
+    const Device *device_ = nullptr;
+    VkTensorCreateInfoARM create_info_;
+    VkTensorDescriptionARM description_;
+    VkTensorMemoryRequirementsInfoARM mem_req_info_;
+    VkMemoryRequirements2 mem_reqs_;
+    std::vector<int64_t> dimensions_;
+    std::vector<int64_t> strides_;
+    vkt::DeviceMemory memory_;
+};
+
+class TensorView : public internal::NonDispHandle<VkTensorViewARM> {
+  public:
+    TensorView() = default;
+    explicit TensorView(const Device &dev, const VkTensorViewCreateInfoARM &info);
+    ~TensorView() noexcept;
+    void Destroy() noexcept;
+
+    // vkCreateTensorViewARM
+    void Init(const Device &dev, const VkTensorViewCreateInfoARM &info);
+    const VkTensorViewCreateInfoARM &CreateInfo() const { return create_info_; };
+
+  private:
+    const Device *device_ = nullptr;
+    VkTensorViewCreateInfoARM create_info_;
+};
+
+class DataGraphPipelineSession : public internal::NonDispHandle<VkDataGraphPipelineSessionARM> {
+  public:
+    explicit DataGraphPipelineSession(const Device &dev, const VkDataGraphPipelineSessionCreateInfoARM &info);
+    DataGraphPipelineSession(const Device &dev, const VkDataGraphPipelineSessionCreateInfoARM &info, NoMemT);
+    ~DataGraphPipelineSession() noexcept;
+    void Destroy() noexcept;
+    void Init(const Device &dev, const VkDataGraphPipelineSessionCreateInfoARM& info);
+    void GetMemoryReqs();
+    void AllocSessionMem(std::vector<vkt::DeviceMemory> &device_mem, bool is_protected = false, size_t scale_factor = 1,
+                         int32_t size_modifier = 0);
+    size_t BindPointsCount() const { return bind_point_reqs_.size(); }
+    uint32_t NumBindObjects() const { return num_bind_objects_; }
+
+    const std::vector<VkDataGraphPipelineSessionBindPointRequirementARM> &BindPointReqs() const { return bind_point_reqs_; }
+    const std::vector<VkMemoryRequirements2> &MemReqs() const { return mem_reqs_; }
+
+  private:
+    const Device *device_ = nullptr;
+    VkDataGraphPipelineSessionCreateInfoARM create_info_;
+    std::vector<VkDataGraphPipelineSessionBindPointRequirementARM> bind_point_reqs_;
+    uint32_t num_bind_objects_ = 0;
+    std::vector<VkMemoryRequirements2> mem_reqs_;
+};
+
+inline VkEventCreateInfo Event::CreateInfo(VkFlags flags) {
+    VkEventCreateInfo info = vku::InitStructHelper();
+    info.flags = flags;
+    return info;
+}
+
+inline VkQueryPoolCreateInfo QueryPool::CreateInfo(VkQueryType type, uint32_t slot_count, VkQueryPoolCreateFlags create_flags) {
+    VkQueryPoolCreateInfo info = vku::InitStructHelper();
+    info.flags = create_flags;
+    info.queryType = type;
+    info.queryCount = slot_count;
+    return info;
+}
+
+inline VkShaderModuleCreateInfo ShaderModule::CreateInfo(size_t code_size, const uint32_t *code, VkFlags flags) {
+    VkShaderModuleCreateInfo info = vku::InitStructHelper();
+    info.codeSize = code_size;
+    info.pCode = code;
+    info.flags = flags;
+    return info;
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type, uint32_t count,
+                                                       const VkDescriptorImageInfo *image_info) {
+    VkWriteDescriptorSet write = vku::InitStructHelper();
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.dstArrayElement = array_element;
+    write.descriptorCount = count;
+    write.descriptorType = type;
+    write.pImageInfo = image_info;
+    return write;
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type, uint32_t count,
+                                                       const VkDescriptorBufferInfo *buffer_info) {
+    VkWriteDescriptorSet write = vku::InitStructHelper();
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.dstArrayElement = array_element;
+    write.descriptorCount = count;
+    write.descriptorType = type;
+    write.pBufferInfo = buffer_info;
+    return write;
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type, uint32_t count, const VkBufferView *buffer_views) {
+    VkWriteDescriptorSet write = vku::InitStructHelper();
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.dstArrayElement = array_element;
+    write.descriptorCount = count;
+    write.descriptorType = type;
+    write.pTexelBufferView = buffer_views;
+    return write;
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type,
+                                                       const std::vector<VkDescriptorImageInfo> &image_info) {
+    return WriteDescriptorSet(set, binding, array_element, type, static_cast<uint32_t>(image_info.size()), &image_info[0]);
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type,
+                                                       const std::vector<VkDescriptorBufferInfo> &buffer_info) {
+    return WriteDescriptorSet(set, binding, array_element, type, static_cast<uint32_t>(buffer_info.size()), &buffer_info[0]);
+}
+
+inline VkWriteDescriptorSet Device::WriteDescriptorSet(const DescriptorSet &set, uint32_t binding, uint32_t array_element,
+                                                       VkDescriptorType type, const std::vector<VkBufferView> &buffer_views) {
+    return WriteDescriptorSet(set, binding, array_element, type, static_cast<uint32_t>(buffer_views.size()), &buffer_views[0]);
+}
+
+class Swapchain : public internal::NonDispHandle<VkSwapchainKHR> {
+  public:
+    explicit Swapchain() = default;
+    explicit Swapchain(const Device &dev, const VkSwapchainCreateInfoKHR &info) { Init(dev, info); }
+    Swapchain(Swapchain &&rhs) noexcept : NonDispHandle(std::move(rhs)) {}
+    Swapchain &operator=(Swapchain &&) = default;
+    ~Swapchain() noexcept;
+    void Destroy() noexcept;
+
+    void Init(const Device &dev, const VkSwapchainCreateInfoKHR &info);
+    void SetName(const char *name) { NonDispHandle<VkSwapchainKHR>::SetName(VK_OBJECT_TYPE_SWAPCHAIN_KHR, name); }
+
+    uint32_t GetImageCount() const;
+    std::vector<VkImage> GetImages() const;
+
+    // Each command buffer records layout transition to present layout for corresponding swapchain image
+    std::vector<vkt::CommandBuffer> RecordTransitionToPresentLayout(
+        const vkt::Device& device, const vkt::CommandPool& command_pool,
+        VkImageLayout present_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) const;
+
+    // Return true if *all* swapchain images were transitioned.
+    // We don't have a guarantee its always possible because the ordering of the acquired images is unspecified
+    bool TryTransitionToPresentLayout(const vkt::Device& device, vkt::Queue& queue, const vkt::CommandPool& command_pool,
+                                      VkImageLayout present_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    uint32_t AcquireNextImage(const Semaphore &image_acquired, uint64_t timeout, VkResult *result = nullptr);
+    uint32_t AcquireNextImage(const Fence &image_acquired, uint64_t timeout, VkResult *result = nullptr);
+};
+
+class IndirectCommandsLayout : public internal::NonDispHandle<VkIndirectCommandsLayoutEXT> {
+  public:
+    ~IndirectCommandsLayout() noexcept;
+    void Destroy() noexcept;
+
+    explicit IndirectCommandsLayout() : NonDispHandle() {}
+    explicit IndirectCommandsLayout(const Device &dev, const VkIndirectCommandsLayoutCreateInfoEXT &info) { Init(dev, info); }
+    void Init(const Device &dev, const VkIndirectCommandsLayoutCreateInfoEXT &info);
+};
+
+class IndirectExecutionSet : public internal::NonDispHandle<VkIndirectExecutionSetEXT> {
+  public:
+    ~IndirectExecutionSet() noexcept;
+    void Destroy() noexcept;
+
+    explicit IndirectExecutionSet() : NonDispHandle() {}
+    explicit IndirectExecutionSet(const Device &dev, const VkIndirectExecutionSetCreateInfoEXT &info) { Init(dev, info); }
+    explicit IndirectExecutionSet(const Device &dev, VkPipeline init_pipeline, uint32_t max_pipelines);
+    explicit IndirectExecutionSet(const Device &dev, const VkIndirectExecutionSetShaderInfoEXT &shader_info);
+    void Init(const Device &dev, const VkIndirectExecutionSetCreateInfoEXT &info);
+};
+
+class Surface {
+  public:
+    Surface() : instance_(VK_NULL_HANDLE), handle_(VK_NULL_HANDLE) {}
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    VkResult Init(VkInstance, const VkWin32SurfaceCreateInfoKHR &);
+#endif
+#if defined(VK_USE_PLATFORM_METAL_EXT)
+    VkResult Init(VkInstance, const VkMetalSurfaceCreateInfoEXT &);
+#endif
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+    VkResult Init(VkInstance, const VkAndroidSurfaceCreateInfoKHR &);
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+    VkResult Init(VkInstance, const VkXlibSurfaceCreateInfoKHR &);
+#endif
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+    VkResult Init(VkInstance, const VkXcbSurfaceCreateInfoKHR &);
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+    VkResult Init(VkInstance, const VkWaylandSurfaceCreateInfoKHR &);
+#endif
+
+    ~Surface() noexcept { Destroy(); }
+    void Destroy() noexcept {
+        if (handle_ != VK_NULL_HANDLE) {
+            vk::DestroySurfaceKHR(instance_, handle_, nullptr);
+            handle_ = VK_NULL_HANDLE;
+        }
+    }
+    VkSurfaceKHR Handle() const { return handle_; }
+    operator VkSurfaceKHR() const { return handle_; }
+
+    Surface(Surface &&src) noexcept : instance_{src.instance_}, handle_{src.handle_} {
+        src.instance_ = {};
+        src.handle_ = {};
+    }
+    Surface &operator=(Surface &&src) noexcept {
+        instance_ = src.instance_;
+        src.instance_ = {};
+        handle_ = src.handle_;
+        src.handle_ = {};
+        return *this;
+    }
+
+    // This is ONLY for tests that need a way test destroying an instance and leak the Surface object (and calling
+    // vkDestroySurfaceKHR will be invalid)
+    void DestroyExplicitly() {
+        handle_ = VK_NULL_HANDLE;
+        instance_ = VK_NULL_HANDLE;
+    }
+
+    std::vector<VkPresentModeKHR> GetPresentModes(VkPhysicalDevice physical_device) const;
+    VkSurfacePresentScalingCapabilitiesKHR GetScalingCapabilities(VkPhysicalDevice physical_device,
+                                                                  VkPresentModeKHR present_mode) const;
+    vvl::SurfaceType GetType() const noexcept {
+        return type_;
+    }
+
+  private:
+    VkInstance instance_ = VK_NULL_HANDLE;
+    VkSurfaceKHR handle_ = VK_NULL_HANDLE;
+    vvl::SurfaceType type_ = vvl::SurfaceType::Unknown;
+};
+
+const VkAllocationCallbacks *DefaultAllocator();
+
+}  // namespace vkt

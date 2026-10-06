@@ -1,0 +1,87 @@
+// Copyright (c) 2024-2026 The Khronos Group Inc.
+// Copyright (c) 2024-2026 Valve Corporation
+// Copyright (c) 2024-2026 LunarG, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// NOTE: This file doesn't contain any entrypoints and should be compiled with the --no-link option for glslang
+
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+// Required to be supported in Vulkan 1.1
+#extension GL_KHR_shader_subgroup_basic : enable
+
+#include "common_descriptor_sets.h"
+#include "error_payload.h"
+#include "descriptor_encoding.h"
+
+layout(buffer_reference, buffer_reference_align = 8, scalar) buffer DescriptorEncodings {
+    DescriptorEncoding data[];
+};
+
+layout(buffer_reference) buffer UnusedInitializedStatus;
+
+layout(set = kInstDefaultDescriptorSet, binding = kBindingInstDescriptorIndexingOOB, scalar) buffer BoundDescriptorSetsSSBO {
+    UnusedInitializedStatus unused_initialized_status;
+    DescriptorEncodings descriptor_encodings[kDebugInputBindlessMaxDescSets];
+} gpuav;
+
+
+// Matches the vvl::DescriptorClass::GeneralBuffer
+//
+// If we have a shader like
+//    layout(set=0, binding=0) buffer foo {
+//        uint a;
+//        uint b;
+//    }
+//    void main() {
+//        b = 0;
+//    }
+//
+// We might have only bound 4 bytes to the buffer, so 'b' is OOB and this function will detect it
+void inst_descriptor_class_general_buffer(const uint inst_offset, const uint desc_set, const uint desc_index, const uint byte_offset, const uint binding_layout_offset) {
+    DescriptorEncodings descriptor_encodings = gpuav.descriptor_encodings[desc_set];
+    const uint global_descriptor_index = binding_layout_offset + desc_index;
+    // check that the offset is in bounds
+    uint resource_size = descriptor_encodings.data[global_descriptor_index].dword_0;
+    if (byte_offset >= resource_size) {
+        error_payload = ErrorPayload(
+                            inst_offset,
+                            SpecConstantLinkShaderId | (kErrorGroup_InstDescriptorClass << kErrorGroup_Shift) | (kErrorSubCode_DescriptorClass_GeneralBufferBounds << kErrorSubCode_Shift),
+                            (desc_set << kInst_DescriptorIndexing_SetShift) | global_descriptor_index,
+                            byte_offset,
+                            resource_size
+                        );
+    }
+}
+
+// Same thing as above, just uses a different SubCode and dedicated function name and using subgroupElect
+void inst_descriptor_class_general_buffer_coop_mat(const uint inst_offset, const uint desc_set, const uint desc_index, const uint byte_offset, const uint binding_layout_offset) {
+    // CoopMat is done (currently) at a subgroup level, so if 1 thread is wrong, by definition the subgroup is all invalid.
+    // To not spam the user, report only 1 error per subgroup
+    if (subgroupElect()) {
+        DescriptorEncodings descriptor_encodings = gpuav.descriptor_encodings[desc_set];
+        const uint global_descriptor_index = binding_layout_offset + desc_index;
+        // check that the offset is in bounds
+        uint resource_size = descriptor_encodings.data[global_descriptor_index].dword_0;
+        if (byte_offset >= resource_size) {
+            error_payload = ErrorPayload(
+                                inst_offset,
+                                SpecConstantLinkShaderId | (kErrorGroup_InstDescriptorClass << kErrorGroup_Shift) | (kErrorSubCode_DescriptorClass_GeneralBufferCoopMatBounds << kErrorSubCode_Shift),
+                                (desc_set << kInst_DescriptorIndexing_SetShift) | global_descriptor_index,
+                                byte_offset,
+                                resource_size
+                            );
+        }
+    }
+}

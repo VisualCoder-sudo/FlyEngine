@@ -1,0 +1,62 @@
+/* Copyright (c) 2023-2024 Nintendo
+ * Copyright (c) 2023-2026 LunarG, Inc.
+ * Modifications Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "shader_object_state.h"
+#include <vulkan/vulkan_core.h>
+#include "shader_module.h"
+#include "state_tracker/state_tracker.h"
+#include "utils/descriptor_utils.h"
+
+namespace vvl {
+
+static DescriptorSetLayoutList GetSetLayouts(DeviceState& dev_data, const VkShaderCreateInfoEXT& pCreateInfo) {
+    DescriptorSetLayoutList set_layouts(pCreateInfo.setLayoutCount);
+    for (uint32_t i = 0; i < pCreateInfo.setLayoutCount; ++i) {
+        set_layouts.list[i] = dev_data.Get<vvl::DescriptorSetLayout>(pCreateInfo.pSetLayouts[i]);
+    }
+    return set_layouts;
+}
+
+ShaderObject::ShaderObject(DeviceState& dev_data, const VkShaderCreateInfoEXT& create_info_i, VkShaderEXT handle,
+                           std::shared_ptr<spirv::Module>& spirv_module)
+    : StateObject(handle, kVulkanObjectTypeShaderEXT),
+      safe_create_info_ext(&create_info_i),
+      create_info_ext(*safe_create_info_ext.ptr()),
+      is_independent_set((create_info_i.flags & VK_SHADER_CREATE_INDEPENDENT_SETS_BIT_KHR) != 0),
+      descriptor_heap_mode((create_info_i.flags & VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT) != 0),
+      descriptor_heap_embedded_samplers_count(descriptor_heap_mode ? CountDescriptorHeapEmbeddedSamplers(create_info_i.pNext) : 0),
+      set_layouts(GetSetLayouts(dev_data, create_info_ext)),
+      push_constant_ranges(GetCanonicalId(create_info_ext.pushConstantRangeCount, create_info_ext.pPushConstantRanges)),
+      set_compat_ids(GetCompatForSet(set_layouts, push_constant_ranges, is_independent_set, true)),
+      stage(nullptr, &safe_create_info_ext, &set_layouts, nullptr, spirv_module, VK_NULL_HANDLE, descriptor_heap_mode),
+      active_slots(GetActiveSlots(stage.entrypoint)),
+      max_active_slot(GetMaxActiveSlot(active_slots)) {
+    // We need to update handle, but if using VK_SHADER_CODE_TYPE_SPIRV_EXT, it will be null
+    if (spirv_module) {
+        spirv_module->handle_ = handle_;
+    }
+}
+
+void ShaderObject::Destroy() {
+    for (auto& item : sub_states_) {
+        item.second->Destroy();
+    }
+    sub_states_.clear();
+    StateObject::Destroy();
+}
+
+}  // namespace vvl

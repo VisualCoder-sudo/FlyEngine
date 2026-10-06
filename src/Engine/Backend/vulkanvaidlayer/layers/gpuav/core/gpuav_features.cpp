@@ -1,0 +1,455 @@
+/* Copyright (c) 2026 The Khronos Group Inc.
+ * Copyright (c) 2026 Valve Corporation
+ * Copyright (c) 2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "gpuav/core/gpuav.h"
+#include "generated/dispatch_functions.h"
+
+namespace gpuav {
+
+static std::vector<VkExtensionProperties> GetAvailableExtensions(VkPhysicalDevice physical_device) {
+    VkResult err;
+    uint32_t extension_count = 512;
+    std::vector<VkExtensionProperties> extensions(extension_count);
+    for (;;) {
+        err = DispatchEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, extensions.data());
+        if (err == VK_SUCCESS) {
+            extensions.resize(extension_count);
+            return extensions;
+        } else if (err == VK_INCOMPLETE) {
+            extension_count *= 2;  // wasn't enough space, increase it
+            extensions.resize(extension_count);
+        } else {
+            return {};
+        }
+    }
+}
+
+static bool IsExtensionAvailable(const char* extension_name, const std::vector<VkExtensionProperties>& available_extensions) {
+    for (const VkExtensionProperties& ext : available_extensions) {
+        if (strncmp(extension_name, ext.extensionName, VK_MAX_EXTENSION_NAME_SIZE) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// We end up printing lots of warning for GPU-AV that really have no use for any object.
+// Instead of spamming with a VkInstance, just explicitly don't print anything
+static const VulkanTypedHandle kNoObjects;
+
+// In PreCallRecord we try to turn on as many features as possible on behalf of the app (and warn the user if we are doing it).
+// Later after device creation, we can decide if the required Vulkan feature for each GPU-AV setting is found and report errors
+void Instance::AddFeatures(VkPhysicalDevice physical_device, vku::safe_VkDeviceCreateInfo* modified_create_info,
+                           const Location& loc) {
+    // Query things here to make sure we don't attempt to add a feature this is just not supported
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR supported_coop_mat_feature = vku::InitStructHelper();
+    VkPhysicalDeviceRobustness2FeaturesKHR supported_robustness2_feature = vku::InitStructHelper(&supported_coop_mat_feature);
+    VkPhysicalDeviceShaderFloat16Int8Features supported_shader_float16_int8_feature =
+        vku::InitStructHelper(&supported_robustness2_feature);
+    VkPhysicalDevice8BitStorageFeatures supported_8bit_feature = vku::InitStructHelper(&supported_shader_float16_int8_feature);
+    VkPhysicalDevice16BitStorageFeatures supported_16bit_feature = vku::InitStructHelper(&supported_8bit_feature);
+    VkPhysicalDeviceBufferDeviceAddressFeatures supported_bda_feature = vku::InitStructHelper(&supported_16bit_feature);
+    VkPhysicalDeviceScalarBlockLayoutFeatures supported_scalar_feature = vku::InitStructHelper(&supported_bda_feature);
+    VkPhysicalDeviceVulkanMemoryModelFeatures supported_memory_model_feature = vku::InitStructHelper(&supported_scalar_feature);
+    VkPhysicalDeviceTimelineSemaphoreFeatures supported_timeline_feature = vku::InitStructHelper(&supported_memory_model_feature);
+    VkPhysicalDeviceFeatures2 features_2 = vku::InitStructHelper(&supported_timeline_feature);
+    DispatchGetPhysicalDeviceFeatures2(physical_device, &features_2);
+
+    std::string adjustment_warnings;
+
+    // First core features
+    {
+        const VkPhysicalDeviceFeatures& supported_features = features_2.features;
+
+        VkPhysicalDeviceFeatures* modified_features = const_cast<VkPhysicalDeviceFeatures*>(modified_create_info->pEnabledFeatures);
+        if (!modified_features) {
+            if (auto* modified_features_2 = const_cast<VkPhysicalDeviceFeatures2*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceFeatures2>(modified_create_info->pNext))) {
+                modified_features = &modified_features_2->features;
+            } else {
+                // The user has no VkPhysicalDeviceFeatures, so we are adding it for them
+                modified_features = new VkPhysicalDeviceFeatures;
+                memset(modified_features, 0, sizeof(VkPhysicalDeviceFeatures));
+                modified_create_info->pEnabledFeatures = modified_features;
+            }
+        }
+
+        if (modified_features) {
+            if (supported_features.fragmentStoresAndAtomics && !modified_features->fragmentStoresAndAtomics) {
+                adjustment_warnings += "\tForcing fragmentStoresAndAtomics to VK_TRUE\n";
+                modified_features->fragmentStoresAndAtomics = VK_TRUE;
+            }
+            if (supported_features.vertexPipelineStoresAndAtomics && !modified_features->vertexPipelineStoresAndAtomics) {
+                adjustment_warnings += "\tForcing vertexPipelineStoresAndAtomics to VK_TRUE\n";
+                modified_features->vertexPipelineStoresAndAtomics = VK_TRUE;
+            }
+            if (supported_features.shaderInt64 && !modified_features->shaderInt64) {
+                adjustment_warnings += "\tForcing shaderInt64 to VK_TRUE\n";
+                modified_features->shaderInt64 = VK_TRUE;
+            }
+            if (gpuav_settings.force_on_robustness && supported_features.robustBufferAccess &&
+                !modified_features->robustBufferAccess) {
+                adjustment_warnings += "\tForcing robustBufferAccess to VK_TRUE\n";
+                modified_features->robustBufferAccess = VK_TRUE;
+            }
+            if (supported_features.shaderInt16 && !modified_features->shaderInt16) {
+                adjustment_warnings += "\tForcing shaderInt16 to VK_TRUE\n";
+                modified_features->shaderInt16 = VK_TRUE;
+            }
+        }
+    }
+
+    // Build extension list once
+    std::vector<VkExtensionProperties> available_extensions = GetAvailableExtensions(physical_device);
+
+    if (supported_timeline_feature.timelineSemaphore) {
+        auto add_timeline_semaphore = [modified_create_info, &adjustment_warnings]() {
+            if (auto* ts_features = const_cast<VkPhysicalDeviceTimelineSemaphoreFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceTimelineSemaphoreFeatures>(modified_create_info))) {
+                if (ts_features->timelineSemaphore == VK_FALSE) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceTimelineSemaphoreFeatures::timelineSemaphore to VK_TRUE\n";
+                    ts_features->timelineSemaphore = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDeviceTimelineSemaphoreFeatures to pNext with timelineSemaphore set to VK_TRUE\n";
+                VkPhysicalDeviceTimelineSemaphoreFeatures new_ts_features = vku::InitStructHelper();
+                new_ts_features.timelineSemaphore = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_ts_features);
+            }
+        };
+
+        if (api_version > VK_API_VERSION_1_1) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (features12->timelineSemaphore == VK_FALSE) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::timelineSemaphore to VK_TRUE\n";
+                    features12->timelineSemaphore = VK_TRUE;
+                }
+            } else {
+                add_timeline_semaphore();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+            add_timeline_semaphore();
+            timeline_khr_ = true;
+        }
+    }
+
+    if (supported_memory_model_feature.vulkanMemoryModel) {
+        auto add_memory_model = [modified_create_info, &adjustment_warnings]() {
+            if (auto* mm_features = const_cast<VkPhysicalDeviceVulkanMemoryModelFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkanMemoryModelFeatures>(modified_create_info))) {
+                if (mm_features->vulkanMemoryModel == VK_FALSE) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkanMemoryModelFeatures::vulkanMemoryModel to VK_TRUE\n";
+                    mm_features->vulkanMemoryModel = VK_TRUE;
+                }
+                if (mm_features->vulkanMemoryModelDeviceScope == VK_FALSE) {
+                    adjustment_warnings +=
+                        "\tForcing VkPhysicalDeviceVulkanMemoryModelFeatures::vulkanMemoryModelDeviceScope to VK_TRUE\n";
+                    mm_features->vulkanMemoryModelDeviceScope = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDeviceVulkanMemoryModelFeatures to pNext with vulkanMemoryModel and "
+                    "vulkanMemoryModelDeviceScope set to VK_TRUE\n";
+                VkPhysicalDeviceVulkanMemoryModelFeatures new_mm_features = vku::InitStructHelper();
+                new_mm_features.vulkanMemoryModel = VK_TRUE;
+                new_mm_features.vulkanMemoryModelDeviceScope = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_mm_features);
+            }
+        };
+
+        if (api_version > VK_API_VERSION_1_1) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (features12->vulkanMemoryModel == VK_FALSE) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::vulkanMemoryModel to VK_TRUE\n";
+                    features12->vulkanMemoryModel = VK_TRUE;
+                }
+                if (features12->vulkanMemoryModelDeviceScope == VK_FALSE) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::vulkanMemoryModelDeviceScope to VK_TRUE\n";
+                    features12->vulkanMemoryModelDeviceScope = VK_TRUE;
+                }
+            } else {
+                add_memory_model();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME);
+            add_memory_model();
+        }
+    }
+
+    if (supported_bda_feature.bufferDeviceAddress) {
+        auto add_bda = [modified_create_info, &adjustment_warnings]() {
+            // Add buffer device address feature
+            if (auto* bda_features = const_cast<VkPhysicalDeviceBufferDeviceAddressFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceBufferDeviceAddressFeatures>(modified_create_info))) {
+                if (!bda_features->bufferDeviceAddress) {
+                    adjustment_warnings +=
+                        "\tForcing VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress to VK_TRUE\n";
+                    bda_features->bufferDeviceAddress = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDeviceBufferDeviceAddressFeatures to pNext with bufferDeviceAddress set to VK_TRUE\n";
+                VkPhysicalDeviceBufferDeviceAddressFeatures new_bda_features = vku::InitStructHelper();
+                new_bda_features.bufferDeviceAddress = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_bda_features);
+            }
+        };
+
+        if (api_version >= VK_API_VERSION_1_2) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (!features12->bufferDeviceAddress) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::bufferDeviceAddress to VK_TRUE\n";
+                    features12->bufferDeviceAddress = VK_TRUE;
+                }
+            } else {
+                add_bda();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            add_bda();
+        }
+    }
+
+    if (supported_scalar_feature.scalarBlockLayout) {
+        auto add_scalar = [modified_create_info, &adjustment_warnings]() {
+            if (auto* bda_features = const_cast<VkPhysicalDeviceScalarBlockLayoutFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceScalarBlockLayoutFeatures>(modified_create_info))) {
+                if (!bda_features->scalarBlockLayout) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceScalarBlockLayoutFeatures::scalarBlockLayout to VK_TRUE\n";
+                    bda_features->scalarBlockLayout = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDeviceScalarBlockLayoutFeatures to pNext with scalarBlockLayout set to VK_TRUE\n";
+                VkPhysicalDeviceScalarBlockLayoutFeatures new_bda_features = vku::InitStructHelper();
+                new_bda_features.scalarBlockLayout = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_bda_features);
+            }
+        };
+
+        if (api_version >= VK_API_VERSION_1_2) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (!features12->scalarBlockLayout) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::scalarBlockLayout to VK_TRUE\n";
+                    features12->scalarBlockLayout = VK_TRUE;
+                }
+            } else {
+                add_scalar();
+            }
+        } else if (IsExtensionAvailable(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+            add_scalar();
+        }
+    }
+
+    if (supported_8bit_feature.storageBuffer8BitAccess) {
+        auto add_8bit_access = [modified_create_info, &adjustment_warnings]() {
+            // Add storageBuffer8BitAccess feature
+            if (auto* eight_bit_access_feature = const_cast<VkPhysicalDevice8BitStorageFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDevice8BitStorageFeatures>(modified_create_info))) {
+                if (!eight_bit_access_feature->storageBuffer8BitAccess) {
+                    adjustment_warnings += "\tForcing VkPhysicalDevice8BitStorageFeatures::storageBuffer8BitAccess to VK_TRUE\n";
+                    eight_bit_access_feature->storageBuffer8BitAccess = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDevice8BitStorageFeatures to pNext with storageBuffer8BitAccess "
+                    "set to VK_TRUE\n";
+                VkPhysicalDevice8BitStorageFeatures new_8bit_features = vku::InitStructHelper();
+                new_8bit_features.storageBuffer8BitAccess = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_8bit_features);
+            }
+        };
+
+        if (api_version >= VK_API_VERSION_1_2) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (!features12->storageBuffer8BitAccess) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::storageBuffer8BitAccess to VK_TRUE\n";
+                    features12->storageBuffer8BitAccess = VK_TRUE;
+                }
+            } else {
+                add_8bit_access();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_8BIT_STORAGE_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
+            add_8bit_access();
+        }
+    }
+
+    if (supported_shader_float16_int8_feature.shaderInt8) {
+        auto add_int8 = [modified_create_info, &adjustment_warnings]() {
+            // Add shaderInt8 feature
+            if (auto* sixteen_bit_access_feature = const_cast<VkPhysicalDeviceShaderFloat16Int8Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceShaderFloat16Int8Features>(modified_create_info))) {
+                if (!sixteen_bit_access_feature->shaderInt8) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceShaderFloat16Int8Features::shaderInt8 to VK_TRUE\n";
+                    sixteen_bit_access_feature->shaderInt8 = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDeviceShaderFloat16Int8Features to pNext with shaderInt8 "
+                    "set to VK_TRUE\n";
+                VkPhysicalDeviceShaderFloat16Int8Features new_16bit_features = vku::InitStructHelper();
+                new_16bit_features.shaderInt8 = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_16bit_features);
+            }
+        };
+
+        if (api_version >= VK_API_VERSION_1_2) {
+            if (auto* features12 = const_cast<VkPhysicalDeviceVulkan12Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan12Features>(modified_create_info->pNext))) {
+                if (!features12->shaderInt8) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan12Features::shaderInt8 to VK_TRUE\n";
+                    features12->shaderInt8 = VK_TRUE;
+                }
+            } else {
+                add_int8();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            add_int8();
+        }
+    }
+
+    if (supported_16bit_feature.storageBuffer16BitAccess) {
+        auto add_16bit_access = [modified_create_info, &adjustment_warnings]() {
+            // Add storageBuffer16BitAccess feature
+            if (auto* sixteen_bit_access_feature = const_cast<VkPhysicalDevice16BitStorageFeatures*>(
+                    vku::FindStructInPNextChain<VkPhysicalDevice16BitStorageFeatures>(modified_create_info))) {
+                if (!sixteen_bit_access_feature->storageBuffer16BitAccess) {
+                    adjustment_warnings += "\tForcing VkPhysicalDevice16BitStorageFeatures::storageBuffer16BitAccess to VK_TRUE\n";
+                    sixteen_bit_access_feature->storageBuffer16BitAccess = VK_TRUE;
+                }
+            } else {
+                adjustment_warnings +=
+                    "\tAdding a VkPhysicalDevice16BitStorageFeatures to pNext with storageBuffer16BitAccess "
+                    "set to VK_TRUE\n";
+                VkPhysicalDevice16BitStorageFeatures new_16bit_features = vku::InitStructHelper();
+                new_16bit_features.storageBuffer16BitAccess = VK_TRUE;
+                vku::AddToPnext(*modified_create_info, new_16bit_features);
+            }
+        };
+
+        if (api_version >= VK_API_VERSION_1_1) {
+            if (auto* features11 = const_cast<VkPhysicalDeviceVulkan11Features*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceVulkan11Features>(modified_create_info->pNext))) {
+                if (!features11->storageBuffer16BitAccess) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceVulkan11Features::storageBuffer16BitAccess to VK_TRUE\n";
+                    features11->storageBuffer16BitAccess = VK_TRUE;
+                }
+            } else {
+                add_16bit_access();
+            }
+        } else if (IsExtensionAvailable(VK_KHR_16BIT_STORAGE_EXTENSION_NAME, available_extensions)) {
+            // Only adds if not found already
+            vku::AddExtension(*modified_create_info, VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
+            add_16bit_access();
+        }
+    }
+
+    if (gpuav_settings.debug_printf_enabled) {
+        if (!IsExtensionAvailable(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, available_extensions)) {
+            adjustment_warnings +=
+                "\tVK_KHR_shader_non_semantic_info is not available on selected device, DebugPrintf may produce "
+                "SPIR-V that could fail to compile the shader\n";
+        } else {
+            vku::AddExtension(*modified_create_info, VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
+        }
+    }
+
+    if (gpuav_settings.force_on_robustness &&
+        (supported_robustness2_feature.robustBufferAccess2 || supported_robustness2_feature.robustImageAccess2 ||
+         supported_robustness2_feature.nullDescriptor)) {
+        const bool has_ext = IsExtensionAvailable(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, available_extensions);
+        const bool has_khr = IsExtensionAvailable(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME, available_extensions);
+        if (has_ext || has_khr) {
+            // Only adds if not found already
+            if (has_khr) {
+                vku::AddExtension(*modified_create_info, VK_KHR_ROBUSTNESS_2_EXTENSION_NAME);
+            } else {
+                vku::AddExtension(*modified_create_info, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+            }
+
+            if (auto* robust_buffer_2_feature = const_cast<VkPhysicalDeviceRobustness2FeaturesKHR*>(
+                    vku::FindStructInPNextChain<VkPhysicalDeviceRobustness2FeaturesKHR>(modified_create_info))) {
+                if (!robust_buffer_2_feature->robustBufferAccess2 && supported_robustness2_feature.robustBufferAccess2) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceRobustness2FeaturesKHR::robustBufferAccess2 to VK_TRUE\n";
+                    robust_buffer_2_feature->robustBufferAccess2 = VK_TRUE;
+                }
+                if (!robust_buffer_2_feature->robustImageAccess2 && supported_robustness2_feature.robustImageAccess2) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceRobustness2FeaturesKHR::robustImageAccess2 to VK_TRUE\n";
+                    robust_buffer_2_feature->robustImageAccess2 = VK_TRUE;
+                }
+                if (!robust_buffer_2_feature->nullDescriptor && supported_robustness2_feature.nullDescriptor) {
+                    adjustment_warnings += "\tForcing VkPhysicalDeviceRobustness2FeaturesKHR::nullDescriptor to VK_TRUE\n";
+                    robust_buffer_2_feature->nullDescriptor = VK_TRUE;
+                }
+            } else {
+                VkPhysicalDeviceRobustness2FeaturesKHR new_robust_buffer_2_feature = vku::InitStructHelper();
+                if (supported_robustness2_feature.robustBufferAccess2) {
+                    adjustment_warnings +=
+                        "\tAdding a VkPhysicalDeviceRobustness2FeaturesKHR to pNext with robustBufferAccess2 set to VK_TRUE\n";
+                    new_robust_buffer_2_feature.robustBufferAccess2 = VK_TRUE;
+                }
+                if (supported_robustness2_feature.robustImageAccess2) {
+                    adjustment_warnings +=
+                        "\tAdding a VkPhysicalDeviceRobustness2FeaturesKHR to pNext with robustImageAccess2 set to VK_TRUE\n";
+                    new_robust_buffer_2_feature.robustImageAccess2 = VK_TRUE;
+                }
+                if (supported_robustness2_feature.nullDescriptor) {
+                    adjustment_warnings +=
+                        "\tAdding a VkPhysicalDeviceRobustness2FeaturesKHR to pNext with nullDescriptor set to VK_TRUE\n";
+                    new_robust_buffer_2_feature.nullDescriptor = VK_TRUE;
+                }
+                vku::AddToPnext(*modified_create_info, new_robust_buffer_2_feature);
+            }
+        }
+    }
+
+    if (gpuav_settings.force_on_robustness && supported_coop_mat_feature.cooperativeMatrixRobustBufferAccess) {
+        // Because they need to have VkPhysicalDeviceCooperativeMatrixFeaturesKHR::cooperativeMatrix to even use this extensions, we
+        // don't add it, we only need to update the other feature bit for them
+        if (auto* coop_mat_feature = const_cast<VkPhysicalDeviceCooperativeMatrixFeaturesKHR*>(
+                vku::FindStructInPNextChain<VkPhysicalDeviceCooperativeMatrixFeaturesKHR>(modified_create_info))) {
+            if (!coop_mat_feature->cooperativeMatrixRobustBufferAccess) {
+                adjustment_warnings +=
+                    "\tForcing VkPhysicalDeviceCooperativeMatrixFeaturesKHR::cooperativeMatrixRobustBufferAccess to VK_TRUE\n";
+                coop_mat_feature->cooperativeMatrixRobustBufferAccess = VK_TRUE;
+            }
+        }
+    }
+
+    if (!adjustment_warnings.empty()) {
+        AdjustmentWarning(kNoObjects, loc, adjustment_warnings.c_str());
+    }
+}
+
+}  // namespace gpuav

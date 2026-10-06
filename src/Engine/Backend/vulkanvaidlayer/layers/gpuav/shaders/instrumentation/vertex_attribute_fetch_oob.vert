@@ -1,0 +1,73 @@
+// Copyright (c) 2024-2026 The Khronos Group Inc.
+// Copyright (c) 2024-2026 Valve Corporation
+// Copyright (c) 2024-2026 LunarG, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// NOTE: This file doesn't contain any entrypoints and should be compiled with the --no-link option for glslang
+
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "common_descriptor_sets.h"
+
+layout(set = kInstDefaultDescriptorSet, binding = kBindingInstVertexAttributeFetchLimits, scalar)
+readonly buffer VertexAttributeFetchLimits {
+    uint has_max_vbb_vertex_input_rate;
+    uint vertex_attribute_fetch_limit_vertex_input_rate;
+
+    uint has_max_vbb_instance_input_rate;
+    uint vertex_attribute_fetch_limit_instance_input_rate;
+};
+
+void inst_vertex_attribute_fetch_oob(const uvec4 stage_info)
+{
+    const uint vertex_index = stage_info[1];
+    const uint instance_index = stage_info[2];
+
+    bool valid_vertex_attribute_fetch_vertex_input_rate = true;
+    bool valid_vertex_attribute_fetch_instance_input_rate = true;
+
+    if (has_max_vbb_vertex_input_rate == 1u) {
+        valid_vertex_attribute_fetch_vertex_input_rate = vertex_index < vertex_attribute_fetch_limit_vertex_input_rate;
+    }
+    if (has_max_vbb_instance_input_rate == 1u) {
+        valid_vertex_attribute_fetch_instance_input_rate = instance_index < vertex_attribute_fetch_limit_instance_input_rate;
+    }
+
+    if (!valid_vertex_attribute_fetch_vertex_input_rate || !valid_vertex_attribute_fetch_instance_input_rate) {
+        const uint cmd_id = inst_error_logger_index_buffer.data;
+        const uint cmd_errors_count = atomicAdd(inst_cmd_errors_count_buffer.errors_count[cmd_id], 1);
+        const bool max_cmd_errors_count_reached = cmd_errors_count >= kMaxErrorsPerCmd;
+
+        if (max_cmd_errors_count_reached) {
+            return;
+        }
+
+        uint write_pos = atomicAdd(inst_errors_buffer.written_count, kErrorRecordSize);
+        const bool errors_buffer_not_filled = (write_pos + kErrorRecordSize) <= SpecConstantInstErrorBufferLengthId;
+
+        if (errors_buffer_not_filled) {
+            const uint error = valid_vertex_attribute_fetch_vertex_input_rate ? kErrorSubCode_IndexedDraw_OOBInstanceIndex : kErrorSubCode_IndexedDraw_OOBVertexIndex;
+
+            inst_errors_buffer.data[write_pos + kHeader_ErrorRecordSizeOffset] = kErrorRecordSize;
+            inst_errors_buffer.data[write_pos + kHeader_ShaderIdErrorOffset] = SpecConstantLinkShaderId | (kErrorGroup_InstIndexedDraw << kErrorGroup_Shift) | (error << kErrorSubCode_Shift);
+            // The shader stage is irrelevant because we know it is a vertex shader
+            inst_errors_buffer.data[write_pos + kHeader_StageInstructionIdOffset] = stage_info[0] << kStageId_Shift;
+            inst_errors_buffer.data[write_pos + kHeader_StageInfoOffset_0] = stage_info[1];
+            inst_errors_buffer.data[write_pos + kHeader_StageInfoOffset_1] = stage_info[2];
+            inst_errors_buffer.data[write_pos + kHeader_StageInfoOffset_2] = stage_info[3];
+
+            inst_errors_buffer.data[write_pos + kHeader_ActionIdErrorLoggerIdOffset] = (inst_action_index_buffer.data << kActionId_Shift) | inst_error_logger_index_buffer.data;
+        }
+    }
+}

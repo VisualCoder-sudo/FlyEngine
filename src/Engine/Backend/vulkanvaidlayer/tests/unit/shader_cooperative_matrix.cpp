@@ -1,0 +1,1314 @@
+/*
+ * Copyright (c) 2015-2026 The Khronos Group Inc.
+ * Copyright (c) 2015-2026 Valve Corporation
+ * Copyright (c) 2015-2026 LunarG, Inc.
+ * Copyright (c) 2015-2026 Google, Inc.
+ * Modifications Copyright (C) 2020 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+#include <spirv/unified1/spirv.hpp>
+#include <vulkan/vulkan_core.h>
+#include <algorithm>
+#include "layer_validation_tests.h"
+#include "pipeline_helper.h"
+#include "shader_object_helper.h"
+#include "cooperative_matrix_helper.h"
+#include "shader_helper.h"
+
+class NegativeShaderCooperativeMatrix : public CooperativeMatrixTest {
+  protected:
+    void ExpectProperties2Error(const VkPhysicalDeviceCooperativeMatrixInfo2EXT& info, const char* vuid) {
+        uint32_t count = 0;
+        m_errorMonitor->SetDesiredError(vuid);
+        vk::GetPhysicalDeviceCooperativeMatrixProperties2EXT(Gpu(), &info, &count, nullptr);
+        m_errorMonitor->VerifyFound();
+    }
+};
+
+TEST_F(NegativeShaderCooperativeMatrix, SpecInfo) {
+    TEST_DESCRIPTION("Test VK_KHR_cooperative_matrix.");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+
+    // https://godbolt.org/z/Ys7faYaav but now validated at GLSL level, so have SPIR-V
+    const char* cs_source = R"asm(
+            OpCapability Shader
+            OpCapability Float16
+            OpCapability VulkanMemoryModel
+            OpCapability CooperativeMatrixKHR
+            OpExtension "SPV_KHR_cooperative_matrix"
+            OpMemoryModel Logical Vulkan
+            OpEntryPoint GLCompute %main "main"
+            OpExecutionMode %main LocalSize 32 1 1
+            OpDecorate %C0 SpecId 0
+            OpDecorate %C1 SpecId 1
+    %void = OpTypeVoid
+        %3 = OpTypeFunction %void
+    %half = OpTypeFloat 16
+    %uint = OpTypeInt 32 0
+    %uint_3 = OpConstant %uint 3
+    %uint_5 = OpConstant %uint 5
+    %uint_2 = OpConstant %uint 2
+        %11 = OpTypeCooperativeMatrixKHR %half %uint_3 %uint_3 %uint_5 %uint_2
+%_ptr_Function_11 = OpTypePointer Function %11
+%half_0x0p_0 = OpConstant %half 0x0p+0
+        %15 = OpConstantComposite %11 %half_0x0p_0
+        %C0 = OpSpecConstant %uint 1
+        %C1 = OpSpecConstant %uint 1
+    %uint_0 = OpConstant %uint 0
+        %19 = OpTypeCooperativeMatrixKHR %half %uint_3 %C0 %C1 %uint_0
+%_ptr_Function_19 = OpTypePointer Function %19
+    %uint_1 = OpConstant %uint 1
+        %24 = OpTypeCooperativeMatrixKHR %half %uint_3 %C0 %C1 %uint_1
+%_ptr_Function_24 = OpTypePointer Function %24
+        %28 = OpTypeCooperativeMatrixKHR %half %uint_3 %C0 %C1 %uint_2
+%_ptr_Function_28 = OpTypePointer Function %28
+    %v3uint = OpTypeVector %uint 3
+%uint_32 = OpConstant %uint 32
+        %35 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+    %main = OpFunction %void None %3
+        %5 = OpLabel
+%badSize = OpVariable %_ptr_Function_11 Function
+        %A = OpVariable %_ptr_Function_19 Function
+        %B = OpVariable %_ptr_Function_24 Function
+        %C = OpVariable %_ptr_Function_28 Function
+            OpStore %badSize %15
+        %22 = OpLoad %19 %A
+        %27 = OpLoad %24 %B
+        %31 = OpLoad %28 %C
+        %32 = OpCooperativeMatrixMulAddKHR %28 %22 %27 %31
+            OpReturn
+            OpFunctionEnd
+    )asm";
+
+    const uint32_t spec_data[] = {
+        63,
+        65,
+    };
+    VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+        {1, sizeof(uint32_t) * 1, sizeof(uint32_t)},
+    };
+
+    VkSpecializationInfo spec_info = {
+        2,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_ASM, &spec_info);
+    m_errorMonitor->SetDesiredError("VUID-VkPipelineShaderStageCreateInfo-pSpecializationInfo-06849");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, SpecInfoNV) {
+    TEST_DESCRIPTION("Test VK_NV_cooperative_matrix.");
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    // glslang will generate OpCapability VulkanMemoryModel and need entension enabled
+    AddRequiredExtensions(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME);
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    RETURN_IF_SKIP(InitFramework());
+
+    VkPhysicalDeviceFloat16Int8FeaturesKHR float16_features = vku::InitStructHelper();
+    // The NV and KHR share the same feature name, so set it without AddRequiredFeature
+    VkPhysicalDeviceCooperativeMatrixFeaturesNV cooperative_matrix_features = vku::InitStructHelper(&float16_features);
+    VkPhysicalDeviceVulkanMemoryModelFeaturesKHR memory_model_features = vku::InitStructHelper(&cooperative_matrix_features);
+    GetPhysicalDeviceFeatures2(memory_model_features);
+    RETURN_IF_SKIP(InitState(nullptr, &memory_model_features));
+
+    // https://godbolt.org/z/Kbx1PsraY but now validated at GLSL level, so have SPIR-V
+    const char* cs_source = R"asm(
+               OpCapability Shader
+               OpCapability Float16
+               OpCapability VulkanMemoryModel
+               OpCapability CooperativeMatrixNV
+               OpExtension "SPV_NV_cooperative_matrix"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 32 1 1
+               OpDecorate %C0 SpecId 0
+               OpDecorate %C1 SpecId 1
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %half = OpTypeFloat 16
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_5 = OpConstant %uint 5
+         %10 = OpTypeCooperativeMatrixNV %half %uint_3 %uint_3 %uint_5
+%_ptr_Function_10 = OpTypePointer Function %10
+%half_0x0p_0 = OpConstant %half 0x0p+0
+         %14 = OpConstantComposite %10 %half_0x0p_0
+         %C0 = OpSpecConstant %uint 1
+         %C1 = OpSpecConstant %uint 1
+         %17 = OpTypeCooperativeMatrixNV %half %uint_3 %C0 %C1
+%_ptr_Function_17 = OpTypePointer Function %17
+     %v3uint = OpTypeVector %uint 3
+    %uint_32 = OpConstant %uint 32
+     %uint_1 = OpConstant %uint 1
+         %29 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+    %badSize = OpVariable %_ptr_Function_10 Function
+          %A = OpVariable %_ptr_Function_17 Function
+          %B = OpVariable %_ptr_Function_17 Function
+          %C = OpVariable %_ptr_Function_17 Function
+               OpStore %badSize %14
+         %20 = OpLoad %17 %A
+         %22 = OpLoad %17 %B
+         %24 = OpLoad %17 %C
+         %25 = OpCooperativeMatrixMulAddNV %17 %20 %22 %24
+               OpReturn
+               OpFunctionEnd
+    )asm";
+
+    const uint32_t spec_data[] = {
+        16,
+        8,
+    };
+    VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+        {1, sizeof(uint32_t) * 1, sizeof(uint32_t)},
+    };
+
+    VkSpecializationInfo spec_info = {
+        2,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_ASM, &spec_info);
+    m_errorMonitor->SetDesiredError("VUID-VkPipelineShaderStageCreateInfo-pSpecializationInfo-06849");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, UnsupportedStageUint32) {
+    TEST_DESCRIPTION("Test error using cooperative matrix in unsupported stage");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+    InitRenderTarget();
+
+    if (!helper.HasValidProperty(VK_SCOPE_SUBGROUP_KHR, 16, 16, 16, VK_COMPONENT_TYPE_UINT32_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    if (helper.SupportsStage(VK_SHADER_STAGE_VERTEX_BIT)) {
+        GTEST_SKIP() << "Cannot execute test due to vertex stage expected to be unsupported";
+    }
+
+    const char* vs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        void main() {
+            coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> A;
+            coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> B;
+            coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> C;
+            coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+       }
+    )glsl";
+
+    CreatePipelineHelper pipe(*this);
+    pipe.vs_ = std::make_unique<VkShaderObj>(*m_device, vs_source, VK_SHADER_STAGE_VERTEX_BIT, SPV_ENV_VULKAN_1_3);
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), pipe.fs_->GetStageCreateInfo()};
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixSupportedStages-08985");
+    pipe.CreateGraphicsPipeline();
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, UnsupportedStageFloat16) {
+    TEST_DESCRIPTION("Test error using cooperative matrix in unsupported stage");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+    InitRenderTarget();
+
+    if (!helper.HasValidProperty(VK_SCOPE_SUBGROUP_KHR, 8, 8, 16, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    if (helper.SupportsStage(VK_SHADER_STAGE_VERTEX_BIT)) {
+        GTEST_SKIP() << "Cannot execute test due to vertex stage expected to be unsupported";
+    }
+
+    const char* vs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 8, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 8, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 8, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+       }
+    )glsl";
+
+    CreatePipelineHelper pipe(*this);
+    pipe.vs_ = std::make_unique<VkShaderObj>(*m_device, vs_source, VK_SHADER_STAGE_VERTEX_BIT, SPV_ENV_VULKAN_1_3);
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), pipe.fs_->GetStageCreateInfo()};
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixSupportedStages-08985");
+    pipe.CreateGraphicsPipeline();
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, ParametersMatchProperties) {
+    TEST_DESCRIPTION("Test that parameters match one of the matrices in any of the supported VkCooperativeMatrixPropertiesKHR");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+
+    VkPhysicalDeviceVulkan11Properties props11 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props11);
+    if (props11.subgroupSize > 32) {
+        GTEST_SKIP() << "local_size_x (32) is not a multiple of subgroupSize";
+    }
+
+    // Tests are assume that Float16 3*5 is not available
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(local_size_x = 32) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 3, 5, gl_MatrixUseAccumulator> badSize = coopmat<float16_t, gl_ScopeSubgroup, 3, 5, gl_MatrixUseAccumulator>(float16_t(0.0));
+        }
+    )glsl";
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3);
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, DimXMultipleSubgroupSize) {
+    TEST_DESCRIPTION("Local workgroup size in the X dimension of the pipeline multiple of subgroupSize");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::maintenance4);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_SUBGROUP_KHR, 16, 16, 16, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    const uint32_t spec_data[] = {
+        31,
+    };
+    const VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+    };
+    const VkSpecializationInfo spec_info = {
+        1,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL, &spec_info);
+
+    m_errorMonitor->SetDesiredError("VUID-VkPipelineShaderStageCreateInfo-module-08987");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, DimXMultipleSubgroupSizeWorkgroupScope) {
+    TEST_DESCRIPTION(
+        "Local workgroup size in the X dimension of the pipeline multiple of subgroupSize and less than or equal to "
+        "cooperativeMatrixWorkgroupScopeMaxWorkgroupSize");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixFlexibleDimensions);
+    AddRequiredFeature(vkt::Feature::maintenance4);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_WORKGROUP_KHR, 32, 32, 32, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    VkPhysicalDeviceCooperativeMatrix2PropertiesNV props2 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props2);
+
+    const uint32_t spec_data[] = {
+        props2.cooperativeMatrixWorkgroupScopeMaxWorkgroupSize + 1,
+    };
+    const VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+    };
+    const VkSpecializationInfo spec_info = {
+        1,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL, &spec_info);
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensions-10165");
+    m_errorMonitor->SetDesiredError("VUID-VkPipelineShaderStageCreateInfo-module-10169", 2);
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, WorkgroupScopeLocalSizeIdSpecConstant) {
+    TEST_DESCRIPTION(
+        "Pre-specialization skips the unknown LocalSizeId; specialization misses all matching flexible-dimensions properties. "
+        "https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/12363");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixFlexibleDimensions);
+    AddRequiredFeature(vkt::Feature::maintenance4);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    constexpr uint32_t kRows = 32;
+    constexpr uint32_t kCols = 32;
+    constexpr uint32_t kK = 32;
+
+    VkPhysicalDeviceCooperativeMatrix2PropertiesNV props2 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props2);
+    VkPhysicalDeviceVulkan11Properties props11 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props11);
+
+    const auto fixed_property_matches_mul_add = [&](const VkCooperativeMatrixPropertiesKHR& prop) {
+        return prop.scope == VK_SCOPE_WORKGROUP_KHR && prop.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+               prop.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && prop.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+               prop.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && prop.MSize == kRows && prop.NSize == kCols && prop.KSize == kK;
+    };
+    if (std::any_of(helper.coop_matrix_props.begin(), helper.coop_matrix_props.end(), fixed_property_matches_mul_add)) {
+        GTEST_SKIP() << "fixed workgroup scope property matches test matrix";
+    }
+
+    const auto flexible_property_matches_mul_add = [&](const VkCooperativeMatrixFlexibleDimensionsPropertiesNV& prop) {
+        return prop.scope == VK_SCOPE_WORKGROUP_KHR && prop.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+               prop.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && prop.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+               prop.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && (kRows % prop.MGranularity) == 0 &&
+               (kCols % prop.NGranularity) == 0 && (kK % prop.KGranularity) == 0;
+    };
+
+    const VkCooperativeMatrixFlexibleDimensionsPropertiesNV* flexible_prop = nullptr;
+    for (const auto& prop : helper.coop_matrix_flex_props) {
+        if (flexible_property_matches_mul_add(prop) &&
+            prop.workgroupInvocations <= props2.cooperativeMatrixWorkgroupScopeMaxWorkgroupSize &&
+            prop.workgroupInvocations <= m_device->Physical().limits_.maxComputeWorkGroupInvocations &&
+            prop.workgroupInvocations <= m_device->Physical().limits_.maxComputeWorkGroupSize[0]) {
+            flexible_prop = &prop;
+            break;
+        }
+    }
+    if (!flexible_prop) {
+        GTEST_SKIP() << "desired VkCooperativeMatrixFlexibleDimensionsPropertiesNV not found";
+    }
+
+    const uint32_t max_workgroup_size = std::min({props2.cooperativeMatrixWorkgroupScopeMaxWorkgroupSize,
+                                                  m_device->Physical().limits_.maxComputeWorkGroupInvocations,
+                                                  m_device->Physical().limits_.maxComputeWorkGroupSize[0]});
+    uint32_t spec_data = 0;
+    // Pick a subgroup-aligned workgroup size that satisfies the generic limits but no flexible-dimensions property.
+    for (uint32_t candidate = props11.subgroupSize; candidate <= max_workgroup_size;) {
+        const bool matches_any_flexible_property =
+            std::any_of(helper.coop_matrix_flex_props.begin(), helper.coop_matrix_flex_props.end(),
+                        [&](const VkCooperativeMatrixFlexibleDimensionsPropertiesNV& prop) {
+                            return flexible_property_matches_mul_add(prop) && prop.workgroupInvocations == candidate;
+                        });
+        if (!matches_any_flexible_property) {
+            spec_data = candidate;
+            break;
+        }
+        if (candidate > max_workgroup_size / 2) {
+            break;
+        }
+        candidate *= 2;
+    }
+    if (spec_data == 0) {
+        GTEST_SKIP() << "unable to find unsupported but otherwise valid workgroup invocation count";
+    }
+
+    const char* spv_source = R"asm(
+               OpCapability Shader
+               OpCapability Float16
+               OpCapability VulkanMemoryModel
+               OpCapability CooperativeMatrixKHR
+               OpExtension "SPV_KHR_cooperative_matrix"
+               OpExtension "SPV_KHR_vulkan_memory_model"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionModeId %main LocalSizeId %local_size_x %uint_1 %uint_1
+               OpDecorate %local_size_x SpecId 18
+               OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %half = OpTypeFloat 16
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+    %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+    %uint_32 = OpConstant %uint 32
+%local_size_x = OpSpecConstant %uint 1
+     %v3uint = OpTypeVector %uint 3
+%gl_WorkGroupSize = OpSpecConstantComposite %v3uint %local_size_x %uint_1 %uint_1
+      %mat_a = OpTypeCooperativeMatrixKHR %half %uint_2 %uint_32 %uint_32 %uint_0
+      %mat_b = OpTypeCooperativeMatrixKHR %half %uint_2 %uint_32 %uint_32 %uint_1
+      %mat_c = OpTypeCooperativeMatrixKHR %half %uint_2 %uint_32 %uint_32 %uint_2
+%_ptr_Function_mat_a = OpTypePointer Function %mat_a
+%_ptr_Function_mat_b = OpTypePointer Function %mat_b
+%_ptr_Function_mat_c = OpTypePointer Function %mat_c
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+          %a = OpVariable %_ptr_Function_mat_a Function
+          %b = OpVariable %_ptr_Function_mat_b Function
+          %c = OpVariable %_ptr_Function_mat_c Function
+     %load_a = OpLoad %mat_a %a
+     %load_b = OpLoad %mat_b %b
+     %load_c = OpLoad %mat_c %c
+     %result = OpCooperativeMatrixMulAddKHR %mat_c %load_a %load_b %load_c
+               OpReturn
+               OpFunctionEnd
+    )asm";
+
+    const VkSpecializationMapEntry entry = {18, 0, sizeof(uint32_t)};
+    const VkSpecializationInfo spec_info = {1, &entry, sizeof(spec_data), &spec_data};
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, spv_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_ASM, &spec_info);
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensions-10165", 3);
+    // The point of the error is being able to tell it is the workgroup size that doesn't match
+    m_errorMonitor->SetDesiredErrorRegex("VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensions-10166",
+                                         "no VkCooperativeMatrixFlexibleDimensionsPropertiesNV with workgroup scope and "
+                                         "workgroupInvocations == [0-9]+");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, SameScope) {
+    TEST_DESCRIPTION("In OpCooperativeMatrixMulAddKHR all matrices should have same scope");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_SUBGROUP_KHR, 16, 16, 16, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(constant_id = 0) const uint scope0 = gl_ScopeSubgroup;
+        layout(constant_id = 1) const uint scope1 = gl_ScopeSubgroup;
+        layout(local_size_x = 64) in;
+        void main() {
+            coopmat<float16_t, scope0, 16, 16, gl_MatrixUseA> A;
+            coopmat<float16_t, scope1, 16, 16, gl_MatrixUseB> B;
+            coopmat<float16_t, scope0, 16, 16, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, scope0, 16, 16, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    const uint32_t spec_data[] = {
+        3,  // gl_ScopeSubgroup
+        4,  // gl_ScopeInvocation
+    };
+    const VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+        {1, sizeof(uint32_t) * 1, sizeof(uint32_t)},
+    };
+    const VkSpecializationInfo spec_info = {
+        2,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL, &spec_info);
+
+    // SPIR-V code is expected to be bad after specialization, due to scopes are different
+    // Need to ignore the spirv-val
+    m_errorMonitor->SetAllowedFailureMsg("VUID-StandaloneSpirv-Scope-12243");
+
+    // Expect gl_ScopeInvocation will not be found in the implementation since it is not allowed in Vulkan
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, WorkgroupScope) {
+    TEST_DESCRIPTION("Workgroup scope requires cooperativeMatrixWorkgroupScope");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixFlexibleDimensions);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_WORKGROUP_KHR, 32, 32, 32, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(local_size_x = 64) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL);
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixWorkgroupScope-10164");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, WorkgroupScopeMaxDimensions) {
+    TEST_DESCRIPTION("Matrix dimensions must be less than or equal to cooperativeMatrixFlexibleDimensionsMaxDimension");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixFlexibleDimensions);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_WORKGROUP_KHR, 32, 32, 32, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(constant_id = 0) const uint dim = 32;
+        layout(local_size_x = 64) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeWorkgroup, dim, dim, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeWorkgroup, dim, dim, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeWorkgroup, dim, dim, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeWorkgroup, dim, dim, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    VkPhysicalDeviceCooperativeMatrix2PropertiesNV props2 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props2);
+    uint32_t dim = props2.cooperativeMatrixFlexibleDimensionsMaxDimension;
+    dim /= 32;
+    dim++;
+    dim *= 32;
+
+    const uint32_t spec_data[] = {
+        dim,
+    };
+    const VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+    };
+    const VkSpecializationInfo spec_info = {
+        1,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL, &spec_info);
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixFlexibleDimensionsMaxDimension-10167");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, WorkgroupScopeMaxSharedMemory) {
+    TEST_DESCRIPTION("cooperativeMatrixWorkgroupScopeReservedSharedMemory limit");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderInt8);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixFlexibleDimensions);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    if (!helper.HasValidProperty(VK_SCOPE_WORKGROUP_KHR, 32, 32, 32, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property not found";
+    }
+
+    const char* cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(constant_id = 0) const uint dim = 32;
+        shared uint8_t sh[dim];
+        layout(local_size_x = 64) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeWorkgroup, 32, 32, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+        }
+    )glsl";
+
+    VkPhysicalDeviceCooperativeMatrix2PropertiesNV props2 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props2);
+
+    uint32_t shmem_size =
+        m_device->Physical().limits_.maxComputeSharedMemorySize - props2.cooperativeMatrixWorkgroupScopeReservedSharedMemory + 1;
+
+    const uint32_t spec_data[] = {
+        shmem_size,
+    };
+    const VkSpecializationMapEntry entries[] = {
+        {0, sizeof(uint32_t) * 0, sizeof(uint32_t)},
+    };
+    const VkSpecializationInfo spec_info = {
+        1,
+        entries,
+        sizeof(spec_data),
+        spec_data,
+    };
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_GLSL, &spec_info);
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-maxComputeSharedMemorySize-10168");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, MatchSizeWithProperties) {
+    TEST_DESCRIPTION("Check size match properties");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+
+    VkPhysicalDeviceVulkan11Properties props11 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(props11);
+    if (props11.subgroupSize > 32) {
+        GTEST_SKIP() << "local_size_x (32) is not a multiple of subgroupSize";
+    }
+
+    if (helper.HasValidProperty(VK_SCOPE_SUBGROUP_KHR, 8, 8, 16, VK_COMPONENT_TYPE_FLOAT16_KHR)) {
+        GTEST_SKIP() << "Valid Property found, need invalid to test";
+    }
+
+    const char* source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types : enable
+        layout(local_size_x = 32) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> A;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 8, gl_MatrixUseB> B;
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 8, gl_MatrixUseAccumulator> C;
+            coopmat<float16_t, gl_ScopeSubgroup, 8, 8, gl_MatrixUseAccumulator> D = coopMatMulAdd(A, B, C);
+       }
+    )glsl";
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163");
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_2);
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, SignedCheck) {
+    TEST_DESCRIPTION("Test that if component type of is signed check that appropriate MatrixSignedComponents is present");
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+
+    // OpExtension "SPV_KHR_storage_buffer_storage_class"
+    const std::string cs_source_template = R"glsl(
+        OpCapability Shader
+        OpCapability VulkanMemoryModel
+        OpCapability CooperativeMatrixKHR
+        OpExtension "SPV_KHR_cooperative_matrix"
+        OpExtension "SPV_KHR_vulkan_memory_model"
+        %1 = OpExtInstImport "GLSL.std.450"
+        OpMemoryModel Logical Vulkan
+        OpEntryPoint GLCompute %4 "main" %13 %17 %22 %24
+        OpExecutionMode %4 LocalSize 64 1 1
+        OpDecorate %29 BuiltIn WorkgroupSize
+        %2 = OpTypeVoid
+        %3 = OpTypeFunction %2
+        %6 = OpTypeInt 32 1
+        %7 = OpTypeInt 32 0
+        %8 = OpConstant %7 3
+        %9 = OpConstant %7 16
+        %10 = OpConstant %7 2
+        %11 = OpTypeCooperativeMatrixKHR %6 %8 %9 %9 %10
+        %12 = OpTypePointer Private %11
+        %13 = OpVariable %12 Private
+        %14 = OpConstant %7 0
+        %15 = OpTypeCooperativeMatrixKHR %6 %8 %9 %9 %14
+        %16 = OpTypePointer Private %15
+        %17 = OpVariable %16 Private
+        %19 = OpConstant %7 1
+        %20 = OpTypeCooperativeMatrixKHR %6 %8 %9 %9 %19
+        %21 = OpTypePointer Private %20
+        %22 = OpVariable %21 Private
+        %24 = OpVariable %12 Private
+        %27 = OpTypeVector %7 3
+        %28 = OpConstant %7 64
+        %29 = OpConstantComposite %27 %28 %19 %19
+        %4 = OpFunction %2 None %3
+        %5 = OpLabel
+        %18 = OpLoad %15 %17
+        %23 = OpLoad %20 %22
+        %25 = OpLoad %11 %24
+        %26 = OpCooperativeMatrixMulAddKHR %11 %18 %23 %25 MatrixASignedComponentsKHR|MatrixBSignedComponentsKHR|MatrixCSignedComponentsKHR|MatrixResultSignedComponentsKHR
+        OpStore %13 %26
+        OpReturn
+        OpFunctionEnd
+    )glsl";
+
+    const auto remove_str = [](const std::string& shader_template, const std::string& removestr) {
+        std::string result = shader_template;
+        auto position = result.find(removestr);
+        assert(position != std::string::npos);
+        result.replace(position, removestr.length(), std::string(""));
+        return result;
+    };
+    const struct {
+        const char* remove;
+        const char* expect;
+    } subtests[] = {
+        {"MatrixASignedComponentsKHR|", "VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163"},
+        {"MatrixBSignedComponentsKHR|", "VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163"},
+        {"MatrixCSignedComponentsKHR|", "VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163"},
+        {"|MatrixResultSignedComponentsKHR", "VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10163"},
+    };
+
+    for (const auto& x : subtests) {
+        const std::string cs_source_str = remove_str(cs_source_template, std::string(x.remove));
+        const char* css = cs_source_str.c_str();
+        CreateComputePipelineHelper pipe(*this);
+
+        pipe.cs_ = VkShaderObj(*m_device, css, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3, SPV_SOURCE_ASM);
+
+        for (const auto& y : subtests) {
+            if (x.remove == y.remove) {
+                // Set expected message
+                m_errorMonitor->SetDesiredError(y.expect);
+            } else {
+                // Ignore messages that types and sizes are unsupported by implementation
+                m_errorMonitor->SetAllowedFailureMsg(y.expect);
+            }
+        }
+
+        pipe.CreateComputePipeline();
+
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, RequiredVulkanVersionPipeline) {
+    TEST_DESCRIPTION("https://gitlab.khronos.org/spirv/SPIR-V/-/issues/847");
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    AddRequiredExtensions(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::storageBuffer16BitAccess);
+    AddRequiredFeature(vkt::Feature::subgroupSizeControl);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    if (!IsPlatformMockICD()) {
+        GTEST_SKIP() << "This makes assumption about possible coop matrix subgroup size and support.";
+    }
+
+    const vkt::DescriptorSetLayout dsl(*m_device, {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    const vkt::PipelineLayout pipeline_layout(*m_device, {&dsl});
+
+    const char* cs_source = R"glsl(
+         #version 450 core
+         #pragma use_vulkan_memory_model
+         #extension GL_KHR_shader_subgroup_basic : enable
+         #extension GL_KHR_memory_scope_semantics : enable
+         #extension GL_KHR_cooperative_matrix : enable
+         #extension GL_EXT_shader_explicit_arithmetic_types : enable
+         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+         layout(local_size_x = 32) in;
+         layout(set=0, binding=0) coherent buffer InputA { uint32_t x[]; } inputA;
+         coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+         void main() {
+             coopMatLoad(matA, inputA.x, 0, 16, gl_CooperativeMatrixLayoutRowMajor);
+         }
+    )glsl";
+    VkShaderObj cs(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_1);
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cp_ci_.stage = cs.GetStageCreateInfo();
+    pipe.cp_ci_.layout = pipeline_layout;
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10770");
+    pipe.CreateComputePipeline(false);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, RequiredVulkanVersionShaderObject) {
+    TEST_DESCRIPTION("https://gitlab.khronos.org/spirv/SPIR-V/-/issues/847");
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    AddRequiredExtensions(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
+    AddRequiredExtensions(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::shaderObject);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    AddRequiredFeature(vkt::Feature::storageBuffer16BitAccess);
+    AddRequiredFeature(vkt::Feature::subgroupSizeControl);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    if (!IsPlatformMockICD()) {
+        GTEST_SKIP() << "This makes assumption about possible coop matrix subgroup size and support.";
+    }
+
+    const vkt::DescriptorSetLayout dsl(*m_device, {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+
+    const char* cs_source = R"glsl(
+         #version 450 core
+         #pragma use_vulkan_memory_model
+         #extension GL_KHR_shader_subgroup_basic : enable
+         #extension GL_KHR_memory_scope_semantics : enable
+         #extension GL_KHR_cooperative_matrix : enable
+         #extension GL_EXT_shader_explicit_arithmetic_types : enable
+         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+         layout(local_size_x = 32) in;
+         layout(set=0, binding=0) coherent buffer InputA { uint32_t x[]; } inputA;
+         coopmat<uint32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+         void main() {
+             coopMatLoad(matA, inputA.x, 0, 16, gl_CooperativeMatrixLayoutRowMajor);
+         }
+    )glsl";
+
+    const auto spv = GLSLToSPV(VK_SHADER_STAGE_COMPUTE_BIT, cs_source, SPV_ENV_VULKAN_1_1);
+    auto shader_ci = ShaderCreateInfoNoNextStageEXT(spv, VK_SHADER_STAGE_COMPUTE_BIT, 1, &dsl.handle());
+
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-OpTypeCooperativeMatrixKHR-10771");
+    const vkt::ShaderEXT comp_shader(*m_device, shader_ci);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2FeatureNotSupported) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrixMaintenance1FeaturesEXT maintenance1_features = vku::InitStructHelper();
+    GetPhysicalDeviceFeatures2(maintenance1_features);
+    if (maintenance1_features.cooperativeMatrixProperties2) {
+        GTEST_SKIP() << "cooperativeMatrixProperties2 is supported";
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    ExpectProperties2Error(info, "VUID-vkGetPhysicalDeviceCooperativeMatrixProperties2EXT-cooperativeMatrixProperties2-13371");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2InvalidScope) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_DEVICE_KHR;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13372");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2WorkgroupScopeNotSupported) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    RETURN_IF_SKIP(Init());
+
+    if (DeviceExtensionSupported(Gpu(), nullptr, VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME)) {
+        VkPhysicalDeviceCooperativeMatrix2FeaturesNV cooperative_matrix2_features = vku::InitStructHelper();
+        GetPhysicalDeviceFeatures2(cooperative_matrix2_features);
+        if (cooperative_matrix2_features.cooperativeMatrixWorkgroupScope) {
+            GTEST_SKIP() << "cooperativeMatrixWorkgroupScope is supported";
+        }
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_WORKGROUP_KHR;
+    info.invocations = 1;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-cooperativeMatrixWorkgroupScope-13373");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2SubgroupSizeNotPowerOfTwo) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    info.subgroupSize = 3;
+    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_size_control_features = vku::InitStructHelper();
+    GetPhysicalDeviceFeatures2(subgroup_size_control_features);
+    if (subgroup_size_control_features.subgroupSizeControl) {
+        VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_control_props = vku::InitStructHelper();
+        GetPhysicalDeviceProperties2(subgroup_size_control_props);
+        if (info.subgroupSize < subgroup_size_control_props.minSubgroupSize) {
+            m_errorMonitor->SetDesiredError("VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13375");
+        }
+        if (info.subgroupSize > subgroup_size_control_props.maxSubgroupSize) {
+            m_errorMonitor->SetDesiredError("VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13376");
+        }
+    } else {
+        VkPhysicalDeviceSubgroupProperties subgroup_props = vku::InitStructHelper();
+        GetPhysicalDeviceProperties2(subgroup_props);
+        if (info.subgroupSize != subgroup_props.subgroupSize) {
+            m_errorMonitor->SetDesiredError("VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13377");
+        }
+    }
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-subgroupSize-13374");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2SubgroupSize) {
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    AddRequiredFeature(vkt::Feature::subgroupSizeControl);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_control_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(subgroup_size_control_props);
+    if (subgroup_size_control_props.minSubgroupSize <= 1) {
+        GTEST_SKIP() << "minSubgroupSize is 1";
+    } else if (subgroup_size_control_props.maxSubgroupSize > UINT32_MAX / 2) {
+        GTEST_SKIP() << "maxSubgroupSize cannot be doubled";
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    info.subgroupSize = 1;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13375");
+
+    info.subgroupSize = subgroup_size_control_props.maxSubgroupSize * 2;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13376");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2SubgroupSizeWithoutSizeControl) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_size_control_features = vku::InitStructHelper();
+    GetPhysicalDeviceFeatures2(subgroup_size_control_features);
+    if (subgroup_size_control_features.subgroupSizeControl) {
+        GTEST_SKIP() << "subgroupSizeControl is supported";
+    }
+
+    VkPhysicalDeviceSubgroupProperties subgroup_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(subgroup_props);
+    if (subgroup_props.subgroupSize > UINT32_MAX / 2) {
+        GTEST_SKIP() << "subgroupSize cannot be doubled";
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    info.subgroupSize = subgroup_props.subgroupSize * 2;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13377");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2WorkgroupInvocations) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_WORKGROUP_KHR;
+    info.invocations = 3;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-invocations-13378");
+
+    info.invocations = 1;
+    info.subgroupSize = 2;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-subgroupSize-13379");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2WorkgroupInvocationsTooLarge) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredExtensions(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixWorkgroupScope);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrix2PropertiesNV cooperative_matrix2_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(cooperative_matrix2_props);
+    uint32_t invocations = 1;
+    while (invocations <= cooperative_matrix2_props.cooperativeMatrixWorkgroupScopeMaxWorkgroupSize &&
+           invocations <= UINT32_MAX / 2) {
+        invocations *= 2;
+    }
+    if (invocations <= cooperative_matrix2_props.cooperativeMatrixWorkgroupScopeMaxWorkgroupSize) {
+        GTEST_SKIP() << "maximum workgroup size is too large to construct a failing power-of-two value";
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_WORKGROUP_KHR;
+    info.invocations = invocations;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-scope-13380");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2InvocationsNotZeroForSubgroup) {
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    info.invocations = 1;
+    ExpectProperties2Error(info, "VUID-VkPhysicalDeviceCooperativeMatrixInfo2EXT-invocations-13381");
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2OpTypeNotSupported) {
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+    if (helper.HasSupportedMatrixUse(VK_SCOPE_SUBGROUP_KHR, 3, 5, VK_COMPONENT_TYPE_FLOAT16_KHR,
+                                     spv::CooperativeMatrixUseMatrixAccumulatorKHR)) {
+        GTEST_SKIP() << "The fixed cooperative-matrix properties support an FP16 3x5 accumulator";
+    }
+
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    const auto properties = QueryCooperativeMatrixProperties2(Gpu(), info);
+    ASSERT_TRUE(properties.has_value());
+    info.flags = VK_COOPERATIVE_MATRIX_SATURATING_ACCUMULATION_BIT_EXT;
+    const auto saturating_properties = QueryCooperativeMatrixProperties2(Gpu(), info);
+    ASSERT_TRUE(saturating_properties.has_value());
+
+    const auto supports_type = [](const std::vector<VkCooperativeMatrixProperties2EXT>& properties) {
+        return std::any_of(properties.begin(), properties.end(), [](const VkCooperativeMatrixProperties2EXT& property) {
+            return property.MGranularity == 3 && property.NGranularity == 5 &&
+                   (property.CType == VK_COMPONENT_TYPE_FLOAT16_KHR || property.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR);
+        });
+    };
+    // OpTypeCooperativeMatrixKHR has no saturating operand, so either Properties2 table can support it.
+    if (supports_type(*properties) || supports_type(*saturating_properties)) {
+        GTEST_SKIP() << "The Properties2 query supports an FP16 3x5 accumulator";
+    }
+
+    VkPhysicalDeviceVulkan11Properties properties11 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(properties11);
+
+    std::string cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+        layout(local_size_x = %SUBGROUP_SIZE%) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 3, 5, gl_MatrixUseAccumulator> bad_size =
+                coopmat<float16_t, gl_ScopeSubgroup, 3, 5, gl_MatrixUseAccumulator>(float16_t(0.0));
+        }
+    )glsl";
+
+    const auto subgroup_size_pos = cs_source.find("%SUBGROUP_SIZE%");
+    ASSERT_NE(subgroup_size_pos, std::string::npos);
+    cs_source.replace(subgroup_size_pos, sizeof("%SUBGROUP_SIZE%") - 1, std::to_string(properties11.subgroupSize));
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cs_ = VkShaderObj(*m_device, cs_source.c_str(), VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3);
+    m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixProperties2-13382");
+    pipe.CreateComputePipeline();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeShaderCooperativeMatrix, Properties2MulAddNotSupported) {
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_EXT_COOPERATIVE_MATRIX_MAINTENANCE_1_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::cooperativeMatrixProperties2);
+    AddRequiredFeature(vkt::Feature::shaderFloat16);
+    RETURN_IF_SKIP(InitCooperativeMatrixKHR());
+    CooperativeMatrixHelper helper(*this);
+    VkPhysicalDeviceCooperativeMatrixInfo2EXT info = vku::InitStructHelper();
+    info.scope = VK_SCOPE_SUBGROUP_KHR;
+    const auto properties = QueryCooperativeMatrixProperties2(Gpu(), info);
+    ASSERT_TRUE(properties.has_value());
+    info.flags = VK_COOPERATIVE_MATRIX_SATURATING_ACCUMULATION_BIT_EXT;
+    const auto saturating_properties = QueryCooperativeMatrixProperties2(Gpu(), info);
+    ASSERT_TRUE(saturating_properties.has_value());
+
+    const auto properties2_support_use = [](const std::vector<VkCooperativeMatrixProperties2EXT>& properties, uint32_t use) {
+        return std::any_of(properties.begin(), properties.end(), [use](const VkCooperativeMatrixProperties2EXT& property) {
+            if (use == spv::CooperativeMatrixUseMatrixAKHR) {
+                return property.MGranularity == 16 && property.KGranularity == 16 &&
+                       property.AType == VK_COMPONENT_TYPE_FLOAT16_KHR;
+            }
+            if (use == spv::CooperativeMatrixUseMatrixBKHR) {
+                return property.KGranularity == 16 && property.NGranularity == 16 &&
+                       property.BType == VK_COMPONENT_TYPE_FLOAT16_KHR;
+            }
+            return property.MGranularity == 16 && property.NGranularity == 16 &&
+                   (property.CType == VK_COMPONENT_TYPE_FLOAT16_KHR || property.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR);
+        });
+    };
+    const auto supports_type = [&helper, &properties, &saturating_properties, &properties2_support_use](uint32_t use) {
+        return helper.HasSupportedMatrixUse(VK_SCOPE_SUBGROUP_KHR, 16, 16, VK_COMPONENT_TYPE_FLOAT16_KHR, use) ||
+               properties2_support_use(*properties, use) || properties2_support_use(*saturating_properties, use);
+    };
+    if (!supports_type(spv::CooperativeMatrixUseMatrixAKHR) || !supports_type(spv::CooperativeMatrixUseMatrixBKHR) ||
+        !supports_type(spv::CooperativeMatrixUseMatrixAccumulatorKHR)) {
+        GTEST_SKIP() << "The advertised properties do not support all FP16 16x16 cooperative-matrix types";
+    }
+
+    const bool fixed_saturating_mul_add =
+        std::any_of(helper.coop_matrix_props.begin(), helper.coop_matrix_props.end(), [](const auto& property) {
+            return property.scope == VK_SCOPE_SUBGROUP_KHR && property.MSize == 16 && property.NSize == 16 &&
+                   property.KSize == 16 && property.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                   property.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && property.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                   property.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && property.saturatingAccumulation;
+        });
+    const bool properties2_saturating_mul_add = std::any_of(
+        saturating_properties->begin(), saturating_properties->end(), [](const VkCooperativeMatrixProperties2EXT& property) {
+            return property.MGranularity == 16 && property.NGranularity == 16 && property.KGranularity == 16 &&
+                   property.AType == VK_COMPONENT_TYPE_FLOAT16_KHR && property.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                   property.CType == VK_COMPONENT_TYPE_FLOAT16_KHR && property.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR;
+        });
+
+    VkPhysicalDeviceVulkan11Properties properties11 = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(properties11);
+
+    std::string cs_source = R"glsl(
+        #version 450
+        #pragma use_vulkan_memory_model
+        #extension GL_KHR_cooperative_matrix : enable
+        #extension GL_KHR_shader_subgroup_basic : enable
+        #extension GL_KHR_memory_scope_semantics : enable
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+        layout(local_size_x = %SUBGROUP_SIZE%) in;
+        void main() {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> c;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> result =
+                coopMatMulAdd(a, b, c, gl_MatrixOperandsSaturatingAccumulation);
+        }
+    )glsl";
+
+    const auto subgroup_size_pos = cs_source.find("%SUBGROUP_SIZE%");
+    ASSERT_NE(subgroup_size_pos, std::string::npos);
+    cs_source.replace(subgroup_size_pos, sizeof("%SUBGROUP_SIZE%") - 1, std::to_string(properties11.subgroupSize));
+
+    const auto create_invalid_pipeline = [this](const char* source) {
+        CreateComputePipelineHelper pipe(*this);
+        pipe.cs_ = VkShaderObj(*m_device, source, VK_SHADER_STAGE_COMPUTE_BIT, SPV_ENV_VULKAN_1_3);
+        m_errorMonitor->SetDesiredError("VUID-RuntimeSpirv-cooperativeMatrixProperties2-13383");
+        pipe.CreateComputePipeline();
+        m_errorMonitor->VerifyFound();
+    };
+    // Only expect the saturating case to fail when neither property API advertises it.
+    if (!fixed_saturating_mul_add && !properties2_saturating_mul_add) {
+        create_invalid_pipeline(cs_source.c_str());
+    }
+
+    std::string signed_components_source = cs_source;
+    const auto flags_pos = signed_components_source.find("gl_MatrixOperandsSaturatingAccumulation");
+    ASSERT_NE(flags_pos, std::string::npos);
+    // GLSL has no named constant for the signed-component bits; bit zero is MatrixASignedComponentsKHR.
+    // A signed-component flag cannot match an FP16 property, so this case is invalid on every implementation.
+    signed_components_source.replace(flags_pos, sizeof("gl_MatrixOperandsSaturatingAccumulation") - 1, "1");
+    create_invalid_pipeline(signed_components_source.c_str());
+}

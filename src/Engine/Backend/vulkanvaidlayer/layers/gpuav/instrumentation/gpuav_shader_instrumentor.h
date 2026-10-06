@@ -1,0 +1,273 @@
+/* Copyright (c) 2020-2026 The Khronos Group Inc.
+ * Copyright (c) 2020-2026 Valve Corporation
+ * Copyright (c) 2020-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "gpuav/spirv/instrumentation_status.h"
+#include "state_tracker/descriptor_mode.h"
+#include "state_tracker/shader_instruction.h"
+#include "state_tracker/state_tracker.h"
+#include "gpuav/spirv/interface.h"
+#include "containers/custom_containers.h"
+
+#include <vector>
+
+// There is a spirv::Instruction used for normal validation.
+// There is a gpuav::spirv::Instruction that is ONLY intended for shader instrumentation (designed so we can build the shader
+// instrumentation as a separate library). For logging GPU-AV will want to make use of the normal validaiton instruction class, just
+// alias it with "Instruction" as that name shouldn't collide with anything.
+using Instruction = ::spirv::Instruction;
+
+namespace vvl {
+struct LabelCommand;
+}
+
+namespace chassis {
+struct ShaderInstrumentationMetadata;
+struct ShaderObjectInstrumentationData;
+}  // namespace chassis
+
+namespace spirv {
+struct Module;
+}
+
+namespace gpuav {
+class Validator;
+namespace spirv {
+struct InstrumentationStatus;
+}
+
+// There are 3 ways to have a null VkShaderModule
+// 1. Use GPL for something like Vertex Input which won't have a shader
+// 2. Use Shader Objects
+// 3. Use VK_KHR_maintenance5 and inline your VkShaderModuleCreateInfo via VkPipelineShaderStageCreateInfo::pNext
+//
+// The first is handled because you have to link it in the end, but we need a way to differentiate 2 and 3
+static const VkShaderModule kPipelineStageInfoHandle = CastFromUint64<VkShaderModule>(0xEEEEEEEEEEEEEEEE);
+
+// GPU Info shows 99% of devices have a maxBoundDescriptorSets of 32 or less, but some are 2^30
+// We set a reasonable max because we have to pad the pipeline layout with dummy descriptor set layouts.
+static const uint32_t kMaxAdjustedBoundDescriptorSet = 33;
+
+struct InstrumentedShader {
+    VkPipeline pipeline;
+    VkShaderModule shader_module;
+    VkShaderEXT shader_object;
+    // We keep the original SPIR-V so we can match up where the error occurred to map to shader source files
+    std::vector<uint32_t> original_spirv;
+
+    gpuav::spirv::InstrumentationStatus::Device status;
+};
+
+// Historically this was an common interface to both GPU-AV and DebugPrintf before the were merged together.
+// We still keep this as encapsulates the complex code around shader instrumentation.
+// Handles shader instrumentation (reserve a descriptor slot, create descriptor
+// sets, pipeline layout, hook into pipeline creation, etc...)
+class GpuShaderInstrumentor : public vvl::DeviceProxy {
+  public:
+    GpuShaderInstrumentor(vvl::DispatchDevice* dev, vvl::InstanceProxy* instance, LayerObjectTypeId type)
+        : DeviceProxy(dev, instance, type) {
+        for (uint32_t i = 0; i < vvl::DescriptorModeCount; i++) {
+            dummy_desc_layout_[i] = VK_NULL_HANDLE;
+            instrumentation_desc_layout_[i] = VK_NULL_HANDLE;
+            instrumentation_pipeline_layout_[i] = VK_NULL_HANDLE;
+        }
+    }
+
+    ReadLockGuard ReadLock() const override;
+    WriteLockGuard WriteLock() override;
+
+    void FinishDeviceSetup(const VkDeviceCreateInfo *pCreateInfo, const Location &loc) override;
+    void PreCallRecordDestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator,
+                                    const RecordObject &record_obj) override;
+
+    bool ValidateCmdWaitEvents(VkCommandBuffer command_buffer, VkPipelineStageFlags2 src_stage_mask, const Location &loc) const;
+    bool PreCallValidateCmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent *pEvents,
+                                      VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
+                                      uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
+                                      uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier *pBufferMemoryBarriers,
+                                      uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier *pImageMemoryBarriers,
+                                      const ErrorObject &error_obj) const override;
+    bool PreCallValidateCmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent *pEvents,
+                                          const VkDependencyInfoKHR *pDependencyInfos, const ErrorObject &error_obj) const override;
+    bool PreCallValidateCmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent *pEvents,
+                                       const VkDependencyInfo *pDependencyInfos, const ErrorObject &error_obj) const override;
+    void PreCallRecordCreatePipelineLayout(VkDevice device, const VkPipelineLayoutCreateInfo *pCreateInfo,
+                                           const VkAllocationCallbacks *pAllocator, VkPipelineLayout *pPipelineLayout,
+                                           const RecordObject &record_obj, chassis::CreatePipelineLayout &chassis_state) override;
+
+    void PreCallRecordSetDebugUtilsObjectNameEXT(VkDevice device, const VkDebugUtilsObjectNameInfoEXT* pNameInfo,
+                                                 const RecordObject& record_obj) override;
+
+    void PostCallRecordCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo *pCreateInfo,
+                                          const VkAllocationCallbacks *pAllocator, VkShaderModule *pShaderModule,
+                                          const RecordObject &record_obj, chassis::CreateShaderModule &chassis_state) override;
+    void PreCallRecordGetShaderBinaryDataEXT(VkDevice device, VkShaderEXT shader, size_t *pDataSize, void *pData,
+                                             const RecordObject &record_obj, chassis::ShaderBinaryData &chassis_state) override;
+    bool PreCallRecordShaderObjectInstrumentation(vku::safe_VkShaderCreateInfoEXT& modified_create_info,
+                                                  const Location& create_info_loc,
+                                                  chassis::ShaderObjectInstrumentationData& shader_instrumentation_data,
+                                                  const vvl::DescriptorMode descriptor_mode);
+    void PreCallRecordCreateShadersEXT(VkDevice device, uint32_t createInfoCount, const VkShaderCreateInfoEXT *pCreateInfos,
+                                       const VkAllocationCallbacks *pAllocator, VkShaderEXT *pShaders,
+                                       const RecordObject &record_obj, chassis::ShaderObject &chassis_state) override;
+    void PostCallRecordCreateShadersEXT(VkDevice device, uint32_t createInfoCount, const VkShaderCreateInfoEXT *pCreateInfos,
+                                        const VkAllocationCallbacks *pAllocator, VkShaderEXT *pShaders,
+                                        const RecordObject &record_obj, chassis::ShaderObject &chassis_state) override;
+    void PreCallRecordDestroyShaderEXT(VkDevice device, VkShaderEXT shader, const VkAllocationCallbacks *pAllocator,
+                                       const RecordObject &record_obj) override;
+
+    void PreCallRecordCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t count,
+                                              const VkGraphicsPipelineCreateInfo *pCreateInfos,
+                                              const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                              const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                              chassis::CreateGraphicsPipelines &chassis_state) override;
+    void PreCallRecordCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t count,
+                                             const VkComputePipelineCreateInfo *pCreateInfos,
+                                             const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                             const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                             chassis::CreateComputePipelines &chassis_state) override;
+    void PreCallRecordCreateRayTracingPipelinesKHR(VkDevice device, VkDeferredOperationKHR deferredOperation,
+                                                   VkPipelineCache pipelineCache, uint32_t count,
+                                                   const VkRayTracingPipelineCreateInfoKHR *pCreateInfos,
+                                                   const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                                   const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                                   chassis::CreateRayTracingPipelinesKHR &chassis_state) override;
+    void PostCallRecordCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t count,
+                                               const VkGraphicsPipelineCreateInfo *pCreateInfos,
+                                               const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                               const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                               chassis::CreateGraphicsPipelines &chassis_state) override;
+    void PostCallRecordCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t count,
+                                              const VkComputePipelineCreateInfo *pCreateInfos,
+                                              const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                              const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                              chassis::CreateComputePipelines &chassis_state) override;
+    void PostCallRecordCreateRayTracingPipelinesKHR(VkDevice device, VkDeferredOperationKHR deferredOperation,
+                                                    VkPipelineCache pipelineCache, uint32_t count,
+                                                    const VkRayTracingPipelineCreateInfoKHR *pCreateInfos,
+                                                    const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines,
+                                                    const RecordObject &record_obj, PipelineStates &pipeline_states,
+                                                    std::shared_ptr<chassis::CreateRayTracingPipelinesKHR> chassis_state) override;
+    void PreCallRecordDestroyPipeline(VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks *pAllocator,
+                                      const RecordObject &record_obj) override;
+
+    void InternalError(LogObjectList objlist, const Location &loc, const char *const specific_message) const;
+    void InternalWarning(LogObjectList objlist, const Location &loc, const char *const specific_message) const;
+    void AdjustmentWarning(LogObjectList objlist, const Location &loc, const char *const specific_message) const;
+    void InternalInfo(LogObjectList objlist, const Location &loc, const char *const specific_message) const;
+
+    bool IsSelectiveInstrumentationEnabled(const void *pNext);
+
+    std::string GenerateDebugInfoMessage(VkCommandBuffer commandBuffer, const uint32_t* error_record,
+                                         const InstrumentedShader* instrumented_shader, VkPipelineBindPoint pipeline_bind_point,
+                                         uint32_t operation_index) const;
+
+  protected:
+    bool NeedPipelineCreationShaderInstrumentation(vvl::Pipeline &pipeline_state, const Location &loc);
+
+    void BuildDescriptorSetLayoutInfo(const vvl::Pipeline& pipeline_state,
+                                      spirv::InstrumentationDescriptorSetLayouts& out_instrumentation_dsl);
+    void BuildDescriptorSetLayoutInfo(const vku::safe_VkShaderCreateInfoEXT& modified_create_info,
+                                      spirv::InstrumentationDescriptorSetLayouts& out_instrumentation_dsl);
+    void BuildDescriptorSetLayoutInfo(const vvl::DescriptorSetLayout& set_layout_state, const uint32_t set_layout_index,
+                                      spirv::InstrumentationDescriptorSetLayouts& out_instrumentation_dsl);
+
+    template <typename SafeCreateInfo>
+    [[nodiscard]] bool PreCallRecordPipelineCreationShaderInstrumentation(
+        const VkAllocationCallbacks *pAllocator, vvl::Pipeline &pipeline_state, SafeCreateInfo &modified_pipeline_ci,
+        uint32_t stages_count, const Location &loc,
+        std::vector<chassis::ShaderInstrumentationMetadata> &shader_instrumentation_metadata);
+    void PostCallRecordPipelineCreationShaderInstrumentation(
+        vvl::Pipeline &pipeline_state, uint32_t stages_count,
+        std::vector<chassis::ShaderInstrumentationMetadata> &shader_instrumentation_metadata);
+
+    // We have GPL variations for graphics as they defer instrumentation until linking
+    [[nodiscard]] bool PreCallRecordPipelineCreationShaderInstrumentationGPL(
+        const VkAllocationCallbacks* pAllocator, vvl::Pipeline& linked_pipeline_state,
+        vku::safe_VkGraphicsPipelineCreateInfo& modified_pipeline_ci, const Location& loc);
+
+    // Function that will hook into the SPIR-V instrumentation passes.
+    void InstrumentShader(const vvl::span<const uint32_t>& input_spirv, const spirv::InstrumentationInterface& interface,
+                          spirv::InstrumentationStatus& out_status, std::vector<uint32_t>& out_instrumented_spirv);
+
+  public:
+    void SetupClassicDescriptor(const Location &loc);
+    void SetupDescriptorBuffers(const Location &loc);
+    void SetupDescriptorHeap(const Location &loc);
+
+    VkDescriptorSetLayout GetInstrumentationDescriptorSetLayout(vvl::DescriptorMode mode) {
+        return instrumentation_desc_layout_[mode];
+    }
+    VkPipelineLayout GetInstrumentationPipelineLayout(vvl::DescriptorMode mode) { return instrumentation_pipeline_layout_[mode]; }
+
+    // Used for both creating VkPipelineLayout and VkShaderEXT
+    vvl::DescriptorMode SelectDescriptorModeFromDSL(uint32_t set_layout_count, const VkDescriptorSetLayout *set_layouts) const;
+
+    // When aborting we will disconnect all future chassis calls.
+    // If we are deep into a call stack, we can use this to return up to the chassis call.
+    // It should only be used after calls that might abort, not to be used for guarding a function (unless a case is found that make
+    // sense too)
+    mutable bool aborted_ = false;
+
+    // Some errors/warnings only want to report once for the lifetime of the app
+    bool reported_code_type_binary_ = false;
+
+    std::atomic<uint32_t> unique_shader_module_id_ = 1;  // zero represents no shader module found
+    // The descriptor slot we will be injecting our error buffer into
+    uint32_t instrumentation_desc_set_bind_index_ = 0;
+    // This is a layout used to "pad" a pipeline layout to fill in any gaps to the selected bind index
+    VkDescriptorSetLayout dummy_desc_layout_[vvl::DescriptorModeCount];
+    vvl::concurrent_unordered_map<uint32_t, InstrumentedShader> instrumented_shaders_map_;
+    std::vector<VkDescriptorSetLayoutBinding> instrumentation_bindings_;
+    spirv::DeviceSettings instrumentation_device_settings_;
+
+    std::vector<spirv::InternalOnlyDebugPrintf> internal_only_debug_printf_;
+
+    // VK_EXT_descriptor_buffer
+    // Each action command advances into the global indirect buffer by this stride
+    VkDeviceSize resource_descriptor_buffer_stride_ = 0;
+    // Each vector index maps to the binding number with the offset to map to (with the start offset included)
+    std::vector<VkDeviceSize> resource_descriptor_buffer_offsets_;
+    // our way to know if VK_EXT_descriptor_buffer is likely being used
+    // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/12676
+    bool hint_descriptor_buffer_ = false;
+
+    // VK_EXT_descriptor_heap
+    // Each action command advances into the global indirect buffer by this stride
+    VkDeviceSize heap_indirect_buffer_stride_ = 0;
+    // where in push data we provide our address to the indirect buffer
+    uint32_t push_data_offset_ = 0;
+
+    // These are the same as enabled_features, but may have been altered at setup time. This should be use for any feature GPU-AV
+    // might force on. We need to track these changes separately so that they don't influence non-GPU-AV parts of validation.
+    DeviceExtensions modified_extensions;
+    DeviceFeatures modified_features;
+
+  private:
+    bool IsPipelineSelectedForInstrumentation(const void* pipeline_ci_pnext, VkPipeline pipeline, const Location& loc);
+    bool IsShaderSelectedForInstrumentation(const vku::safe_VkPipelineShaderStageCreateInfo& stage_ci,
+                                            VkShaderModule modified_shader, const Location& loc);
+    void AddDescriptorHeapMappings(VkBaseOutStructure *create_info);
+    void Cleanup();
+    VkDescriptorSetLayout instrumentation_desc_layout_[vvl::DescriptorModeCount];
+    VkPipelineLayout instrumentation_pipeline_layout_[vvl::DescriptorModeCount];
+
+    // Pass select_instrumented_shaders from vkCreateShaderModule to CreatePipeline time
+    vvl::unordered_set<VkShaderModule> selected_instrumented_shaders;
+};
+
+}  // namespace gpuav

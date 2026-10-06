@@ -109,6 +109,17 @@ int main() {
         }
         if (cov < 15.9) { std::printf("degenerate outline only %.2f of 16 filled\n", cov); ++failures; }
     }
+    // Regression: regular-grid blocks have collinear vertices along their sides. The inset used to
+    // place those at half their position, turning the park grass into a star over the pad.
+    {
+        std::vector<Vector2> L = { {0,80}, {40,80}, {80,80}, {120,80}, {120,120}, {80,120}, {80,160}, {40,160}, {40,120}, {0,120} };
+        std::vector<Vector2> g;
+        bool ok = citygeom::InsetPolygon(L, 3.0f, g);
+        bool inside = ok;
+        for (const Vector2& v : g) if (!citygeom::PointInPolygon(v, L)) inside = false;
+        const float a = ok ? std::fabs(citygeom::PolygonArea(g)) : 0.0f;
+        if (!ok || !inside || a < 4000.0f || a > 5600.0f) { std::printf("collinear grid inset wrong (area %.0f)\n", a); ++failures; }
+    }
     std::printf("%d outlines (%d fell back to the uninset outline), %d failed\n", polys, insetFailed, failures);
     std::printf(failures ? "city_geometry_test: FAILED\n" : "city_geometry_test: all passed\n");
     return failures ? 1 : 0;

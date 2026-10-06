@@ -1,0 +1,5357 @@
+/*
+ * Copyright (c) 2015-2026 The Khronos Group Inc.
+ * Copyright (c) 2015-2026 Valve Corporation
+ * Copyright (c) 2015-2026 LunarG, Inc.
+ * Copyright (c) 2015-2026 Google, Inc.
+ * Modifications Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+#include <cmath>
+#include "generated/vk_function_pointers.h"
+#include "utils/cast_utils.h"
+#include "layer_validation_tests.h"
+#include "pipeline_helper.h"
+#include "descriptor_helper.h"
+#include "render_pass_helper.h"
+
+class NegativeCommand : public VkLayerTest {};
+
+TEST_F(NegativeCommand, CommandPoolConsistency) {
+    TEST_DESCRIPTION("Allocate command buffers from one command pool and attempt to delete them from another.");
+
+    m_errorMonitor->SetDesiredError("VUID-vkFreeCommandBuffers-pCommandBuffers-parent");
+
+    RETURN_IF_SKIP(Init());
+
+    VkCommandPoolCreateInfo pool_create_info = vku::InitStructHelper();
+    pool_create_info.queueFamilyIndex = m_device->graphics_queue_node_index_;
+    pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+    vkt::CommandPool command_pool_1(*m_device, pool_create_info);
+    vkt::CommandPool command_pool_2(*m_device, pool_create_info);
+
+    VkCommandBuffer cb;
+    VkCommandBufferAllocateInfo command_buffer_allocate_info = vku::InitStructHelper();
+    command_buffer_allocate_info.commandPool = command_pool_1;
+    command_buffer_allocate_info.commandBufferCount = 1;
+    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vk::AllocateCommandBuffers(device(), &command_buffer_allocate_info, &cb);
+
+    vk::FreeCommandBuffers(device(), command_pool_2, 1, &cb);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, IndexBufferNotBound) {
+    TEST_DESCRIPTION("Run an indexed draw call without an index buffer bound.");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-None-07312");
+    // Use DrawIndexed w/o an index buffer bound
+    vk::CmdDrawIndexed(m_command_buffer, 3, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, IndexBufferNotBoundMaintenance6) {
+    TEST_DESCRIPTION("Just setting feature is not enough, need to set to null");
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance6);
+    AddRequiredFeature(vkt::Feature::nullDescriptor);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-None-07312");
+    vk::CmdDrawIndexed(m_command_buffer, 0, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, IndexBufferDestroyed) {
+    TEST_DESCRIPTION("Run an indexed draw call without an index buffer bound.");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+    vkt::Buffer index_buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+    index_buffer.Destroy();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-commandBuffer-recording");
+    // Use DrawIndexed w/o an index buffer bound
+    vk::CmdDrawIndexed(m_command_buffer, 3, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, IndexBufferSizeOffset) {
+    TEST_DESCRIPTION("Run bind index buffer with an offset greater than the size of the index buffer.");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+    vkt::Buffer index_buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 512, VK_INDEX_TYPE_UINT16);
+
+    // draw one past the end of the buffer
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-robustBufferAccess2-08798");
+    vk::CmdDrawIndexed(m_command_buffer, 256, 1, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    // draw one too many indices
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-robustBufferAccess2-08798");
+    vk::CmdDrawIndexed(m_command_buffer, 257, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+
+    // draw one too many indices
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-robustBufferAccess2-08798");
+    vk::CmdDrawIndexed(m_command_buffer, 513, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    // draw one past the end of the buffer using the offset
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-robustBufferAccess2-08798");
+    vk::CmdDrawIndexed(m_command_buffer, 512, 1, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MissingClearAttachment) {
+    TEST_DESCRIPTION("Points to a wrong colorAttachment index in a VkClearAttachment structure passed to vkCmdClearAttachments");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    VkClearAttachment color_attachment = {VK_IMAGE_ASPECT_COLOR_BIT, 2, VkClearValue{}};
+    VkClearRect clear_rect = {{{0, 0}, {m_width, m_height}}, 0, 1};
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07271");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    color_attachment.colorAttachment = VK_ATTACHMENT_UNUSED;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07271");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MissingClearAttachment2) {
+    TEST_DESCRIPTION("Points to a wrong colorAttachment index in a VkClearAttachment structure passed to vkCmdClearAttachments");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    VkClearAttachment color_attachment = {VK_IMAGE_ASPECT_COLOR_BIT, 1, VkClearValue{}};
+    VkClearRect clear_rect = {{{0, 0}, {m_width, m_height}}, 0, 1};
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07271");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachment64Bit) {
+    TEST_DESCRIPTION("Clear with a 64-bit format");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R64G64B64A64_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+        GTEST_SKIP() << "VK_FORMAT_R64G64B64A64_SFLOAT format not supported";
+    }
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_R64G64B64A64_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    vkt::ImageView image_view = image.CreateView();
+
+    RenderPassSingleSubpass rp(*this);
+    rp.AddAttachmentDescription(VK_FORMAT_R64G64B64A64_SFLOAT);
+    rp.AddColorAttachment(0, VK_IMAGE_LAYOUT_GENERAL);
+    rp.CreateRenderPass();
+    vkt::Framebuffer fb(*m_device, rp, 1, &image_view.handle());
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(rp, fb);
+
+    VkClearAttachment attachment;
+    attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-None-09679");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CommandBufferTwoSubmits) {
+    m_errorMonitor->SetDesiredError("UNASSIGNED-DrawState-CommandBufferSingleSubmitViolation");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    m_command_buffer.End();
+
+    // Bypass framework since it does the waits automatically
+    m_default_queue->SubmitAndWait(m_command_buffer);
+
+    // Cause validation error by re-submitting cmd buffer that should only be
+    // submitted once
+    m_default_queue->SubmitAndWait(m_command_buffer);
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, Sync2CommandBufferTwoSubmits) {
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::synchronization2);
+    RETURN_IF_SKIP(Init());
+
+    m_errorMonitor->SetDesiredError("UNASSIGNED-DrawState-CommandBufferSingleSubmitViolation");
+    InitRenderTarget();
+
+    m_command_buffer.Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    m_command_buffer.End();
+
+    // Bypass framework since it does the waits automatically
+    VkCommandBufferSubmitInfo cb_info = vku::InitStructHelper();
+    cb_info.commandBuffer = m_command_buffer;
+
+    VkSubmitInfo2 submit_info = vku::InitStructHelper();
+    submit_info.commandBufferInfoCount = 1;
+    submit_info.pCommandBufferInfos = &cb_info;
+
+    vk::QueueSubmit2KHR(m_default_queue->handle(), 1, &submit_info, VK_NULL_HANDLE);
+    m_default_queue->Wait();
+
+    // Cause validation error by re-submitting cmd buffer that should only be
+    // submitted once
+    vk::QueueSubmit2KHR(m_default_queue->handle(), 1, &submit_info, VK_NULL_HANDLE);
+    m_default_queue->Wait();
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, PushConstants) {
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkPipelineLayout pipeline_layout;
+    VkPushConstantRange pc_range = {};
+    VkPipelineLayoutCreateInfo pipeline_layout_ci = vku::InitStructHelper();
+    pipeline_layout_ci.pushConstantRangeCount = 1;
+    pipeline_layout_ci.pPushConstantRanges = &pc_range;
+
+    // Check for invalid push constant ranges in pipeline layouts.
+    struct PipelineLayoutTestCase {
+        VkPushConstantRange const range;
+        const char* msg;
+    };
+
+    const uint32_t too_big = m_device->Physical().limits_.maxPushConstantsSize + 0x4;
+    const std::array<PipelineLayoutTestCase, 10> range_tests = {{
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0, 0}, "VUID-VkPushConstantRange-size-00296"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0, 1}, "VUID-VkPushConstantRange-size-00297"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 4, 1}, "VUID-VkPushConstantRange-size-00297"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 4, 0}, "VUID-VkPushConstantRange-size-00296"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 1, 4}, "VUID-VkPushConstantRange-offset-00295"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0, too_big}, "VUID-VkPushConstantRange-size-00298"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, too_big, too_big}, "VUID-VkPushConstantRange-offset-00294"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, too_big, 4}, "VUID-VkPushConstantRange-offset-00294"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0xFFFFFFF0, 0x00000020}, "VUID-VkPushConstantRange-offset-00294"},
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0x00000020, 0xFFFFFFF0}, "VUID-VkPushConstantRange-size-00298"},
+    }};
+
+    // Check for invalid offset and size
+    for (const auto& iter : range_tests) {
+        pc_range = iter.range;
+        m_errorMonitor->SetDesiredError(iter.msg);
+        vk::CreatePipelineLayout(device(), &pipeline_layout_ci, NULL, &pipeline_layout);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Check for invalid stage flag
+    pc_range.offset = 0;
+    pc_range.size = 16;
+    pc_range.stageFlags = 0;
+    m_errorMonitor->SetDesiredError("VUID-VkPushConstantRange-stageFlags-parameter");
+    vk::CreatePipelineLayout(device(), &pipeline_layout_ci, NULL, &pipeline_layout);
+    m_errorMonitor->VerifyFound();
+
+    // Check for duplicate stage flags in a list of push constant ranges.
+    // A shader can only have one push constant block and that block is mapped
+    // to the push constant range that has that shader's stage flag set.
+    // The shader's stage flag can only appear once in all the ranges, so the
+    // implementation can find the one and only range to map it to.
+    const uint32_t ranges_per_test = 5;
+    struct DuplicateStageFlagsTestCase {
+        VkPushConstantRange const ranges[ranges_per_test];
+        std::vector<const char*> const msg;
+    };
+    // Overlapping ranges are OK, but a stage flag can appear only once.
+    const std::array<DuplicateStageFlagsTestCase, 3> duplicate_stage_flags_tests = {
+        {
+            {{{VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4}},
+             {
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+             }},
+            {{{VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_GEOMETRY_BIT, 0, 4},
+              {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_GEOMETRY_BIT, 0, 4}},
+             {
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+             }},
+            {{{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4},
+              {VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_VERTEX_BIT, 0, 4},
+              {VK_SHADER_STAGE_GEOMETRY_BIT, 0, 4}},
+             {
+                 "VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292",
+             }},
+        },
+    };
+
+    for (const auto& iter : duplicate_stage_flags_tests) {
+        pipeline_layout_ci.pPushConstantRanges = iter.ranges;
+        pipeline_layout_ci.pushConstantRangeCount = ranges_per_test;
+        for (const auto& vuid : iter.msg) {
+            m_errorMonitor->SetDesiredError(vuid);
+        }
+        vk::CreatePipelineLayout(device(), &pipeline_layout_ci, NULL, &pipeline_layout);
+        m_errorMonitor->VerifyFound();
+    }
+
+    //
+    // CmdPushConstants tests
+    //
+
+    // Setup a pipeline layout with ranges: [0,32) [16,80)
+    const std::vector<VkPushConstantRange> pc_range2 = {{VK_SHADER_STAGE_VERTEX_BIT, 16, 64},
+                                                        {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32}};
+    const vkt::PipelineLayout pipeline_layout_obj(*m_device, {}, pc_range2);
+
+    const uint8_t dummy_values[100] = {};
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    // Check for invalid stage flag
+    // Note that VU 07790 isn't reached due to parameter validation
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-stageFlags-parameter");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, 0, 0, 16, dummy_values);
+    m_errorMonitor->VerifyFound();
+
+    // Positive tests for the overlapping ranges
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, dummy_values);
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_VERTEX_BIT, 32, 48, dummy_values);
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 16, 16,
+                         dummy_values);
+
+    // Wrong cmd stages for extant range
+    // No range for all cmd stages -- "VUID-vkCmdPushConstants-offset-01795" VUID-vkCmdPushConstants-offset-01795
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01795");
+    // Missing cmd stages for found overlapping range -- "VUID-vkCmdPushConstants-offset-01796" VUID-vkCmdPushConstants-offset-01796
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01796");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_GEOMETRY_BIT, 0, 16, dummy_values);
+    m_errorMonitor->VerifyFound();
+
+    // Wrong no extant range
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01795");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_FRAGMENT_BIT, 80, 4, dummy_values);
+    m_errorMonitor->VerifyFound();
+
+    // Wrong overlapping extent
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01795");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 20,
+                         dummy_values);
+    m_errorMonitor->VerifyFound();
+
+    // Wrong stage flags for valid overlapping range
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01796");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout_obj, VK_SHADER_STAGE_VERTEX_BIT, 16, 16, dummy_values);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, PushConstantsCompute) {
+    TEST_DESCRIPTION("https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/11404");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkPushConstantRange pc_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 4};
+    vkt::PipelineLayout pipeline_layout(*m_device, {}, {pc_range});
+
+    const uint32_t data[4] = {};
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-offset-01795");
+    vk::CmdPushConstants(m_command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &data);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, PushConstant2PipelineLayoutCreateInfo) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance6);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const float data[16] = {};
+    VkPushConstantsInfo pc_info = vku::InitStructHelper();
+    pc_info.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pc_info.offset = 32;
+    pc_info.size = 16;
+    pc_info.pValues = data;
+    pc_info.layout = VK_NULL_HANDLE;
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-VkPushConstantsInfo-None-09495");
+    vk::CmdPushConstants2KHR(m_command_buffer, &pc_info);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, NoBeginCommandBuffer) {
+    RETURN_IF_SKIP(Init());
+    m_errorMonitor->SetDesiredError("VUID-vkEndCommandBuffer-commandBuffer-00059");
+    vk::EndCommandBuffer(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CommandBufferReset) {
+    RETURN_IF_SKIP(Init());
+
+    // no VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    vkt::CommandPool pool(*m_device, m_device->graphics_queue_node_index_, 0);
+    vkt::CommandBuffer cb(*m_device, pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+
+    // Force the failure by setting the Renderpass and Framebuffer fields with (fake) data
+    VkCommandBufferInheritanceInfo cmd_buf_hinfo = vku::InitStructHelper();
+    VkCommandBufferBeginInfo cmd_buf_info = vku::InitStructHelper();
+    cmd_buf_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    cmd_buf_info.pInheritanceInfo = &cmd_buf_hinfo;
+
+    // Begin CB to transition to recording state
+    vk::BeginCommandBuffer(cb, &cmd_buf_info);
+    // Can't re-begin. This should trigger error
+    m_errorMonitor->SetDesiredError("VUID-vkBeginCommandBuffer-commandBuffer-00050");
+    vk::BeginCommandBuffer(cb, &cmd_buf_info);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkResetCommandBuffer-commandBuffer-00046");
+    VkCommandBufferResetFlags flags = 0;  // Don't care about flags for this test
+    // Reset attempt will trigger error due to incorrect CommandPool state
+    vk::ResetCommandBuffer(cb, flags);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkBeginCommandBuffer-commandBuffer-00050");
+    // Transition CB to RECORDED state
+    vk::EndCommandBuffer(cb);
+    // Now attempting to Begin will implicitly reset, which triggers error
+    vk::BeginCommandBuffer(cb, &cmd_buf_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CommandBufferPrimaryFlags) {
+    RETURN_IF_SKIP(Init());
+    VkCommandBufferBeginInfo cmd_buf_info = vku::InitStructHelper();
+    cmd_buf_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    m_errorMonitor->SetDesiredError("VUID-vkBeginCommandBuffer-commandBuffer-02840");
+    vk::BeginCommandBuffer(m_command_buffer, &cmd_buf_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearColorAttachmentsOutsideRenderPass) {
+    // Call CmdClearAttachmentss outside of an active RenderPass
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-renderpass");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    // Start no RenderPass
+    m_command_buffer.Begin();
+
+    VkClearAttachment color_attachment;
+    color_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    color_attachment.clearValue.color.float32[0] = 0;
+    color_attachment.clearValue.color.float32[1] = 0;
+    color_attachment.clearValue.color.float32[2] = 0;
+    color_attachment.clearValue.color.float32[3] = 0;
+    color_attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {{{0, 0}, {32, 32}}, 0, 1};
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearColorAttachmentsZeroLayercount) {
+    TEST_DESCRIPTION("Call CmdClearAttachments with a pRect having a layerCount of zero.");
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-layerCount-01934");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment color_attachment;
+    color_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    color_attachment.clearValue.color.float32[0] = 0;
+    color_attachment.clearValue.color.float32[1] = 0;
+    color_attachment.clearValue.color.float32[2] = 0;
+    color_attachment.clearValue.color.float32[3] = 0;
+    color_attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {{{0, 0}, {32, 32}}};
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearColorAttachmentsZeroExtent) {
+    TEST_DESCRIPTION("Call CmdClearAttachments with a pRect having a rect2D extent of zero.");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment color_attachment;
+    color_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    color_attachment.clearValue.color.float32[0] = 0;
+    color_attachment.clearValue.color.float32[1] = 0;
+    color_attachment.clearValue.color.float32[2] = 0;
+    color_attachment.clearValue.color.float32[3] = 0;
+    color_attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    clear_rect.rect.extent = {0, 1};
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-rect-02682");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    clear_rect.rect.extent = {1, 0};
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-rect-02683");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachmentsAspectMasks) {
+    TEST_DESCRIPTION("Check VkClearAttachment invalid aspect masks.");
+    AddRequiredExtensions(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment attachment;
+    attachment.clearValue.color.float32[0] = 0;
+    attachment.clearValue.color.float32[1] = 0;
+    attachment.clearValue.color.float32[2] = 0;
+    attachment.clearValue.color.float32[3] = 0;
+    attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_METADATA_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-00020");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_METADATA_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-00020");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_1_BIT_EXT;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-02246");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_MEMORY_PLANE_2_BIT_EXT;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-02246");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachmentsImplicitCheck) {
+    TEST_DESCRIPTION("Check VkClearAttachment implicit VUs.");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment color_attachment;
+    color_attachment.clearValue.color.float32[0] = 0;
+    color_attachment.clearValue.color.float32[1] = 0;
+    color_attachment.clearValue.color.float32[2] = 0;
+    color_attachment.clearValue.color.float32[3] = 0;
+    color_attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    color_attachment.aspectMask = 0;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-parameter");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    color_attachment.aspectMask = 0xffffffff;
+    m_errorMonitor->SetDesiredError("VUID-VkClearAttachment-aspectMask-parameter");
+    vk::CmdClearAttachments(m_command_buffer, 1, &color_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachmentsDepth) {
+    TEST_DESCRIPTION("Call CmdClearAttachments with invalid depth aspect masks.");
+
+    RETURN_IF_SKIP(Init());
+    m_depth_stencil_fmt = FindSupportedStencilOnlyFormat(Gpu());
+    if (m_depth_stencil_fmt == VK_FORMAT_UNDEFINED) {
+        GTEST_SKIP() << "Couldn't find a stencil only image format";
+    }
+
+    m_depthStencil->Init(*m_device, m_width, m_height, 1, m_depth_stencil_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    vkt::ImageView depth_image_view = m_depthStencil->CreateView(VK_IMAGE_ASPECT_STENCIL_BIT);
+    InitRenderTarget(&depth_image_view.handle());
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment attachment;
+    attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+
+    attachment.clearValue.depthStencil.depth = 0.0f;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07884");
+    attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachmentsStencil) {
+    TEST_DESCRIPTION("Call CmdClearAttachments with invalid stencil aspect masks.");
+
+    RETURN_IF_SKIP(Init());
+    m_depth_stencil_fmt = FindSupportedDepthOnlyFormat(Gpu());
+    m_depthStencil->Init(*m_device, m_width, m_height, 1, m_depth_stencil_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    vkt::ImageView depth_image_view = m_depthStencil->CreateView(VK_IMAGE_ASPECT_DEPTH_BIT);
+    InitRenderTarget(&depth_image_view.handle());
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkClearAttachment attachment;
+    attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+
+    attachment.clearValue.depthStencil.depth = 0.0f;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07885");
+    attachment.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearAttachmentsOutsideRenderPass) {
+    TEST_DESCRIPTION("Call CmdClearAttachments outside renderpass");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    VkClearAttachment attachment;
+    attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {};
+    clear_rect.rect.offset = {0, 0};
+    clear_rect.rect.extent = {1, 1};
+    clear_rect.baseArrayLayer = 0;
+    clear_rect.layerCount = 1;
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-renderpass");
+    vk::CmdClearAttachments(m_command_buffer, 1, &attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DrawOutsideRenderPass) {
+    TEST_DESCRIPTION("call vkCmdDraw without renderpass");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-renderpass");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DrawOutsideRenderPassDebugLabels) {
+    TEST_DESCRIPTION("call vkCmdDraw without renderpass - make sure debug labels appear in message");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    VkDebugUtilsLabelEXT label = vku::InitStructHelper();
+    label.pLabelName = "RegionA";
+    vk::CmdBeginDebugUtilsLabelEXT(m_command_buffer, &label);
+    label.pLabelName = "RegionB";
+    vk::CmdBeginDebugUtilsLabelEXT(m_command_buffer, &label);
+    label.pLabelName = "RegionC";
+    vk::CmdBeginDebugUtilsLabelEXT(m_command_buffer, &label);
+    vk::CmdEndDebugUtilsLabelEXT(m_command_buffer);
+    m_errorMonitor->SetDesiredError("RegionA::RegionB");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DispatchInsideRenderPass) {
+    TEST_DESCRIPTION("Only allowed with VK_QCOM_tile_shading");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.CreateComputePipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDispatch-None-10672");
+    vk::CmdDispatch(m_command_buffer, 1, 1, 1);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, MultiDrawDrawOutsideRenderPass) {
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::multiDraw);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkMultiDrawInfoEXT multi_draws[3] = {};
+    multi_draws[0].vertexCount = multi_draws[1].vertexCount = multi_draws[2].vertexCount = 3;
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-renderpass");
+    vk::CmdDrawMultiEXT(m_command_buffer, 3, multi_draws, 1, 0, sizeof(VkMultiDrawInfoEXT));
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ExecuteCommandsPrimaryCB) {
+    TEST_DESCRIPTION("Attempt vkCmdExecuteCommands with a primary command buffer (should only be secondary)");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    // An empty primary command buffer
+    vkt::CommandBuffer cb(*m_device, m_command_pool);
+    cb.Begin();
+    cb.End();
+
+    m_command_buffer.Begin();
+    vk::CmdBeginRenderPass(m_command_buffer, &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    VkCommandBuffer handle = cb;
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdExecuteCommands-pCommandBuffers-00088");
+    vk::CmdExecuteCommands(m_command_buffer, 1, &handle);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetUnexpectedError("All elements of pCommandBuffers must not be in the pending state");
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, SimultaneousUseOneShot) {
+    TEST_DESCRIPTION("Submit the same command buffer twice in one submit looking for simultaneous use and one time submit errors");
+    const char* simultaneous_use_message = "is already in use and is not marked for simultaneous use";
+    RETURN_IF_SKIP(Init());
+
+    VkCommandBuffer cmd_bufs[2];
+    VkCommandBufferAllocateInfo alloc_info = vku::InitStructHelper();
+    alloc_info.commandBufferCount = 2;
+    alloc_info.commandPool = m_command_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vk::AllocateCommandBuffers(device(), &alloc_info, cmd_bufs);
+
+    VkCommandBufferBeginInfo cb_binfo = vku::InitStructHelper();
+    cb_binfo.pInheritanceInfo = VK_NULL_HANDLE;
+    cb_binfo.flags = 0;
+    vk::BeginCommandBuffer(cmd_bufs[0], &cb_binfo);
+    VkViewport viewport = {0, 0, 16, 16, 0, 1};
+    vk::CmdSetViewport(cmd_bufs[0], 0, 1, &viewport);
+    vk::EndCommandBuffer(cmd_bufs[0]);
+    VkCommandBuffer duplicates[2] = {cmd_bufs[0], cmd_bufs[0]};
+
+    VkSubmitInfo submit_info = vku::InitStructHelper();
+    submit_info.commandBufferCount = 2;
+    submit_info.pCommandBuffers = duplicates;
+    m_errorMonitor->SetDesiredError(simultaneous_use_message);
+    vk::QueueSubmit(m_default_queue->handle(), 1, &submit_info, VK_NULL_HANDLE);
+    m_errorMonitor->VerifyFound();
+    m_default_queue->Wait();
+
+    // Set one time use and now look for one time submit
+    duplicates[0] = duplicates[1] = cmd_bufs[1];
+    cb_binfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vk::BeginCommandBuffer(cmd_bufs[1], &cb_binfo);
+    vk::CmdSetViewport(cmd_bufs[1], 0, 1, &viewport);
+    vk::EndCommandBuffer(cmd_bufs[1]);
+    m_errorMonitor->SetDesiredError("VUID-vkQueueSubmit-pCommandBuffers-00071");
+    m_errorMonitor->SetDesiredError("UNASSIGNED-DrawState-CommandBufferSingleSubmitViolation");
+    vk::QueueSubmit(m_default_queue->handle(), 1, &submit_info, VK_NULL_HANDLE);
+    m_errorMonitor->VerifyFound();
+    m_default_queue->Wait();
+}
+
+TEST_F(NegativeCommand, DrawTimeImageViewTypeMismatchWithPipeline) {
+    TEST_DESCRIPTION(
+        "Test that an error is produced when an image view type does not match the dimensionality declared in the shader");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const char* fs_source = R"glsl(
+        #version 450
+        layout(set=0, binding=0) uniform sampler3D s;
+        layout(location=0) out vec4 color;
+        void main() {
+           color = texture(s, vec3(0));
+        }
+    )glsl";
+    VkShaderObj fs(*m_device, fs_source, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    vkt::Image image(*m_device, 16, 16, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    vkt::ImageView image_view = image.CreateView();
+    vkt::Sampler sampler(*m_device, SafeSaneSamplerCreateInfo());
+
+    OneOffDescriptorSet descriptor_set(m_device,
+                                       {
+                                           {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                       });
+    vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    descriptor_set.WriteDescriptorImageInfo(0, image_view, sampler);
+    descriptor_set.UpdateDescriptorSets();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.gp_ci_.layout = pipeline_layout;
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                              nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-viewType-07752");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DrawTimeImageViewTypeMismatchWithPipelineFunction) {
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const char* fs_source = R"glsl(
+        #version 450
+        layout(set=0, binding=0) uniform sampler3D s;
+        layout(location=0) out vec4 color;
+
+        vec4 foo(sampler3D func_sampler) {
+            return texture(func_sampler, vec3(0));
+        }
+
+        void main() {
+           color = foo(s);
+        }
+    )glsl";
+    VkShaderObj fs(*m_device, fs_source, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    vkt::Image image(*m_device, 16, 16, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    vkt::ImageView image_view = image.CreateView();
+    vkt::Sampler sampler(*m_device, SafeSaneSamplerCreateInfo());
+
+    OneOffDescriptorSet descriptor_set(m_device,
+                                       {
+                                           {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                       });
+    vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    descriptor_set.WriteDescriptorImageInfo(0, image_view, sampler);
+    descriptor_set.UpdateDescriptorSets();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.gp_ci_.layout = pipeline_layout;
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                              nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-viewType-07752");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DrawTimeImageComponentTypeMismatchWithPipeline) {
+    TEST_DESCRIPTION(
+        "Test that an error is produced when the component type of an imageview disagrees with the type in the shader.");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const char* fs_source = R"glsl(
+        #version 450
+        layout(set=0, binding=0) uniform isampler2D s;
+        layout(location=0) out vec4 color;
+        void main() {
+           color = texelFetch(s, ivec2(0), 0);
+        }
+    )glsl";
+    VkShaderObj fs(*m_device, fs_source, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    vkt::Image image(*m_device, 16, 16, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    vkt::ImageView image_view = image.CreateView();
+    vkt::Sampler sampler(*m_device, SafeSaneSamplerCreateInfo());
+
+    OneOffDescriptorSet descriptor_set(m_device,
+                                       {
+                                           {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                       });
+    vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    descriptor_set.WriteDescriptorImageInfo(0, image_view, sampler);
+    descriptor_set.UpdateDescriptorSets();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.gp_ci_.layout = pipeline_layout;
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                              nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-format-07753");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImageLowSampleCount) {
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-00257");
+
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    // Create two images of sample count 1 and try to Resolve between them
+    VkImageCreateInfo image_create_info = vkt::Image::ImageCreateInfo2D(
+        32, 1, 1, 1, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    vkt::Image src_image(*m_device, image_create_info, vkt::set_layout);
+    vkt::Image dst_image(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_command_buffer.End();
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImageHighSampleCount) {
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-00259");
+
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    // Create two images of sample count 4 and try to Resolve between them
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.extent = {32, 32, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_create_info.flags = 0;
+
+    vkt::Image src_image(*m_device, image_create_info, vkt::set_layout);
+    vkt::Image dst_image(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+    // Need memory barrier to VK_IMAGE_LAYOUT_GENERAL for source and dest?
+    // VK_IMAGE_LAYOUT_UNDEFINED = 0,
+    // VK_IMAGE_LAYOUT_GENERAL = 1,
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_command_buffer.End();
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImageFormatMismatch) {
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.extent = {32, 1, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;  // guarantee support from sampledImageColorSampleCounts
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_create_info.flags = 0;
+    vkt::Image src_image(*m_device, image_create_info, vkt::set_layout);
+
+    // Set format to something other than source image
+    image_create_info.format = VK_FORMAT_R32_SFLOAT;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_image(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+    // Need memory barrier to VK_IMAGE_LAYOUT_GENERAL for source and dest?
+    // VK_IMAGE_LAYOUT_UNDEFINED = 0,
+    // VK_IMAGE_LAYOUT_GENERAL = 1,
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-01386");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImageLayoutMismatch) {
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.extent = {32, 32, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;  // guarantee support from sampledImageColorSampleCounts
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.flags = 0;
+    vkt::Image src_image(*m_device, image_create_info);
+
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_image(*m_device, image_create_info);
+
+    m_command_buffer.Begin();
+    // source image must have valid contents before resolve
+    VkClearColorValue clear_color = {{0, 0, 0, 0}};
+    VkImageSubresourceRange subresource = {};
+    subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource.layerCount = 1;
+    subresource.levelCount = 1;
+    src_image.SetLayout(m_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk::CmdClearColorImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &subresource);
+    m_command_buffer.TransitionLayout(src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    dst_image.SetLayout(m_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    // source image layout mismatch
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImageLayout-00260");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    // dst image layout mismatch
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImageLayout-00262");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveInvalidSubresource) {
+    AddOptionalExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    const bool copy_commands2 = IsExtensionsEnabled(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.extent = {32, 32, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;  // guarantee support from sampledImageColorSampleCounts
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.flags = 0;
+    vkt::Image src_image(*m_device, image_create_info);
+
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dstImage(*m_device, image_create_info);
+
+    m_command_buffer.Begin();
+    // source image must have valid contents before resolve
+    VkClearColorValue clear_color = {{0, 0, 0, 0}};
+    VkImageSubresourceRange subresource = {};
+    subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource.layerCount = 1;
+    subresource.levelCount = 1;
+    src_image.SetLayout(m_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk::CmdClearColorImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &subresource);
+    m_command_buffer.TransitionLayout(src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    dstImage.SetLayout(m_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    // invalid source mip level
+    resolve_region.srcSubresource.mipLevel = image_create_info.mipLevels;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcSubresource-01709");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    // Equivalent test using KHR_copy_commands2
+    if (copy_commands2) {
+        const VkImageResolve2 resolve_region2 = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+                                                 NULL,
+                                                 resolve_region.srcSubresource,
+                                                 resolve_region.srcOffset,
+                                                 resolve_region.dstSubresource,
+                                                 resolve_region.dstOffset,
+                                                 resolve_region.extent};
+        const VkResolveImageInfo2 resolve_image_info2 = {
+            VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2, NULL, src_image,       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,   1,    &resolve_region2};
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcSubresource-01709");
+        vk::CmdResolveImage2KHR(m_command_buffer, &resolve_image_info2);
+        m_errorMonitor->VerifyFound();
+    }
+
+    resolve_region.srcSubresource.mipLevel = 0;
+    // invalid dest mip level
+    resolve_region.dstSubresource.mipLevel = image_create_info.mipLevels;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstSubresource-01710");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    // Equivalent test using KHR_copy_commands2
+    if (copy_commands2) {
+        const VkImageResolve2 resolve_region2 = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+                                                 NULL,
+                                                 resolve_region.srcSubresource,
+                                                 resolve_region.srcOffset,
+                                                 resolve_region.dstSubresource,
+                                                 resolve_region.dstOffset,
+                                                 resolve_region.extent};
+        const VkResolveImageInfo2 resolve_image_info2 = {
+            VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2, NULL, src_image,       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,   1,    &resolve_region2};
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-dstSubresource-01710");
+        vk::CmdResolveImage2KHR(m_command_buffer, &resolve_image_info2);
+        m_errorMonitor->VerifyFound();
+    }
+
+    resolve_region.dstSubresource.mipLevel = 0;
+    // invalid source array layer range
+    resolve_region.srcSubresource.baseArrayLayer = image_create_info.arrayLayers;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcSubresource-01711");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    // Equivalent test using KHR_copy_commands2
+    if (copy_commands2) {
+        const VkImageResolve2 resolve_region2 = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+                                                 NULL,
+                                                 resolve_region.srcSubresource,
+                                                 resolve_region.srcOffset,
+                                                 resolve_region.dstSubresource,
+                                                 resolve_region.dstOffset,
+                                                 resolve_region.extent};
+        const VkResolveImageInfo2 resolve_image_info2 = {
+            VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2, NULL, src_image,       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,   1,    &resolve_region2};
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcSubresource-01711");
+        vk::CmdResolveImage2KHR(m_command_buffer, &resolve_image_info2);
+        m_errorMonitor->VerifyFound();
+    }
+
+    resolve_region.srcSubresource.baseArrayLayer = 0;
+    // invalid dest array layer range
+    resolve_region.dstSubresource.baseArrayLayer = image_create_info.arrayLayers;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstSubresource-01712");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    // Equivalent test using KHR_copy_commands2
+    if (copy_commands2) {
+        const VkImageResolve2 resolve_region2 = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+                                                 NULL,
+                                                 resolve_region.srcSubresource,
+                                                 resolve_region.srcOffset,
+                                                 resolve_region.dstSubresource,
+                                                 resolve_region.dstOffset,
+                                                 resolve_region.extent};
+        const VkResolveImageInfo2 resolve_image_info2 = {
+            VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2, NULL, src_image,       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,   1,    &resolve_region2};
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-dstSubresource-01712");
+        vk::CmdResolveImage2KHR(m_command_buffer, &resolve_image_info2);
+        m_errorMonitor->VerifyFound();
+    }
+
+    resolve_region.dstSubresource.baseArrayLayer = 0;
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImageImageType) {
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_create_info.extent = {32, 1, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 4;                  // more than 1 to not trip other validation
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;  // guarantee support from sampledImageColorSampleCounts
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.flags = 0;
+
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    vkt::Image src_image2D(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.imageType = VK_IMAGE_TYPE_1D;
+    vkt::Image dst_image1D(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.imageType = VK_IMAGE_TYPE_3D;
+    image_create_info.extent.height = 16;
+    image_create_info.extent.depth = 16;
+    image_create_info.arrayLayers = 1;
+    vkt::Image dst_image3D(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    // layerCount is not 1
+    resolve_region.srcSubresource.layerCount = 2;
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve-layerCount-08803");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-04446");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dst_image3D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.srcSubresource.layerCount = 1;
+
+    // Set height with 1D dstImage
+    resolve_region.extent.height = 2;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-00276");
+    // Also exceed height of both images
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcOffset-00270");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstOffset-00275");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dst_image1D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.extent.height = 1;
+
+    // Set depth with 1D dstImage and 2D srcImage
+    resolve_region.extent.depth = 2;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-00278");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-00273");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dst_image1D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.extent.depth = 1;
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImageSizeExceeded) {
+    TEST_DESCRIPTION("Resolve Image with subresource region greater than size of src/dst image");
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_create_info.extent = {32, 32, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // Note: Some implementations expect color attachment usage for any
+    // multisample surface
+    image_create_info.flags = 0;
+
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    vkt::Image src_image2D(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dstImage2D(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve resolve_region = {};
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {32, 32, 1};
+
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+
+    // srcImage exceeded in x-dim
+    resolve_region.srcOffset.x = 4;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcOffset-00269");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.srcOffset.x = 0;
+
+    // dstImage exceeded in x-dim
+    resolve_region.dstOffset.x = 4;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstOffset-00274");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.dstOffset.x = 0;
+
+    // both image exceeded in y-dim
+    resolve_region.srcOffset.y = 32;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcOffset-00270");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.srcOffset.y = 0;
+
+    resolve_region.dstOffset.y = 32;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstOffset-00275");
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.dstOffset.y = 0;
+
+    // srcImage exceeded in z-dim
+    resolve_region.srcOffset.z = 1;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcOffset-00272");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-00273");  // because it's a 2d image
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.srcOffset.z = 0;
+
+    // dstImage exceeded in z-dim
+    resolve_region.dstOffset.z = 1;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstOffset-00277");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-00278");  // because it's a 2d image
+    vk::CmdResolveImage(m_command_buffer, src_image2D, VK_IMAGE_LAYOUT_GENERAL, dstImage2D, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    resolve_region.dstOffset.z = 0;
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearImage) {
+    TEST_DESCRIPTION("Call ClearColorImage w/ a depth|stencil image and ClearDepthStencilImage with a color image.");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+
+    // Color image
+    VkClearColorValue clear_color;
+    memset(clear_color.uint32, 0, sizeof(uint32_t) * 4);
+
+    auto image_ci = vkt::Image::ImageCreateInfo2D(32, 32, 1, 1, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    vkt::Image color_image_no_transfer(*m_device, image_ci);
+
+    image_ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vkt::Image color_image(*m_device, image_ci);
+
+    const VkImageSubresourceRange color_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, image_ci.mipLevels, 0, image_ci.arrayLayers};
+
+    // Depth/Stencil image
+    VkClearDepthStencilValue clear_value = {0};
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {64, 64, 1};
+    image_ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vkt::Image ds_image(*m_device, image_ci);
+
+    const VkImageSubresourceRange ds_range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, image_ci.mipLevels, 0, image_ci.arrayLayers};
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-image-00007");
+
+    vk::CmdClearColorImage(m_command_buffer, ds_image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &color_range);
+
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-image-00002");
+
+    vk::CmdClearColorImage(m_command_buffer, color_image_no_transfer, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &color_range);
+
+    m_errorMonitor->VerifyFound();
+
+    // Call CmdClearDepthStencilImage with color image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-image-00014");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-image-02826");
+
+    vk::CmdClearDepthStencilImage(m_command_buffer, color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &ds_range);
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearColor64Bit) {
+    TEST_DESCRIPTION("Clear with a 64-bit format");
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R64G64B64A64_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "VK_FORMAT_R64G64B64A64_SFLOAT format not supported";
+    }
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_R64G64B64A64_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    m_command_buffer.Begin();
+    const VkClearColorValue clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-image-09678");
+    vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &range);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CommandQueueFlags) {
+    TEST_DESCRIPTION(
+        "Allocate a command buffer on a queue that does not support graphics and try to issue a graphics-only command");
+
+    RETURN_IF_SKIP(Init());
+
+    const std::optional<uint32_t> queue_family_index = m_device->QueueFamilyWithoutCapabilities(VK_QUEUE_GRAPHICS_BIT);
+    if (!queue_family_index) {
+        GTEST_SKIP() << "Non-graphics queue family not found";
+    }
+
+    // Create command pool on a non-graphics queue
+    vkt::CommandPool command_pool(*m_device, queue_family_index.value());
+
+    // Setup command buffer on pool
+    vkt::CommandBuffer command_buffer(*m_device, command_pool);
+    command_buffer.Begin();
+
+    // Issue a graphics only command
+    m_errorMonitor->SetDesiredError("VUID-vkCmdSetViewport-commandBuffer-cmdpool");
+    VkViewport viewport = {0, 0, 16, 16, 0, 1};
+    vk::CmdSetViewport(command_buffer, 0, 1, &viewport);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MultiDraw) {
+    TEST_DESCRIPTION("Test validation of multi_draw extension");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::multiDraw);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMultiDrawPropertiesEXT multi_draw_properties = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(multi_draw_properties);
+    InitRenderTarget();
+
+    VkMultiDrawInfoEXT multi_draws[3] = {};
+    multi_draws[0].vertexCount = multi_draws[1].vertexCount = multi_draws[2].vertexCount = 3;
+
+    VkMultiDrawIndexedInfoEXT multi_draw_indices[3] = {};
+    multi_draw_indices[0].indexCount = multi_draw_indices[1].indexCount = multi_draw_indices[2].indexCount = 1;
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    // Try existing VUID checks
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-None-08606");
+    vk::CmdDrawMultiEXT(m_command_buffer, 3, multi_draws, 1, 0, sizeof(VkMultiDrawInfoEXT));
+    m_errorMonitor->VerifyFound();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-None-07312");  // missing index buffer
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-None-08606");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    // New VUIDs added with multi_draw (also see GPU-AV)
+    vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    multi_draw_indices[2].indexCount = 511;
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 2, VK_INDEX_TYPE_UINT16);
+    // This first should be fine
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    // Fail with index offset
+    multi_draw_indices[2].firstIndex = 1;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    // Fail with index count
+    multi_draw_indices[2].firstIndex = 0;
+    multi_draw_indices[2].indexCount = 512;
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+    multi_draw_indices[2].indexCount = 1;
+
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-drawCount-09628");
+    vk::CmdDrawMultiEXT(m_command_buffer, 3, multi_draws, 1, 0, sizeof(VkMultiDrawInfoEXT) + 1);
+    m_errorMonitor->VerifyFound();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-drawCount-09629");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT) + 1, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-drawCount-04935");
+    vk::CmdDrawMultiEXT(m_command_buffer, 3, nullptr, 1, 0, sizeof(VkMultiDrawInfoEXT));
+    m_errorMonitor->VerifyFound();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-drawCount-04940");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, nullptr, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+
+    if (multi_draw_properties.maxMultiDrawCount < vvl::kU32Max) {
+        uint32_t draw_count = multi_draw_properties.maxMultiDrawCount + 1;
+        std::vector<VkMultiDrawInfoEXT> max_multi_draws(draw_count);
+        std::vector<VkMultiDrawIndexedInfoEXT> max_multi_indexed_draws(draw_count);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-drawCount-04934");
+        vk::CmdDrawMultiEXT(m_command_buffer, draw_count, max_multi_draws.data(), 1, 0, sizeof(VkMultiDrawInfoEXT));
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-drawCount-04939");
+        vk::CmdDrawMultiIndexedEXT(m_command_buffer, draw_count, max_multi_indexed_draws.data(), 1, 0,
+                                   sizeof(VkMultiDrawIndexedInfoEXT), 0);
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeCommand, MultiDrawMaintenance5) {
+    TEST_DESCRIPTION("Test validation of multi_draw extension with VK_KHR_maintenance5");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance5);
+    AddRequiredFeature(vkt::Feature::multiDraw);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    // Try existing VUID checks
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    // Use non-power-of-2 size to
+    vkt::Buffer buffer(*m_device, 2048, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkMultiDrawIndexedInfoEXT multi_draw_indices = {0, 514, 0};  // overflow
+
+    // same as calling vkCmdBindIndexBuffer (size of the buffer creation)
+    vk::CmdBindIndexBuffer2KHR(m_command_buffer, buffer, 2, 1024, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 1, &multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+
+    multi_draw_indices.indexCount = 256;  // only uses [0 - 512]
+    vk::CmdBindIndexBuffer2KHR(m_command_buffer, buffer, 2, 508, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 1, &multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MultiDrawWholeSizeMaintenance5) {
+    TEST_DESCRIPTION("Test validation of multi_draw extension with VK_KHR_maintenance5");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance5);
+    AddRequiredFeature(vkt::Feature::multiDraw);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    // Try existing VUID checks
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    // Use non-power-of-2 size to
+    vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkMultiDrawIndexedInfoEXT multi_draw_indices = {0, 514, 0};  // overflow
+
+    // VK_WHOLE_SIZE also full size of the buffer
+    vk::CmdBindIndexBuffer2KHR(m_command_buffer, buffer, 2, VK_WHOLE_SIZE, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 1, &multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MultiDrawMaintenance5Mixed) {
+    TEST_DESCRIPTION("Test vkCmdBindIndexBuffer2KHR with vkCmdBindIndexBuffer");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance5);
+    AddRequiredFeature(vkt::Feature::multiDraw);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    // Try existing VUID checks
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    // New VUIDs added with multi_draw (also see GPU-AV)
+    vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMultiDrawIndexedInfoEXT multi_draw_indices = {0, 511, 0};
+
+    // valid
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT16);
+    // should be overwritten with smaller size
+    vk::CmdBindIndexBuffer2KHR(m_command_buffer, buffer, 0, 1000, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-robustBufferAccess2-08798");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 1, &multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, MultiDrawFeatures) {
+    TEST_DESCRIPTION("Test validation of multi draw feature enabled");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkMultiDrawInfoEXT multi_draws[3] = {};
+    multi_draws[0].vertexCount = multi_draws[1].vertexCount = multi_draws[2].vertexCount = 3;
+
+    VkMultiDrawIndexedInfoEXT multi_draw_indices[3] = {};
+    multi_draw_indices[0].indexCount = multi_draw_indices[1].indexCount = multi_draw_indices[2].indexCount = 1;
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiEXT-None-04933");
+    vk::CmdDrawMultiEXT(m_command_buffer, 3, multi_draws, 1, 0, sizeof(VkMultiDrawInfoEXT));
+    m_errorMonitor->VerifyFound();
+    vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawMultiIndexedEXT-None-04937");
+    vk::CmdDrawMultiIndexedEXT(m_command_buffer, 3, multi_draw_indices, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, IndirectDraw) {
+    TEST_DESCRIPTION("Test covered valid usage for vkCmdDrawIndirect and vkCmdDrawIndexedIndirect");
+
+    AddRequiredFeature(vkt::Feature::multiDrawIndirect);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+
+    vkt::Buffer draw_buffer(*m_device, sizeof(VkDrawIndirectCommand), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    vkt::Buffer draw_buffer_correct(*m_device, sizeof(VkDrawIndirectCommand), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    vkt::Buffer draw_buffer_large(*m_device, sizeof(VkDrawIndirectCommand) * 16u, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    vkt::Buffer index_buffer(*m_device, sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-buffer-02709");
+    vk::CmdDrawIndirect(m_command_buffer, draw_buffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00488");
+    vk::CmdDrawIndirect(m_command_buffer, draw_buffer_correct, 0, 2, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-drawCount-00540");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer_correct, 0, 2, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-offset-02710");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer_large, 2, 1, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, MultiDrawIndirectFeature) {
+    TEST_DESCRIPTION("use vkCmdDrawIndexedIndirect without MultiDrawIndirect");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    if (m_device->Physical().limits_.maxDrawIndirectCount < 2) {
+        GTEST_SKIP() << "maxDrawIndirectCount is too low";
+    }
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    vkt::Buffer draw_buffer(*m_device, sizeof(VkDrawIndirectCommand) * 3, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    vkt::Buffer index_buffer(*m_device, sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer, 0, 0, sizeof(VkDrawIndexedIndirectCommand));
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-drawCount-02718");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer, 0, 2, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, StrideMultiDrawIndirect) {
+    TEST_DESCRIPTION("Validate Stride parameter.");
+    AddRequiredFeature(vkt::Feature::multiDrawIndirect);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const uint32_t buffer_size = 128;
+    vkt::Buffer buffer(*m_device, buffer_size,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    CreatePipelineHelper helper(*this);
+    helper.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+
+    auto buf_memory_barrier = buffer.BufferMemoryBarrier(
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INDEX_READ_BIT, 0, VK_WHOLE_SIZE);
+    m_command_buffer.Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, buf_memory_barrier);
+
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, helper.Handle());
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00476");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00488");
+    vk::CmdDrawIndirect(m_command_buffer, buffer, 0, 100, 2);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdDrawIndirect(m_command_buffer, buffer, 0, 2, 24);
+
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT16);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-drawCount-00528");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-drawCount-00540");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, buffer, 0, 100, 2);
+    m_errorMonitor->VerifyFound();
+
+    auto draw_count = m_device->Physical().limits_.maxDrawIndirectCount;
+    if (draw_count != vvl::kU32Max) {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-02719");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00476");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00488");
+        vk::CmdDrawIndirect(m_command_buffer, buffer, 0, draw_count + 1, 2);
+        m_errorMonitor->VerifyFound();
+    }
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-drawCount-00487");
+    vk::CmdDrawIndirect(m_command_buffer, buffer, buffer_size, 1, 2);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-drawCount-00539");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, buffer, buffer_size, 1, 2);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdDrawIndexedIndirect(m_command_buffer, buffer, 0, 2, 24);
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DrawIndirectCountKHR) {
+    TEST_DESCRIPTION("Test covered valid usage for vkCmdDrawIndirectCountKHR");
+
+    AddRequiredExtensions(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+
+    VkBufferCreateInfo buffer_create_info = vku::InitStructHelper();
+    buffer_create_info.size = sizeof(VkDrawIndirectCommand);
+    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    vkt::Buffer draw_buffer(*m_device, buffer_create_info, vkt::no_mem);
+
+    VkDeviceSize count_buffer_size = 128;
+    VkBufferCreateInfo count_buffer_create_info = vku::InitStructHelper();
+    count_buffer_create_info.size = count_buffer_size;
+    count_buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    vkt::Buffer count_buffer(*m_device, count_buffer_create_info);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-buffer-02708");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    draw_buffer.AllocateAndBindMemory(*m_device);
+
+    vkt::Buffer count_buffer_unbound(*m_device, count_buffer_create_info, vkt::no_mem);
+
+    count_buffer_create_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    vkt::Buffer count_buffer_wrong(*m_device, count_buffer_create_info);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-countBuffer-02714");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer_unbound, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-countBuffer-02715");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer_wrong, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-offset-02710");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 1, count_buffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-countBufferOffset-02716");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 1, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-countBufferOffset-04129");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, count_buffer_size, 1,
+                                sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-stride-03110");
+    vk::CmdDrawIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 0, 1, 1);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DrawIndexedIndirectCountKHR) {
+    TEST_DESCRIPTION("Test covered valid usage for vkCmdDrawIndexedIndirectCountKHR");
+
+    AddRequiredExtensions(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, NULL);
+
+    VkBufferCreateInfo buffer_create_info = vku::InitStructHelper();
+    buffer_create_info.size = sizeof(VkDrawIndexedIndirectCommand);
+    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    vkt::Buffer draw_buffer(*m_device, buffer_create_info);
+
+    VkDeviceSize count_buffer_size = 128;
+    VkBufferCreateInfo count_buffer_create_info = vku::InitStructHelper();
+    count_buffer_create_info.size = count_buffer_size;
+    count_buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    vkt::Buffer count_buffer(*m_device, count_buffer_create_info);
+
+    VkBufferCreateInfo index_buffer_create_info = vku::InitStructHelper();
+    index_buffer_create_info.size = sizeof(uint32_t);
+    index_buffer_create_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    vkt::Buffer index_buffer(*m_device, index_buffer_create_info);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-None-07312");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    vkt::Buffer draw_buffer_unbound(*m_device, count_buffer_create_info, vkt::no_mem);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-buffer-02708");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer_unbound, 0, count_buffer, 0, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    vkt::Buffer count_buffer_unbound(*m_device, count_buffer_create_info, vkt::no_mem);
+
+    count_buffer_create_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    vkt::Buffer count_buffer_wrong(*m_device, count_buffer_create_info);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-countBuffer-02714");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer_unbound, 0, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-countBuffer-02715");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer_wrong, 0, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-offset-02710");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 1, count_buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-countBufferOffset-02716");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 1, 1, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-countBufferOffset-04129");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, count_buffer_size, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-stride-03142");
+    vk::CmdDrawIndexedIndirectCountKHR(m_command_buffer, draw_buffer, 0, count_buffer, 0, 1, 1);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DrawIndirectCountFeature) {
+    TEST_DESCRIPTION("Test covered valid usage for the 1.2 drawIndirectCount feature");
+
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    vkt::Buffer indirect_buffer(*m_device, sizeof(VkDrawIndirectCommand), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    vkt::Buffer indexed_indirect_buffer(*m_device, sizeof(VkDrawIndexedIndirectCommand), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    vkt::Buffer count_buffer(*m_device, sizeof(uint32_t), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    vkt::Buffer index_buffer(*m_device, sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    // Make calls to valid commands but without the drawIndirectCount feature set
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirectCount-None-04445");
+    vk::CmdDrawIndirectCount(m_command_buffer, indirect_buffer, 0, count_buffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirectCount-None-04445");
+    vk::CmdDrawIndexedIndirectCount(m_command_buffer, indexed_indirect_buffer, 0, count_buffer, 0, 1,
+                                    sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ExclusiveScissorNV) {
+    TEST_DESCRIPTION("Test VK_NV_scissor_exclusive with multiViewport disabled.");
+
+    AddRequiredExtensions(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_NV_SCISSOR_EXCLUSIVE_EXTENSION_NAME);
+
+    AddRequiredFeature(vkt::Feature::exclusiveScissor);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    if (m_device->Physical().limits_.maxViewports <= 1) {
+        GTEST_SKIP() << "Device doesn't support multiple viewports";
+    }
+
+    // Based on PSOViewportStateTests
+    {
+        VkViewport viewport = {0.0f, 0.0f, 64.0f, 64.0f, 0.0f, 1.0f};
+        VkViewport viewports[] = {viewport, viewport};
+        VkRect2D scissor = {{0, 0}, {64, 64}};
+        VkRect2D scissors[100] = {scissor, scissor};
+
+        struct TestCase {
+            uint32_t viewport_count;
+            VkViewport* viewports;
+            uint32_t scissor_count;
+            VkRect2D* scissors;
+            uint32_t exclusive_scissor_count;
+            VkRect2D* exclusive_scissors;
+
+            std::vector<std::string> vuids;
+        };
+
+        // 02029 only requires exclusiveScissorCount to be 0 or at least viewportCount, so an exclusiveScissorCount
+        // larger than viewportCount does not violate it.
+        std::vector<TestCase> test_cases = {
+            {1,
+             viewports,
+             1,
+             scissors,
+             2,
+             scissors,
+             {"VUID-VkPipelineViewportExclusiveScissorStateCreateInfoNV-exclusiveScissorCount-02027"}},
+            {1,
+             viewports,
+             1,
+             scissors,
+             100,
+             scissors,
+             {"VUID-VkPipelineViewportExclusiveScissorStateCreateInfoNV-exclusiveScissorCount-02027",
+              "VUID-VkPipelineViewportExclusiveScissorStateCreateInfoNV-exclusiveScissorCount-02028"}},
+            {1, viewports, 1, scissors, 1, nullptr, {"VUID-VkGraphicsPipelineCreateInfo-pDynamicStates-04056"}},
+        };
+
+        for (const auto& test_case : test_cases) {
+            VkPipelineViewportExclusiveScissorStateCreateInfoNV exc = vku::InitStructHelper();
+
+            const auto break_vp = [&test_case, &exc](CreatePipelineHelper& helper) {
+                helper.vp_state_ci_.viewportCount = test_case.viewport_count;
+                helper.vp_state_ci_.pViewports = test_case.viewports;
+                helper.vp_state_ci_.scissorCount = test_case.scissor_count;
+                helper.vp_state_ci_.pScissors = test_case.scissors;
+                helper.vp_state_ci_.pNext = &exc;
+
+                exc.exclusiveScissorCount = test_case.exclusive_scissor_count;
+                exc.pExclusiveScissors = test_case.exclusive_scissors;
+            };
+            CreatePipelineHelper::OneshotTest(*this, break_vp, kErrorBit, test_case.vuids);
+        }
+    }
+
+    // Based on SetDynScissorParamTests
+    {
+        const VkRect2D scissor = {{0, 0}, {16, 16}};
+        const VkRect2D scissors[] = {scissor, scissor};
+
+        m_command_buffer.Begin();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-firstExclusiveScissor-02035");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 1, 1, scissors);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-exclusiveScissorCount-arraylength");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 0, 0, nullptr);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-exclusiveScissorCount-02036");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 0, 2, scissors);
+        m_errorMonitor->VerifyFound();
+
+        // This VU gets triggered before VUID-vkCmdSetExclusiveScissorNV-firstExclusiveScissor-02035
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-exclusiveScissorCount-arraylength");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 1, 0, scissors);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-firstExclusiveScissor-02035");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-exclusiveScissorCount-02036");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 1, 2, scissors);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetExclusiveScissorNV-pExclusiveScissors-parameter");
+        vk::CmdSetExclusiveScissorNV(m_command_buffer, 0, 1, nullptr);
+        m_errorMonitor->VerifyFound();
+
+        struct TestCase {
+            VkRect2D scissor;
+            std::string vuid;
+        };
+
+        std::vector<TestCase> test_cases = {
+            {{{-1, 0}, {16, 16}}, "VUID-vkCmdSetExclusiveScissorNV-x-02037"},
+            {{{0, -1}, {16, 16}}, "VUID-vkCmdSetExclusiveScissorNV-x-02037"},
+            {{{1, 0}, {vvl::kI32Max, 16}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02038"},
+            {{{vvl::kI32Max, 0}, {1, 16}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02038"},
+            {{{0, 0}, {uint32_t{vvl::kI32Max} + 1, 16}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02038"},
+            {{{0, 1}, {16, vvl::kI32Max}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02039"},
+            {{{0, vvl::kI32Max}, {16, 1}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02039"},
+            {{{0, 0}, {16, uint32_t{vvl::kI32Max} + 1}}, "VUID-vkCmdSetExclusiveScissorNV-offset-02039"}};
+
+        for (const auto& test_case : test_cases) {
+            m_errorMonitor->SetDesiredError(test_case.vuid.c_str());
+            vk::CmdSetExclusiveScissorNV(m_command_buffer, 0, 1, &test_case.scissor);
+            m_errorMonitor->VerifyFound();
+        }
+
+        m_command_buffer.End();
+    }
+}
+
+TEST_F(NegativeCommand, ViewportWScalingNV) {
+    TEST_DESCRIPTION("Verify VK_NV_clip_space_w_scaling");
+
+    AddRequiredExtensions(VK_NV_CLIP_SPACE_W_SCALING_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::multiViewport);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const char vs_src[] = R"glsl(
+        #version 450
+        const vec2 positions[] = { vec2(-1.0f,  1.0f),
+                                   vec2( 1.0f,  1.0f),
+                                   vec2(-1.0f, -1.0f),
+                                   vec2( 1.0f, -1.0f) };
+        out gl_PerVertex {
+            vec4 gl_Position;
+        };
+
+        void main() {
+            gl_Position = vec4(positions[gl_VertexIndex % 4], 0.0f, 1.0f);
+        }
+    )glsl";
+
+    const char fs_src[] = R"glsl(
+        #version 450
+        layout(location = 0) out vec4 outColor;
+
+        void main() {
+            outColor = vec4(0.0f, 1.0f, 0.0f, 1.0f);
+        }
+    )glsl";
+
+    const std::vector<VkViewport> vp = {
+        {0.0f, 0.0f, 64.0f, 64.0f}, {0.0f, 0.0f, 64.0f, 64.0f}, {0.0f, 0.0f, 64.0f, 64.0f}, {0.0f, 0.0f, 64.0f, 64.0f}};
+    const std::vector<VkRect2D> sc = {{{0, 0}, {32, 32}}, {{32, 0}, {32, 32}}, {{0, 32}, {32, 32}}, {{32, 32}, {32, 32}}};
+    constexpr std::array scale = {VkViewportWScalingNV{-0.2f, -0.2f}, VkViewportWScalingNV{0.2f, -0.2f},
+                                  VkViewportWScalingNV{-0.2f, 0.2f}, VkViewportWScalingNV{0.2f, 0.2f}};
+
+    const uint32_t vp_count = static_cast<uint32_t>(vp.size());
+
+    VkPipelineViewportWScalingStateCreateInfoNV vpsi = vku::InitStructHelper();
+    vpsi.viewportWScalingEnable = VK_TRUE;
+    vpsi.viewportCount = vp_count;
+    vpsi.pViewportWScalings = scale.data();
+
+    VkPipelineViewportStateCreateInfo vpci = vku::InitStructHelper(&vpsi);
+    vpci.viewportCount = vp_count;
+    vpci.pViewports = vp.data();
+    vpci.scissorCount = vp_count;
+    vpci.pScissors = sc.data();
+
+    const auto set_vpci = [&vpci](CreatePipelineHelper& helper) { helper.vp_state_ci_ = vpci; };
+
+    // Make sure no errors show up when creating the pipeline with w-scaling enabled
+    CreatePipelineHelper::OneshotTest(*this, set_vpci, kErrorBit);
+
+    // Create pipeline with w-scaling enabled but without a valid scaling array
+    vpsi.pViewportWScalings = nullptr;
+    CreatePipelineHelper::OneshotTest(*this, set_vpci, kErrorBit,
+                                      std::vector<std::string>({"VUID-VkGraphicsPipelineCreateInfo-pDynamicStates-01715"}));
+
+    vpsi.pViewportWScalings = scale.data();
+
+    // Create pipeline with w-scaling enabled but without matching viewport counts
+    vpsi.viewportCount = 1;
+    CreatePipelineHelper::OneshotTest(
+        *this, set_vpci, kErrorBit,
+        std::vector<std::string>({"VUID-VkPipelineViewportStateCreateInfo-viewportWScalingEnable-01726"}));
+
+    VkShaderObj vs(*m_device, vs_src, VK_SHADER_STAGE_VERTEX_BIT);
+    VkShaderObj fs(*m_device, fs_src, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    vpsi.viewportCount = vp_count;
+    CreatePipelineHelper pipe(*this);
+    pipe.shader_stages_ = {vs.GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.vp_state_ci_ = vpci;
+    pipe.CreateGraphicsPipeline();
+
+    CreatePipelineHelper pipe_dynamic(*this);
+    pipe_dynamic.shader_stages_ = {vs.GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe_dynamic.vp_state_ci_ = vpci;
+    pipe_dynamic.AddDynamicState(VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_NV);
+    pipe_dynamic.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+
+    // Bind pipeline without dynamic w scaling enabled
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    // Bind pipeline that has dynamic w-scaling enabled
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_dynamic);
+
+    const auto max_vps = m_device->Physical().limits_.maxViewports;
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdSetViewportWScalingNV-firstViewport-01324");
+    vk::CmdSetViewportWScalingNV(m_command_buffer, 1, max_vps, scale.data());
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdSetViewportWScalingNV(m_command_buffer, 0, vp_count, scale.data());
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, FilterCubicSamplerInCmdDraw) {
+    TEST_DESCRIPTION("Verify if sampler is filter cubic, image view needs to support it.");
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_EXT_FILTER_CUBIC_EXTENSION_NAME);
+    AddRequiredExtensions(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+
+    VkFormatProperties format_props;
+    vk::GetPhysicalDeviceFormatProperties(m_device->Physical(), format, &format_props);
+    if ((format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT) == 0) {
+        GTEST_SKIP() << "SAMPLED_IMAGE_FILTER_CUBIC_BIT for format is not supported.";
+    }
+
+    auto image_ci = vkt::Image::ImageCreateInfo2D(128, 128, 1, 1, format, usage);
+
+    VkPhysicalDeviceImageViewImageFormatInfoEXT imageview_format_info = vku::InitStructHelper();
+    imageview_format_info.imageViewType = VK_IMAGE_VIEW_TYPE_2D;
+    VkPhysicalDeviceImageFormatInfo2 image_format_info = vku::InitStructHelper(&imageview_format_info);
+    image_format_info.type = image_ci.imageType;
+    image_format_info.format = image_ci.format;
+    image_format_info.tiling = image_ci.tiling;
+    image_format_info.usage = image_ci.usage;
+    image_format_info.flags = image_ci.flags;
+
+    VkFilterCubicImageViewImageFormatPropertiesEXT filter_cubic_props = vku::InitStructHelper();
+    VkImageFormatProperties2 image_format_properties = vku::InitStructHelper(&filter_cubic_props);
+
+    vk::GetPhysicalDeviceImageFormatProperties2(Gpu(), &image_format_info, &image_format_properties);
+
+    if (filter_cubic_props.filterCubic || filter_cubic_props.filterCubicMinmax) {
+        GTEST_SKIP() << "Image and ImageView supports filter cubic ; skipped.";
+    }
+
+    vkt::Image image(*m_device, image_ci, vkt::set_layout);
+    vkt::ImageView image_view = image.CreateView();
+
+    VkSamplerCreateInfo sampler_ci = vku::InitStructHelper();
+    sampler_ci.minFilter = VK_FILTER_CUBIC_EXT;
+    sampler_ci.magFilter = VK_FILTER_CUBIC_EXT;
+    vkt::Sampler sampler(*m_device, sampler_ci);
+    ASSERT_TRUE(sampler.initialized());
+
+    VkSamplerReductionModeCreateInfo reduction_mode_ci = vku::InitStructHelper();
+    reduction_mode_ci.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN;
+    sampler_ci.pNext = &reduction_mode_ci;
+    vkt::Sampler sampler_reduction(*m_device, sampler_ci);
+
+    VkShaderObj fs(*m_device, kFragmentSamplerGlsl, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    CreatePipelineHelper g_pipe(*this);
+    g_pipe.shader_stages_ = {g_pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    g_pipe.dsl_bindings_[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    g_pipe.CreateGraphicsPipeline();
+
+    g_pipe.descriptor_set_->WriteDescriptorImageInfo(0, image_view, sampler_reduction);
+    g_pipe.descriptor_set_->UpdateDescriptorSets();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe.pipeline_layout_, 0, 1,
+                              &g_pipe.descriptor_set_->set_, 0, nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-filterCubicMinmax-02695");
+    vk::CmdDraw(m_command_buffer, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+    m_command_buffer.Reset();
+
+    g_pipe.descriptor_set_->WriteDescriptorImageInfo(0, image_view, sampler);
+    g_pipe.descriptor_set_->UpdateDescriptorSets();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe.pipeline_layout_, 0, 1,
+                              &g_pipe.descriptor_set_->set_, 0, nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-filterCubic-02694");
+    vk::CmdDraw(m_command_buffer, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ImageFilterCubicSamplerInCmdDraw) {
+    TEST_DESCRIPTION("Verify if sampler is filter cubic with the VK_IMG_filter cubic extension that it's a valid ImageViewType.");
+
+    AddRequiredExtensions(VK_IMG_FILTER_CUBIC_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    auto image_ci = vkt::Image::ImageCreateInfo2D(128, 128, 1, 1, format, usage);
+    image_ci.imageType = VK_IMAGE_TYPE_3D;
+    vkt::Image image(*m_device, image_ci, vkt::set_layout);
+
+    vkt::ImageView image_view = image.CreateView(VK_IMAGE_VIEW_TYPE_3D);
+
+    VkSamplerCreateInfo sampler_ci = vku::InitStructHelper();
+    sampler_ci.minFilter = VK_FILTER_CUBIC_EXT;
+    sampler_ci.magFilter = VK_FILTER_CUBIC_EXT;
+    vkt::Sampler sampler(*m_device, sampler_ci);
+    ASSERT_TRUE(sampler.initialized());
+
+    const char fs_src[] = R"glsl(
+        #version 450
+        layout(set=0, binding=0) uniform sampler3D s;
+        layout(location=0) out vec4 x;
+        void main(){
+            x = texture(s, vec3(1));
+        }
+    )glsl";
+    VkShaderObj fs(*m_device, fs_src, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    CreatePipelineHelper g_pipe(*this);
+    g_pipe.shader_stages_ = {g_pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    g_pipe.dsl_bindings_[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    g_pipe.CreateGraphicsPipeline();
+
+    g_pipe.descriptor_set_->WriteDescriptorImageInfo(0, image_view, sampler);
+    g_pipe.descriptor_set_->UpdateDescriptorSets();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe.pipeline_layout_, 0, 1,
+                              &g_pipe.descriptor_set_->set_, 0, nullptr);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-02693");
+    vk::CmdDraw(m_command_buffer, 1, 0, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, CmdUpdateBufferSize) {
+    TEST_DESCRIPTION("Update buffer with invalid dataSize");
+
+    RETURN_IF_SKIP(Init());
+
+    uint32_t update_data[4] = {0, 0, 0, 0};
+    VkDeviceSize data_size = sizeof(uint32_t) * 4;
+    vkt::Buffer buffer(*m_device, data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdUpdateBuffer-dataSize-00033");
+    m_command_buffer.Begin();
+    vk::CmdUpdateBuffer(m_command_buffer, buffer, sizeof(uint32_t), data_size, (void*)update_data);
+    m_command_buffer.End();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CmdUpdateBufferDstOffset) {
+    TEST_DESCRIPTION("Update buffer with invalid dst offset");
+    RETURN_IF_SKIP(Init());
+
+    uint32_t update_data[4] = {0, 0, 0, 0};
+    VkDeviceSize data_size = sizeof(uint32_t) * 4;
+    vkt::Buffer buffer(*m_device, data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdUpdateBuffer-dstOffset-00032");
+    m_command_buffer.Begin();
+    vk::CmdUpdateBuffer(m_command_buffer, buffer, sizeof(uint32_t) * 8, data_size, (void*)update_data);
+    m_command_buffer.End();
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DescriptorSetPipelineBindPoint) {
+    TEST_DESCRIPTION(
+        "Attempt to bind descriptor set to a bind point not supported by command pool the command buffer was allocated from");
+    RETURN_IF_SKIP(Init());
+
+    const std::optional<uint32_t> compute_qfi = m_device->ComputeOnlyQueueFamily();
+    if (!compute_qfi) {
+        GTEST_SKIP() << "No compute-only queue family, skipping bindpoint and queue tests.";
+    }
+
+    OneOffDescriptorSet descriptor_set(m_device, {
+                                                     {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                                 });
+
+    const vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    vkt::CommandPool command_pool(*m_device, compute_qfi.value());
+    vkt::CommandBuffer command_buffer(*m_device, command_pool);
+    command_buffer.Begin();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdBindDescriptorSets-pipelineBindPoint-00361");
+    vk::CmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                              nullptr);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DescriptorSetPipelineBindPointMaintenance6) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance6);
+    RETURN_IF_SKIP(Init());
+
+    const std::optional<uint32_t> compute_qfi = m_device->ComputeOnlyQueueFamily();
+    if (!compute_qfi) {
+        GTEST_SKIP() << "No compute-only queue family, skipping bindpoint and queue tests.";
+    }
+
+    OneOffDescriptorSet descriptor_set(m_device, {
+                                                     {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                                 });
+
+    const vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    vkt::CommandPool command_pool(*m_device, compute_qfi.value());
+    vkt::CommandBuffer command_buffer(*m_device, command_pool);
+    command_buffer.Begin();
+
+    VkBindDescriptorSetsInfo bind_ds_info = vku::InitStructHelper();
+    bind_ds_info.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bind_ds_info.layout = pipeline_layout;
+    bind_ds_info.firstSet = 0;
+    bind_ds_info.descriptorSetCount = 1;
+    bind_ds_info.pDescriptorSets = &descriptor_set.set_;
+    bind_ds_info.dynamicOffsetCount = 0;
+    bind_ds_info.pDynamicOffsets = nullptr;
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdBindDescriptorSets2-pBindDescriptorSetsInfo-09467");
+    vk::CmdBindDescriptorSets2KHR(command_buffer, &bind_ds_info);
+    m_errorMonitor->VerifyFound();
+
+    bind_ds_info.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bind_ds_info.descriptorSetCount = 0;
+    m_errorMonitor->SetDesiredError("VUID-VkBindDescriptorSetsInfo-descriptorSetCount-arraylength");
+    vk::CmdBindDescriptorSets2KHR(command_buffer, &bind_ds_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CmdClearColorImageNullColor) {
+    TEST_DESCRIPTION("Test invalid null entries for clear color");
+    RETURN_IF_SKIP(Init());
+
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    VkImageSubresourceRange isr = {};
+    isr.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    isr.baseArrayLayer = 0;
+    isr.baseMipLevel = 0;
+    isr.layerCount = 1;
+    isr.levelCount = 1;
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-pColor-04961");
+    vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, nullptr, 1, &isr);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, EndCommandBufferWithConditionalRendering) {
+    TEST_DESCRIPTION("Call EndCommandBuffer when conditional rendering is active");
+    AddRequiredExtensions(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    vkt::Buffer buffer(*m_device, 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT);
+
+    VkConditionalRenderingBeginInfoEXT conditional_rendering_begin = vku::InitStructHelper();
+    conditional_rendering_begin.buffer = buffer;
+
+    VkCommandBufferBeginInfo command_buffer_begin = vku::InitStructHelper();
+
+    vk::BeginCommandBuffer(m_command_buffer, &command_buffer_begin);
+    vk::CmdBeginConditionalRenderingEXT(m_command_buffer, &conditional_rendering_begin);
+    m_errorMonitor->SetDesiredError("VUID-vkEndCommandBuffer-None-01978");
+    vk::EndCommandBuffer(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DrawBlendEnabledFormatFeatures) {
+    TEST_DESCRIPTION("Test pipeline blend enabled with missing image views format features");
+    AddRequiredExtensions(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::extendedDynamicState3ColorBlendEnable);
+    RETURN_IF_SKIP(Init());
+
+    // Best guess format
+    m_render_target_fmt = VK_FORMAT_B8G8R8A8_USCALED;
+    const VkFormatFeatureFlags2 linear = m_device->FormatFeaturesLinear(m_render_target_fmt);
+    const VkFormatFeatureFlags2 optimal = m_device->FormatFeaturesOptimal(m_render_target_fmt);
+    if (!(linear & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT) || (linear & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT) ||
+        !(optimal & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT)) {
+        GTEST_SKIP() << "Need " << string_VkFormat(m_render_target_fmt)
+                     << " to support blending in optimal tiling, but not in linear tiling";
+    }
+
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.cb_attachments_.blendEnable = VK_TRUE;
+    pipe.CreateGraphicsPipeline();
+
+    CreatePipelineHelper pipe2(*this);
+    pipe2.AddDynamicState(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
+    pipe2.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-blendEnable-04727");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    VkBool32 color_blend_enable = VK_TRUE;
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe2);
+    vk::CmdSetColorBlendEnableEXT(m_command_buffer, 0, 1u, &color_blend_enable);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-blendEnable-04727");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    color_blend_enable = VK_FALSE;
+    vk::CmdSetColorBlendEnableEXT(m_command_buffer, 0, 1u, &color_blend_enable);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, EndConditionalRendering) {
+    TEST_DESCRIPTION("Invalid calls to vkCmdEndConditionalRenderingEXT.");
+
+    AddRequiredExtensions(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    VkAttachmentDescription attach[] = {
+        {0, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+    };
+    VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpasses[] = {
+        {0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1, &ref, nullptr, nullptr, 0, nullptr},
+        {0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1, &ref, nullptr, nullptr, 0, nullptr},
+    };
+
+    VkSubpassDependency dep = {0,
+                               1,
+                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                               VK_DEPENDENCY_BY_REGION_BIT};
+
+    VkRenderPassCreateInfo rpci = vku::InitStructHelper();
+    rpci.attachmentCount = 1;
+    rpci.pAttachments = attach;
+    rpci.subpassCount = 2;
+    rpci.pSubpasses = subpasses;
+    rpci.dependencyCount = 1;
+    rpci.pDependencies = &dep;
+
+    vkt::RenderPass render_pass(*m_device, rpci);
+
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    vkt::ImageView imageView = image.CreateView();
+
+    vkt::Framebuffer framebuffer(*m_device, render_pass, 1, &imageView.handle());
+
+    VkBufferCreateInfo buffer_create_info = vku::InitStructHelper();
+    buffer_create_info.size = 32;
+    buffer_create_info.usage = VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
+    vkt::Buffer buffer(*m_device, buffer_create_info);
+
+    VkConditionalRenderingBeginInfoEXT conditional_rendering_begin = vku::InitStructHelper();
+    conditional_rendering_begin.buffer = buffer;
+
+    VkClearValue clear_value;
+    clear_value.color = m_clear_color;
+
+    VkRenderPassBeginInfo rpbi = vku::InitStructHelper();
+    rpbi.renderPass = render_pass;
+    rpbi.framebuffer = framebuffer;
+    rpbi.renderArea = {{0, 0}, {32, 32}};
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear_value;
+
+    m_command_buffer.Begin();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdEndConditionalRenderingEXT-None-01985");
+    vk::CmdEndConditionalRenderingEXT(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBeginConditionalRenderingEXT(m_command_buffer, &conditional_rendering_begin);
+    vk::CmdBeginRenderPass(m_command_buffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdEndConditionalRenderingEXT-None-01986");
+    vk::CmdEndConditionalRenderingEXT(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.NextSubpass();
+    m_command_buffer.EndRenderPass();
+    vk::CmdEndConditionalRenderingEXT(m_command_buffer);
+
+    m_command_buffer.FullMemoryBarrier();
+    vk::CmdBeginRenderPass(m_command_buffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    vk::CmdBeginConditionalRenderingEXT(m_command_buffer, &conditional_rendering_begin);
+    m_command_buffer.NextSubpass();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdEndConditionalRenderingEXT-None-01987");
+    vk::CmdEndConditionalRenderingEXT(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+}
+
+TEST_F(NegativeCommand, ResolveUsage) {
+    TEST_DESCRIPTION("Resolve image with missing usage flags.");
+
+    RETURN_IF_SKIP(Init());
+    const VkPhysicalDeviceLimits& dev_limits = m_device->Physical().limits_;
+    if ((dev_limits.sampledImageColorSampleCounts & VK_SAMPLE_COUNT_2_BIT) == 0) {
+        GTEST_SKIP() << "Required VkSampleCountFlagBits are not supported; skipping";
+    }
+
+    // Best guess format
+    const VkFormat src_format = VK_FORMAT_A8B8G8R8_USCALED_PACK32;
+    const VkFormat dst_format = VK_FORMAT_A8B8G8R8_SSCALED_PACK32;
+    const VkFormatFeatureFlags2 src_features = m_device->FormatFeaturesOptimal(src_format);
+    const VkFormatFeatureFlags2 dst_features = m_device->FormatFeaturesOptimal(dst_format);
+    if ((src_features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT) || !(src_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT) ||
+        (dst_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT) || !(dst_features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT)) {
+        GTEST_SKIP() << "Need " << string_VkFormat(src_format) << " to only be a transfer dst and " << string_VkFormat(dst_format)
+                     << " to only be a transfer src";
+    }
+    // The formats also need to actually be usable for the multisampled images below
+    auto multisampled_image_supported = [this](VkFormat format, VkImageUsageFlags usage) {
+        VkImageCreateInfo ci = vkt::Image::ImageCreateInfo2D(32, 1, 1, 1, format, usage);
+        ci.samples = VK_SAMPLE_COUNT_2_BIT;
+        VkImageFormatProperties props;
+        return GetImageFormatProps(Gpu(), ci, props) == VK_SUCCESS && (props.sampleCounts & VK_SAMPLE_COUNT_2_BIT) != 0;
+    };
+    if (!multisampled_image_supported(src_format, VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+        !multisampled_image_supported(dst_format, VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Need " << string_VkFormat(src_format) << " and " << string_VkFormat(dst_format)
+                     << " to support multisampled images";
+    }
+
+    VkImageCreateInfo image_create_info = vku::InitStructHelper();
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.extent = {32, 1, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_2_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_create_info.flags = 0;
+    vkt::Image src_image(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.format = dst_format;
+
+    // Some implementations don't support multisampling, check that image format is valid
+    VkImageFormatProperties image_format_props{};
+    VkResult result = GetImageFormatProps(Gpu(), image_create_info, image_format_props);
+    bool src_image_2_tests_valid = false;
+    vkt::Image src_image2;
+    if ((result == VK_SUCCESS) && (image_format_props.sampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0) {
+        src_image2.Init(*m_device, image_create_info);
+        src_image_2_tests_valid = true;
+    }
+
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vkt::Image invalidSrcImage(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_create_info.format = src_format;
+    vkt::Image invalidSrcImage2(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    vkt::Image dstImage(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.format = src_format;
+    vkt::Image dstImage2(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    vkt::Image invalidDstImage(*m_device, image_create_info, vkt::set_layout);
+
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_create_info.format = dst_format;
+    vkt::Image invalidDstImage2(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.Begin();
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-06762");
+    vk::CmdResolveImage(m_command_buffer, invalidSrcImage, VK_IMAGE_LAYOUT_GENERAL, dstImage, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-06764");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, invalidDstImage, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcImage-06763");
+    vk::CmdResolveImage(m_command_buffer, invalidSrcImage2, VK_IMAGE_LAYOUT_GENERAL, dstImage2, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    if (src_image_2_tests_valid) {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-dstImage-06765");
+        vk::CmdResolveImage(m_command_buffer, src_image2, VK_IMAGE_LAYOUT_GENERAL, invalidDstImage2, VK_IMAGE_LAYOUT_GENERAL, 1,
+                            &resolve_region);
+        m_errorMonitor->VerifyFound();
+    }
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DepthStencilStateForReadOnlyLayout) {
+    TEST_DESCRIPTION("invalid depth stencil state for subpass that uses read only image layout.");
+
+    RETURN_IF_SKIP(Init());
+
+    const VkFormat ds_format = FindSupportedDepthStencilFormat(Gpu());
+    vkt::Image ds_image(*m_device, 32, 32, ds_format,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    vkt::ImageView image_view = ds_image.CreateView(VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    RenderPassSingleSubpass rp(*this);
+    rp.AddAttachmentDescription(ds_format, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    rp.AddDepthStencilAttachment(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    rp.CreateRenderPass();
+
+    VkPipelineDepthStencilStateCreateInfo depth_state_info = vku::InitStructHelper();
+    depth_state_info.depthTestEnable = VK_TRUE;
+    depth_state_info.depthWriteEnable = VK_TRUE;
+
+    VkPipelineDepthStencilStateCreateInfo stencil_state_info = vku::InitStructHelper();
+    stencil_state_info.front.failOp = VK_STENCIL_OP_ZERO;
+    stencil_state_info.front.writeMask = 1;
+    stencil_state_info.back.writeMask = 1;
+    stencil_state_info.stencilTestEnable = VK_TRUE;
+
+    VkPipelineDepthStencilStateCreateInfo stencil_disabled_state_info = vku::InitStructHelper();
+    stencil_disabled_state_info.front.failOp = VK_STENCIL_OP_ZERO;
+    stencil_disabled_state_info.front.writeMask = 1;
+    stencil_disabled_state_info.back.writeMask = 0;
+    stencil_disabled_state_info.stencilTestEnable = VK_TRUE;
+
+    CreatePipelineHelper depth_pipe(*this);
+    depth_pipe.LateBindPipelineInfo();
+    depth_pipe.gp_ci_.renderPass = rp;
+    depth_pipe.gp_ci_.pDepthStencilState = &depth_state_info;
+    depth_pipe.CreateGraphicsPipeline(false);
+
+    CreatePipelineHelper stencil_pipe(*this);
+    stencil_pipe.LateBindPipelineInfo();
+    stencil_pipe.gp_ci_.renderPass = rp;
+    stencil_pipe.gp_ci_.pDepthStencilState = &stencil_state_info;
+    stencil_pipe.CreateGraphicsPipeline(false);
+
+    CreatePipelineHelper stencil_disabled_pipe(*this);
+    stencil_disabled_pipe.LateBindPipelineInfo();
+    stencil_disabled_pipe.gp_ci_.renderPass = rp;
+    stencil_disabled_pipe.gp_ci_.pDepthStencilState = &stencil_disabled_state_info;
+    stencil_disabled_pipe.CreateGraphicsPipeline(false);
+
+    CreatePipelineHelper stencil_dynamic_pipe(*this);
+    stencil_dynamic_pipe.AddDynamicState(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
+    stencil_dynamic_pipe.LateBindPipelineInfo();
+    stencil_dynamic_pipe.gp_ci_.renderPass = rp;
+    stencil_dynamic_pipe.gp_ci_.pDepthStencilState = &stencil_state_info;
+    stencil_dynamic_pipe.CreateGraphicsPipeline(false);
+
+    vkt::Framebuffer framebuffer(*m_device, rp, 1, &image_view.handle());
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(rp, framebuffer, 32, 32);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-06886");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, stencil_pipe);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-06887");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    // valid since writeMask is set to zero
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, stencil_disabled_pipe);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, stencil_dynamic_pipe);
+    vk::CmdSetStencilWriteMask(m_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, 1);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-06887");
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_errorMonitor->VerifyFound();
+
+    // valid since writeMask is set to zero
+    vk::CmdSetStencilWriteMask(m_command_buffer, VK_STENCIL_FACE_FRONT_BIT, 0);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, DepthStencilStateForReadOnlyLayoutDynamicRendering) {
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::dynamicRendering);
+    RETURN_IF_SKIP(Init());
+
+    auto depth_format = FindSupportedDepthOnlyFormat(Gpu());
+    auto stencil_format = FindSupportedStencilOnlyFormat(Gpu());
+    if (stencil_format == VK_FORMAT_UNDEFINED) {
+        GTEST_SKIP() << "Couldn't find a stencil only image format";
+    }
+    vkt::Image depth_image(*m_device, 32, 32, depth_format,
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    vkt::Image stencil_image(*m_device, 32, 32, stencil_format,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    vkt::ImageView depth_image_view = depth_image.CreateView(VK_IMAGE_ASPECT_DEPTH_BIT);
+    vkt::ImageView stencil_image_view = stencil_image.CreateView(VK_IMAGE_ASPECT_STENCIL_BIT);
+
+    VkPipelineRenderingCreateInfo pipeline_rendering_info = vku::InitStructHelper();
+    pipeline_rendering_info.colorAttachmentCount = 0;
+    pipeline_rendering_info.depthAttachmentFormat = depth_format;
+    pipeline_rendering_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+    VkPipelineDepthStencilStateCreateInfo depth_state_info = vku::InitStructHelper();
+    depth_state_info.depthTestEnable = VK_TRUE;
+    depth_state_info.depthWriteEnable = VK_TRUE;
+
+    CreatePipelineHelper depth_pipe(*this, &pipeline_rendering_info);
+    depth_pipe.gp_ci_.pDepthStencilState = &depth_state_info;
+    depth_pipe.CreateGraphicsPipeline();
+
+    pipeline_rendering_info.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+    pipeline_rendering_info.stencilAttachmentFormat = stencil_format;
+
+    VkPipelineDepthStencilStateCreateInfo stencil_state_info = vku::InitStructHelper();
+    stencil_state_info.front.failOp = VK_STENCIL_OP_ZERO;
+    stencil_state_info.front.writeMask = 1;
+    stencil_state_info.back.writeMask = 1;
+    stencil_state_info.stencilTestEnable = VK_TRUE;
+
+    CreatePipelineHelper stencil_pipe(*this, &pipeline_rendering_info);
+    stencil_pipe.gp_ci_.pDepthStencilState = &stencil_state_info;
+    stencil_pipe.CreateGraphicsPipeline();
+
+    VkRenderingInfo begin_rendering_info = vku::InitStructHelper();
+    begin_rendering_info.layerCount = 1;
+    begin_rendering_info.renderArea = {{0, 0}, {1, 1}};
+
+    {
+        VkRenderingAttachmentInfo depth_attachment = vku::InitStructHelper();
+        depth_attachment.imageView = depth_image_view;
+        depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        begin_rendering_info.pDepthAttachment = &depth_attachment;
+
+        m_command_buffer.Begin();
+        m_command_buffer.BeginRendering(begin_rendering_info);
+        vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_pipe);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-06886");
+        vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+        m_errorMonitor->VerifyFound();
+        m_command_buffer.EndRendering();
+    }
+    {
+        VkRenderingAttachmentInfo stencil_attachment = vku::InitStructHelper();
+        stencil_attachment.imageView = stencil_image_view;
+        stencil_attachment.imageLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL;
+        begin_rendering_info.pStencilAttachment = &stencil_attachment;
+        begin_rendering_info.pDepthAttachment = nullptr;
+
+        m_command_buffer.BeginRendering(begin_rendering_info);
+        vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, stencil_pipe);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-06887");
+        vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+        m_errorMonitor->VerifyFound();
+        m_command_buffer.EndRendering();
+    }
+}
+
+TEST_F(NegativeCommand, ClearColorImageWithRange) {
+    TEST_DESCRIPTION("Record clear color with an invalid VkImageSubresourceRange");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    const VkClearColorValue clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    m_command_buffer.Begin();
+
+    // Try baseMipLevel >= image.mipLevels with VK_REMAINING_MIP_LEVELS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-baseMipLevel-01470");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_REMAINING_MIP_LEVELS, 0, 1};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseMipLevel >= image.mipLevels without VK_REMAINING_MIP_LEVELS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-baseMipLevel-01470");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-pRanges-01692");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, 0, 1};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try levelCount = 0
+    {
+        m_errorMonitor->SetDesiredError("VUID-VkImageSubresourceRange-levelCount-01720");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 0, 1};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseMipLevel + levelCount > image.mipLevels
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-pRanges-01692");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 2, 0, 1};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer >= image.arrayLayers with VK_REMAINING_ARRAY_LAYERS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-baseArrayLayer-01472");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 1, VK_REMAINING_ARRAY_LAYERS};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer >= image.arrayLayers without VK_REMAINING_ARRAY_LAYERS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-baseArrayLayer-01472");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-pRanges-01693");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 1, 1};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try layerCount = 0
+    {
+        m_errorMonitor->SetDesiredError("VUID-VkImageSubresourceRange-layerCount-01721");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 0};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer + layerCount > image.arrayLayers
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-pRanges-01693");
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeCommand, ClearDepthStencilWithAspect) {
+    TEST_DESCRIPTION("Verify ClearDepth with an invalid VkImageAspectFlags.");
+    RETURN_IF_SKIP(Init());
+    const auto depth_format = FindSupportedDepthStencilFormat(Gpu());
+
+    const VkClearDepthStencilValue clear_value = {};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+
+    vkt::Image image(*m_device, 64, 64, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    m_command_buffer.Begin();
+
+    // Element of pRanges.aspect includes VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT not included in the
+    // VkImageCreateInfo::usage used to create image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02659");
+    // Element of pRanges.aspect includes VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT not included in the
+    // VkImageCreateInfo::usage used to create image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02660");
+    // ... since VK_IMAGE_USAGE_TRANSFER_DST_BIT not included in the VkImageCreateInfo::usage used to create image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02659");
+    vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
+    m_errorMonitor->VerifyFound();
+
+    // Using stencil aspect when format only have depth
+    const VkFormat depth_only_format = FindSupportedDepthOnlyFormat(Gpu());
+    if (depth_only_format != VK_FORMAT_UNDEFINED) {
+        vkt::Image depth_image(*m_device, 64, 64, depth_only_format,
+                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-image-02825");
+        vk::CmdClearDepthStencilImage(m_command_buffer, depth_image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearDepthStencilWithAspectSeparate) {
+    TEST_DESCRIPTION("Verify ClearDepth with an invalid VkImageAspectFlags.");
+    AddRequiredExtensions(VK_EXT_SEPARATE_STENCIL_USAGE_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+    const auto depth_format = FindSupportedDepthStencilFormat(Gpu());
+
+    const VkClearDepthStencilValue clear_value = {};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+
+    m_command_buffer.Begin();
+
+    VkImageStencilUsageCreateInfo image_stencil_create_info = vku::InitStructHelper();
+    image_stencil_create_info.stencilUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;  // not VK_IMAGE_USAGE_TRANSFER_DST_BIT
+
+    auto image_ci = vkt::Image::ImageCreateInfo2D(64, 64, 1, 1, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    image_ci.pNext = &image_stencil_create_info;
+    vkt::Image image(*m_device, image_ci);
+
+    // Element of pRanges.aspect includes VK_IMAGE_ASPECT_STENCIL_BIT, and image was created with separate stencil usage,
+    // VK_IMAGE_USAGE_TRANSFER_DST_BIT not included in the VkImageStencilUsageCreateInfo::stencilUsage used to create image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02658");
+    // ... since VK_IMAGE_USAGE_TRANSFER_DST_BIT not included in the VkImageCreateInfo::usage used to create image
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02659");
+    vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearDepthStencilWithRange) {
+    TEST_DESCRIPTION("Record clear depth with an invalid VkImageSubresourceRange");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    const auto depth_format = FindSupportedDepthStencilFormat(Gpu());
+    vkt::Image image(*m_device, 32, 32, depth_format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    const VkImageAspectFlags ds_aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+    const VkClearDepthStencilValue clear_value = {};
+
+    m_command_buffer.Begin();
+
+    // Try baseMipLevel >= image.mipLevels with VK_REMAINING_MIP_LEVELS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-baseMipLevel-01474");
+        const VkImageSubresourceRange range = {ds_aspect, 1, VK_REMAINING_MIP_LEVELS, 0, 1};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseMipLevel >= image.mipLevels without VK_REMAINING_MIP_LEVELS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-baseMipLevel-01474");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-01694");
+        const VkImageSubresourceRange range = {ds_aspect, 1, 1, 0, 1};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try levelCount = 0
+    {
+        m_errorMonitor->SetDesiredError("VUID-VkImageSubresourceRange-levelCount-01720");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 0, 0, 1};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseMipLevel + levelCount > image.mipLevels
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-01694");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 2, 0, 1};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer >= image.arrayLayers with VK_REMAINING_ARRAY_LAYERS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-baseArrayLayer-01476");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 1, 1, VK_REMAINING_ARRAY_LAYERS};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer >= image.arrayLayers without VK_REMAINING_ARRAY_LAYERS
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-baseArrayLayer-01476");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-01695");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 1, 1, 1};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try layerCount = 0
+    {
+        m_errorMonitor->SetDesiredError("VUID-VkImageSubresourceRange-layerCount-01721");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 1, 0, 0};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+
+    // Try baseArrayLayer + layerCount > image.arrayLayers
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-01695");
+        const VkImageSubresourceRange range = {ds_aspect, 0, 1, 0, 2};
+        vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &range);
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeCommand, ClearColorImageWithinRenderPass) {
+    // Call CmdClearColorImage within an active RenderPass
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-renderpass");
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    VkClearColorValue clear_color;
+    memset(clear_color.uint32, 0, sizeof(uint32_t) * 4);
+
+    auto image_ci = vkt::Image::ImageCreateInfo2D(32, 32, 1, 1, VK_FORMAT_B8G8R8A8_UNORM,
+                                                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    vkt::Image dst_image(*m_device, image_ci, vkt::set_layout);
+
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, image_ci.mipLevels, 0, image_ci.arrayLayers};
+
+    vk::CmdClearColorImage(m_command_buffer, dst_image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &range);
+
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearDepthStencilImage) {
+    // Hit errors related to vk::CmdClearDepthStencilImage()
+    // 1. Use an image that doesn't have VK_IMAGE_USAGE_TRANSFER_DST_BIT set
+    // 2. Call CmdClearDepthStencilImage within an active RenderPass
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    auto depth_format = FindSupportedDepthStencilFormat(Gpu());
+
+    VkClearDepthStencilValue clear_value = {0};
+    // Error here is that VK_IMAGE_USAGE_TRANSFER_DST_BIT is excluded for DS image that we'll call Clear on below
+    VkImageCreateInfo image_create_info =
+        vkt::Image::ImageCreateInfo2D(64, 64, 1, 1, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    vkt::Image dst_image_bad_usage(*m_device, image_create_info, vkt::set_layout);
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, image_create_info.mipLevels, 0,
+                                        image_create_info.arrayLayers};
+
+    m_command_buffer.Begin();
+    // need to handle since an element of pRanges includes VK_IMAGE_ASPECT_DEPTH_BIT without VkImageCreateInfo::usage having
+    // VK_IMAGE_USAGE_TRANSFER_DST_BIT being set
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02660");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-pRanges-02659");
+    vk::CmdClearDepthStencilImage(m_command_buffer, dst_image_bad_usage, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
+    m_errorMonitor->VerifyFound();
+
+    // Fix usage for next test case
+    image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vkt::Image dst_image(*m_device, image_create_info, vkt::set_layout);
+
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-renderpass");
+    vk::CmdClearDepthStencilImage(m_command_buffer, dst_image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearDepthImage) {
+    TEST_DESCRIPTION("Test clearing without VK_EXT_depth_range_unrestricted");
+    // Extension doesn't have feature bit, so not enabling extension invokes restrictions
+    RETURN_IF_SKIP(Init());
+
+    // Need to set format framework uses for InitRenderTarget
+    m_depth_stencil_fmt = FindSupportedDepthStencilFormat(Gpu());
+
+    int depth_attachment_index = 1;
+    m_depthStencil->Init(*m_device, m_width, m_height, 1, m_depth_stencil_fmt,
+                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    vkt::ImageView depth_image_view = m_depthStencil->CreateView(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    InitRenderTarget(&depth_image_view.handle());
+
+    m_command_buffer.Begin();
+
+    m_errorMonitor->SetDesiredError("VUID-VkClearDepthStencilValue-depth-00022");
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    const VkClearDepthStencilValue bad_clear_value = {1.5f, 0};
+    vk::CmdClearDepthStencilImage(m_command_buffer, m_depthStencil->handle(), VK_IMAGE_LAYOUT_GENERAL, &bad_clear_value, 1, &range);
+    m_errorMonitor->VerifyFound();
+
+    m_renderPassClearValues[depth_attachment_index].depthStencil.depth = 1.5f;
+    m_errorMonitor->SetDesiredError("VUID-VkClearDepthStencilValue-depth-00022");
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    m_errorMonitor->VerifyFound();
+
+    // set back to normal
+    m_renderPassClearValues[depth_attachment_index].depthStencil.depth = 1.0f;
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    m_errorMonitor->SetDesiredError("VUID-VkClearDepthStencilValue-depth-00022");
+    VkClearAttachment clear_attachment;
+    clear_attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    clear_attachment.clearValue.depthStencil.depth = 1.5f;
+    clear_attachment.clearValue.depthStencil.stencil = 0;
+    VkClearRect clear_rect = {{{0, 0}, {32, 32}}, 0, 1};
+    vk::CmdClearAttachments(m_command_buffer, 1, &clear_attachment, 1, &clear_rect);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearDepthImageWithNAN) {
+    TEST_DESCRIPTION("Clear depth image when depth clear value is NAN");
+    RETURN_IF_SKIP(Init());
+
+    VkFormat depth_stencil_format = FindSupportedDepthStencilFormat(Gpu());
+    vkt::Image depth_image(*m_device, 32, 32, depth_stencil_format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    const VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    const VkClearDepthStencilValue nan_depth_clear_value = {std::numeric_limits<float>::quiet_NaN(), 0};
+    assert(std::isnan(nan_depth_clear_value.depth));
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-VkClearDepthStencilValue-depth-00022");
+    vk::CmdClearDepthStencilImage(m_command_buffer, depth_image, VK_IMAGE_LAYOUT_GENERAL, &nan_depth_clear_value, 1, &subresource);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearColorImageImageLayout) {
+    TEST_DESCRIPTION("Check ClearImage layouts with SHARED_PRESENTABLE_IMAGE extension active.");
+    AddRequiredExtensions(VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    auto image_ci = vkt::Image::ImageCreateInfo2D(32, 32, 1, 4, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    vkt::Image dst_image(*m_device, image_ci, vkt::set_layout);
+    m_command_buffer.Begin();
+
+    VkClearColorValue color_clear_value = {};
+    VkImageSubresourceRange clear_range;
+    clear_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    clear_range.baseMipLevel = 0;
+    clear_range.baseArrayLayer = 0;
+    clear_range.layerCount = 1;
+    clear_range.levelCount = 1;
+
+    // Fail by using bad layout for color clear (GENERAL, SHARED_PRESENT or TRANSFER_DST are permitted).
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-imageLayout-01394");
+    vk::CmdClearColorImage(m_command_buffer, dst_image, VK_IMAGE_LAYOUT_UNDEFINED, &color_clear_value, 1, &clear_range);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CmdClearAttachmentTests) {
+    TEST_DESCRIPTION("Various tests for validating usage of vkCmdClearAttachments");
+
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    VkImageFormatProperties image_format_properties{};
+    ASSERT_EQ(VK_SUCCESS, vk::GetPhysicalDeviceImageFormatProperties(m_device->Physical(), m_renderTargets[0]->Format(),
+                                                                     VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                                     m_renderTargets[0]->Usage(), 0, &image_format_properties));
+    if (image_format_properties.maxArrayLayers < 4) {
+        GTEST_SKIP() << "Test needs to create image 2D array of 4 image view, but VkImageFormatProperties::maxArrayLayers is < 4. "
+                        "Skipping test.";
+    }
+
+    // Create frame buffer with 2 layers, and image view with 4 layers,
+    // to make sure that considered layer count is the one coming from frame buffer
+    // (test would not fail if layer count used to do validation was 4)
+    assert(!m_renderTargets.empty());
+    const auto render_target_ci = vkt::Image::ImageCreateInfo2D(m_renderTargets[0]->Width(), m_renderTargets[0]->Height(),
+                                                                m_renderTargets[0]->CreateInfo().mipLevels, 4,
+                                                                m_renderTargets[0]->Format(), m_renderTargets[0]->Usage());
+    vkt::Image render_target(*m_device, render_target_ci, vkt::set_layout);
+    vkt::ImageView render_target_view =
+        render_target.CreateView(VK_IMAGE_VIEW_TYPE_2D_ARRAY, 0, 1, 0, render_target_ci.arrayLayers);
+    VkFramebufferCreateInfo fb_info = vku::InitStructHelper();
+    fb_info.renderPass = RenderPass();
+    fb_info.layers = 2;
+    fb_info.attachmentCount = 1;
+    fb_info.pAttachments = &render_target_view.handle();
+    fb_info.width = m_width;
+    fb_info.height = m_height;
+    vkt::Framebuffer framebuffer(*m_device, fb_info);
+    m_renderPassBeginInfo.framebuffer = framebuffer;
+
+    // Create secondary command buffer
+    VkCommandBufferAllocateInfo secondary_cmd_buffer_alloc_info = vku::InitStructHelper();
+    secondary_cmd_buffer_alloc_info.commandPool = m_command_pool;
+    secondary_cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    secondary_cmd_buffer_alloc_info.commandBufferCount = 1;
+
+    vkt::CommandBuffer secondary_cmd_buffer(*m_device, secondary_cmd_buffer_alloc_info);
+    VkCommandBufferInheritanceInfo secondary_cmd_buffer_inheritance_info = vku::InitStructHelper();
+    secondary_cmd_buffer_inheritance_info.renderPass = m_renderPass;
+    secondary_cmd_buffer_inheritance_info.framebuffer = framebuffer;
+
+    VkCommandBufferBeginInfo secondary_cmd_buffer_begin_info = vku::InitStructHelper();
+    secondary_cmd_buffer_begin_info.flags =
+        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    secondary_cmd_buffer_begin_info.pInheritanceInfo = &secondary_cmd_buffer_inheritance_info;
+
+    // Create clear rect
+    VkClearAttachment color_attachment;
+    color_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    color_attachment.clearValue.color.float32[0] = 1.0;
+    color_attachment.clearValue.color.float32[1] = 1.0;
+    color_attachment.clearValue.color.float32[2] = 1.0;
+    color_attachment.clearValue.color.float32[3] = 1.0;
+    color_attachment.colorAttachment = 0;
+    VkClearRect clear_rect = {{{0, 0}, {m_width, m_height}}, 0, 1};
+
+    auto clear_cmds = [this, &color_attachment](VkCommandBuffer cmd_buffer, VkClearRect clear_rect) {
+        // extent too wide
+        VkClearRect clear_rect_too_large = clear_rect;
+        clear_rect_too_large.rect.extent.width = m_renderPassBeginInfo.renderArea.extent.width + 4;
+        clear_rect_too_large.rect.extent.height = clear_rect_too_large.rect.extent.height / 2;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-pRects-00016");
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect_too_large);
+
+        // baseLayer < render pass instance layer count
+        clear_rect.baseArrayLayer = 1;
+        clear_rect.layerCount = 1;
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect);
+
+        // baseLayer + layerCount <= render pass instance layer count
+        clear_rect.baseArrayLayer = 0;
+        clear_rect.layerCount = 2;
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect);
+
+        // baseLayer >= render pass instance layer count
+        clear_rect.baseArrayLayer = 2;
+        clear_rect.layerCount = 1;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-pRects-06937");
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect);
+
+        // baseLayer + layerCount > render pass instance layer count
+        clear_rect.baseArrayLayer = 0;
+        clear_rect.layerCount = 4;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-pRects-06937");
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect);
+
+        // baseLayer + layerCount overflows 32-bit,
+        clear_rect.baseArrayLayer = 2;
+        clear_rect.layerCount = std::numeric_limits<uint32_t>::max() - 1;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-pRects-06937");
+        vk::CmdClearAttachments(cmd_buffer, 1, &color_attachment, 1, &clear_rect);
+    };
+
+    // Register clear commands to secondary command buffer
+    secondary_cmd_buffer.Begin(&secondary_cmd_buffer_begin_info);
+    clear_cmds(secondary_cmd_buffer, clear_rect);
+    secondary_cmd_buffer.End();
+
+    m_command_buffer.Begin();
+
+    // Execute secondary command buffer
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    vk::CmdExecuteCommands(m_command_buffer, 1, &secondary_cmd_buffer.handle());
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+
+    // Execute same commands as previously, but in a primary command buffer
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    clear_cmds(m_command_buffer, clear_rect);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, BindVertexIndexBufferUsage) {
+    TEST_DESCRIPTION("Bad usage flags for binding the Vertex and Index buffer");
+    RETURN_IF_SKIP(Init());
+
+    vkt::Buffer buffer(*m_device, 64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    m_command_buffer.Begin();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdBindIndexBuffer-buffer-08784");
+    vk::CmdBindIndexBuffer(m_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT32);
+    m_errorMonitor->VerifyFound();
+
+    VkDeviceSize offsets = 0;
+    m_errorMonitor->SetDesiredError("VUID-vkCmdBindVertexBuffers-pBuffers-00627");
+    vk::CmdBindVertexBuffers(m_command_buffer, 0, 1, &buffer.handle(), &offsets);
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, BindIndexBufferHandles) {
+    TEST_DESCRIPTION("call vkCmdBindIndexBuffer with bad Handles");
+    RETURN_IF_SKIP(Init());
+    vkt::Buffer buffer(*m_device, 64, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    m_command_buffer.Begin();
+    VkBuffer bad_buffer = CastToHandle<VkBuffer, uintptr_t>(0xbaadbeef);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdBindIndexBuffer-buffer-parameter");
+    vk::CmdBindIndexBuffer(m_command_buffer, bad_buffer, 0, VK_INDEX_TYPE_UINT32);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ClearImageAspectMask) {
+    TEST_DESCRIPTION("Need to use VK_IMAGE_ASPECT_COLOR_BIT.");
+
+    RETURN_IF_SKIP(Init());
+
+    VkClearColorValue clear_color;
+    memset(clear_color.uint32, 0, sizeof(uint32_t) * 4);
+    const VkImageSubresourceRange color_range = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+
+    vkt::Image image(*m_device, 32, 32, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-aspectMask-02498");
+    vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &color_range);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, RenderPassContinueNotSupportedByCommandPool) {
+    TEST_DESCRIPTION("Use render pass continue bit with unsupported command pool.");
+
+    RETURN_IF_SKIP(Init());
+
+    const std::optional<uint32_t> non_graphics_queue_family_index = m_device->QueueFamilyWithoutCapabilities(VK_QUEUE_GRAPHICS_BIT);
+
+    if (!non_graphics_queue_family_index) {
+        GTEST_SKIP() << "No suitable queue found.";
+    }
+
+    vkt::CommandPool command_pool(*m_device, non_graphics_queue_family_index.value());
+    vkt::CommandBuffer command_buffer(*m_device, command_pool);
+
+    VkCommandBufferBeginInfo begin_info = vku::InitStructHelper();
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferBeginInfo-flags-09123");
+    vk::BeginCommandBuffer(command_buffer, &begin_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ClearDepthStencilImageWithInvalidAspect) {
+    TEST_DESCRIPTION("Use vkCmdClearDepthStencilImage with invalid image aspect.");
+
+    RETURN_IF_SKIP(Init());
+
+    VkFormat format = FindSupportedDepthStencilFormat(m_device->Physical());
+    vkt::Image image(*m_device, 32, 32, format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    VkClearDepthStencilValue clear_value = {0};
+    VkImageSubresourceRange range = {};
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.baseMipLevel = 0u;
+    range.layerCount = 1u;
+    range.baseArrayLayer = 0u;
+    range.levelCount = 1u;
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearDepthStencilImage-aspectMask-02824");
+    vk::CmdClearDepthStencilImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1u, &range);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+TEST_F(NegativeCommand, ClearColorImageWithMissingFeature) {
+    TEST_DESCRIPTION("Use vkCmdClearColorImage with image format that doesnt have VK_FORMAT_FEATURE_TRANSFER_DST_BIT.");
+
+    AddRequiredExtensions(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    // Best guess format
+    const VkFormat format = VK_FORMAT_A8B8G8R8_SSCALED_PACK32;
+    const VkImageCreateInfo image_ci = vkt::Image::ImageCreateInfo2D(32, 32, 1, 1, format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    VkImageFormatProperties image_format_props;
+    if ((m_device->FormatFeaturesOptimal(format) & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT) ||
+        GetImageFormatProps(Gpu(), image_ci, image_format_props) != VK_SUCCESS) {
+        GTEST_SKIP() << "Need " << string_VkFormat(format) << " to be usable as an image, but not as a transfer dst";
+    }
+
+    vkt::Image image(*m_device, 32, 32, format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    VkImageSubresourceRange range = {};
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.baseMipLevel = 0u;
+    range.layerCount = 1u;
+    range.baseArrayLayer = 0u;
+    range.levelCount = 1u;
+
+    VkClearColorValue clear_value = {{0, 0, 0, 0}};
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-image-01993");
+    vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1u, &range);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+TEST_F(NegativeCommand, ClearDsImageWithInvalidAspect) {
+    TEST_DESCRIPTION("Attempt to clear color aspect of depth/stencil image.");
+
+    RETURN_IF_SKIP(Init());
+
+    for (uint32_t i = 0; i < 2; ++i) {
+        bool missing_depth = i == 0;
+        auto format = missing_depth ? FindSupportedStencilOnlyFormat(m_device->Physical())
+                                    : FindSupportedDepthOnlyFormat(m_device->Physical());
+        if (format == VK_FORMAT_UNDEFINED) {
+            continue;
+        }
+        VkImageAspectFlags image_aspect = missing_depth ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+        VkImageAspectFlags clear_aspect = missing_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT;
+
+        vkt::Image image(*m_device, 32, 32, format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        vkt::ImageView image_view = image.CreateView(image_aspect);
+
+        RenderPassSingleSubpass rp(*this);
+        rp.AddAttachmentDescription(format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        rp.AddDepthStencilAttachment(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        rp.CreateRenderPass();
+
+        vkt::Framebuffer framebuffer(*m_device, rp, 1, &image_view.handle());
+
+        VkClearValue clear_value = {};
+        clear_value.depthStencil = {0};
+
+        VkClearAttachment clear_attachment = {};
+        clear_attachment.aspectMask = clear_aspect;
+        clear_attachment.colorAttachment = 0u;
+        clear_attachment.clearValue.depthStencil.depth = 0.0f;
+        VkClearRect clear_rect;
+        clear_rect.rect = {{0, 0}, {32u, 32u}};
+        clear_rect.baseArrayLayer = 0u;
+        clear_rect.layerCount = 1u;
+
+        m_command_buffer.Begin();
+        m_command_buffer.BeginRenderPass(rp, framebuffer, 32, 32, 1, &clear_value);
+        if (missing_depth) {
+            m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07884");
+        } else {
+            m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-aspectMask-07885");
+        }
+        vk::CmdClearAttachments(m_command_buffer, 1u, &clear_attachment, 1u, &clear_rect);
+        m_errorMonitor->VerifyFound();
+        m_command_buffer.EndRenderPass();
+        m_command_buffer.End();
+    }
+}
+
+TEST_F(NegativeCommand, InvalidCommandBufferInheritanceInfo) {
+    TEST_DESCRIPTION("Test VkCommandBufferInheritanceInfo using disabled featuers.");
+
+    AddRequiredExtensions(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+    RETURN_IF_SKIP(Init());
+
+    vkt::CommandBuffer secondary_cb(*m_device, m_command_pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+
+    VkCommandBufferInheritanceConditionalRenderingInfoEXT inheritance_conditional_rendering_info = vku::InitStructHelper();
+    inheritance_conditional_rendering_info.conditionalRenderingEnable = VK_TRUE;
+
+    VkCommandBufferInheritanceInfo inheritance_info = vku::InitStructHelper(&inheritance_conditional_rendering_info);
+
+    VkCommandBufferBeginInfo begin_info = vku::InitStructHelper();
+    begin_info.pInheritanceInfo = &inheritance_info;
+
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceConditionalRenderingInfoEXT-conditionalRenderingEnable-01977");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+
+    inheritance_info.pNext = nullptr;
+    inheritance_info.occlusionQueryEnable = VK_TRUE;
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceInfo-occlusionQueryEnable-00056");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+
+    inheritance_info.occlusionQueryEnable = VK_FALSE;
+    inheritance_info.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceInfo-pipelineStatistics-00058");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+
+    inheritance_info.pipelineStatistics = 0u;
+    inheritance_info.queryFlags = VK_QUERY_CONTROL_PRECISE_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceInfo-queryFlags-02788");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, PipelineStatisticsInvalidFlags) {
+    TEST_DESCRIPTION("Use invalid pipelineStatistics flags.");
+
+    AddRequiredFeature(vkt::Feature::pipelineStatisticsQuery);
+    RETURN_IF_SKIP(Init());
+
+    vkt::CommandBuffer secondary_cb(*m_device, m_command_pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+
+    VkCommandBufferInheritanceInfo inheritance_info = vku::InitStructHelper();
+
+    VkCommandBufferBeginInfo begin_info = vku::InitStructHelper();
+    begin_info.pInheritanceInfo = &inheritance_info;
+
+    inheritance_info.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_FLAG_BITS_MAX_ENUM;  // Invalid
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceInfo-pipelineStatistics-02789");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, QueryControlInvalidFlags) {
+    TEST_DESCRIPTION("Use invalid query control flags.");
+
+    AddRequiredFeature(vkt::Feature::inheritedQueries);
+    RETURN_IF_SKIP(Init());
+
+    vkt::CommandBuffer secondary_cb(*m_device, m_command_pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+
+    VkCommandBufferInheritanceInfo inheritance_info = vku::InitStructHelper();
+
+    VkCommandBufferBeginInfo begin_info = vku::InitStructHelper();
+    begin_info.pInheritanceInfo = &inheritance_info;
+
+    inheritance_info.queryFlags = VK_QUERY_CONTROL_FLAG_BITS_MAX_ENUM;  // Invalid
+    m_errorMonitor->SetDesiredError("VUID-VkCommandBufferInheritanceInfo-queryFlags-00057");
+    vk::BeginCommandBuffer(secondary_cb, &begin_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, CommandBufferRecording) {
+    TEST_DESCRIPTION("Test core functions for commandBuffer-recording VUs.");
+    RETURN_IF_SKIP(Init());
+    RETURN_IF_SKIP(InitRenderTarget());
+
+    {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetViewport-commandBuffer-recording");
+        const VkViewport viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+        vk::CmdSetViewport(m_command_buffer, 0, 1, &viewport);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetScissor-commandBuffer-recording");
+        const VkRect2D scissor = {{0, 0}, {0, 0}};
+        vk::CmdSetScissor(m_command_buffer, 0, 1, &scissor);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetLineWidth-commandBuffer-recording");
+        vk::CmdSetLineWidth(m_command_buffer, 1.0f);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetDepthBias-commandBuffer-recording");
+        vk::CmdSetDepthBias(m_command_buffer, 0.0f, 0.0f, 0.0f);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetBlendConstants-commandBuffer-recording");
+        float blends[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        vk::CmdSetBlendConstants(m_command_buffer, blends);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetDepthBounds-commandBuffer-recording");
+        vk::CmdSetDepthBounds(m_command_buffer, 1.0f, 1.0f);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetStencilCompareMask-commandBuffer-recording");
+        vk::CmdSetStencilCompareMask(m_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFFFFFFFF);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetStencilWriteMask-commandBuffer-recording");
+        vk::CmdSetStencilWriteMask(m_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFFFFFFFF);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetStencilReference-commandBuffer-recording");
+        vk::CmdSetStencilReference(m_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFFFFFFFF);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        CreatePipelineHelper pipe(*this);
+        pipe.CreateGraphicsPipeline();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBindPipeline-commandBuffer-recording");
+        vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBeginRenderPass-commandBuffer-recording");
+        m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        vkt::Buffer indirect_buffer(*m_device, 32, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-renderpass");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDraw-None-08606");
+        vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-renderpass");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-None-07312");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-None-08606");
+        vk::CmdDrawIndexed(m_command_buffer, 0, 1, 0, 0, 0);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-renderpass");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndirect-None-08606");
+        vk::CmdDrawIndirect(m_command_buffer, indirect_buffer, 0, 1, 32);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-renderpass");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-None-07312");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-None-08606");
+        vk::CmdDrawIndexedIndirect(m_command_buffer, indirect_buffer, 0, 1, 0);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDispatch-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDispatch-None-08606");
+        vk::CmdDispatch(m_command_buffer, 1, 1, 1);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDispatchIndirect-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdDispatchIndirect-None-08606");
+        vk::CmdDispatchIndirect(m_command_buffer, indirect_buffer, 0);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        vkt::Image image(*m_device, 16, 16, VK_FORMAT_R8G8B8A8_UINT,
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+        VkImageCopy copy_region;
+        copy_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy_region.srcOffset = {0, 0, 0};
+        copy_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy_region.dstOffset = {1, 1, 0};
+        copy_region.extent = {1, 1, 1};
+        m_errorMonitor->SetDesiredError("VUID-vkCmdCopyImage-commandBuffer-recording");
+        vk::CmdCopyImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+        m_errorMonitor->VerifyFound();
+
+        VkBufferImageCopy buffer_region = {};
+        buffer_region.bufferRowLength = 0;
+        buffer_region.bufferImageHeight = 0;
+        buffer_region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        buffer_region.imageOffset = {0, 0, 0};
+        buffer_region.imageExtent = {1, 1, 1};
+        buffer_region.bufferOffset = 0;
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdCopyBufferToImage-commandBuffer-recording");
+        vk::CmdCopyBufferToImage(m_command_buffer, buffer, image, VK_IMAGE_LAYOUT_GENERAL, 1, &buffer_region);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdCopyImageToBuffer-commandBuffer-recording");
+        vk::CmdCopyImageToBuffer(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, &buffer_region);
+        m_errorMonitor->VerifyFound();
+
+        VkBufferCopy buffer_copy = {0, 64, 64};
+        m_errorMonitor->SetDesiredError("VUID-vkCmdCopyBuffer-commandBuffer-recording");
+        vk::CmdCopyBuffer(m_command_buffer, buffer, buffer, 1, &buffer_copy);
+        m_errorMonitor->VerifyFound();
+
+        VkImageBlit blit_region;
+        blit_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u};
+        blit_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u};
+        blit_region.srcOffsets[0] = {0, 0, 0};
+        blit_region.srcOffsets[1] = {1, 1, 1};
+        blit_region.dstOffsets[0] = {1, 1, 0};
+        blit_region.dstOffsets[1] = {2, 2, 1};
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBlitImage-commandBuffer-recording");
+        vk::CmdBlitImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_GENERAL, 1u, &blit_region,
+                         VK_FILTER_NEAREST);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdFillBuffer-commandBuffer-recording");
+        vk::CmdFillBuffer(m_command_buffer, buffer, 0, 4, 0);
+        m_errorMonitor->VerifyFound();
+
+        uint32_t data = 0;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdUpdateBuffer-commandBuffer-recording");
+        vk::CmdUpdateBuffer(m_command_buffer, buffer, 0, 4, &data);
+        m_errorMonitor->VerifyFound();
+
+        VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkClearColorValue clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearColorImage-commandBuffer-recording");
+        vk::CmdClearColorImage(m_command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &range);
+        m_errorMonitor->VerifyFound();
+
+        VkClearAttachment clear_attachment;
+        clear_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear_attachment.colorAttachment = 0;
+        VkClearRect clear_rect = {{{0, 0}, {m_width, m_height}}, 0, 1};
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdClearAttachments-renderpass");
+        vk::CmdClearAttachments(m_command_buffer, 1, &clear_attachment, 1, &clear_rect);
+        m_errorMonitor->VerifyFound();
+
+        VkImageMemoryBarrier image_barrier =
+            image.LayoutTransitionBarrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, range);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdPipelineBarrier-commandBuffer-recording");
+        m_command_buffer.Barrier(image_barrier, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        vkt::Buffer index_buffer(*m_device, 1024, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        vkt::Buffer vertex_buffer(*m_device, 1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBindIndexBuffer-commandBuffer-recording");
+        vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        m_errorMonitor->VerifyFound();
+        VkDeviceSize offsets = 0;
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBindVertexBuffers-commandBuffer-recording");
+        vk::CmdBindVertexBuffers(m_command_buffer, 0, 1, &vertex_buffer.handle(), &offsets);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        vkt::Event event(*m_device);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetEvent-commandBuffer-recording");
+        vk::CmdSetEvent(m_command_buffer, event, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdWaitEvents-commandBuffer-recording");
+        vk::CmdWaitEvents(m_command_buffer, 1, &event.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, nullptr, 0, nullptr, 0, nullptr);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdResetEvent-commandBuffer-recording");
+        vk::CmdResetEvent(m_command_buffer, event, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        m_errorMonitor->VerifyFound();
+    }
+
+    if (m_device->Physical().limits_.timestampComputeAndGraphics) {
+        vkt::QueryPool query_pool(*m_device, VK_QUERY_TYPE_TIMESTAMP, 1);
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdResetQueryPool-commandBuffer-recording");
+        vk::CmdResetQueryPool(m_command_buffer, query_pool, 0, 1);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBeginQuery-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBeginQuery-queryType-02804");
+        vk::CmdBeginQuery(m_command_buffer, query_pool, 0, 0);
+        m_errorMonitor->VerifyFound();
+        m_errorMonitor->SetDesiredError("VUID-vkCmdEndQuery-commandBuffer-recording");
+        m_errorMonitor->SetDesiredError("VUID-vkCmdEndQuery-None-01923");
+        vk::CmdEndQuery(m_command_buffer, query_pool, 0);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdWriteTimestamp-commandBuffer-recording");
+        vk::CmdWriteTimestamp(m_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 0);
+        m_errorMonitor->VerifyFound();
+
+        vkt::Buffer buffer(*m_device, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        m_errorMonitor->SetDesiredError("VUID-vkCmdCopyQueryPoolResults-commandBuffer-recording");
+        vk::CmdCopyQueryPoolResults(m_command_buffer, query_pool, 0, 1, buffer, 0, 4, VK_QUERY_RESULT_WAIT_BIT);
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        OneOffDescriptorSet descriptor_set(m_device, {{0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_ALL, nullptr}});
+        VkPushConstantRange pc_range = {VK_SHADER_STAGE_VERTEX_BIT, 0, 4};
+        vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_}, {pc_range});
+        m_errorMonitor->SetDesiredError("VUID-vkCmdBindDescriptorSets-commandBuffer-recording");
+        vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                                  nullptr);
+        m_errorMonitor->VerifyFound();
+
+        m_errorMonitor->SetDesiredError("VUID-vkCmdPushConstants-commandBuffer-recording");
+        uint32_t data = 0;
+        vk::CmdPushConstants(m_command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &data);
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeCommand, ManyInvalidatedObjects) {
+    RETURN_IF_SKIP(Init());
+
+    const char* cs_source = R"glsl(
+        #version 450
+        layout(set = 0, binding = 0) buffer SSBO_0 {
+            vec4 a;
+        };
+
+        layout(set = 0, binding = 1) uniform sampler2D s;
+
+        void main() {
+            a =  texture(s, vec2(0));
+        }
+    )glsl";
+
+    vkt::Buffer buffer1(*m_device, 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    vkt::Buffer buffer2(*m_device, 32, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    vkt::Image image(*m_device, 16, 16, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    vkt::ImageView image_view = image.CreateView();
+    vkt::Sampler sampler(*m_device, SafeSaneSamplerCreateInfo());
+
+    OneOffDescriptorSet descriptor_set(m_device,
+                                       {
+                                           {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                           {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL, nullptr},
+                                       });
+    vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+    descriptor_set.WriteDescriptorBufferInfo(0, buffer1, 0, VK_WHOLE_SIZE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    descriptor_set.WriteDescriptorImageInfo(1, image_view, sampler);
+    descriptor_set.UpdateDescriptorSets();
+
+    CreateComputePipelineHelper pipe(*this);
+    pipe.cp_ci_.layout = pipeline_layout;
+    pipe.cs_ = VkShaderObj(*m_device, cs_source, VK_SHADER_STAGE_COMPUTE_BIT);
+    pipe.CreateComputePipeline();
+
+    CreateComputePipelineHelper pipe2(*this);
+    pipe2.CreateComputePipeline();
+
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &descriptor_set.set_, 0,
+                              nullptr);
+    vk::CmdDispatch(m_command_buffer, 1, 1, 1);
+
+    uint32_t data = 0;
+    vk::CmdUpdateBuffer(m_command_buffer, buffer2, 0, sizeof(uint32_t), &data);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe2);
+
+    image.Destroy();
+    buffer2.Destroy();
+    pipe2.Destroy();
+
+    m_errorMonitor->SetDesiredError("VUID-vkEndCommandBuffer-commandBuffer-00059");
+    vk::EndCommandBuffer(m_command_buffer);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImageFormat) {
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    if (!IsPlatformMockICD()) {
+        GTEST_SKIP() << "Too hard to find unsupported format that works on real driver.";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    image_ci.format = VK_FORMAT_B8G8R8A8_UINT;
+    image_ci.extent = {32, 32, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+
+    vkt::Image src_image(*m_device, image_ci, vkt::set_layout);
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-maintenance10-11799");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImage2Format) {
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    if (!IsPlatformMockICD()) {
+        GTEST_SKIP() << "Too hard to find unsupported format that works on real driver.";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    image_ci.format = VK_FORMAT_B8G8R8A8_UINT;
+    image_ci.extent = {32, 32, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+
+    vkt::Image src_image(*m_device, image_ci, vkt::set_layout);
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    resolve_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    resolve_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper();
+    resolve_info.srcImage = src_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-maintenance10-11799");
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImageAspectMask) {
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    RETURN_IF_SKIP(Init());
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 4;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+    image_ci.flags = 0;
+
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    vkt::Image src_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve resolve_region;
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    resolve_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT;
+    resolve_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve-aspectMask-10981");
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve-aspectMask-10981");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+    m_errorMonitor->VerifyFound();
+
+    resolve_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve-aspectMask-10981");
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve-aspectMask-10981");
+    m_errorMonitor->SetDesiredError("VUID-vkCmdResolveImage-srcSubresource-11802");
+    vk::CmdResolveImage(m_command_buffer, src_image, VK_IMAGE_LAYOUT_GENERAL, dst_image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                        &resolve_region);
+
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2ColorImageAspectMask) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMaintenance10PropertiesKHR maintenance10_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(maintenance10_props);
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_R8G8B8A8_UINT;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+
+    vkt::Image src_color_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_color_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+    resolve_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    resolve_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = VK_RESOLVE_IMAGE_SKIP_TRANSFER_FUNCTION_BIT_KHR;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_color_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_color_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    if (!maintenance10_props.resolveSrgbFormatSupportsTransferFunctionControl) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageModeInfoKHR-flags-10996");
+    } else {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-pNext-10982");
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-pNext-10982");
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10985");
+    }
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2ColorImageResolveModeNone) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMaintenance10PropertiesKHR maintenance10_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(maintenance10_props);
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_R8G8B8A8_UINT;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+
+    vkt::Image src_color_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_color_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_NONE;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_color_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_color_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10985");
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10983");
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageAspectMask) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcSubresource-11800");
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-dstSubresource-11801");
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageIllegalAspectMaskValues) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve2-aspectMask-10993");
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve2-aspectMask-10993");
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageSrcAndDstAspectMasksDifferent) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcSubresource-11802");
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageResolveModeNone) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(depth_stencil_resolve_props);
+    const bool has_depth_resolve_mode_sample_zero =
+        (depth_stencil_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
+    if (has_depth_resolve_mode_sample_zero) {
+        GTEST_SKIP() << "depth resolve mode supports VK_RESOLVE_MODE_SAMPLE_ZERO_BIT";
+    }
+    const bool has_stencil_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedStencilResolveModes & VK_RESOLVE_MODE_AVERAGE_BIT) != 0;
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_NONE;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    resolve_info.srcImage = src_depth_image;
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10987");
+    if (!has_stencil_resolve_mode_sample_average) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10990");
+    }
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageResolveMode) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(depth_stencil_resolve_props);
+    const bool has_depth_resolve_mode_sample_zero =
+        (depth_stencil_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
+    if (has_depth_resolve_mode_sample_zero) {
+        GTEST_SKIP() << "depth resolve mode supports VK_RESOLVE_MODE_SAMPLE_ZERO_BIT";
+    }
+    const bool has_stencil_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedStencilResolveModes & VK_RESOLVE_MODE_AVERAGE_BIT) != 0;
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    resolve_info.srcImage = src_depth_image;
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10989");
+    if (!has_stencil_resolve_mode_sample_average) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10990");
+    }
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2StencilImageResolveMode) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(depth_stencil_resolve_props);
+    const bool has_stencil_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedStencilResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
+    if (has_stencil_resolve_mode_sample_average) {
+        GTEST_SKIP() << "stencil resolve mode supports VK_RESOLVE_MODE_SAMPLE_ZERO_BIT";
+    }
+    const bool has_depth_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_AVERAGE_BIT) != 0;
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = FindSupportedDepthStencilFormat(Gpu());
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth/stencil images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    resolve_info.srcImage = src_depth_image;
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10990");
+    if (!has_depth_resolve_mode_sample_average) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10989");
+    }
+
+    if (!depth_stencil_resolve_props.independentResolve) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10991");
+    }
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthStencilImageResolveMode) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(depth_stencil_resolve_props);
+    const bool has_stencil_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedStencilResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
+    if (has_stencil_resolve_mode_sample_average) {
+        GTEST_SKIP() << "stencil resolve mode supports VK_RESOLVE_MODE_SAMPLE_ZERO_BIT";
+    }
+    const bool has_depth_resolve_mode_sample_average =
+        (depth_stencil_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_AVERAGE_BIT) != 0;
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = FindSupportedDepthStencilFormat(Gpu());
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth/stencil images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    std::array<VkImageResolve2KHR, 2> resolve_regions;
+    resolve_regions[0] = vku::InitStructHelper();
+    resolve_regions[0].srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_regions[0].srcOffset = {0, 0, 0};
+    resolve_regions[0].dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_regions[0].dstOffset = {0, 0, 0};
+    resolve_regions[0].extent = {1, 1, 1};
+    resolve_regions[1] = resolve_regions[0];
+    resolve_regions[1].srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    resolve_regions[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = size32(resolve_regions);
+    resolve_info.pRegions = resolve_regions.data();
+
+    resolve_info.srcImage = src_depth_image;
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10990");
+    if (!has_depth_resolve_mode_sample_average) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10989");
+    }
+    if (!depth_stencil_resolve_props.independentResolve) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10991");
+    }
+    if (!depth_stencil_resolve_props.independentResolveNone) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10992");
+    }
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageNoMaintenance10) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    RETURN_IF_SKIP(Init());
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve2-maintenance10-10994");
+    m_errorMonitor->SetDesiredError("VUID-VkImageResolve2-maintenance10-10994");
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageResolveImageModeInfoBothSkipAndEnableTransfer) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMaintenance10PropertiesKHR maintenance_10_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(maintenance_10_props);
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = VK_RESOLVE_IMAGE_SKIP_TRANSFER_FUNCTION_BIT_KHR | VK_RESOLVE_IMAGE_ENABLE_TRANSFER_FUNCTION_BIT_KHR;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageModeInfoKHR-flags-10995");
+    if (!maintenance_10_props.resolveSrgbFormatSupportsTransferFunctionControl) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageModeInfoKHR-flags-10996");
+    }
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2DepthImageResolveImageModeInvalidMode) {
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMaintenance10PropertiesKHR maintenance_10_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(maintenance_10_props);
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_D16_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = VK_RESOLVE_IMAGE_SKIP_TRANSFER_FUNCTION_BIT_KHR;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_MIN_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageModeInfoKHR-flags-10997");
+    if (!maintenance_10_props.resolveSrgbFormatSupportsTransferFunctionControl) {
+        m_errorMonitor->SetDesiredError("VUID-VkResolveImageModeInfoKHR-flags-10996");
+    }
+    resolve_info.srcImage = src_depth_image;
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ResolveImage2ColorImageResolveModeSampleZero) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::samplerYcbcrConversion);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkPhysicalDeviceMaintenance10PropertiesKHR maintenance10_props = vku::InitStructHelper();
+    GetPhysicalDeviceProperties2(maintenance10_props);
+
+    if (!FormatFeaturesAreSupported(Gpu(), VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Required formats/features not supported";
+    }
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+
+    vkt::Image src_color_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_color_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_color_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_color_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10984");
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, DrawIndexedIndirectOffset) {
+    AddRequiredFeature(vkt::Feature::multiDrawIndirect);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_, 0, 1,
+                              &pipe.descriptor_set_->set_, 0, nullptr);
+
+    vkt::Buffer draw_buffer_correct(*m_device, sizeof(VkDrawIndirectCommand) * 16u, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    vkt::Buffer index_buffer(*m_device, sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexedIndirect-offset-02710");
+    vk::CmdDrawIndexedIndirect(m_command_buffer, draw_buffer_correct, 3u, 2u, sizeof(VkDrawIndexedIndirectCommand));
+    m_errorMonitor->VerifyFound();
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(NegativeCommand, ResolveImage2StencilResolveMode) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance10);
+    RETURN_IF_SKIP(Init());
+
+    VkFormat format = FindSupportedStencilOnlyFormat(gpu_);
+
+    VkImageCreateInfo image_ci = vku::InitStructHelper();
+    image_ci.format = format;
+    image_ci.extent = {32, 1, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_ci.flags = 0;
+    image_ci.imageType = VK_IMAGE_TYPE_2D;
+    if (!IsImageFormatSupported(Gpu(), image_ci, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        GTEST_SKIP() << "Multisample depth images not supported";
+    }
+
+    vkt::Image src_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    vkt::Image dst_depth_image(*m_device, image_ci, vkt::set_layout);
+
+    m_command_buffer.Begin();
+
+    VkImageResolve2KHR resolve_region = vku::InitStructHelper();
+    resolve_region.srcSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_region.srcOffset = {0, 0, 0};
+    resolve_region.dstSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+    resolve_region.dstOffset = {0, 0, 0};
+    resolve_region.extent = {1, 1, 1};
+
+    VkResolveImageModeInfoKHR resolve_mode = vku::InitStructHelper();
+    resolve_mode.flags = 0;
+    resolve_mode.resolveMode = VK_RESOLVE_MODE_NONE;
+    resolve_mode.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    VkResolveImageInfo2KHR resolve_info = vku::InitStructHelper(&resolve_mode);
+    resolve_info.srcImage = src_depth_image;
+    resolve_info.srcImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.dstImage = dst_depth_image;
+    resolve_info.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    resolve_info.regionCount = 1;
+    resolve_info.pRegions = &resolve_region;
+
+    resolve_info.srcImage = src_depth_image;
+    m_errorMonitor->SetDesiredError("VUID-VkResolveImageInfo2-srcImage-10988");
+    vk::CmdResolveImage2KHR(m_command_buffer, &resolve_info);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, SetPrimitiveRestartIndex) {
+    AddRequiredExtensions(VK_EXT_PRIMITIVE_RESTART_INDEX_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::primitiveRestartIndex);
+    RETURN_IF_SKIP(Init());
+    InitRenderTarget();
+
+    vkt::Buffer index_buffer(*m_device, 64, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.ia_ci_.primitiveRestartEnable = VK_TRUE;
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdBindIndexBuffer(m_command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+    vk::CmdSetPrimitiveRestartIndexEXT(m_command_buffer, 0xFFFFFFFF);
+    m_errorMonitor->SetDesiredError("VUID-vkCmdDrawIndexed-primitiveRestartIndex-12401");
+    vk::CmdDrawIndexed(m_command_buffer, 3, 1, 0, 3, 0);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+// See https://gitlab.khronos.org/vulkan/vulkan/-/issues/4793
+// You are not allowed to call reset on destroyed objects
+TEST_F(NegativeCommand, DeviceLostInUse) {
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    RETURN_IF_SKIP(Init());
+    if (!IsPlatformMockICD()) {
+        GTEST_SKIP() << "Test only supported by MockICD";
+    }
+
+    m_command_buffer.Begin();
+    m_command_buffer.End();
+
+    vkt::Fence fence(*m_device);
+
+    // Special way to force VK_ERROR_DEVICE_LOST with MockICD
+    m_errorMonitor->SetAllowedFailureMsg("VUID-VkSubmitInfo-pNext-pNext");
+    VkExportFenceCreateInfo fault_injection = vku::InitStructHelper();
+
+    VkSubmitInfo submit_info = vku::InitStructHelper(&fault_injection);
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &m_command_buffer.handle();
+    VkResult result = vk::QueueSubmit(m_default_queue->handle(), 1, &submit_info, fence);
+
+    if (result != VK_ERROR_DEVICE_LOST) {
+        vk::QueueWaitIdle(m_default_queue->handle());
+        GTEST_SKIP() << "No device lost found";
+    }
+
+    m_errorMonitor->SetDesiredError("VUID-vkResetFences-pFences-01123");
+    fence.Reset();
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkResetCommandBuffer-commandBuffer-00045");
+    vk::ResetCommandBuffer(m_command_buffer, 0);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredError("VUID-vkResetCommandPool-commandPool-00040");
+    vk::ResetCommandPool(*m_device, m_command_pool, 0);
+    m_errorMonitor->VerifyFound();
+}
+
+TEST_F(NegativeCommand, ArmSchedulingControlsDispatchParameters) {
+    TEST_DESCRIPTION("Validate VK_ARM_scheduling_controls dispatch parameter limits.");
+
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_ARM_SHADER_CORE_BUILTINS_EXTENSION_NAME);
+    AddRequiredExtensions(VK_ARM_SCHEDULING_CONTROLS_EXTENSION_NAME);
+
+    RETURN_IF_SKIP(Init());
+    if (!DeviceExtensionSupported(Gpu(), nullptr, VK_ARM_SCHEDULING_CONTROLS_EXTENSION_NAME, 2)) {
+        GTEST_SKIP() << VK_ARM_SCHEDULING_CONTROLS_EXTENSION_NAME << " spec version 2 not supported";
+    }
+
+    VkPhysicalDeviceSchedulingControlsDispatchParametersPropertiesARM dispatch_props = vku::InitStructHelper();
+    VkPhysicalDeviceSchedulingControlsPropertiesARM scheduling_props = vku::InitStructHelper(&dispatch_props);
+    VkPhysicalDeviceProperties2 props2 = vku::InitStructHelper(&scheduling_props);
+    vk::GetPhysicalDeviceProperties2(Gpu(), &props2);
+
+    VkDispatchParametersARM dispatch_parameters = vku::InitStructHelper();
+
+    m_command_buffer.Begin();
+
+    m_errorMonitor->SetDesiredError("VUID-vkCmdSetDispatchParametersARM-pDispatchParameters-parameter");
+    vk::CmdSetDispatchParametersARM(m_command_buffer.handle(), nullptr);
+    m_errorMonitor->VerifyFound();
+
+    if ((scheduling_props.schedulingControlsFlags & VK_PHYSICAL_DEVICE_SCHEDULING_CONTROLS_DISPATCH_PARAMETERS_ARM) == 0) {
+        m_errorMonitor->SetDesiredError("VUID-vkCmdSetDispatchParametersARM-schedulingControlsFlags-12391");
+        vk::CmdSetDispatchParametersARM(m_command_buffer.handle(), &dispatch_parameters);
+        m_errorMonitor->VerifyFound();
+        return;
+    }
+
+    dispatch_parameters.maxWarpsPerShaderCore = dispatch_props.schedulingControlsMaxWarpsCount;
+    if (dispatch_parameters.maxWarpsPerShaderCore != 0xffffffffu) {
+        dispatch_parameters.maxWarpsPerShaderCore++;
+        m_errorMonitor->SetDesiredError("VUID-VkDispatchParametersARM-maxWarpsPerShaderCore-12392");
+        vk::CmdSetDispatchParametersARM(m_command_buffer.handle(), &dispatch_parameters);
+        m_errorMonitor->VerifyFound();
+        dispatch_parameters.maxWarpsPerShaderCore = 0;
+    }
+
+    dispatch_parameters.maxQueuedWorkGroupBatches = dispatch_props.schedulingControlsMaxQueuedBatchesCount;
+    if (dispatch_parameters.maxQueuedWorkGroupBatches != 0xffffffffu) {
+        dispatch_parameters.maxQueuedWorkGroupBatches++;
+        m_errorMonitor->SetDesiredError("VUID-VkDispatchParametersARM-maxQueuedWorkGroupBatches-12393");
+        vk::CmdSetDispatchParametersARM(m_command_buffer.handle(), &dispatch_parameters);
+        m_errorMonitor->VerifyFound();
+        dispatch_parameters.maxQueuedWorkGroupBatches = 0;
+    }
+
+    dispatch_parameters.workGroupBatchSize = dispatch_props.schedulingControlsMaxWorkGroupBatchSize;
+    if (dispatch_parameters.workGroupBatchSize != 0xffffffffu) {
+        dispatch_parameters.workGroupBatchSize++;
+        m_errorMonitor->SetDesiredError("VUID-VkDispatchParametersARM-workGroupBatchSize-12394");
+        vk::CmdSetDispatchParametersARM(m_command_buffer.handle(), &dispatch_parameters);
+        m_errorMonitor->VerifyFound();
+    }
+}
+
+TEST_F(NegativeCommand, BindDescriptorSets2NullDynamicOffsets) {
+    TEST_DESCRIPTION("vkCmdBindDescriptorSets2 with a dynamicOffsetCount but no pDynamicOffsets array");
+    SetTargetApiVersion(VK_API_VERSION_1_1);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance6);
+    RETURN_IF_SKIP(Init());
+
+    OneOffDescriptorSet descriptor_set(m_device, {{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL, nullptr}});
+    const vkt::PipelineLayout pipeline_layout(*m_device, {&descriptor_set.layout_});
+
+    vkt::Buffer buffer(*m_device, 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    descriptor_set.WriteDescriptorBufferInfo(0, buffer, 0, 1024, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+    descriptor_set.UpdateDescriptorSets();
+
+    VkBindDescriptorSetsInfo bind_ds_info = vku::InitStructHelper();
+    bind_ds_info.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
+    bind_ds_info.layout = pipeline_layout;
+    bind_ds_info.firstSet = 0;
+    bind_ds_info.descriptorSetCount = 1;
+    bind_ds_info.pDescriptorSets = &descriptor_set.set_;
+    bind_ds_info.dynamicOffsetCount = 1;
+    bind_ds_info.pDynamicOffsets = nullptr;
+
+    m_command_buffer.Begin();
+    m_errorMonitor->SetDesiredError("VUID-VkBindDescriptorSetsInfo-pDynamicOffsets-parameter");
+    vk::CmdBindDescriptorSets2KHR(m_command_buffer, &bind_ds_info);
+    m_errorMonitor->VerifyFound();
+    m_command_buffer.End();
+}

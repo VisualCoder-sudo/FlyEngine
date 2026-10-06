@@ -1,0 +1,153 @@
+// Copyright (c) 2024-2026 The Khronos Group Inc.
+// Copyright (c) 2024-2026 Valve Corporation
+// Copyright (c) 2024-2026 LunarG, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// NOTE: This file doesn't contain any entrypoints and should be compiled with the--no-link option for glslang
+
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "common_descriptor_sets.h"
+#include "error_payload.h"
+#include "descriptor_encoding.h"
+
+layout(buffer_reference, buffer_reference_align = 8, scalar) buffer DescriptorEncodings {
+    DescriptorEncoding data[];
+};
+
+layout(buffer_reference, buffer_reference_align = 8, scalar) buffer InitializedStatus {
+    // Maps to DescriptorIdPool and used to detect if descriptor is still valid on CPU
+    uint data[];
+};
+
+layout(set = kInstDefaultDescriptorSet, binding = kBindingInstDescriptorIndexingOOB, scalar) buffer BoundDescriptorSetsSSBO {
+    InitializedStatus descriptor_init_status;
+    DescriptorEncodings descriptor_encodings[kDebugInputBindlessMaxDescSets];
+} gpuav;
+
+// Unlike the bindless version, we don't need to check for Uninitialized and Destroyed descriptors.
+// At draw time on the CPU we can verify that information.
+bool inst_descriptor_indexing_oob_non_bindless(const uint inst_offset, const uint desc_set, const uint binding,
+                                               const uint desc_index, const uint binding_layout_size, const uint binding_layout_offset) {
+    // For non-array this should hopefully optimized out as "if (0 > 1)"
+    // Have seen with Mesa, that the final NIR will optimize out all of inst_descriptor_indexing_oob_non_bindless if this is false.
+    if (desc_index >= binding_layout_size) {
+        error_payload = ErrorPayload(
+                            inst_offset,
+                            SpecConstantLinkShaderId | (kErrorGroup_InstDescriptorIndexingOOB << kErrorGroup_Shift) | (kErrorSubCode_DescriptorIndexing_Bounds << kErrorSubCode_Shift),
+                            (desc_set << kInst_DescriptorIndexing_SetShift) | desc_index,
+                            binding_layout_size,
+                            binding
+                        );
+
+        return false;
+    }
+    return true;
+}
+
+// Unlike the non-bindless version, bindless needs to check for Uninitialized and Destroyed descriptors.
+bool inst_descriptor_indexing_oob_bindless(const uint inst_offset, const uint desc_set, const uint binding,
+                                           const uint desc_index, const uint binding_layout_size, const uint binding_layout_offset) {
+    uint error = 0u;
+
+    // First make sure the index is not OOB
+    if (desc_index >= binding_layout_size) {
+        error = kErrorSubCode_DescriptorIndexing_Bounds;
+    } else {
+        DescriptorEncodings descriptor_encodings = gpuav.descriptor_encodings[desc_set];
+
+        // check if the descriptor was ever initialized
+        const uint global_descriptor_index = binding_layout_offset + desc_index;
+        uint desc_id = descriptor_encodings.data[global_descriptor_index].id & kNullDescriptor;
+        if (desc_id == 0u) {
+            error = kErrorSubCode_DescriptorIndexing_Uninitialized;
+        } else if (desc_id != kNullDescriptor) {
+            // check that the resource is still valid (and not using nullDescriptor)
+            uint desc_index = desc_id / 32;
+            uint desc_bit = 1 << (desc_id & 31);
+            if ((gpuav.descriptor_init_status.data[desc_index] & desc_bit) == 0) {
+                error = kErrorSubCode_DescriptorIndexing_Destroyed;
+            }
+        }
+    }
+
+    if (0u != error) {
+        error_payload = ErrorPayload(
+                        inst_offset,
+                        SpecConstantLinkShaderId | (kErrorGroup_InstDescriptorIndexingOOB << kErrorGroup_Shift) | (error << kErrorSubCode_Shift),
+                        (desc_set << kInst_DescriptorIndexing_SetShift) | desc_index,
+                        binding_layout_size,
+                        binding
+                    );
+        return false;
+    }
+    return true;
+}
+
+// This version includes an extra check for Combined Image Samplers
+bool inst_descriptor_indexing_oob_bindless_combined_image_sampler(const uint inst_offset, const uint desc_set, const uint binding,
+                                                                  const uint desc_index, const uint binding_layout_size, const uint binding_layout_offset) {
+    uint error = 0u;
+
+    // First make sure the index is not OOB
+    if (desc_index >= binding_layout_size) {
+        error = kErrorSubCode_DescriptorIndexing_Bounds;
+    } else {
+        DescriptorEncodings descriptor_encodings = gpuav.descriptor_encodings[desc_set];
+
+        // check if the descriptor was ever initialized
+        const uint global_descriptor_index = binding_layout_offset + desc_index;
+        DescriptorEncoding descriptor_encoding = descriptor_encodings.data[global_descriptor_index];
+        uint desc_id = descriptor_encoding.id & kNullDescriptor;
+        if (desc_id == 0u) {
+            error = kErrorSubCode_DescriptorIndexing_Uninitialized;
+        } else if (desc_id != kNullDescriptor) {
+            // check that the resource is still valid (and not using nullDescriptor)
+            uint desc_index = desc_id / 32;
+            uint desc_bit = 1 << (desc_id & 31);
+            if ((gpuav.descriptor_init_status.data[desc_index] & desc_bit) == 0) {
+                error = kErrorSubCode_DescriptorIndexing_Destroyed;
+            }
+        }
+
+        // If dealing with a combined image sampler, need to check the sampler as well
+        uint desc_type = (descriptor_encoding.id & ~kNullDescriptor) >> kDescBitShift;
+        if (desc_type == kImageSamplerDesc && error == 0) {
+            // check sampler
+            desc_id = descriptor_encoding.dword_0;
+            if (desc_id == 0u) {
+                error = kErrorSubCode_DescriptorIndexing_Uninitialized;
+            } else if (desc_id != kNullDescriptor) {
+                // check that the resource is still valid
+                uint desc_index = desc_id / 32;
+                uint desc_bit = 1 << (desc_id & 31);
+                if ((gpuav.descriptor_init_status.data[desc_index] & desc_bit) == 0) {
+                    error = kErrorSubCode_DescriptorIndexing_Destroyed;
+                }
+            }
+        }
+    }
+
+    if (0u != error) {
+        error_payload = ErrorPayload(
+                        inst_offset,
+                        SpecConstantLinkShaderId | (kErrorGroup_InstDescriptorIndexingOOB << kErrorGroup_Shift) | (error << kErrorSubCode_Shift),
+                        (desc_set << kInst_DescriptorIndexing_SetShift) | desc_index,
+                        binding_layout_size,
+                        binding
+                    );
+        return false;
+    }
+    return true;
+}

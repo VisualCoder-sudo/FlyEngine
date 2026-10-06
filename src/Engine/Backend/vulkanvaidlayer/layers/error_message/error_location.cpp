@@ -1,0 +1,237 @@
+/* Copyright (c) 2021-2026 The Khronos Group Inc.
+ * Copyright (c) 2021-2026 Valve Corporation
+ * Copyright (c) 2021-2026 LunarG, Inc.
+ * Copyright (C) 2021-2022 Google Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "error_location.h"
+#include "generated/error_location_helper.h"
+#include <algorithm>
+
+void Location::AppendFields(std::ostream& out) const {
+    if (prev) {
+        // When apply a .dot(sub_index) we duplicate the field item
+        // Instead of dealing with partial non-const Location, just do the check here
+        const Location& prev_loc = (prev->field == field && prev->index == vvl::kNoIndex32 && prev->prev) ? *prev->prev : *prev;
+
+        // Work back and print for Location first
+        prev_loc.AppendFields(out);
+
+        // check if need connector from last item
+        const bool prev_loc_struct_not_empty = prev_loc.structure != vvl::Struct::Empty;
+        const bool prev_loc_has_unindexed_field = prev_loc.field != vvl::Field::Empty && prev_loc.index == vvl::kNoIndex32;
+        const bool loc_is_array_element_field = prev_loc.index != vvl::kNoIndex32 &&
+                                                // eg: this->Fields() would yield "pInfos[42].mode"
+                                                // |isPNext| case to handle pCreateInfo[0].pNext<>
+                                                (field != vvl::Field::Empty || isPNext);
+        if (prev_loc_struct_not_empty || prev_loc_has_unindexed_field || loc_is_array_element_field) {
+            out << ((prev_loc.index == vvl::kNoIndex32 && IsFieldPointer(prev_loc.field)) ? "->" : ".");
+        }
+    }
+    if (isPNext && structure != vvl::Struct::Empty) {
+        out << "pNext<" << vvl::String(structure) << (field != vvl::Field::Empty ? ">." : ">");
+    }
+
+    out << vvl::String(field);
+    if (index != vvl::kNoIndex32) {
+        out << "[" << index << "]";
+    }
+}
+
+std::string Location::Fields() const {
+    std::ostringstream out;
+    AppendFields(out);
+    return out.str();
+}
+
+std::string Location::Message() const {
+    std::ostringstream out;
+    if (debug_region && !debug_region->empty()) {
+        out << "[ Debug region: " << *debug_region << " ] ";
+    }
+    out << StringFunc() << "(): ";
+    AppendFields(out);
+    std::string message = out.str();
+    // Remove space in the end when no fields are added
+    if (message.back() == ' ') {
+        message.pop_back();
+    }
+    return message;
+}
+
+std::string PrintPNextChain(vvl::Struct in_struct, const void* in_pNext) {
+    std::ostringstream out;
+
+    if (in_pNext) {
+        // We might not have a good way to pass in the original struct
+        if (in_struct == vvl::Struct::Empty) {
+            out << "pNext";
+        } else {
+            out << "pNext chain: " << vvl::String(in_struct) << "::pNext";
+        }
+
+        // Catches if pNext chain is circular chaining
+        // uses small vector (and 16) as most chains should be at most 2 or 3 items
+        small_vector<const void*, 16> visited;
+
+        for (const VkBaseInStructure* current = static_cast<const VkBaseInStructure*>(in_pNext); current != nullptr;
+             current = current->pNext) {
+            const bool already_visited =
+                std::find(visited.begin(), visited.end(), static_cast<const void*>(current)) != visited.end();
+            if (already_visited) {
+                out << " -> circular loop detected in pNext chaining!";
+                break;
+            }
+
+            // Special case for the 2 special loader structs
+            if (current->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO) {
+                out << " -> [VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO]";
+            } else if (current->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO) {
+                out << " -> [VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO]";
+            } else {
+                vvl::Struct next_struct = vvl::StypeToStruct(current->sType);
+                if (next_struct == vvl::Struct::Empty) {
+                    out << " -> [Unknown VkStructureType " << (int)current->sType << "]";
+                } else {
+                    out << " -> [" << vvl::String(next_struct) << "]";
+                }
+            }
+
+            visited.emplace_back(current);
+        }
+    } else {
+        if (in_struct == vvl::Struct::Empty) {
+            out << "pNext is NULL";
+        } else {
+            out << vvl::String(in_struct) << "::pNext is NULL";
+        }
+    }
+
+    return out.str();
+}
+
+namespace vvl {
+LocationCapture::LocationCapture(const Location& loc) { Capture(loc, 1); }
+
+LocationCapture::LocationCapture(const LocationCapture& other) : capture(other.capture) {
+    if (capture.empty()) {
+        return;
+    }
+    capture[0].prev = nullptr;
+    for (CaptureStore::size_type i = 1; i < capture.size(); i++) {
+        capture[i].prev = &capture[i - 1];
+    }
+}
+
+LocationCapture::LocationCapture(LocationCapture&& other) : capture(std::move(other.capture)) {
+    if (capture.empty()) {
+        return;
+    }
+    capture[0].prev = nullptr;
+    for (CaptureStore::size_type i = 1; i < capture.size(); i++) {
+        capture[i].prev = &capture[i - 1];
+    }
+}
+
+LocationCapture& LocationCapture::operator=(LocationCapture&& other) {
+    capture.clear();
+    capture.PushBackFrom(other.capture);
+    if (capture.empty()) {
+        return *this;
+    }
+    capture[0].prev = nullptr;
+    for (CaptureStore::size_type i = 1; i < capture.size(); i++) {
+        capture[i].prev = &capture[i - 1];
+    }
+    return *this;
+}
+
+const Location* LocationCapture::Capture(const Location& loc, CaptureStore::size_type depth) {
+    const Location* prev_capture = nullptr;
+    if (loc.prev) {
+        prev_capture = Capture(*loc.prev, depth + 1);
+    } else {
+        capture.reserve(depth);
+    }
+
+    capture.emplace_back(loc);
+    capture.back().prev = prev_capture;
+    return &(capture.back());
+}
+
+bool operator<(const Key& lhs, const Key& rhs) {
+    if (lhs.function < rhs.function) {
+        return true;
+    } else if (lhs.function > rhs.function) {
+        return false;
+    }
+
+    if (lhs.structure < rhs.structure) {
+        return true;
+    } else if (lhs.structure > rhs.structure) {
+        return false;
+    }
+
+    if (lhs.field < rhs.field) {
+        return true;
+    } else if (lhs.field > rhs.field) {
+        return false;
+    }
+
+    if (lhs.recurse_field < rhs.recurse_field) {
+        return true;
+    } else if (lhs.recurse_field > rhs.recurse_field) {
+        return false;
+    }
+
+    return false;
+}
+
+bool operator==(const Key& lhs, const Key& rhs) {
+    return lhs.function == rhs.function && lhs.structure == rhs.structure && lhs.field == rhs.field &&
+           lhs.recurse_field == rhs.recurse_field;
+}
+
+bool operator==(const Key& key, const Location& loc) {
+    assert(key.function != Func::Empty || key.structure != Struct::Empty);
+    assert(loc.function != Func::Empty);
+    if (key.function != Func::Empty) {
+        if (key.function != loc.function) {
+            return false;
+        }
+    }
+    if (key.structure != Struct::Empty) {
+        if (key.structure != loc.structure) {
+            return false;
+        }
+    }
+    if (key.field == Field::Empty) {
+        return true;
+    }
+    if (key.field == loc.field) {
+        return true;
+    }
+    if (key.recurse_field) {
+        const Location* prev = loc.prev;
+        while (prev != nullptr) {
+            if (key.field == prev->field) {
+                return true;
+            }
+            prev = prev->prev;
+        }
+    }
+    return false;
+}
+
+}  // namespace vvl

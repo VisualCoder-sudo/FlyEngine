@@ -1,0 +1,903 @@
+/*
+ * Copyright (c) 2023-2026 LunarG, Inc.
+ * Copyright (c) 2023-2026 Valve Corporation
+ * Copyright (c) 2025 Arm Limited.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// clang-format off
+
+// We need to include this file in CMake so Visual Studio can open it easier
+// Wrap between #if 0 ... #endif so that the compiler doesn't actually try to parse anything
+#if 0
+
+// This file list all VUID that are not possible to validate.
+// This file should never be included, but here for searchability and statistics
+
+const char* unimplementable_validation[] = {
+    // sparseAddressSpaceSize can't be tracked in a layer
+    // https://gitlab.khronos.org/vulkan/vulkan/-/issues/2403
+    "VUID-vkCreateBuffer-flags-00911",
+    "VUID-vkCreateImage-flags-00939",
+
+    // Some of the early extensions were not created with a feature bit. This means if the extension is used, we considered it
+    // "enabled". This becomes a problem as some coniditional VUIDs depend on the Extension to be enabled, this means we are left
+    // with 2 variations of the VUIDs, but only one is not possible to ever get to.
+    // The following are a list of these:
+    "VUID-VkSubpassDescription2-multisampledRenderToSingleSampled-06869",  // VUID-VkSubpassDescription2-multisampledRenderToSingleSampled-06872
+
+    // This VUID cannot be validated at vkCmdEndDebugUtilsLabelEXT time. Needs spec clarification.
+    // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/5671
+    "VUID-vkCmdEndDebugUtilsLabelEXT-commandBuffer-01912",
+
+    // These VUIDs cannot be validated beyond making sure the pointer is not null
+    "VUID-VkMemoryToImageCopy-pHostPointer-09061",
+    "VUID-VkImageToMemoryCopy-pHostPointer-09066",
+
+    // these are already taken care in spirv-val for 08737
+    "VUID-VkShaderModuleCreateInfo-pCode-08736",
+    "VUID-VkShaderCreateInfoEXT-pCode-08736",
+
+    // is same as VUID-VkShaderModuleCreateInfo-pCode-08738
+    "VUID-VkShaderModuleCreateInfo-pCode-07912",
+
+    // We can't detect what user does in their callback
+    "VUID-PFN_vkDebugUtilsMessengerCallbackEXT-None-04769",
+    "VUID-VkDeviceMemoryReportCallbackDataEXT-pNext-pNext",
+    "VUID-VkDeviceMemoryReportCallbackDataEXT-sType-sType",
+
+    // We are not going to package glslang inside the VVL layer just to validate VK_NV_glsl_shader
+    "VUID-VkShaderModuleCreateInfo-pCode-01379",
+
+    // These are checked already in VUID-vkGetPrivateData-objectType-04018 and VUID-vkSetPrivateData-objectHandle-04016
+    "VUID-vkGetPrivateData-device-parameter",
+    "VUID-vkSetPrivateData-device-parameter",
+
+    // These ask if pData is a certain size, but no way to validate a pointer to memory is a certain size.
+    // There is already another implicit VU checking if pData is not null.
+    "VUID-vkGetBufferOpaqueCaptureDescriptorDataEXT-pData-08073",
+    "VUID-vkGetImageOpaqueCaptureDescriptorDataEXT-pData-08077",
+    "VUID-vkGetImageViewOpaqueCaptureDescriptorDataEXT-pData-08081",
+    "VUID-vkGetSamplerOpaqueCaptureDescriptorDataEXT-pData-08085",
+    "VUID-vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT-pData-08089",
+    "VUID-vkGetTensorOpaqueCaptureDescriptorDataARM-pData-09703",
+    "VUID-vkGetTensorViewOpaqueCaptureDescriptorDataARM-pData-09707",
+
+    // These would need to be checked by the loader as it uses these to call into the layers/drivers
+    "VUID-vkEnumerateInstanceVersion-pApiVersion-parameter",
+    "VUID-vkEnumerateDeviceExtensionProperties-pPropertyCount-parameter",
+    "VUID-vkEnumerateDeviceLayerProperties-pPropertyCount-parameter",
+    "VUID-vkEnumerateInstanceLayerProperties-pPropertyCount-parameter",
+    "VUID-vkEnumerateInstanceExtensionProperties-pPropertyCount-parameter",
+    // These are implemented, but can't test as the loader will fail out first
+    "VUID-VkInstanceCreateInfo-ppEnabledLayerNames-parameter",
+    "VUID-VkInstanceCreateInfo-ppEnabledExtensionNames-parameter",
+
+    // Caches are called between application runs so there is no way for a layer to track this information
+    "VUID-VkPipelineCacheCreateInfo-initialDataSize-00768",
+    "VUID-VkPipelineCacheCreateInfo-initialDataSize-00769",
+    "VUID-VkValidationCacheCreateInfoEXT-initialDataSize-01534",
+    "VUID-VkValidationCacheCreateInfoEXT-initialDataSize-01535",
+    // The header data returned from vkGetPipelineCacheData is the driver's responsibility to make correct.
+    // There is CTS for this, and not within the scope of the Validation Layers to check
+    "VUID-VkPipelineCacheHeaderVersionOne-headerSize-04967",
+    "VUID-VkPipelineCacheHeaderVersionOne-headerVersion-04968",
+    "VUID-VkPipelineCacheHeaderVersionOne-headerSize-08990",
+    "VUID-VkPipelineCacheHeaderVersionOne-headerVersion-parameter",
+    // Same as above, struct is returned by the driver
+    "VUID-VkDeviceFaultVendorBinaryHeaderVersionOneEXT-headerSize-07340",
+    "VUID-VkDeviceFaultVendorBinaryHeaderVersionOneEXT-headerVersion-07341",
+    "VUID-VkDeviceFaultVendorBinaryHeaderVersionOneKHR-headerVersion-parameter",
+
+    // https://gitlab.khronos.org/vulkan/vulkan/-/merge_requests/7958
+    // These are useless VUs and nothing to do
+    "VUID-VkComputePipelineCreateInfo-stage-00702",
+    "VUID-VkGraphicsPipelineCreateInfo-pStages-00742",
+    "VUID-VkGraphicsPipelineCreateInfo-None-04889",
+    "VUID-VkRayTracingPipelineCreateInfoKHR-pStages-03426",
+    "VUID-VkRayTracingPipelineCreateInfoNV-pStages-03426",
+    "VUID-VkExecutionGraphPipelineCreateInfoAMDX-pStages-09129",
+
+    // Extension has redundant implicit VUs
+    "VUID-VkBufferConstraintsInfoFUCHSIA-createInfo-parameter",
+    "VUID-VkBufferConstraintsInfoFUCHSIA-bufferCollectionConstraints-parameter",
+    "VUID-VkImageConstraintsInfoFUCHSIA-bufferCollectionConstraints-parameter",
+    "VUID-VkImageFormatConstraintsInfoFUCHSIA-imageCreateInfo-parameter",
+
+    // https://gitlab.khronos.org/vulkan/vulkan/-/merge_requests/6639#note_468463
+    "VUID-VkIndirectCommandsVertexBufferTokenEXT-vertexBindingUnit-11134",
+
+    // Unlike things like VkIndirectCommandsTokenDataEXT/VkDescriptorDataEXT this is
+    // an union of pNext structs that have no way to hit without hitting other things first
+    "VUID-VkAccelerationStructureGeometryKHR-triangles-parameter",
+    "VUID-VkAccelerationStructureGeometryKHR-instances-parameter",
+    "VUID-VkAccelerationStructureGeometryKHR-aabbs-parameter",
+
+    // These are being covered by both
+    //   VUID-VkWriteDescriptorSet-dstBinding-00315
+    //   VUID-VkWriteDescriptorSet-dstArrayElement-00321
+    // We would need to really make things complex in order to report these 2 VUs correctly
+    // and on top of that, there are MANY missing similar VUs in VkWriteDescriptorSet the spec would need
+    "VUID-VkDescriptorUpdateTemplateEntry-dstBinding-00354",
+    "VUID-VkDescriptorUpdateTemplateEntry-dstArrayElement-00355",
+
+    // This is just VUID-vkCmdBeginRendering-renderpass
+    // The logic in CoreChecks::InsideRenderPass() already gives a good error message
+    "VUID-vkCmdBeginRendering-commandBuffer-10914",
+
+    // If VkDeviceAddress can be zero, we will validate it in cc_buffer_address.h
+    // We cover these in VUID-VkDeviceAddress-size-11364
+    // https://gitlab.khronos.org/vulkan/vulkan/-/merge_requests/7517#note_546958
+    "VUID-VkDescriptorAddressInfoEXT-address-parameter",
+    "VUID-VkStridedDeviceAddressRangeKHR-address-parameter",
+    "VUID-VkBindIndexBufferIndirectCommandEXT-bufferAddress-parameter",
+    "VUID-VkBindIndexBufferIndirectCommandNV-bufferAddress-parameter",
+    "VUID-VkBindVertexBufferIndirectCommandEXT-bufferAddress-parameter",
+    "VUID-VkBindVertexBufferIndirectCommandNV-bufferAddress-parameter",
+    "VUID-VkDrawIndirectCountIndirectCommandEXT-bufferAddress-parameter",
+    "VUID-VkBindPipelineIndirectCommandNV-pipelineAddress-parameter",
+    "VUID-VkBufferDeviceAddressCreateInfoEXT-deviceAddress-parameter",
+    "VUID-VkBuildPartitionedAccelerationStructureIndirectCommandNV-opType-parameter",
+    "VUID-VkBuildPartitionedAccelerationStructureInfoNV-srcAccelerationStructureData-parameter",
+    "VUID-VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV-clusterReferences-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-clusterFlags-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-geometryIndexAndFlagsBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-indexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-opacityMicromapArray-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-opacityMicromapIndexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-vertexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-geometryIndexAndFlagsBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-indexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-instantiationBoundingBoxLimit-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-opacityMicromapArray-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-opacityMicromapIndexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV-vertexBuffer-parameter",
+    "VUID-VkClusterAccelerationStructureCommandsInfoNV-dstImplicitData-parameter",
+    "VUID-VkClusterAccelerationStructureCommandsInfoNV-srcInfosCount-parameter",
+    "VUID-VkClusterAccelerationStructureGetTemplateIndicesInfoNV-clusterTemplateAddress-parameter",
+    "VUID-VkClusterAccelerationStructureInstantiateClusterInfoNV-clusterTemplateAddress-parameter",
+    "VUID-VkClusterAccelerationStructureMoveObjectsInfoNV-srcAccelerationStructure-parameter",
+    "VUID-VkComputePipelineIndirectBufferInfoNV-pipelineDeviceAddressCaptureReplay-parameter",
+    "VUID-VkDescriptorGetInfoEXT-accelerationStructure-parameter",
+    "VUID-VkPartitionedAccelerationStructureUpdateInstanceDataNV-accelerationStructure-parameter",
+    "VUID-VkPartitionedAccelerationStructureWriteInstanceDataNV-accelerationStructure-parameter",
+    "VUID-VkStridedDeviceAddressNV-startAddress-parameter",
+    "VUID-VkTraceRaysIndirectCommand2KHR-callableShaderBindingTableAddress-parameter",
+    "VUID-VkTraceRaysIndirectCommand2KHR-hitShaderBindingTableAddress-parameter",
+    "VUID-VkTraceRaysIndirectCommand2KHR-missShaderBindingTableAddress-parameter",
+    "VUID-VkTraceRaysIndirectCommand2KHR-raygenShaderRecordAddress-parameter",
+    "VUID-VkAccelerationStructureCreateInfoKHR-deviceAddress-parameter",
+    "VUID-VkGeneratedCommandsInfoEXT-preprocessAddress-parameter",
+    "VUID-VkGeneratedCommandsInfoEXT-sequenceCountAddress-parameter",
+    "VUID-VkMicromapCreateInfoEXT-deviceAddress-parameter",
+    "VUID-VkStridedDeviceAddressRegionKHR-deviceAddress-parameter",
+    "VUID-VkDeviceAddressRangeKHR-address-parameter",
+
+    // These were added as a fix for https://gitlab.khronos.org/vulkan/vulkan/-/issues/4544
+    // But really the "real" fix is banning it earlier https://gitlab.khronos.org/vulkan/vulkan/-/merge_requests/7858
+    // These should be removed from the spec, as they are not needed/possible anymore,
+    // ... but that is an annoying challenge for the WG, so leaving them here
+    "VUID-RuntimeSpirv-OpTypeSampler-12203",
+    "VUID-RuntimeSpirv-OpTypeImage-12204",
+    "VUID-RuntimeSpirv-OpTypeImage-12207",
+
+    // VUID-vkUpdateDescriptorSets-pDescriptorWrites-06238
+    // VUID-vkUpdateDescriptorSets-pDescriptorWrites-06239
+    // already covers these explicitly, this is just a left over generated VUID
+    "VUID-VkDescriptorImageInfo-commonparent",
+
+    // These implicit VUs ask to check for a valid structure that has no sType,
+    // there is nothing that can actually be validated
+    //
+    // VkImageSubresourceLayers
+    "VUID-VkImageBlit-dstSubresource-parameter",
+    "VUID-VkImageBlit-srcSubresource-parameter",
+    "VUID-VkImageBlit2-dstSubresource-parameter",
+    "VUID-VkImageBlit2-srcSubresource-parameter",
+    "VUID-VkImageCopy-dstSubresource-parameter",
+    "VUID-VkImageCopy-srcSubresource-parameter",
+    "VUID-VkImageCopy2-dstSubresource-parameter",
+    "VUID-VkImageCopy2-srcSubresource-parameter",
+    "VUID-VkImageResolve-dstSubresource-parameter",
+    "VUID-VkImageResolve-srcSubresource-parameter",
+    "VUID-VkImageResolve2-dstSubresource-parameter",
+    "VUID-VkImageResolve2-srcSubresource-parameter",
+    "VUID-VkBufferImageCopy-imageSubresource-parameter",
+    "VUID-VkBufferImageCopy2-imageSubresource-parameter",
+    "VUID-VkMemoryToImageCopy-imageSubresource-parameter",
+    "VUID-VkImageToMemoryCopy-imageSubresource-parameter",
+    "VUID-VkCopyMemoryToImageIndirectCommandKHR-imageSubresource-parameter",
+    "VUID-VkDeviceMemoryImageCopyKHR-imageSubresource-parameter",
+    // VkImageSubresourceRange
+    "VUID-VkImageMemoryBarrier-subresourceRange-parameter",
+    "VUID-VkImageMemoryBarrier2-subresourceRange-parameter",
+    "VUID-VkHostImageLayoutTransitionInfo-subresourceRange-parameter",
+    "VUID-VkImageViewCreateInfo-subresourceRange-parameter",
+    // VkImageSubresource
+    "VUID-VkImageSubresource2-imageSubresource-parameter",
+    "VUID-VkSparseImageMemoryBind-subresource-parameter",
+    // VkStencilOpState
+    "VUID-VkPipelineDepthStencilStateCreateInfo-front-parameter",
+    "VUID-VkPipelineDepthStencilStateCreateInfo-back-parameter",
+    // VkClearValue
+    "VUID-VkRenderingAttachmentInfo-clearValue-parameter",
+    // VkComponentMapping
+    "VUID-VkImageViewCreateInfo-components-parameter",
+    "VUID-VkSamplerYcbcrConversionCreateInfo-components-parameter",
+    "VUID-VkSamplerBorderColorComponentMappingCreateInfoEXT-components-parameter",
+    // VkAttachmentReference
+    "VUID-VkRenderPassFragmentDensityMapCreateInfoEXT-fragmentDensityMapAttachment-parameter",
+    // VkVideoEncodeH264QpKHR and VkVideoEncodeH264FrameSizeKHR
+    "VUID-VkVideoEncodeH264RateControlLayerInfoKHR-maxFrameSize-parameter",
+    "VUID-VkVideoEncodeH264RateControlLayerInfoKHR-maxQp-parameter",
+    "VUID-VkVideoEncodeH264RateControlLayerInfoKHR-minQp-parameter",
+    // VkVideoEncodeH265QpKHR and VkVideoEncodeH265FrameSizeKHR
+    "VUID-VkVideoEncodeH265RateControlLayerInfoKHR-maxFrameSize-parameter",
+    "VUID-VkVideoEncodeH265RateControlLayerInfoKHR-maxQp-parameter",
+    "VUID-VkVideoEncodeH265RateControlLayerInfoKHR-minQp-parameter",
+    // VkVideoPictureResourceInfoKHR
+    "VUID-VkVideoDecodeInfoKHR-dstPictureResource-parameter",
+    "VUID-VkVideoEncodeInfoKHR-srcPictureResource-parameter",
+    // VkPushConstantRange
+    "VUID-VkIndirectCommandsPushConstantTokenEXT-updateRange-parameter",
+    // VkExternalMemoryProperties
+    "VUID-VkExternalTensorPropertiesARM-externalMemoryProperties-parameter",
+    // VkIndexType
+    "VUID-VkBindIndexBufferIndirectCommandEXT-indexType-parameter",
+    // VkHostAddressRangeConstEXT
+    "VUID-VkOpaqueCaptureDataCreateInfoEXT-pData-parameter",
+    "VUID-VkPushDataInfoEXT-data-parameter",
+    // Descriptor heap union structs
+    "VUID-VkDescriptorSetAndBindingMappingEXT-constantOffset-parameter",
+    "VUID-VkDescriptorSetAndBindingMappingEXT-indirectIndex-parameter",
+    "VUID-VkDescriptorSetAndBindingMappingEXT-indirectIndexArray-parameter",
+    "VUID-VkDescriptorSetAndBindingMappingEXT-pushIndex-parameter",
+    "VUID-VkDescriptorSetAndBindingMappingEXT-shaderRecordIndex-parameter",
+    // Video
+    "VUID-VkVideoEncodeAV1RateControlLayerInfoKHR-maxFrameSize-parameter",
+    "VUID-VkVideoEncodeAV1RateControlLayerInfoKHR-maxQIndex-parameter",
+    "VUID-VkVideoEncodeAV1RateControlLayerInfoKHR-minQIndex-parameter",
+
+    // These structs are never called anywhere explicitly
+    "VUID-VkAccelerationStructureInstanceKHR-flags-parameter",
+    "VUID-VkAccelerationStructureMatrixMotionInstanceNV-flags-parameter",
+    "VUID-VkAccelerationStructureSRTMotionInstanceNV-flags-parameter",
+
+    // When:
+    //   Struct A has a pointer field to Struct B
+    //   Struct B has a non-pointer field to Struct C
+    // you get a situation where Struct B has a VU that is not hit because we validate it in Struct C
+    "VUID-VkAttachmentSampleLocationsEXT-sampleLocationsInfo-parameter",              // VUID-VkSampleLocationsInfoEXT-sType-sType
+    "VUID-VkSubpassSampleLocationsEXT-sampleLocationsInfo-parameter",                 // VUID-VkSampleLocationsInfoEXT-sType-sType
+    "VUID-VkPipelineSampleLocationsStateCreateInfoEXT-sampleLocationsInfo-parameter", // VUID-VkSampleLocationsInfoEXT-sType-sType
+    "VUID-VkComputePipelineCreateInfo-stage-parameter", // VUID-VkPipelineShaderStageCreateInfo-sType-sType
+
+    // Not possible as described in https://gitlab.khronos.org/vulkan/vulkan/-/merge_requests/6324
+    "VUID-VkGraphicsPipelineCreateInfo-pTessellationState-09023",
+    "VUID-VkGraphicsPipelineCreateInfo-pViewportState-09025",
+    "VUID-VkGraphicsPipelineCreateInfo-pMultisampleState-09027",
+    "VUID-VkGraphicsPipelineCreateInfo-pDepthStencilState-09029",
+    "VUID-VkGraphicsPipelineCreateInfo-pInputAssemblyState-09032",
+    "VUID-VkGraphicsPipelineCreateInfo-pDepthStencilState-09034",
+    "VUID-VkGraphicsPipelineCreateInfo-pDepthStencilState-09036",
+    "VUID-VkGraphicsPipelineCreateInfo-pColorBlendState-09038",
+    "VUID-VkGraphicsPipelineCreateInfo-pRasterizationState-09039",
+    "VUID-VkGraphicsPipelineCreateInfo-pRasterizationState-09040",
+    // another variation of it
+    "VUID-vkGetDeviceFaultInfoEXT-pFaultCounts-07337",
+    "VUID-vkGetDeviceFaultInfoEXT-pFaultCounts-07338",
+    "VUID-vkGetDeviceFaultInfoEXT-pFaultCounts-07339",
+    "VUID-VkRenderingInputAttachmentIndexInfo-pDepthInputAttachmentIndex-parameter",
+    "VUID-VkRenderingInputAttachmentIndexInfo-pStencilInputAttachmentIndex-parameter",
+
+    // These VUs have "is not NULL it must be a pointer to a valid pointer to valid structure" language
+    // There is no actual way to validate thsese
+    // https://gitlab.khronos.org/vulkan/vulkan/-/issues/3718
+    "VUID-VkDescriptorGetInfoEXT-pUniformTexelBuffer-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pStorageTexelBuffer-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pUniformBuffer-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pStorageBuffer-parameter",
+    // These occur in stateless validation when a pointer member is optional and the length member is also optional
+    "VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-parameter",
+    "VUID-VkSubpassDescription-pResolveAttachments-parameter",
+    "VUID-VkTimelineSemaphoreSubmitInfo-pWaitSemaphoreValues-parameter",
+    "VUID-VkTimelineSemaphoreSubmitInfo-pSignalSemaphoreValues-parameter",
+    "VUID-VkVideoEncodeH264SessionParametersAddInfoKHR-pStdSPSs-parameter",
+    "VUID-VkVideoEncodeH264SessionParametersAddInfoKHR-pStdPPSs-parameter",
+    "VUID-VkVideoEncodeH265SessionParametersAddInfoKHR-pStdVPSs-parameter",
+    "VUID-VkVideoEncodeH265SessionParametersAddInfoKHR-pStdSPSs-parameter",
+    "VUID-VkVideoEncodeH265SessionParametersAddInfoKHR-pStdPPSs-parameter",
+    "VUID-VkD3D12FenceSubmitInfoKHR-pWaitSemaphoreValues-parameter",
+    "VUID-VkD3D12FenceSubmitInfoKHR-pSignalSemaphoreValues-parameter",
+    "VUID-VkPresentRegionKHR-pRectangles-parameter",
+    "VUID-VkBindDescriptorSetsInfo-pDynamicOffsets-parameter",
+    "VUID-VkPhysicalDeviceHostImageCopyProperties-pCopySrcLayouts-parameter",
+    "VUID-VkPhysicalDeviceHostImageCopyProperties-pCopyDstLayouts-parameter",
+    "VUID-VkSurfacePresentModeCompatibilityKHR-pPresentModes-parameter",
+    "VUID-VkFrameBoundaryEXT-pImages-parameter",
+    "VUID-VkFrameBoundaryEXT-pBuffers-parameter",
+    "VUID-VkFrameBoundaryEXT-pTag-parameter",
+    "VUID-VkMicromapBuildInfoEXT-pUsageCounts-parameter",
+    "VUID-VkMicromapBuildInfoEXT-ppUsageCounts-parameter",
+    "VUID-VkAccelerationStructureTrianglesOpacityMicromapEXT-pUsageCounts-parameter",
+    "VUID-VkAccelerationStructureTrianglesOpacityMicromapEXT-ppUsageCounts-parameter",
+    "VUID-VkAccelerationStructureTrianglesDisplacementMicromapNV-pUsageCounts-parameter",
+    "VUID-VkAccelerationStructureTrianglesDisplacementMicromapNV-ppUsageCounts-parameter",
+    "VUID-VkAccelerationStructureGeometryMicromapDataKHR-ppUsageCounts-parameter",
+    "VUID-VkAccelerationStructureGeometryMicromapDataKHR-pUsageCounts-parameter",
+    "VUID-VkShaderCreateInfoEXT-pPushConstantRanges-parameter",
+    "VUID-VkLatencySurfaceCapabilitiesNV-pPresentModes-parameter",
+    "VUID-vkCmdBeginTransformFeedbackEXT-pCounterBufferOffsets-parameter",
+    "VUID-vkCmdEndTransformFeedbackEXT-pCounterBufferOffsets-parameter",
+    "VUID-vkCmdBindVertexBuffers2-pSizes-parameter",
+    "VUID-vkCmdBindVertexBuffers2-pStrides-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pSampledImage-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pSampler-parameter",
+    "VUID-VkDescriptorGetInfoEXT-pStorageImage-parameter",
+    "VUID-vkGetAccelerationStructureBuildSizesKHR-pMaxPrimitiveCounts-parameter",
+    "VUID-vkCmdDrawMultiIndexedEXT-pVertexOffset-parameter",
+    "VUID-VkDisplayModeCreateInfoKHR-parameters-parameter",
+    "VUID-VkPipelineBinaryHandlesInfoKHR-pPipelineBinaries-parameter",
+    "VUID-VkSubpassDescription2-pResolveAttachments-parameter",
+    "VUID-VkPhysicalDeviceLayeredApiPropertiesListKHR-pLayeredApis-parameter",
+    "VUID-VkExecutionGraphPipelineCreateInfoAMDX-pStages-parameter",
+    "VUID-VkGetLatencyMarkerInfoNV-pTimings-parameter",
+    "VUID-VkIndirectExecutionSetShaderInfoEXT-pSetLayoutInfos-parameter",
+    "VUID-VkAccelerationStructureBuildGeometryInfoKHR-pGeometries-parameter",
+    "VUID-vkEnumeratePhysicalDeviceGroups-pPhysicalDeviceGroupProperties-parameter",
+    "VUID-vkGetImageSparseMemoryRequirements2-pSparseMemoryRequirements-parameter",
+    "VUID-vkGetPhysicalDeviceQueueFamilyProperties2-pQueueFamilyProperties-parameter",
+    "VUID-vkGetPhysicalDeviceSparseImageFormatProperties2-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceToolProperties-pToolProperties-parameter",
+    "VUID-vkGetDeviceImageSparseMemoryRequirements-pSparseMemoryRequirements-parameter",
+    "VUID-vkGetPhysicalDeviceVideoFormatPropertiesKHR-pVideoFormatProperties-parameter",
+    "VUID-vkGetVideoSessionMemoryRequirementsKHR-pMemoryRequirements-parameter",
+    "VUID-vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR-pCounters-parameter",
+    "VUID-vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR-pCounterDescriptions-parameter",
+    "VUID-vkGetPhysicalDeviceSurfaceFormats2KHR-pSurfaceFormats-parameter",
+    "VUID-vkGetPhysicalDeviceDisplayProperties2KHR-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceDisplayPlaneProperties2KHR-pProperties-parameter",
+    "VUID-vkGetDisplayModeProperties2KHR-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceFragmentShadingRatesKHR-pFragmentShadingRates-parameter",
+    "VUID-vkGetPipelineExecutablePropertiesKHR-pProperties-parameter",
+    "VUID-vkGetPipelineExecutableStatisticsKHR-pStatistics-parameter",
+    "VUID-vkGetPipelineExecutableInternalRepresentationsKHR-pInternalRepresentations-parameter",
+    "VUID-vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR-pProperties-parameter",
+    "VUID-vkGetQueueCheckpointDataNV-pCheckpointData-parameter",
+    "VUID-vkGetQueueCheckpointData2NV-pCheckpointData-parameter",
+    "VUID-vkGetPhysicalDeviceCooperativeMatrixPropertiesNV-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV-pCombinations-parameter",
+    "VUID-vkGetPhysicalDeviceOpticalFlowImageFormatsNV-pImageFormatProperties-parameter",
+    "VUID-vkGetPhysicalDeviceCooperativeVectorPropertiesNV-pProperties-parameter",
+    "VUID-VkPresentTimingsInfoEXT-pTimingInfos-parameter",
+    "VUID-vkEnumeratePhysicalDeviceQueueFamilyPerformanceCountersByRegionARM-pCounterDescriptions-parameter",
+    "VUID-vkEnumeratePhysicalDeviceQueueFamilyPerformanceCountersByRegionARM-pCounters-parameter",
+    "VUID-vkGetSwapchainTimeDomainPropertiesEXT-pTimeDomainsCounter-parameter",
+    "VUID-vkGetSwapchainTimingPropertiesEXT-pSwapchainTimingPropertiesCounter-parameter",
+    "VUID-vkGetFramebufferTilePropertiesQCOM-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV-pProperties-parameter",
+    "VUID-VkAccelerationStructureBuildGeometryInfoKHR-ppGeometries-parameter",
+    "VUID-VkPipelineBinaryCreateInfoKHR-pKeysAndDataInfo-parameter",
+    "VUID-vkCmdSetDepthClampRangeEXT-pDepthClampRange-parameter",
+    "VUID-VkRenderingInputAttachmentIndexInfo-pColorAttachmentInputIndices-parameter",
+    "VUID-VkPipelineViewportDepthClampControlCreateInfoEXT-pDepthClampRange-parameter",
+    "VUID-VkTensorCopyARM-pDstOffset-parameter",
+    "VUID-VkTensorCopyARM-pExtent-parameter",
+    "VUID-VkTensorCopyARM-pSrcOffset-parameter",
+    "VUID-VkDataGraphPipelinePropertyQueryResultARM-pData-parameter",
+    "VUID-VkDataGraphPipelineShaderModuleCreateInfoARM-pConstants-parameter",
+    "VUID-VkDataGraphPipelineShaderModuleCreateInfoARM-pSpecializationInfo-parameter",
+    "VUID-vkGetDataGraphPipelineSessionBindPointRequirementsARM-pBindPointRequirements-parameter",
+    "VUID-vkGetPhysicalDeviceQueueFamilyDataGraphPropertiesARM-pQueueFamilyDataGraphProperties-parameter",
+    "VUID-VkResourceDescriptorInfoEXT-pImage-parameter",
+    "VUID-VkResourceDescriptorInfoEXT-pAddressRange-parameter",
+    "VUID-VkResourceDescriptorInfoEXT-pTensorARM-parameter",
+    "VUID-VkResourceDescriptorInfoEXT-pTexelBuffer-parameter",
+    "VUID-vkCmdBeginTransformFeedback2EXT-pCounterInfos-parameter",
+    "VUID-vkCmdEndTransformFeedback2EXT-pCounterInfos-parameter",
+    "VUID-vkCmdBindTransformFeedbackBuffers2EXT-pBindingInfos-parameter",
+    "VUID-vkGetDeviceFaultReportsKHR-pFaultInfo-parameter",
+    "VUID-VkGraphicsPipelineCreateInfo-pDynamicStates-04058",
+    // These occur in stateless validation when a pointer member is optional and the length member is null
+    "VUID-VkDeviceCreateInfo-pEnabledFeatures-parameter",
+    "VUID-VkInstanceCreateInfo-pApplicationInfo-parameter",
+    "VUID-VkPipelineShaderStageCreateInfo-pSpecializationInfo-parameter",
+    "VUID-VkSubpassDescription-pDepthStencilAttachment-parameter",
+    "VUID-VkShaderCreateInfoEXT-pSpecializationInfo-parameter",
+    "VUID-VkExportFenceWin32HandleInfoKHR-pAttributes-parameter",
+    "VUID-VkExportSemaphoreWin32HandleInfoKHR-pAttributes-parameter",
+    "VUID-VkExportMemoryWin32HandleInfoKHR-pAttributes-parameter",
+    "VUID-VkExportMemoryWin32HandleInfoNV-pAttributes-parameter",
+    "VUID-vkEnumerateDeviceExtensionProperties-pProperties-parameter",
+    "VUID-vkEnumerateDeviceLayerProperties-pProperties-parameter",
+    "VUID-vkEnumerateInstanceExtensionProperties-pProperties-parameter",
+    "VUID-vkEnumerateInstanceLayerProperties-pProperties-parameter",
+    "VUID-vkGetPhysicalDeviceCooperativeMatrixProperties2EXT-pProperties-parameter",
+    // Checking for null-terminated UTF-8 string
+    "VUID-VkApplicationInfo-pApplicationName-parameter",
+    "VUID-VkApplicationInfo-pEngineName-parameter",
+    "VUID-VkDebugUtilsObjectNameInfoEXT-pObjectName-parameter",
+    "VUID-VkDebugUtilsMessengerCallbackDataEXT-pMessageIdName-parameter",
+    "VUID-VkDebugUtilsMessengerCallbackDataEXT-pMessage-parameter",
+    "VUID-VkPipelineShaderStageNodeCreateInfoAMDX-pName-parameter",
+    "VUID-VkShaderCreateInfoEXT-pName-parameter",
+    "VUID-vkGetDeviceProcAddr-pName-parameter",
+    "VUID-vkGetInstanceProcAddr-pName-parameter",
+    "VUID-vkEnumerateDeviceExtensionProperties-pLayerName-parameter",
+    "VUID-vkEnumerateInstanceExtensionProperties-pLayerName-parameter",
+    // Can't validate a VkAllocationCallbacks structure
+    "VUID-vkCreateAccelerationStructureKHR-pAllocator-parameter",
+    "VUID-vkCreateAccelerationStructureNV-pAllocator-parameter",
+    "VUID-vkCreateAndroidSurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateBuffer-pAllocator-parameter",
+    "VUID-vkCreateBufferCollectionFUCHSIA-pAllocator-parameter",
+    "VUID-vkCreateBufferView-pAllocator-parameter",
+    "VUID-vkCreateCommandPool-pAllocator-parameter",
+    "VUID-vkCreateComputePipelines-pAllocator-parameter",
+    "VUID-vkCreateCuFunctionNVX-pAllocator-parameter",
+    "VUID-vkCreateCuModuleNVX-pAllocator-parameter",
+    "VUID-vkCreateCudaFunctionNV-pAllocator-parameter",
+    "VUID-vkCreateCudaModuleNV-pAllocator-parameter",
+    "VUID-vkCreateDebugReportCallbackEXT-pAllocator-parameter",
+    "VUID-vkCreateDebugUtilsMessengerEXT-pAllocator-parameter",
+    "VUID-vkCreateDeferredOperationKHR-pAllocator-parameter",
+    "VUID-vkCreateDescriptorPool-pAllocator-parameter",
+    "VUID-vkCreateDescriptorSetLayout-pAllocator-parameter",
+    "VUID-vkCreateDescriptorUpdateTemplate-pAllocator-parameter",
+    "VUID-vkCreateDevice-pAllocator-parameter",
+    "VUID-vkCreateDirectFBSurfaceEXT-pAllocator-parameter",
+    "VUID-vkCreateDisplayModeKHR-pAllocator-parameter",
+    "VUID-vkCreateDisplayPlaneSurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateEvent-pAllocator-parameter",
+    "VUID-vkCreateExecutionGraphPipelinesAMDX-pAllocator-parameter",
+    "VUID-vkCreateFence-pAllocator-parameter",
+    "VUID-vkCreateFramebuffer-pAllocator-parameter",
+    "VUID-vkCreateGraphicsPipelines-pAllocator-parameter",
+    "VUID-vkCreateHeadlessSurfaceEXT-pAllocator-parameter",
+    "VUID-vkCreateIOSSurfaceMVK-pAllocator-parameter",
+    "VUID-vkCreateImage-pAllocator-parameter",
+    "VUID-vkCreateImagePipeSurfaceFUCHSIA-pAllocator-parameter",
+    "VUID-vkCreateImageView-pAllocator-parameter",
+    "VUID-vkCreateIndirectCommandsLayoutNV-pAllocator-parameter",
+    "VUID-vkCreateInstance-pAllocator-parameter",
+    "VUID-vkCreateMacOSSurfaceMVK-pAllocator-parameter",
+    "VUID-vkCreateMetalSurfaceEXT-pAllocator-parameter",
+    "VUID-vkCreateMicromapEXT-pAllocator-parameter",
+    "VUID-vkCreateOpticalFlowSessionNV-pAllocator-parameter",
+    "VUID-vkCreatePipelineCache-pAllocator-parameter",
+    "VUID-vkCreatePipelineLayout-pAllocator-parameter",
+    "VUID-vkCreatePrivateDataSlot-pAllocator-parameter",
+    "VUID-vkCreateQueryPool-pAllocator-parameter",
+    "VUID-vkCreateRayTracingPipelinesKHR-pAllocator-parameter",
+    "VUID-vkCreateRayTracingPipelinesNV-pAllocator-parameter",
+    "VUID-vkCreateRenderPass-pAllocator-parameter",
+    "VUID-vkCreateRenderPass2-pAllocator-parameter",
+    "VUID-vkCreateSampler-pAllocator-parameter",
+    "VUID-vkCreateSamplerYcbcrConversion-pAllocator-parameter",
+    "VUID-vkCreateScreenSurfaceQNX-pAllocator-parameter",
+    "VUID-vkCreateSemaphore-pAllocator-parameter",
+    "VUID-vkCreateShaderModule-pAllocator-parameter",
+    "VUID-vkCreateShadersEXT-pAllocator-parameter",
+    "VUID-vkCreateSharedSwapchainsKHR-pAllocator-parameter",
+    "VUID-vkCreateStreamDescriptorSurfaceGGP-pAllocator-parameter",
+    "VUID-vkCreateSwapchainKHR-pAllocator-parameter",
+    "VUID-vkCreateValidationCacheEXT-pAllocator-parameter",
+    "VUID-vkCreateViSurfaceNN-pAllocator-parameter",
+    "VUID-vkCreateVideoSessionKHR-pAllocator-parameter",
+    "VUID-vkCreateVideoSessionParametersKHR-pAllocator-parameter",
+    "VUID-vkCreateWaylandSurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateWin32SurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateXcbSurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateXlibSurfaceKHR-pAllocator-parameter",
+    "VUID-vkCreateIndirectCommandsLayoutEXT-pAllocator-parameter",
+    "VUID-vkCreateIndirectExecutionSetEXT-pAllocator-parameter",
+    "VUID-vkCreatePipelineBinariesKHR-pAllocator-parameter",
+    "VUID-vkDestroyAccelerationStructureKHR-pAllocator-parameter",
+    "VUID-vkDestroyAccelerationStructureNV-pAllocator-parameter",
+    "VUID-vkDestroyBuffer-pAllocator-parameter",
+    "VUID-vkDestroyBufferCollectionFUCHSIA-pAllocator-parameter",
+    "VUID-vkDestroyBufferView-pAllocator-parameter",
+    "VUID-vkDestroyCommandPool-pAllocator-parameter",
+    "VUID-vkDestroyCuFunctionNVX-pAllocator-parameter",
+    "VUID-vkDestroyCuModuleNVX-pAllocator-parameter",
+    "VUID-vkDestroyCudaFunctionNV-pAllocator-parameter",
+    "VUID-vkDestroyCudaModuleNV-pAllocator-parameter",
+    "VUID-vkDestroyDebugReportCallbackEXT-pAllocator-parameter",
+    "VUID-vkDestroyDebugUtilsMessengerEXT-pAllocator-parameter",
+    "VUID-vkDestroyDeferredOperationKHR-pAllocator-parameter",
+    "VUID-vkDestroyDescriptorPool-pAllocator-parameter",
+    "VUID-vkDestroyDescriptorSetLayout-pAllocator-parameter",
+    "VUID-vkDestroyDescriptorUpdateTemplate-pAllocator-parameter",
+    "VUID-vkDestroyDevice-pAllocator-parameter",
+    "VUID-vkDestroyEvent-pAllocator-parameter",
+    "VUID-vkDestroyFence-pAllocator-parameter",
+    "VUID-vkDestroyFramebuffer-pAllocator-parameter",
+    "VUID-vkDestroyImage-pAllocator-parameter",
+    "VUID-vkDestroyImageView-pAllocator-parameter",
+    "VUID-vkDestroyIndirectCommandsLayoutNV-pAllocator-parameter",
+    "VUID-vkDestroyInstance-pAllocator-parameter",
+    "VUID-vkDestroyMicromapEXT-pAllocator-parameter",
+    "VUID-vkDestroyOpticalFlowSessionNV-pAllocator-parameter",
+    "VUID-vkDestroyPipeline-pAllocator-parameter",
+    "VUID-vkDestroyPipelineCache-pAllocator-parameter",
+    "VUID-vkDestroyPipelineLayout-pAllocator-parameter",
+    "VUID-vkDestroyPrivateDataSlot-pAllocator-parameter",
+    "VUID-vkDestroyQueryPool-pAllocator-parameter",
+    "VUID-vkDestroyRenderPass-pAllocator-parameter",
+    "VUID-vkDestroySampler-pAllocator-parameter",
+    "VUID-vkDestroySamplerYcbcrConversion-pAllocator-parameter",
+    "VUID-vkDestroySemaphore-pAllocator-parameter",
+    "VUID-vkDestroyShaderEXT-pAllocator-parameter",
+    "VUID-vkDestroyShaderModule-pAllocator-parameter",
+    "VUID-vkDestroySurfaceKHR-pAllocator-parameter",
+    "VUID-vkDestroySwapchainKHR-pAllocator-parameter",
+    "VUID-vkDestroyValidationCacheEXT-pAllocator-parameter",
+    "VUID-vkDestroyVideoSessionKHR-pAllocator-parameter",
+    "VUID-vkDestroyVideoSessionParametersKHR-pAllocator-parameter",
+    "VUID-vkDestroyIndirectCommandsLayoutEXT-pAllocator-parameter",
+    "VUID-vkDestroyIndirectExecutionSetEXT-pAllocator-parameter",
+    "VUID-vkDestroyPipelineBinaryKHR-pAllocator-parameter",
+    "VUID-vkReleaseCapturedPipelineDataKHR-pAllocator-parameter",
+    "VUID-vkFreeMemory-pAllocator-parameter",
+    "VUID-vkRegisterDeviceEventEXT-pAllocator-parameter",
+    "VUID-vkRegisterDisplayEventEXT-pAllocator-parameter",
+    "VUID-vkAllocateMemory-pAllocator-parameter",
+    "VUID-vkCreateDataGraphPipelineSessionARM-pAllocator-parameter",
+    "VUID-vkCreateDataGraphPipelinesARM-pAllocator-parameter",
+    "VUID-vkCreateExternalComputeQueueNV-pAllocator-parameter",
+    "VUID-vkCreateSurfaceOHOS-pAllocator-parameter",
+    "VUID-vkCreateTensorViewARM-pAllocator-parameter",
+    "VUID-vkCreateTensorARM-pAllocator-parameter",
+    "VUID-vkDestroyDataGraphPipelineSessionARM-pAllocator-parameter",
+    "VUID-vkDestroyExternalComputeQueueNV-pAllocator-parameter",
+    "VUID-vkDestroyTensorARM-pAllocator-parameter",
+    "VUID-vkDestroyTensorViewARM-pAllocator-parameter",
+    "VUID-vkCreateAccelerationStructure2KHR-pAllocator-parameter",
+
+    // about requiring external host access synchronization, can't be verified
+    "VUID-vkCreateDataGraphPipelinesARM-pipelineCache-09762",
+
+    // Removed in https://github.com/KhronosGroup/Vulkan-ValidationLayers/pull/9302
+    // Found these are not invalid actually
+    "VUID-VkPhysicalDeviceAccelerationStructurePropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceClusterCullingShaderPropertiesHUAWEI-sType-sType",
+    "VUID-VkPhysicalDeviceComputeShaderDerivativesPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceConservativeRasterizationPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceCooperativeMatrix2PropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceCooperativeMatrixPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceCooperativeMatrixPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceCudaKernelLaunchPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceCustomBorderColorPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDepthStencilResolveProperties-sType-sType",
+    "VUID-VkPhysicalDeviceDescriptorBufferDensityMapPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDescriptorBufferPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDescriptorIndexingProperties-sType-sType",
+    "VUID-VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDeviceGeneratedCommandsPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceDiscardRectanglePropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDisplacementMicromapPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceDriverProperties-sType-sType",
+    "VUID-VkPhysicalDeviceDrmPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceExtendedDynamicState3PropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceExtendedSparseAddressSpacePropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceExternalFormatResolvePropertiesANDROID-sType-sType",
+    "VUID-VkPhysicalDeviceExternalMemoryHostPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceFloatControlsProperties-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentDensityMap2PropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentDensityMapPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentShaderBarycentricPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentShadingRateEnumsPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentShadingRatePropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceHostImageCopyProperties-sType-sType",
+    "VUID-VkPhysicalDeviceIDProperties-sType-sType",
+    "VUID-VkPhysicalDeviceImageAlignmentControlPropertiesMESA-sType-sType",
+    "VUID-VkPhysicalDeviceImageProcessing2PropertiesQCOM-sType-sType",
+    "VUID-VkPhysicalDeviceImageProcessingPropertiesQCOM-sType-sType",
+    "VUID-VkPhysicalDeviceInlineUniformBlockProperties-sType-sType",
+    "VUID-VkPhysicalDeviceLayeredApiPropertiesKHR-pNext-pNext",
+    "VUID-VkPhysicalDeviceLayeredApiPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceLayeredApiPropertiesKHR-sType-unique",
+    "VUID-VkPhysicalDeviceLayeredApiPropertiesListKHR-sType-sType",
+    "VUID-VkPhysicalDeviceLayeredDriverPropertiesMSFT-sType-sType",
+    "VUID-VkPhysicalDeviceLegacyVertexAttributesPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceLineRasterizationProperties-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance3Properties-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance4Properties-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance5Properties-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance6Properties-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance7PropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceMapMemoryPlacedPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceMeshShaderPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceMeshShaderPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceMultiDrawPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceMultiviewPerViewAttributesPropertiesNVX-sType-sType",
+    "VUID-VkPhysicalDeviceMultiviewProperties-sType-sType",
+    "VUID-VkPhysicalDeviceNestedCommandBufferPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceOpacityMicromapPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceOpticalFlowPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDevicePCIBusInfoPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDevicePerformanceQueryPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDevicePipelineBinaryPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDevicePipelineRobustnessProperties-sType-sType",
+    "VUID-VkPhysicalDevicePointClippingProperties-sType-sType",
+    "VUID-VkPhysicalDevicePortabilitySubsetPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceProtectedMemoryProperties-sType-sType",
+    "VUID-VkPhysicalDeviceProvokingVertexPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDevicePushDescriptorProperties-sType-sType",
+    "VUID-VkPhysicalDeviceRayTracingInvocationReorderPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceRayTracingPipelinePropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceRayTracingPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceRenderPassStripedPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceRobustness2PropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceSampleLocationsPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceSamplerFilterMinmaxProperties-sType-sType",
+    "VUID-VkPhysicalDeviceSchedulingControlsPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceShaderCoreBuiltinsPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceShaderCoreProperties2AMD-sType-sType",
+    "VUID-VkPhysicalDeviceShaderCorePropertiesAMD-sType-sType",
+    "VUID-VkPhysicalDeviceShaderCorePropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceShaderEnqueuePropertiesAMDX-sType-sType",
+    "VUID-VkPhysicalDeviceShaderIntegerDotProductProperties-sType-sType",
+    "VUID-VkPhysicalDeviceShaderModuleIdentifierPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceShaderObjectPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceShaderSMBuiltinsPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceShaderTileImagePropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceShadingRateImagePropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceSubgroupProperties-sType-sType",
+    "VUID-VkPhysicalDeviceSubgroupSizeControlProperties-sType-sType",
+    "VUID-VkPhysicalDeviceSubpassShadingPropertiesHUAWEI-sType-sType",
+    "VUID-VkPhysicalDeviceTexelBufferAlignmentProperties-sType-sType",
+    "VUID-VkPhysicalDeviceTimelineSemaphoreProperties-sType-sType",
+    "VUID-VkPhysicalDeviceTransformFeedbackPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceVertexAttributeDivisorProperties-sType-sType",
+    "VUID-VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceVulkan11Properties-sType-sType",
+    "VUID-VkPhysicalDeviceVulkan12Properties-sType-sType",
+    "VUID-VkPhysicalDeviceVulkan13Properties-sType-sType",
+    "VUID-VkPhysicalDeviceVulkan14Properties-sType-sType",
+    "VUID-VkPhysicalDeviceClusterAccelerationStructurePropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceCooperativeVectorPropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceDescriptorBufferTensorPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceExternalComputeQueuePropertiesNV-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentDensityMapLayeredPropertiesVALVE-sType-sType",
+    "VUID-VkPhysicalDeviceFragmentDensityMapOffsetPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance10PropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceMaintenance9PropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceMemoryDecompressionPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDevicePartitionedAccelerationStructurePropertiesNV-sType-sType",
+    "VUID-VkPhysicalDevicePerformanceCountersByRegionPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceTensorPropertiesARM-sType-sType",
+    "VUID-VkPhysicalDeviceTileMemoryHeapPropertiesQCOM-sType-sType",
+    "VUID-VkPhysicalDeviceTileShadingPropertiesQCOM-sType-sType",
+    "VUID-VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceShaderLongVectorPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceDescriptorHeapPropertiesEXT-sType-sType",
+    "VUID-VkPastPresentationTimingEXT-pNext-pNext",
+    "VUID-VkPastPresentationTimingEXT-sType-sType",
+    "VUID-VkPhysicalDeviceShaderAbortPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceFaultPropertiesKHR-sType-sType",
+    "VUID-VkPhysicalDeviceShaderSplitBarrierPropertiesEXT-sType-sType",
+    "VUID-VkPhysicalDeviceOpacityMicromapPropertiesKHR-sType-sType",
+
+    // Needs to be correct for VVL to even know about the struct
+    "VUID-VkLayerSettingsCreateInfoEXT-sType-sType",
+
+    // Points to Video struts not defined
+    "VUID-VkVideoDecodeAV1InlineSessionParametersInfoKHR-pStdSequenceHeader-parameter",
+    "VUID-VkVideoDecodeH264InlineSessionParametersInfoKHR-pStdPPS-parameter",
+    "VUID-VkVideoDecodeH264InlineSessionParametersInfoKHR-pStdSPS-parameter",
+    "VUID-VkVideoDecodeH265InlineSessionParametersInfoKHR-pStdPPS-parameter",
+    "VUID-VkVideoDecodeH265InlineSessionParametersInfoKHR-pStdSPS-parameter",
+    "VUID-VkVideoDecodeH265InlineSessionParametersInfoKHR-pStdVPS-parameter",
+    "VUID-VkVideoEncodeAV1SessionParametersCreateInfoKHR-pStdDecoderModelInfo-parameter",
+    "VUID-VkVideoEncodeAV1SessionParametersCreateInfoKHR-pStdOperatingPoints-parameter",
+
+    // Acceleration structure replay related,
+    // VVL would need to track AS state outside of the application, impossible
+    "VUID-VkAccelerationStructureCreateInfoKHR-deviceAddress-09488"
+    "VUID-VkAccelerationStructureCreateInfoKHR-deviceAddress-09489"
+    "VUID-VkAccelerationStructureCreateInfoKHR-deviceAddress-09490"
+
+    // These are suppose to be for Buffer/Memory <--> Image
+    // These 3 checks are covered, Image-to-Image is different
+    // Likely needs to just be removed from the spec, but a lot of churn for little reward
+    "VUID-VkCopyImageToImageInfo-dstImage-00207",
+    "VUID-VkCopyImageToImageInfo-dstImage-00208",
+    "VUID-VkCopyImageToImageInfo-dstImage-00209",
+
+    // Can't check for a valid VkDeviceOrHostAddressConstKHR union
+    "VUID-VkAccelerationStructureDenseGeometryFormatTrianglesDataAMDX-compressedData-parameter",
+    "VUID-VkAccelerationStructureGeometryLinearSweptSpheresDataNV-indexData-parameter",
+    "VUID-VkAccelerationStructureGeometryLinearSweptSpheresDataNV-radiusData-parameter",
+    "VUID-VkAccelerationStructureGeometryLinearSweptSpheresDataNV-vertexData-parameter",
+    "VUID-VkAccelerationStructureGeometrySpheresDataNV-indexData-parameter",
+    "VUID-VkAccelerationStructureGeometrySpheresDataNV-radiusData-parameter",
+    "VUID-VkAccelerationStructureGeometrySpheresDataNV-vertexData-parameter",
+    "VUID-VkConvertCooperativeVectorMatrixInfoNV-srcData-parameter",
+    "VUID-VkConvertCooperativeVectorMatrixInfoNV-dstData-parameter",
+
+    // RT pipeline stack size is dynamic, allocated at runtime
+    // how rays behaves in the scene
+    "VUID-vkCmdSetRayTracingPipelineStackSizeKHR-pipelineStackSize-03610",
+
+    // Currently ALL BuiltIn in SPIR-V are only for Vulkan
+    "VUID-StandaloneSpirv-BuiltIn-04668",
+
+    // We can't track the entire CPU memory range to decode things
+    // This could be more possible if things like VkDescriptorBufferInfo had an sType
+    "VUID-vkUpdateDescriptorSetWithTemplate-pData-01685",
+
+    // This is caught by VUID-VkPipelineShaderStageCreateInfo-stage-parameter
+    "VUID-VkPipelineShaderStageCreateInfo-stage-00706",
+
+    // We use to have these implemented until we found out (from the issue below) that these were giving false positives.
+    // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/11900
+    //
+    // There is no real way for VVL to track FD handles and while it "might work"
+    // the cost of false positives are not worth the integrity of the tool.
+    //
+    // If someone complains in a |real world app| how this would have helpped, we can discuss adding them back somehow.
+    "VUID-VkImportSemaphoreFdInfoKHR-handleType-03263",
+    "VUID-VkImportSemaphoreFdInfoKHR-handleType-03264",
+    "VUID-VkMemoryAllocateInfo-allocationSize-01742",
+    "VUID-VkMemoryDedicatedAllocateInfo-image-01878",
+    "VUID-VkMemoryDedicatedAllocateInfo-buffer-01879",
+    "VUID-VkMemoryDedicatedAllocateInfoTensorARM-tensor-09859",
+};
+
+// These are things that "could be done" but require a crazy amount of work, for no real usecase
+//
+// Anything here should be here because it was carefully thought over why we don't want it
+const char* not_going_to_do[] = {
+    // These were added for "completeness" (by us!) and serve no real purpose.
+    // 1. VK_EXT_validation_features/VK_EXT_validation_flags are implemented by us and we don't even care
+    //    if the extension name is enabled or not
+    // 2. It would crazy for a layer to suddenly not have VK_EXT_layer_settings work if the extension name is not provided
+    //
+    // Until there is a real world usecase where these are needed, we are just going to defer validating them.
+    "VUID-VkInstanceCreateInfo-pNext-10242",
+    "VUID-VkInstanceCreateInfo-pNext-10243",
+    "VUID-VkInstanceCreateInfo-pNext-10244",
+
+    // See issue in VK_EXT_memory_decompression where we discussed why this is not possible
+    // without implementing the decompression algorithm
+    "VUID-VkDecompressMemoryRegionEXT-decompressedSize-07689",
+
+    // Pointless Ray Tracing VUs
+    "VUID-VkRayTracingShaderGroupCreateInfoKHR-rayTracingPipelineShaderGroupHandleCaptureReplayMixed-03603",
+    "VUID-VkRayTracingShaderGroupCreateInfoKHR-rayTracingPipelineShaderGroupHandleCaptureReplayMixed-03604",
+
+    // Where added "for completeness", but doesn't seem to be possible with any configuration
+    "VUID-vkBindImageMemory-apiVersion-07921",
+    "VUID-VkBindImageMemoryInfo-apiVersion-07921",
+
+    // Adding a bunch of generated code to check crazy edge cases for an extension that was only ever added to
+    // layer OpenGL ES on Vulkan is not worth it
+    "VUID-VkSamplerCreateInfo-borderColor-04442",
+
+    // Implied by VUID-vkCmdBuildAccelerationStructuresKHR-dstAccelerationStructure-03706
+    "VUID-vkCmdBuildAccelerationStructuresKHR-None-03407",
+    "VUID-vkCmdBuildAccelerationStructuresIndirectKHR-None-03407",
+
+    // https://gitlab.khronos.org/vulkan/vulkan/-/issues/4621
+    // There is no real known use for this as it will break many things prior
+    "VUID-VkSamplerYcbcrConversionCreateInfo-ycbcrRange-02748",
+
+    // We would require to add obj-c files and a dependency to Metal
+    "VUID-VkMemoryAllocateInfo-pNext-10396",
+
+    // VK_KHR_portability_subset  is dead and no one is supporting it
+    "VUID-VkVertexInputAttributeDescription2EXT-vertexAttributeAccessBeyondStride-04806",
+
+    // Not going to add full ASTC software decoding
+    "VUID-VkImageViewASTCDecodeModeEXT-decodeMode-02232",
+
+    // This is a crazy VU that is just not practical to track/test as it involves
+    // pipeline binaries from the user's system
+    "VUID-VkPipelineBinaryInfoKHR-binaryCount-09603",
+
+    // This should be a single VU as
+    // VUID-RuntimeSpirv-imageDescriptorAlignment-11349
+    // already cover imageDescriptorAlignment, but there is a separate VU
+    // for atomic storage images.
+    // Instead of wasting effort/memory tracking that, we just combine the VU
+    "VUID-RuntimeSpirv-imageDescriptorAlignment-11383",
+
+    // These are kinda of flawed VUs due to design of the API
+    // (Heaps improved on this design)
+    // Even with descriptor hashing, we could scan the buffer, but this
+    // is all happening at vkCmdBindDescriptorBuffersEXT, so the buffer can be update after
+    // GPU-Dump will try and detect this at **draw time**, but that is about all we can do
+    "VUID-vkCmdBindDescriptorBuffersEXT-pBindingInfos-08053",
+    "VUID-vkCmdBindDescriptorBuffersEXT-pBindingInfos-08054",
+    // No one has ever explained to me what "memory must be resident" actually means
+    // This falls under the failure of the sparse memory spec/testing
+    // so going to skip until someone complains loudly
+    "VUID-vkCmdDraw-None-08119",
+
+    // https://gitlab.khronos.org/vulkan/vulkan/-/work_items/4965
+    // Apparently some ARM devices support no clip/cull and guarded by the
+    // shaderClipDistance/shaderCullDistance features such that these are not possible to even hit
+    // This whole thing is an issue because glslang adds the Clip/Cull to the gl_vertex output struct
+    // but only if you use it does it use the OpCapabilty
+    // ... so these are just here because of the decision of glslang years ago
+    "VUID-RuntimeSpirv-maxClipDistances-08448",
+    "VUID-RuntimeSpirv-maxCullDistances-08449",
+
+    // Sync Val already covers these, just without an explicit VU
+    // I decided to not try and remove these from the spec (but they should be)
+    "VUID-vkCmdExecuteCommands-commandBuffer-06533",
+    "VUID-vkCmdExecuteCommands-commandBuffer-06534",
+    "VUID-vkCmdExecuteCommands-pCommandBuffers-06535",
+    "VUID-vkCmdExecuteCommands-pCommandBuffers-06536",
+};
+
+// VUs from deprecated extensions that would require complex codegen to get working
+const char* deprecated_validation[] = {
+    // NV Ray tracing that is now KHR ray tracing
+    "VUID-VkAccelerationStructureCreateInfoNV-info-parameter",
+    "VUID-VkAccelerationStructureInfoNV-type-parameter",
+    "VUID-VkAccelerationStructureMotionInstanceNV-flags-zerobitmask",
+    "VUID-VkAccelerationStructureMotionInstanceNV-matrixMotionInstance-parameter",
+    "VUID-VkAccelerationStructureMotionInstanceNV-staticInstance-parameter",
+    "VUID-VkAccelerationStructureMotionInstanceNV-type-parameter",
+    "VUID-VkGeometryDataNV-aabbs-parameter",
+    "VUID-VkGeometryDataNV-triangles-parameter",
+    "VUID-VkGeometryNV-geometry-parameter",
+    "VUID-VkAccelerationStructureTrianglesDisplacementMicromapNV-micromap-parameter",
+    "VUID-VkBindIndexBufferIndirectCommandNV-indexType-parameter",
+    "VUID-VkAccelerationStructureMotionInstanceNV-srtMotionInstance-parameter",
+    "VUID-RuntimeSpirv-OpTraceRayKHR-06360",
+    "VUID-RuntimeSpirv-OpRayQueryGenerateIntersectionKHR-06354",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06361",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06362",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06363",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06364",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06365",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06366",
+    "VUID-RuntimeSpirv-OpTraceRayMotionNV-06367",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayMotionNV-07704",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07705",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07706",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07707",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07708",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayMotionNV-07709",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07710",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayMotionNV-07711",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07712",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07713",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07714",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07715",
+    "VUID-RuntimeSpirv-OpHitObjectTraceRayNV-07716",
+
+    // No one wants to own VK_EXT_opacity_micromap with the KHR coming out
+    // ... sad
+    "VUID-VkAccelerationStructureTrianglesOpacityMicromapEXT-micromap-parameter",
+
+    // VK_NV_per_stage_descriptor_set now deprecated for VK_EXT_descriptor_heap
+    "VUID-VkDescriptorSetLayoutCreateInfo-flags-09463",
+    "VUID-VkDescriptorSetLayoutCreateInfo-flags-09464",
+    "VUID-VkDescriptorSetLayoutBinding-flags-09466",
+
+    // The work for this was prototyped and its a lot for a check that is likely not neeed
+    // TransformFeedback has been legacy for awhile and will only add if someone ACTUALLY needs these
+    "VUID-VkGraphicsPipelineCreateInfo-rasterizationStream-02319",
+    "VUID-VkGraphicsPipelineCreateInfo-rasterizationStream-02320",
+};
+
+// clang-format on
+#endif

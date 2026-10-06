@@ -1,0 +1,133 @@
+// Copyright (c) 2023-2026 The Khronos Group Inc.
+// Copyright (c) 2023-2026 Valve Corporation
+// Copyright (c) 2023-2026 LunarG, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "gpuav_error_header.h"
+#include "gpuav_shaders_constants.h"
+
+#ifdef __SLANG__
+
+// Slang has no equivalent to a GLSL buffer block ending with a runtime sized array, so the error
+// buffer is seen as a flat array of uint: `flags`, then `errors_count`, then the error records.
+static const uint kErrorBuffer_FlagsOffset = 0;
+static const uint kErrorBuffer_ErrorsCountOffset = 1;
+static const uint kErrorBuffer_RecordsOffset = 2;
+
+[vk::binding(kBindingDiagErrorBuffer, kDiagCommonDescriptorSet)] RWStructuredBuffer<uint> error_buffer;
+
+[vk::binding(kBindingDiagActionIndex, kDiagCommonDescriptorSet)] StructuredBuffer<uint> action_index;
+
+[vk::binding(kBindingDiagCmdResourceIndex, kDiagCommonDescriptorSet)] StructuredBuffer<uint> resource_index;
+
+[vk::binding(kBindingDiagCmdErrorsCount, kDiagCommonDescriptorSet)] RWStructuredBuffer<uint> cmd_errors_count;
+
+bool MaxCmdErrorsCountReached() {
+    const uint cmd_id = resource_index[0];
+    uint previous_errors_count;
+    InterlockedAdd(cmd_errors_count[cmd_id], 1, previous_errors_count);
+    return previous_errors_count >= kMaxErrorsPerCmd;
+}
+
+void GpuavLogError5(uint error_group, uint error_sub_code, uint dword_0, uint dword_1, uint dword_2, uint dword_3, uint dword_4) {
+    if (MaxCmdErrorsCountReached()) {
+        return;
+    }
+
+    uint error_buffer_size;
+    uint error_buffer_stride;
+    error_buffer.GetDimensions(error_buffer_size, error_buffer_stride);
+    const uint errors_buffer_length = error_buffer_size - kErrorBuffer_RecordsOffset;
+
+    uint vo_idx;
+    InterlockedAdd(error_buffer[kErrorBuffer_ErrorsCountOffset], kErrorRecordSize, vo_idx);
+    const bool errors_buffer_filled = (vo_idx + kErrorRecordSize) > errors_buffer_length;
+    if (errors_buffer_filled) {
+        return;
+    }
+
+    const uint record_i = kErrorBuffer_RecordsOffset + vo_idx;
+
+    error_buffer[record_i + kHeader_ShaderIdErrorOffset] =
+        (error_group << kErrorGroup_Shift) | (error_sub_code << kErrorSubCode_Shift);
+    error_buffer[record_i + kHeader_ErrorRecordSizeOffset] = kErrorRecordSize;
+    error_buffer[record_i + kHeader_ActionIdErrorLoggerIdOffset] = (action_index[0] << kActionId_Shift) | resource_index[0];
+
+    error_buffer[record_i + kValCmd_ErrorPayloadDword_0] = dword_0;
+    error_buffer[record_i + kValCmd_ErrorPayloadDword_1] = dword_1;
+    error_buffer[record_i + kValCmd_ErrorPayloadDword_2] = dword_2;
+    error_buffer[record_i + kValCmd_ErrorPayloadDword_3] = dword_3;
+    error_buffer[record_i + kValCmd_ErrorPayloadDword_4] = dword_4;
+}
+
+#else
+
+#extension GL_EXT_scalar_block_layout : require
+
+layout(set = kDiagCommonDescriptorSet, binding = kBindingDiagErrorBuffer, scalar) buffer ErrorBuffer {
+    uint flags;
+    uint errors_count;
+    uint errors_buffer[];
+};
+
+layout(set = kDiagCommonDescriptorSet, binding = kBindingDiagActionIndex, scalar) readonly buffer ActionIndexBuffer {
+    uint action_index[];
+};
+
+layout(set = kDiagCommonDescriptorSet, binding = kBindingDiagCmdResourceIndex, scalar) readonly buffer ResourceIndexBuffer {
+    uint resource_index[];
+};
+
+layout(set = kDiagCommonDescriptorSet, binding = kBindingDiagCmdErrorsCount, scalar) buffer CmdErrorsCountBuffer {
+    uint cmd_errors_count[];
+};
+
+bool MaxCmdErrorsCountReached() {
+    const uint cmd_id = resource_index[0];
+    const uint cmd_errors_count = atomicAdd(cmd_errors_count[cmd_id], 1);
+    return cmd_errors_count >= kMaxErrorsPerCmd;
+}
+
+void GpuavLogError5(uint error_group, uint error_sub_code, uint dword_0, uint dword_1, uint dword_2, uint dword_3, uint dword_4) {
+    if (MaxCmdErrorsCountReached()) {
+        return;
+    }
+
+    uint vo_idx = atomicAdd(errors_count, kErrorRecordSize);
+    const bool errors_buffer_filled = (vo_idx + kErrorRecordSize) > errors_buffer.length();
+    if (errors_buffer_filled) {
+        return;
+    }
+
+    errors_buffer[vo_idx + kHeader_ShaderIdErrorOffset] =
+        (error_group << kErrorGroup_Shift) | (error_sub_code << kErrorSubCode_Shift);
+    errors_buffer[vo_idx + kHeader_ErrorRecordSizeOffset] = kErrorRecordSize;
+    errors_buffer[vo_idx + kHeader_ActionIdErrorLoggerIdOffset] = (action_index[0] << kActionId_Shift) | resource_index[0];
+
+    errors_buffer[vo_idx + kValCmd_ErrorPayloadDword_0] = dword_0;
+    errors_buffer[vo_idx + kValCmd_ErrorPayloadDword_1] = dword_1;
+    errors_buffer[vo_idx + kValCmd_ErrorPayloadDword_2] = dword_2;
+    errors_buffer[vo_idx + kValCmd_ErrorPayloadDword_3] = dword_3;
+    errors_buffer[vo_idx + kValCmd_ErrorPayloadDword_4] = dword_4;
+}
+
+#endif
+
+void GpuavLogError2(uint error_group, uint error_sub_code, uint dword_0, uint dword_1) {
+    GpuavLogError5(error_group, error_sub_code, dword_0, dword_1, 0, 0, 0);
+}
+
+void GpuavLogError4(uint error_group, uint error_sub_code, uint dword_0, uint dword_1, uint dword_2, uint dword_3) {
+    GpuavLogError5(error_group, error_sub_code, dword_0, dword_1, dword_2, dword_3, 0);
+}

@@ -1,0 +1,541 @@
+/*
+ * Copyright (c) 2015-2026 The Khronos Group Inc.
+ * Copyright (c) 2015-2026 Valve Corporation
+ * Copyright (c) 2015-2026 LunarG, Inc.
+ * Copyright (c) 2015-2026 Google, Inc.
+ * Copyright (C) 2025 Arm Limited.
+ * Copyright (C) 2026 Qualcomm Technologies, Inc.
+ * Modifications Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+#pragma once
+
+#include <vulkan/vulkan.h>
+
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+#include <android/log.h>
+#include <android_native_app_glue.h>
+#endif
+
+#include <vulkan/utility/vk_format_utils.h>
+#include <vulkan/utility/vk_struct_helper.hpp>
+
+// Remove Windows macro that prevents usage of its name in any scope of the program.
+// For example, BitstreamBuffer::MemoryBarrier() won't compile on ARM64.
+#if defined(VK_USE_PLATFORM_WIN32_KHR) && defined(MemoryBarrier)
+#undef MemoryBarrier
+#endif
+
+#include "binding.h"
+#include "containers/limits.h"
+#include "render.h"
+
+#include <vector>
+#include <array> // Required for Windows in many tests
+
+// MSVC and GCC define __SANITIZE_ADDRESS__ when compiling with address sanitization
+// However, clang doesn't. Instead you have to use __has_feature to check.
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+#define VVL_ENABLE_ASAN 1
+#endif
+#elif defined(__SANITIZE_ADDRESS__)
+#define VVL_ENABLE_ASAN 1
+#endif
+
+// GCC defines __SANITIZE_THREAD__ when compiling with address sanitization
+// However, clang doesn't. Instead you have to use __has_feature to check.
+#if defined(__clang__)
+#if __has_feature(thread_sanitizer)
+#define VVL_ENABLE_TSAN 1
+#endif
+#elif defined(__SANITIZE_THREAD__)
+#define VVL_ENABLE_TSAN 1
+#endif
+
+#if defined(VVL_ENABLE_ASAN)
+#if __has_include(<sanitizer/lsan_interface.h>)
+#include <sanitizer/lsan_interface.h>
+#else
+#error The lsan_interface.h header was not found!
+#endif
+#endif
+
+#define OBJECT_LAYER_NAME "VK_LAYER_KHRONOS_validation"
+
+[[maybe_unused]] static const VkBool32 kVkFalse = VK_FALSE;
+[[maybe_unused]] static const VkBool32 kVkTrue = VK_TRUE;
+
+// Way to inject lower limits for tests that need to test limits
+static const VkLayerSettingEXT kLowerLimitsSetting = {OBJECT_LAYER_NAME, "gpuav_debug_test_lower_limits",
+                                                      VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &kVkTrue};
+
+// This is only for tests where you have a good reason to have more than the default (10) duplicate message limit.
+// It is highly suggested you first try to breakup your test up into smaller tests if you are trying to use this.
+static const VkLayerSettingEXT kDisableMessageLimitSetting = {OBJECT_LAYER_NAME, "enable_message_limit",
+                                                              VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &kVkFalse};
+[[maybe_unused]] static VkLayerSettingsCreateInfoEXT kDisableMessageLimit = {VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
+                                                                             nullptr, 1, &kDisableMessageLimitSetting};
+
+// Static arrays helper
+template <class ElementT, size_t array_size>
+uint32_t size32(ElementT (&)[array_size]) {
+    return static_cast<uint32_t>(array_size);
+}
+
+template <class Container>
+uint32_t size32(const Container &c) {
+    return static_cast<uint32_t>(c.size());
+}
+
+// Format search helper
+VkFormat FindSupportedDepthOnlyFormat(VkPhysicalDevice gpu);
+VkFormat FindSupportedStencilOnlyFormat(VkPhysicalDevice gpu);
+VkFormat FindSupportedDepthStencilFormat(VkPhysicalDevice gpu);
+
+// Returns true if *any* requested features are available.
+// Assumption is that the framework can successfully create an image as
+// long as at least one of the feature bits is present (excepting VTX_BUF).
+bool FormatIsSupported(VkPhysicalDevice gpu, VkFormat format, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL,
+                       VkFormatFeatureFlags features = ~VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+
+// Returns true if format and *all* requested features are available.
+bool FormatFeaturesAreSupported(VkPhysicalDevice gpu, VkFormat format, VkImageTiling tiling, VkFormatFeatureFlags features);
+bool FormatFeatures2AreSupported(VkPhysicalDevice gpu, VkFormat format, VkImageTiling tiling, VkFormatFeatureFlags2 features);
+
+// Small wrapprer around vkGetPhysicalDeviceImageFormatProperties
+VkResult GetImageFormatProps(VkPhysicalDevice gpu, const VkImageCreateInfo &ci, VkImageFormatProperties &out_limits);
+
+// VK_EXT_image_drm_format_modifier
+bool IsDrmModifierSupported(VkPhysicalDevice gpu, uint64_t drm_format_modifier, const VkImageCreateInfo& ci,
+                            const void* image_format_info_pnext = nullptr);
+std::vector<uint64_t> GetSupportedDrmModifiers(VkPhysicalDevice gpu, const std::vector<uint64_t>& drm_format_modifiers,
+                                               const VkImageCreateInfo& ci, const void* image_format_info_pnext = nullptr);
+
+// Returns true if format and *all* requested features are available.
+bool IsImageFormatSupported(VkPhysicalDevice gpu, const VkImageCreateInfo &ci, const VkFormatFeatureFlags features);
+
+// Returns true if format and *all* requested features are available.
+bool BufferFormatAndFeaturesSupported(VkPhysicalDevice gpu, VkFormat format, VkFormatFeatureFlags features);
+
+// Simple sane SamplerCreateInfo boilerplate
+VkSamplerCreateInfo SafeSaneSamplerCreateInfo(void *p_next = nullptr);
+
+// Dependent "false" type for the static assert, as GCC will evaluate
+// non-dependent static_asserts even for non-instantiated templates
+template <typename T>
+struct AlwaysFalse : std::false_type {};
+
+// Helpers to get nearest greater or smaller value (of float) -- useful for testing the boundary cases of Vulkan limits
+float NearestGreater(const float from);
+float NearestSmaller(const float from);
+
+// Defining VVL_TESTS_USE_CUSTOM_TEST_FRAMEWORK allows downstream users
+// to inject custom test framework changes. This includes the ability
+// to override the base class of the VkLayerTest class so that
+// appropriate test framework customizations can be injected into the
+// class hierarchy at the closest possible place to the base class used
+// by all validation layer tests. Downstream users can provide their
+// own version of custom_test_framework.h to define the appropriate
+// custom base class to use through the VkLayerTestBase type identifier.
+#ifdef VVL_TESTS_USE_CUSTOM_TEST_FRAMEWORK
+#include "framework/custom_test_framework.h"
+#else
+using VkLayerTestBase = VkRenderFramework;
+#endif
+
+// VkLayerTest is the main GTest test class
+// It is the root for all other test class variations
+class VkLayerTest : public VkLayerTestBase {
+  public:
+    const char *kValidationLayerName = "VK_LAYER_KHRONOS_validation";
+    const char *kSynchronization2LayerName = "VK_LAYER_KHRONOS_synchronization2";
+
+    void Init(VkPhysicalDeviceFeatures *features = nullptr, VkPhysicalDeviceFeatures2 *features2 = nullptr,
+              void *instance_pnext = nullptr);
+    void AddSurfaceExtension();
+
+    template <typename Features>
+    VkPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2(Features &feature_query) {
+        VkPhysicalDeviceFeatures2 features2 = vku::InitStructHelper(&feature_query);
+        return GetPhysicalDeviceFeatures2(features2);
+    }
+
+    template <typename Properties>
+    VkPhysicalDeviceProperties2 GetPhysicalDeviceProperties2(Properties &props_query) {
+        VkPhysicalDeviceProperties2 props2 = vku::InitStructHelper(&props_query);
+        return GetPhysicalDeviceProperties2(props2);
+    }
+
+    template <typename Proc, bool assert_proc = true>
+    [[nodiscard]] const Proc GetInstanceProcAddr(const char *proc_name) const noexcept {
+        static_assert(std::is_pointer_v<Proc>);
+
+        auto proc = reinterpret_cast<Proc>(vk::GetInstanceProcAddr(instance(), proc_name));
+        if constexpr (assert_proc) {
+            assert(proc);
+        }
+        return proc;
+    }
+
+    template <typename Proc, bool assert_proc = true>
+    [[nodiscard]] const Proc GetDeviceProcAddr(const char *proc_name) noexcept {
+        static_assert(std::is_pointer_v<Proc>);
+
+        auto proc = reinterpret_cast<Proc>(vk::GetDeviceProcAddr(device(), proc_name));
+        if constexpr (assert_proc) {
+            assert(proc);
+        }
+        return proc;
+    }
+    APIVersion DeviceValidationVersion() const;
+
+    // Helpers to quickly create a Handle and check it gives a certain VU error
+    void CreateSamplerTest(const VkSamplerCreateInfo &create_info, const char *vuid);
+    void CreateBufferTest(const VkBufferCreateInfo &create_info, const char *vuid);
+    void CreateImageTest(const VkImageCreateInfo &create_info, const char *vuid);
+    void CreateBufferViewTest(const VkBufferViewCreateInfo &create_info, const char *vuid);
+    void CreateImageViewTest(const VkImageViewCreateInfo &create_info, const char *vuid);
+    void CreateRenderPassTest(const VkRenderPassCreateInfo &create_info, bool rp2_supported, const char *rp1_vuid,
+                              const char *rp2_vuid);
+    void CreateRenderPassBeginTest(const VkCommandBuffer command_buffer, const VkRenderPassBeginInfo *begin_info,
+                                   bool rp2_supported, const char *rp1_vuid, const char *rp2_vuid);
+
+    VkResolveModeFlagBits FindSupportedDepthResolveMode();
+    VkResolveModeFlagBits FindSupportedStencilResolveMode();
+
+  protected:
+    void SetTargetApiVersion(APIVersion target_api_version);
+
+    VkLayerTest();
+};
+
+template <>
+VkPhysicalDeviceFeatures2 VkLayerTest::GetPhysicalDeviceFeatures2(VkPhysicalDeviceFeatures2 &feature_query);
+
+template <>
+VkPhysicalDeviceProperties2 VkLayerTest::GetPhysicalDeviceProperties2(VkPhysicalDeviceProperties2 &props2);
+
+class VkBestPracticesLayerTest : public VkLayerTest {
+  public:
+    void InitBestPracticesFramework(const char* vendor_checks_to_enable = nullptr);
+    void InitBestPractices(const char* vendor_checks_to_enable = nullptr);
+
+  protected:
+    VkValidationFeatureEnableEXT enables_[1] = {VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT};
+    VkValidationFeaturesEXT features_ = {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT, nullptr, 1, enables_, 0, nullptr};
+};
+
+class GpuAVTest : public virtual VkLayerTest {
+  public:
+    void InitGpuAvFramework(std::vector<VkLayerSettingEXT> layer_settings = {}, bool safe_mode = true);
+
+    VkValidationFeaturesEXT GetGpuAvValidationFeatures();
+};
+
+class GpuAVGpuAVShaderSanitizer : public GpuAVTest {
+  public:
+    void SimpleZeroComputeTest(const char *shader, int source_type, const char *expected_error = nullptr, uint32_t error_count = 1);
+    void InitCoopMatFp16();
+    void CoopMatAlignmentTest(const char* cs_source, const std::vector<uint32_t>& params, bool expect_error);
+};
+
+class GpuAVBufferDeviceAddressTest : public GpuAVTest {
+  public:
+    void InitGpuVUBufferDeviceAddress(bool safe_mode = true);
+};
+
+class GpuAVDescriptorIndexingTest : public GpuAVTest {
+  public:
+    void InitGpuVUDescriptorIndexing(bool safe_mode = true);
+};
+
+class GpuAVMesh : public GpuAVTest {
+  public:
+    void InitBasicMeshAndTask(bool safe_mode = true);
+};
+
+class GpuAVDescriptorBuffer : public GpuAVTest {
+  public:
+    void InitBasicDescriptorBuffer(std::vector<VkLayerSettingEXT> layer_settings = {}, bool safe_mode = true);
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_properties = vku::InitStructHelper();
+};
+
+class GpuAVDescriptorClassGeneralBuffer : public GpuAVTest {
+  public:
+    void ComputeStorageBufferTest(const char *shader, int source_type, VkDeviceSize buffer_size,
+                                  const char *expected_error = nullptr, uint32_t error_count = 1);
+};
+
+class GpuAVDescriptorClassGeneralBufferCoopMat : public GpuAVTest {
+  public:
+    void InitCooperativeMatrixKHR(bool safe_mode = true);
+    void BasicComputeTest(const char *shader, int source_type, VkDeviceSize buffer_size, const char *expected_error = nullptr,
+                          uint32_t error_count = 1);
+};
+
+class GpuAVCopyMemoryIndirect : public GpuAVTest {
+  public:
+    void InitGpuAVCopyMemoryIndirect(bool safe_mode = true);
+};
+
+class GpuAVRayQueryTest : public GpuAVTest {
+  public:
+    void InitGpuAVRayQuery(std::vector<VkLayerSettingEXT> layer_settings = {});
+};
+
+class GpuAVDescriptorHeapEXT : public GpuAVTest {
+  public:
+    void InitGpuAVDescriptorHeap(std::vector<VkLayerSettingEXT> layer_settings = {}, bool safe_mode = true);
+
+    VkPhysicalDeviceDescriptorHeapPropertiesEXT heap_props = vku::InitStructHelper();
+};
+
+class GpuAVRayHitObjectTest : public GpuAVTest {
+  public:
+    void InitHitObjectMotionTest(std::vector<VkLayerSettingEXT> layer_settings = {});
+    void InitHitObjectTest(std::vector<VkLayerSettingEXT> layer_settings = {});
+};
+
+class GpuAVSharedMemoryDataRaceTest : public GpuAVTest {
+  public:
+    void InitSharedMemoryDataRace(uint32_t message_limit = 1);
+};
+
+class DebugPrintfTests : public VkLayerTest {
+  public:
+    void InitDebugPrintfFramework(void *p_next = nullptr, bool reserve_slot = false);
+};
+
+class AndroidExternalResolveTest : public VkLayerTest {
+  public:
+    void InitBasicAndroidExternalResolve();
+    bool nullColorAttachmentWithExternalFormatResolve;
+};
+
+class LegacyTest : public VkLayerTest {
+  public:
+    void CreateRenderPass();
+};
+
+class DescriptorBufferTest : public VkLayerTest {
+  public:
+    void InitBasicDescriptorBuffer(void *instance_pnext = nullptr);
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_properties = vku::InitStructHelper();
+};
+
+class DescriptorIndexingTest : public VkLayerTest {
+  public:
+    void ComputePipelineShaderTest(const char *shader, std::vector<VkDescriptorSetLayoutBinding> &bindings);
+};
+
+class DescriptorHeapTestEXT : public VkLayerTest {
+  public:
+    void InitBasicDescriptorHeap();
+    void InitUntypedDescriptorHeap();
+
+    VkPhysicalDeviceDescriptorHeapPropertiesEXT heap_props = vku::InitStructHelper();
+    VkPhysicalDeviceDescriptorHeapTensorPropertiesARM tensor_heap_props = vku::InitStructHelper();
+};
+
+class DeviceAddressCommands : public VkLayerTest {
+  public:
+    void InitBasicDeviceAddressCommands();
+};
+
+class DynamicRenderingTest : public VkLayerTest {
+  public:
+    void InitBasicDynamicRendering();
+    void InitBasicDynamicRenderingLocalRead();
+
+    VkRenderingInfo GetSimpleRenderingInfo();
+    VkRenderingInfo GetSimpleSuspendInfo();
+    VkRenderingInfo GetSimpleResumeInfo();
+};
+
+class DynamicStateTest : public VkLayerTest {
+  public:
+    void InitBasicExtendedDynamicState();  // enables VK_EXT_extended_dynamic_state
+};
+
+class ExternalMemorySyncTest : public VkLayerTest {
+  protected:
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    using ExternalHandle = HANDLE;
+#else
+    using ExternalHandle = int;
+#endif
+};
+
+class DeviceGeneratedCommandsTest : public VkLayerTest {
+  public:
+    void InitBasicDeviceGeneratedCommands();
+
+    void SetPreProcessBuffer(VkGeneratedCommandsInfoEXT &generated_commands_info, void *pipeline_or_shader_object = nullptr);
+    std::unique_ptr<vkt::Buffer> pre_process_buffer_ = std::make_unique<vkt::Buffer>();
+};
+
+class GraphicsLibraryTest : public VkLayerTest {
+  public:
+    void InitBasicGraphicsLibrary();
+};
+
+class TileMemoryHeapTest : public VkLayerTest {
+  public:
+};
+
+class HostImageCopyTest : public VkLayerTest {
+  public:
+    void InitHostImageCopyTest();
+    bool CopyLayoutSupported(const std::vector<VkImageLayout> &copy_src_layouts, const std::vector<VkImageLayout> &copy_dst_layouts,
+                             VkImageLayout layout);
+    std::vector<VkImageLayout> copy_src_layouts;
+    std::vector<VkImageLayout> copy_dst_layouts;
+
+    // Every test will use these, set the default most will use
+    uint32_t width = 32;
+    uint32_t height = 32;
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkImageCreateInfo image_ci;
+};
+
+class ImageTest : public VkLayerTest {
+  public:
+    VkImageCreateInfo DefaultImageInfo();
+};
+
+class ImageDrmTest : public VkLayerTest {
+  public:
+    void InitBasicImageDrm();
+    std::vector<uint64_t> GetFormatModifier(VkFormat format, VkFormatFeatureFlags2 features, uint32_t plane_count = 1);
+};
+
+class MeshTest : public virtual VkLayerTest {
+  public:
+    void InitBasicMeshAndTask();
+};
+
+class QueryTest : public VkLayerTest {
+  public:
+    bool HasZeroTimestampValidBits();
+};
+
+class RayTracingTest : public virtual VkLayerTest {
+  public:
+    void InitFrameworkForRayTracingTest(VkValidationFeaturesEXT *enabled_features = nullptr);
+
+    void NvInitFrameworkForRayTracingTest(VkPhysicalDeviceFeatures2KHR *features2 = nullptr,
+                                          VkValidationFeaturesEXT *enabled_features = nullptr);
+};
+
+class GpuAVRayTracingTest : public GpuAVTest, public RayTracingTest {};
+
+class ShaderObjectTestEXT : public virtual VkLayerTest {
+  public:
+    void InitBasicShaderObject(void *instance_pnext = nullptr);
+    void InitBasicMeshShaderObject(APIVersion target_api_version);
+
+    // Many tests just need a basic vert/frag shader
+    vkt::ShaderEXT m_vert_shader;
+    vkt::ShaderEXT m_frag_shader;
+    void CreateMinimalShaders();
+};
+
+class SyncObjectTest : public VkLayerTest {
+  protected:
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    using ExternalHandle = HANDLE;
+#else
+    using ExternalHandle = int;
+#endif
+};
+
+class TensorTest : public VkLayerTest {
+  public:
+    void InitBasicTensor();
+    void InitTensorControls();
+    static VkTensorDescriptionARM DefaultDesc();
+    static VkTensorDescriptionARM TensorShaderDesc();
+    static VkTensorCreateInfoARM DefaultCreateInfo(VkTensorDescriptionARM *desc = nullptr);
+    static VkTensorRollingBackingCreateInfoARM InitTensorRollingInfo(const uint32_t (&wraps)[4]);
+};
+
+class DataGraphTest : public VkLayerTest {
+  public:
+    void InitBasicDataGraph(bool optical_flow = false);
+    static std::vector<VkBindDataGraphPipelineSessionMemoryInfoARM> InitSessionBindInfo(const vkt::DataGraphPipelineSession& session, const std::vector<vkt::DeviceMemory>& device_mem);
+    static VkTensorDescriptionARM DefaultDesc();
+    static VkTensorDescriptionARM DefaultConstantTensorDesc();
+    static VkDataGraphPipelineConstantARM GetConstant(const VkTensorDescriptionARM &desc = defaultConstantTensorDesc);
+
+    static const VkTensorDescriptionARM defaultConstantTensorDesc;
+};
+
+class WsiTest : public VkLayerTest {
+  public:
+    void GetDisplayAndDisplayMode(VkDisplayKHR* display, VkDisplayModeKHR* display_mode);
+
+  protected:
+    // Find physical device group that contains physical device selected by the test framework
+    std::optional<VkPhysicalDeviceGroupProperties> FindPhysicalDeviceGroup();
+};
+
+class CooperativeMatrixTest : public VkLayerTest {
+  public:
+    void InitCooperativeMatrixKHR();
+};
+
+class TileShadingTest : public VkLayerTest {
+  public:
+    struct Config {
+        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+        VkExtent2D rt_size = {64, 64};
+        VkExtent2D tile_apron_size = {0, 0};
+        bool use_render_pass2 = false;
+        bool block_match_usage = false;
+    } tile_shading_rp_config;
+
+    void InitBasicTileShading();
+    void InitTileShadingRenderTarget();
+
+    vkt::RenderPass m_tile_shading_render_pass;
+    vkt::Framebuffer m_tile_shading_framebuffer;
+    vkt::Image m_color_image;
+    vkt::ImageView m_color_view;
+};
+
+class ParentTest : public VkLayerTest {
+  public:
+    ~ParentTest();
+    vkt::Device *m_second_device = nullptr;
+};
+
+template <typename T>
+bool IsValidVkStruct(const T &s) {
+    return vku::GetSType<T>() == s.sType;
+}
+
+struct DebugUtilsLabelCheckData {
+    std::function<void(const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, DebugUtilsLabelCheckData *)> callback;
+    size_t count;
+};
+
+bool operator==(const VkDebugUtilsLabelEXT &rhs, const VkDebugUtilsLabelEXT &lhs);
+
+VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                                  VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+                                                  const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData);
+
+VkFormat FindFormatWithoutFeatures(VkPhysicalDevice gpu, VkImageTiling tiling,
+                                   VkFormatFeatureFlags undesired_features = vvl::kNoIndex32);
+
+VkFormat FindFormatWithoutFeatures2(VkPhysicalDevice gpu, VkImageTiling tiling, VkFormatFeatureFlags2 undesired_features);
+
+void PrintAndroid(const char *c);

@@ -1,0 +1,288 @@
+# ~~~
+# Copyright (c) 2014-2026 Valve Corporation
+# Copyright (c) 2014-2026 LunarG, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ~~~
+cmake_minimum_required(VERSION 3.22.1)
+
+# The VERSION field is generated with the "--generated-version" flag in the generate_source.py script
+#
+# If working with unreleased extensions, make sure the header and validation version are all on the same header version
+project(VVL VERSION 1.4.363 LANGUAGES CXX)
+
+# This variable enables downstream users to customize the target API
+# variant (e.g. Vulkan SC)
+set(API_TYPE "vulkan")
+
+add_subdirectory(scripts)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
+set(CMAKE_VISIBILITY_INLINES_HIDDEN "YES")
+# Static libraries don't link, so they can start building
+# without waiting for the libraries they depend on
+set(CMAKE_OPTIMIZE_DEPENDENCIES ON)
+
+include(GNUInstallDirs)
+
+set_property(GLOBAL PROPERTY USE_FOLDERS ON) # Remove when min is 3.26, see CMP0143
+
+add_compile_definitions(VK_ENABLE_BETA_EXTENSIONS)
+if(WIN32)
+    add_compile_definitions(VK_USE_PLATFORM_WIN32_KHR)
+
+    # Allow usage of unsafe CRT functions and minimize what Windows.h leaks
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+elseif(ANDROID)
+    add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR)
+elseif(APPLE)
+    add_compile_definitions(VK_USE_PLATFORM_METAL_EXT)
+    if (IOS)
+        add_compile_definitions(VK_USE_PLATFORM_IOS_MVK)
+    endif()
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        add_compile_definitions(VK_USE_PLATFORM_MACOS_MVK)
+    endif()
+else()
+    option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
+    option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
+    option(BUILD_WSI_XLIB_XRANDR_SUPPORT "Build X11 Xrandr WSI support" ON)
+    option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" ON)
+
+    if (BUILD_WSI_XCB_SUPPORT OR BUILD_WSI_XLIB_SUPPORT OR BUILD_WSI_WAYLAND_SUPPORT)
+        find_package(PkgConfig REQUIRED QUIET)
+    endif()
+
+    if(BUILD_WSI_XCB_SUPPORT)
+        pkg_check_modules(XCB REQUIRED QUIET IMPORTED_TARGET xcb)
+        add_compile_definitions(VK_USE_PLATFORM_XCB_KHR)
+    endif()
+
+    if(BUILD_WSI_XLIB_SUPPORT)
+        pkg_check_modules(X11 REQUIRED QUIET IMPORTED_TARGET x11)
+        add_compile_definitions(VK_USE_PLATFORM_XLIB_KHR)
+        if(BUILD_WSI_XLIB_XRANDR_SUPPORT)
+            pkg_check_modules(XRANDR REQUIRED QUIET IMPORTED_TARGET xrandr)
+            add_compile_definitions(VK_USE_PLATFORM_XLIB_XRANDR_EXT)
+        endif()
+    endif()
+
+    if(BUILD_WSI_WAYLAND_SUPPORT)
+        pkg_check_modules(WAYlAND_CLIENT QUIET REQUIRED IMPORTED_TARGET wayland-client)
+        add_compile_definitions(VK_USE_PLATFORM_WAYLAND_KHR)
+    endif()
+endif()
+
+# Tracy
+option(VVL_ENABLE_TRACY "Enable profiling with Tracy" OFF)
+option(VVL_ENABLE_TRACY_CPU_MEMORY "Enable profiling memory with Tracy" OFF)
+option(VVL_TRACY_CALLSTACK "Size of the collected collected call stacks" 48)
+if (VVL_ENABLE_TRACY)
+    if(VVL_ENABLE_TRACY_CPU_MEMORY AND USE_MIMALLOC)
+        message(FATAL_ERROR "Tracy cannot be used with mimalloc")
+    endif()
+
+    if (VVL_TRACY_CALLSTACK STREQUAL "OFF")
+        set(VVL_TRACY_CALLSTACK 48)
+    endif()
+
+    add_compile_definitions(
+        TRACY_ENABLE
+        TRACY_CALLSTACK=${VVL_TRACY_CALLSTACK}
+        TRACY_DELAYED_INIT
+        TRACY_MANUAL_LIFETIME
+    )
+
+    if(VVL_ENABLE_TRACY_CPU_MEMORY)
+        add_compile_definitions(VVL_TRACY_CPU_MEMORY)
+    endif()
+
+    if(VVL_ENABLE_TRACY_GPU)
+        add_compile_definitions(
+            VVL_TRACY_GPU
+            TRACY_VK_USE_SYMBOL_TABLE
+        )
+    endif()
+endif()
+
+find_package(VulkanHeaders ${PROJECT_VERSION} CONFIG QUIET)
+
+find_package(VulkanUtilityLibraries CONFIG QUIET)
+
+find_package(SPIRV-Headers CONFIG QUIET)
+
+find_package(SPIRV-Tools-opt CONFIG QUIET)
+
+# Workaround AppleClang using the wrong headers when there are headers in /usr/local/include
+if (CMAKE_CXX_COMPILER_ID STREQUAL AppleClang AND TARGET Vulkan::Headers AND TARGET Vulkan::LayerSettings
+    AND TARGET SPIRV-Headers::SPIRV-Headers AND TARGET SPIRV-Tools-static AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+    get_target_property(vulkan_headers_aliased Vulkan::Headers ALIASED_TARGET)
+    if (NOT vulkan_headers_aliased)
+        set_target_properties(Vulkan::Headers PROPERTIES SYSTEM OFF)
+    endif()
+    get_target_property(vulkan_utilities_aliased Vulkan::LayerSettings ALIASED_TARGET)
+    if (NOT vulkan_utilities_aliased)
+        set_target_properties(Vulkan::LayerSettings PROPERTIES SYSTEM OFF)
+        set_target_properties(Vulkan::SafeStruct PROPERTIES SYSTEM OFF)
+        set_target_properties(Vulkan::UtilityHeaders PROPERTIES SYSTEM OFF)
+    endif()
+    get_target_property(spirv_headers_aliased SPIRV-Headers::SPIRV-Headers ALIASED_TARGET)
+    if (NOT spirv_headers_aliased)
+        set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES SYSTEM OFF)
+    endif()
+    get_target_property(spirv_tools_opt_aliased SPIRV-Tools-opt  ALIASED_TARGET)
+    if (NOT spirv_tools_opt_aliased)
+        set_target_properties(SPIRV-Tools-static PROPERTIES SYSTEM OFF)
+        set_target_properties(SPIRV-Tools-opt PROPERTIES SYSTEM OFF)
+    endif()
+endif()
+
+# NOTE: Our custom code generation target isn't desirable for system package managers or add_subdirectory users.
+# So this target needs to be off by default to avoid obtuse build errors or patches.
+option(VVL_CODEGEN "Enable vulkan validation layer code generation")
+if (VVL_CODEGEN)
+    find_package(Python3 REQUIRED)
+    add_custom_target(vvl_codegen
+        COMMAND Python3::Interpreter "${VVL_SOURCE_DIR}/scripts/generate_source.py"
+            "${VULKAN_HEADERS_INSTALL_DIR}/${CMAKE_INSTALL_DATADIR}/vulkan/registry"
+            "${SPIRV_HEADERS_INSTALL_DIR}/include/spirv/unified1"
+            --incremental --generated-version ${VulkanHeaders_VERSION} --api ${API_TYPE}
+        WORKING_DIRECTORY ${VVL_SOURCE_DIR}/layers/${API_TYPE}/generated
+    )
+endif()
+
+if (ANNOTATED_SPEC_LINK)
+    message("ANNOTATED_SPEC_LINK is ${ANNOTATED_SPEC_LINK}")
+    add_compile_definitions(ANNOTATED_SPEC_LINK=${ANNOTATED_SPEC_LINK})
+endif()
+
+# The idiom for open source projects is to NOT enable warnings as errors.
+# System/language package managers have to build on multiple different platforms and compilers.
+# By defaulting to `ON` we cause issues for package managers since there is no standard way to disable warnings until CMake 3.24
+option(BUILD_WERROR "Treat compiler warnings as errors")
+if (BUILD_WERROR)
+    add_compile_options("$<IF:$<CXX_COMPILER_ID:MSVC>,/WX,-Werror>")
+    # MSVC only: turns link.exe warnings (e.g. LNK4098, mismatched Debug/Release runtimes) into
+    # build failures too. There's no cross-platform link.exe/ld equivalent to add here.
+    # TODO: replace with CMAKE_LINK_WARNING_AS_ERROR once the minimum CMake version is >= 4.0.
+    #
+    # LNK4099 (PDB for a prebuilt dependency .lib not found) is ignored: it's a pre-existing,
+    # benign issue independent of this fix - our dependencies' static libraries don't carry
+    # their compiler-generated PDBs (CMake's COMPILE_PDB_NAME isn't installable for STATIC_LIBRARY
+    # targets via $<TARGET_PDB_FILE:...>), so the linker always falls back to no debug info for
+    # those objects. It was already happening before /WX was added to the linker; /WX would just
+    # newly turn it into a hard failure. Fixing it for real means installing each dependency's own
+    # PDB, which requires patching that dependency's CMakeLists.txt, not something to do here.
+    add_link_options("$<$<CXX_COMPILER_ID:MSVC>:/WX;/IGNORE:4099>")
+endif()
+
+option(VVL_ENABLE_ASAN "Use address sanitization")
+if (VVL_ENABLE_ASAN)
+    add_compile_options(-fsanitize=address)
+    if (NOT MSVC)
+        add_link_options(-fsanitize=address)
+    endif()
+endif()
+
+option(VVL_ENABLE_UBSAN "Use undefined behavior sanitization")
+if (VVL_ENABLE_UBSAN)
+    if (NOT MSVC)
+        add_compile_options(-fsanitize=undefined)
+        add_link_options(-fsanitize=undefined)
+
+        # VVL's test-suites deliberately use invalid enum values.
+        # This creates a lot of false positives.
+        add_compile_options(-fno-sanitize=enum)
+    endif()
+endif()
+
+if(${CMAKE_CXX_COMPILER_ID} MATCHES "(GNU|Clang)")
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wpointer-arith
+    )
+    if(${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
+        add_compile_options(
+            -Wconversion
+            -Wimplicit-fallthrough
+            -Wstring-conversion
+            # When using tools such as lldb, strings will produce "error: summary string parsing error"
+            $<$<CONFIG:Debug>:-fstandalone-debug>
+        )
+    endif()
+elseif(MSVC)
+    add_compile_options(
+        /W4
+        /we5038 # Enable warning about MIL ordering in constructors
+    )
+
+    # Enforce stricter ISO C++
+    add_compile_options(/permissive-)
+    add_compile_options(/utf-8)
+
+    # PDBs aren't generated on Release builds by default.
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG:FULL>")
+
+    # Enable /LTCG (Link-time code generation)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    # Remove unreferenced code/data.
+    add_link_options("$<$<CONFIG:Release>:/OPT:REF>")
+    # Merge duplicate data/functions
+    add_link_options("$<$<CONFIG:Release>:/OPT:ICF>")
+
+    add_compile_options($<$<BOOL:${MSVC_IDE}>:/MP>) # Speed up Visual Studio builds
+endif()
+
+add_subdirectory(layers)
+
+if(MSVC AND UPDATE_DEPS)
+    set(SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
+    file(GLOB_RECURSE SCRIPTS
+        "${SCRIPTS_DIR}/*.py"
+        "${SCRIPTS_DIR}/*.json"
+    )
+    add_custom_target(Scripts SOURCES ${SCRIPTS})
+    source_group(TREE ${SCRIPTS_DIR} PREFIX "Scripts" FILES ${SCRIPTS})
+
+    set(EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external")
+    file(GLOB_RECURSE EXTERNAL_HEADER_FILES
+            "${GLSLANG_INSTALL_DIR}/*.h"
+            "${GLSLANG_INSTALL_DIR}/*.hpp"
+            "${VULKAN_HEADERS_INSTALL_DIR}/*.h"
+            "${VULKAN_HEADERS_INSTALL_DIR}/*.hpp"
+            "${VULKAN_UTILITY_LIBRARIES_INSTALL_DIR}/*.h"
+            "${VULKAN_UTILITY_LIBRARIES_INSTALL_DIR}/*.hpp"
+            "${SPIRV_HEADERS_INSTALL_DIR}/*.h"
+            "${SPIRV_HEADERS_INSTALL_DIR}/*.hpp"
+            "${SPIRV_TOOLS_INSTALL_DIR}/*.h"
+            "${SPIRV_TOOLS_INSTALL_DIR}/*.hpp"
+            "${GOOGLETEST_INSTALL_DIR}/*.h"
+            "${MIMALLOC_INSTALL_DIR}/*.h"
+    )
+    add_custom_target(External SOURCES ${EXTERNAL_HEADER_FILES})
+    source_group(TREE ${EXTERNAL_DIR} PREFIX "External" FILES ${EXTERNAL_HEADER_FILES})
+endif()
+
+option(BUILD_TESTS "Build the tests")
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+    # Set tests as Visual Studio startup project
+    set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT vk_layer_validation_tests)
+endif()

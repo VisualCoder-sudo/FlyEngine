@@ -1,0 +1,151 @@
+/* Copyright (c) 2024-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <vector>
+#include "access_path.h"
+#include "containers/custom_containers.h"
+#include "link.h"
+#include "interface.h"
+#include "function_basic_block.h"
+#include "type_manager.h"
+#include "gpuav/spirv/instrumentation_status.h"
+
+class DebugReport;
+struct DeviceFeatures;
+struct OfflineLinkInfo;
+
+namespace gpuav {
+namespace spirv {
+
+struct ModuleHeader {
+    uint32_t magic_number;
+    uint32_t version;
+    uint32_t generator;
+    uint32_t bound;
+    uint32_t schema;
+};
+
+// This is the "brain" of SPIR-V logic, it stores the memory of all the Instructions and is the main context.
+// There are other helper classes that are charge of handling the various parts of the module.
+// The Module takes SPIR-V, has each pass modify it, then dumps it out into the instrumented SPIR-V
+class Module {
+  public:
+    Module(vvl::span<const uint32_t> words, DebugReport* debug_report, const DeviceSettings& settings,
+           const InstrumentationInterface& interface, spirv::InstrumentationStatus& out_status);
+
+    // Memory that holds all the actual SPIR-V data, replicate the "Logical Layout of a Module" of SPIR-V.
+    // Divided into sections to make easier to modify each part at different times, but still keeps it simple to write out all the
+    // instructions to a binary format.
+    ModuleHeader header_;
+    InstructionList capabilities_;
+    InstructionList extensions_;
+    InstructionList ext_inst_imports_;
+    InstructionList memory_model_;
+    InstructionList entry_points_;
+    InstructionList execution_modes_;
+    InstructionList debug_source_;
+    InstructionList debug_name_;
+    InstructionList debug_module_processed_;
+    InstructionList annotations_;
+    InstructionList types_values_constants_;
+    FunctionList functions_;
+
+    // Handles all types and constants
+    TypeManager type_manager_;
+
+    // When adding a new instruction with result ID, will need to grab the next ID
+    uint32_t TakeNextId();
+
+    // Order of functions that will try to be linked in
+    std::vector<LinkInfo> link_infos_;
+    void LinkFunctions(const LinkInfo& info);
+    void PostProcess();
+
+    // The class is designed to be written out to a binary file.
+    void ToBinary(std::vector<uint32_t>& out) const;
+
+    void AddInterfaceVariables(uint32_t id, spv::StorageClass storage_class);
+    vvl::unordered_set<uint32_t> added_interface_variables_;
+
+    // Helpers
+    bool HasCapability(spv::Capability capability);
+    void AddCapability(spv::Capability capability);
+    void RemoveCapability(spv::Capability capability);
+    void AddExtension(const char* extension);
+    void AddDebugName(const char* name, uint32_t id);
+    void AddDecoration(uint32_t target_id, spv::Decoration decoration, const std::vector<uint32_t>& operands);
+    void AddMemberDecoration(uint32_t target_id, uint32_t index, spv::Decoration decoration, const std::vector<uint32_t>& operands);
+
+    // Finds (and creates if needed) decoration and returns the OpVariable it points to
+    const Variable& GetBuiltInVariable(uint32_t built_in);
+
+    // We will build up all the AccessPath on the first pass and then return them each sequential pass
+    const AccessPath* GetAccessPath(const Function& function, const Instruction& inst);
+
+    // Global settings we would know at vkCreateDevice
+    const DeviceSettings& settings_;
+    // Per-pipeline/shaderObject information
+    const InstrumentationInterface& interface_;
+
+    bool use_bda_ = false;
+
+    // We only care about the entrypoint the pipeline shader stage / shader object is targeting
+    // This is the ID both found in OpEntryPoint and the result ID of OpFunction
+    uint32_t target_entry_point_id_ = 0;
+    Instruction* GetTargetEntryPoint() const;
+
+    // TODO - To make things simple to start, decide if the whole shader has anything bindless or not. The next step will be a
+    // system to pass in the information from the descriptor set layout to build a LUT of which OpVariable point to bindless
+    // descriptors. This will require special consideration as it will break a simple way to test standalone version of the
+    // instrumentation
+    bool has_bindless_descriptors_ = false;
+
+    // To keep the GPU Shader Instrumentation a standalone sub-project, the runtime version needs to pass in info to allow for
+    // warnings/errors to be piped into the normal callback (otherwise will be sent to stdout)
+    DebugReport* debug_report_ = nullptr;
+    // Used if need to report error/warning
+    void InternalWarning(const char* tag, const std::string& message);
+    void InternalError(const char* tag, const std::string& message);
+
+    // Prevent adding function if nothing was instrumented
+    bool need_log_error_ = false;
+    // Used when UseErrorPayloadVariable is set. Needs to be same for all passes.
+    // Will be set in the LogErrorPass
+    uint32_t error_payload_variable_id_ = 0;
+
+    // Used by SharedMemoryDataRacePass, linked by Module::LinkFunctions
+    uint32_t shared_memory_shadow_variable_id_ = 0;
+
+    spirv::InstrumentationStatus& out_status;
+
+  private:
+    // This is here to emulate the
+    //  spirv-opt --set-spec-const-default-value <values> --freeze-spec-const --fold-spec-const-op-composite
+    // Normally done, but by doing it internally, we can both be faster (not re-prasing the SPIR-V) and most importantly, preserve
+    // the |position_offset| value to know the index of the instructions from the original operation
+    void SetSpecConstantValue(Instruction* inst, const Type& type, vvl::unordered_map<uint32_t, uint32_t>& id_to_spec_id);
+    bool ConstantFold(Instruction* inst, const Type& type);
+    bool ConstantFoldVectorShuffle(Instruction* inst, const Type& type);
+    bool ConstantFoldCompositeExtract(Instruction* inst, const Type& type);
+    bool ConstantFoldCompositeInsert(Instruction* inst, const Type& type);
+    uint32_t ResolveConstantSizeOf(const Instruction& inst);
+
+    vvl::unordered_map<const Instruction*, std::unique_ptr<AccessPath>> access_path_cache_;
+};
+
+}  // namespace spirv
+}  // namespace gpuav

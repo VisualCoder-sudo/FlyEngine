@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -66,7 +67,8 @@ int Run(int argc, char** argv) {
     cityPtr->GenerateGrid(Vector2{ 260.0f, 0.0f });
     if (parkMode) {
         auto& nodes = cityPtr->GetNodes();
-        for (size_t i = 0; i < nodes.size(); ++i) {
+        const bool noJitter = std::getenv("FLY_NOJITTER") != nullptr;   // perfect grid
+        for (size_t i = 0; i < nodes.size() && !noJitter; ++i) {
             const float jx = std::sin((float)i * 12.9898f) * 9.0f, jz = std::cos((float)i * 78.233f) * 9.0f;
             nodes[i].pos.x += jx;
             nodes[i].pos.y += jz;
@@ -75,6 +77,7 @@ int Run(int argc, char** argv) {
         const int mid = (int)cityPtr->GetNodes().size() / 2;
         cityPtr->DeleteNode(mid + 1);
         cityPtr->DeleteNode(mid - 2);
+        if (noJitter) { cityPtr->DeleteNode(mid + 2); cityPtr->DeleteNode(mid - 1); cityPtr->DeleteNode(mid + 8); }
         cityPtr->RebuildAll();
     }
     engine.AddEntity(std::move(cityOwner));
@@ -160,6 +163,75 @@ int Run(int argc, char** argv) {
                     }
                 }
             }
+        }
+        // Park grass sanity: the inset outline must stay inside the block and keep roughly
+        // (area - perimeter*inset) of it; a star-shaped or pinched grass outline is wrong.
+        {
+            int weird = 0, parks = 0, shownW = 0;
+            for (int iter = 0; iter < 600; ++iter) {
+                const int ni = (int)(rnd() * (float)cityPtr->GetNodes().size());
+                const Vector2 p = cityPtr->NodePos(ni);
+                cityPtr->MoveNode(ni, Vector2{ p.x + (rnd() - 0.5f) * 30.0f, p.y + (rnd() - 0.5f) * 30.0f }, true);
+                for (const auto& b : cityPtr->GetBlocks()) {
+                    if (!b.park || b.parkPoly.size() < 3) continue;
+                    std::vector<Vector2> poly;
+                    for (int idx : b.nodes) poly.push_back(cityPtr->NodePos(idx));
+                    if (!citygeom::IsSimplePolygonForTest(poly)) continue;
+                    ++parks;
+                    float per = 0.0f;
+                    for (size_t i = 0; i < poly.size(); ++i) {
+                        const Vector2 d{ poly[(i + 1) % poly.size()].x - poly[i].x, poly[(i + 1) % poly.size()].y - poly[i].y };
+                        per += std::sqrt(d.x * d.x + d.y * d.y);
+                    }
+                    const float a0 = std::fabs(citygeom::PolygonArea(poly)), a1 = std::fabs(citygeom::PolygonArea(b.parkPoly));
+                    const float expect = a0 - per * cityPtr->GetParams().parkInset;
+                    bool outside = false;
+                    for (const auto& v : b.parkPoly) if (!citygeom::PointInPolygon(v, poly)) outside = true;
+                    const bool sameAsOutline = b.parkPoly.size() == poly.size() && std::fabs(a1 - a0) < 1e-3f;
+                    if (outside || a1 < expect * 0.8f || (a1 > a0 * 1.001f)) {
+                        ++weird;
+                        if (shownW++ < 3) {
+                            std::printf("[park] weird grass (block %llu): block area %.0f, grass area %.0f, expected ~%.0f%s%s; block:",
+                                        (unsigned long long)b.id, a0, a1, expect, outside ? ", grass vertex outside block" : "", sameAsOutline ? ", grass == block outline" : "");
+                            for (const auto& v : poly) std::printf(" (%.2f,%.2f)", v.x, v.y);
+                            std::printf("\n[park]   grass:");
+                            for (const auto& v : b.parkPoly) std::printf(" (%.2f,%.2f)", v.x, v.y);
+                            std::printf("\n");
+                        }
+                    }
+                }
+            }
+            std::printf("[park] park grass outlines: %d of %d look wrong\n", weird, parks);
+        }
+        // A real drag is a long sequence of incremental rebuilds. After every step the live
+        // (incrementally updated) city must match a copy rebuilt from scratch.
+        {
+            unsigned seed2 = 99;
+            auto rnd2 = [&]() { seed2 = seed2 * 1664525u + 1013904223u; return (float)(seed2 >> 8) / 16777216.0f; };
+            int diverged = 0, steps = 0, shownD = 0;
+            for (int drag = 0; drag < 25; ++drag) {
+                const int ni = (int)(rnd2() * (float)cityPtr->GetNodes().size());
+                const Vector2 start = cityPtr->NodePos(ni);
+                const Vector2 target{ start.x + (rnd2() - 0.5f) * 70.0f, start.y + (rnd2() - 0.5f) * 70.0f };
+                for (int k = 1; k <= 12; ++k) {                       // 12 mouse-move steps
+                    const float t = (float)k / 12.0f;
+                    cityPtr->MoveNode(ni, Vector2{ start.x + (target.x - start.x) * t, start.y + (target.y - start.y) * t }, true);
+                    std::stringstream ss;
+                    cityPtr->WriteToStream(ss);
+                    city::City fresh;
+                    fresh.ReadFromStream(ss);
+                    fresh.RebuildAll();
+                    const auto a = cityPtr->DebugGeometryHashes(), b = fresh.DebugGeometryHashes();
+                    ++steps;
+                    if (a.road != b.road || a.buildings != b.buildings || a.roadTris != b.roadTris || a.instances != b.instances) {
+                        ++diverged;
+                        if (shownD++ < 5)
+                            std::printf("[park] drag %d step %d (node %d): live city differs from a fresh rebuild: roadTris %zu vs %zu, instances %zu vs %zu\n",
+                                        drag, k, ni, a.roadTris, b.roadTris, a.instances, b.instances);
+                    }
+                }
+            }
+            std::printf("[park] drag sequences: %d of %d steps differ from a fresh rebuild\n", diverged, steps);
         }
         std::printf("[park] triangulation coverage: %d of %d valid outlines incomplete (%d self-crossing outlines skipped)\n", bad, blocksChecked, selfCrossing);
     }

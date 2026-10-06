@@ -1,0 +1,152 @@
+/*
+ * Copyright (c) 2023-2026 The Khronos Group Inc.
+ * Copyright (c) 2023-2026 Valve Corporation
+ * Copyright (c) 2023-2026 LunarG, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+#pragma once
+
+#include "layer_validation_tests.h"
+#include <vector>
+
+class RenderPassHelperBase {
+  public:
+    RenderPassHelperBase(VkLayerTest &test, vkt::Device *device = nullptr);
+    ~RenderPassHelperBase() { Destroy(); }
+
+    const VkRenderPass &Handle() const { return render_pass_.handle(); }
+    operator VkRenderPass() const { return render_pass_; }
+
+    // Explicit destroy for those tests that need to test render pass lifetime
+    void Destroy() { render_pass_.Destroy(); };
+
+  protected:
+    vkt::Device *device_;
+    vkt::RenderPass render_pass_;
+};
+
+// Helper designed to quickly make a renderPass/framebuffer that only has a single Subpass.
+//
+// Common usage:
+//   RenderPassSingleSubpass rp(*this);
+//   rp.AddAttachmentDescription(input_format); // add attachment description 0
+//   rp.AddAttachmentDescription(color_format); // add attachment description 1
+//   rp.AddInputAttachment(0, VK_IMAGE_LAYOUT_GENERAL); // input attachment based on attachment description 0
+//   rp.AddColorAttachment(1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); // color attachment bazsed on attachment description 1
+//   rp.CreateRenderPass();
+class RenderPassSingleSubpass : public RenderPassHelperBase {
+  public:
+    RenderPassSingleSubpass(VkLayerTest &test, vkt::Device *device = nullptr);
+
+    VkRenderPassCreateInfo GetCreateInfo();
+
+    // Ordered from most likely to be custom vs will use defauly
+    void AddAttachmentDescription(VkFormat format, VkImageLayout initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkImageLayout finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                  VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE);
+    // Overload for setting sampler count
+    void AddAttachmentDescription(VkFormat format, VkSampleCountFlagBits samples,
+                                  VkImageLayout initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkImageLayout finalLayout = VK_IMAGE_LAYOUT_GENERAL);
+    // Use already initialized object
+    void AddAttachmentDescription(const VkAttachmentDescription& attachment_description);
+
+    // Pass in index to attachment description
+    void AddInputAttachment(uint32_t attachment_index, VkImageLayout layout);
+    void AddColorAttachment(uint32_t attachment_index, VkImageLayout layout);
+    void AddResolveAttachment(uint32_t attachment_index, VkImageLayout layout);
+    void AddDepthStencilAttachment(uint32_t attachment_index, VkImageLayout layout);
+
+    void AddSubpassDependency(VkSubpassDependency dependency);
+    void AddSubpassSelfDependency(VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VkAccessFlags srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VkAccessFlags dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VkDependencyFlags dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
+
+    void CreateRenderPass(void *pNext = nullptr, VkRenderPassCreateFlags flags = 0);
+
+  private:
+    VkRenderPassCreateInfo rp_create_info_;
+
+    std::vector<VkAttachmentDescription> attachment_descriptions_;
+    std::vector<VkAttachmentReference> input_attachments_;
+    std::vector<VkAttachmentReference> color_attachments_;
+    VkAttachmentReference resolve_attachment_;
+    VkAttachmentReference ds_attachment_;
+
+    VkSubpassDescription subpass_description_;
+    std::vector<VkSubpassDependency> subpass_dependencies_;
+};
+
+// Helper for vkCreateRenderPass2 API, works similar to RenderPassSingleSubpass
+class RenderPass2SingleSubpass : public RenderPassHelperBase {
+  public:
+    RenderPass2SingleSubpass(VkLayerTest &test, vkt::Device *device = nullptr);
+
+    VkRenderPassCreateInfo2 GetCreateInfo();
+
+    // Ordered from most likely to be custom vs will use defauly
+    void AddAttachmentDescription(VkFormat format, VkImageLayout initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkImageLayout finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                  VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE);
+    // Overload for setting sampler count
+    void AddAttachmentDescription(VkFormat format, VkSampleCountFlagBits samples,
+                                  VkImageLayout initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                  VkImageLayout finalLayout = VK_IMAGE_LAYOUT_GENERAL);
+
+    // Have a separate set function to keep AddAttachmentDescription simple (very few things extend the AttachmentDescription)
+    void SetAttachmentDescriptionPNext(uint32_t index, void *pNext);
+
+    // Pass in index to attachment description
+    void AddInputAttachment(uint32_t attachment_index, VkImageLayout layout, VkImageAspectFlags aspect_mask = 0,
+                            void *pNext = nullptr);
+    void AddColorAttachment(uint32_t attachment_index, VkImageLayout layout, VkImageAspectFlags aspect_mask = 0,
+                            void *pNext = nullptr);
+    void AddResolveAttachment(uint32_t attachment_index, VkImageLayout layout, VkImageAspectFlags aspect_mask = 0,
+                              void *pNext = nullptr);
+    void AddDepthStencilAttachment(uint32_t attachment_index, VkImageLayout layout, VkImageAspectFlags aspect_mask = 0,
+                                   void *pNext = nullptr);
+    // VK_KHR_depth_stencil_resolve
+    void AddDepthStencilResolveAttachment(uint32_t attachment_index, VkImageLayout layout, VkResolveModeFlagBits depth_resolve_mode,
+                                          VkResolveModeFlagBits stencil_resolve_mode);
+    // VK_KHR_fragment_shading_rate
+    void AddFragmentShadingRateAttachment(uint32_t attachment_index, VkImageLayout layout, VkExtent2D texel_size);
+
+    void SetViewMask(uint32_t view_mask) { subpass_description_.viewMask = view_mask; }
+
+    void AddSubpassDependency(VkSubpassDependency2 dependency);
+    void AddSubpassSelfDependency(VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VkAccessFlags srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VkAccessFlags dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VkDependencyFlags dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
+
+    void CreateRenderPass(void *pNext = nullptr, VkRenderPassCreateFlags flags = 0);
+
+  private:
+    VkRenderPassCreateInfo2 rp_create_info_;
+
+    std::vector<VkAttachmentDescription2> attachment_descriptions_;
+    std::vector<VkAttachmentReference2> input_attachments_;
+    std::vector<VkAttachmentReference2> color_attachments_;
+    VkAttachmentReference2 resolve_attachment_;
+    VkAttachmentReference2 ds_attachment_;
+
+    VkSubpassDescriptionDepthStencilResolve ds_resolve_;
+    VkAttachmentReference2 ds_resolve_attachment_;
+
+    VkFragmentShadingRateAttachmentInfoKHR fsr_attachment_info_;
+    VkAttachmentReference2 fsr_attachment_;
+
+    VkSubpassDescription2 subpass_description_;
+    std::vector<VkSubpassDependency2> subpass_dependencies_;
+};

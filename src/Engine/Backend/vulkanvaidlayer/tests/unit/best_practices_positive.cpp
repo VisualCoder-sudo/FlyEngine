@@ -1,0 +1,730 @@
+/*
+ * Copyright (c) 2015-2026 The Khronos Group Inc.
+ * Copyright (c) 2015-2026 Valve Corporation
+ * Copyright (c) 2015-2026 LunarG, Inc.
+ * Copyright (c) 2015-2026 Google, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+#include <vulkan/vulkan_core.h>
+#include "layer_validation_tests.h"
+#include "pipeline_helper.h"
+#include "descriptor_helper.h"
+
+void VkBestPracticesLayerTest::InitBestPracticesFramework(const char* vendor_checks_to_enable) {
+    const VkLayerSettingEXT settings = {OBJECT_LAYER_NAME, vendor_checks_to_enable, VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &kVkTrue};
+    const VkLayerSettingsCreateInfoEXT layer_settings_create_info{VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, nullptr, 1,
+                                                                  &settings};
+
+    if (vendor_checks_to_enable) {
+        features_.pNext = &layer_settings_create_info;
+    }
+
+    AddRequiredExtensions(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+    InitFramework(&features_);
+}
+
+void VkBestPracticesLayerTest::InitBestPractices(const char* vendor_checks_to_enable) {
+    RETURN_IF_SKIP(InitBestPracticesFramework(vendor_checks_to_enable));
+    RETURN_IF_SKIP(InitState());
+}
+
+class PositiveBestPractices : public VkBestPracticesLayerTest {};
+
+TEST_F(PositiveBestPractices, TestDestroyFreeNullHandles) {
+    VkResult err;
+
+    TEST_DESCRIPTION("Call all applicable destroy and free routines with NULL handles, expecting no validation errors");
+
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+
+    vk::DestroyBuffer(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyBufferView(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyCommandPool(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyDescriptorPool(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyDescriptorSetLayout(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyDevice(VK_NULL_HANDLE, NULL);
+    vk::DestroyEvent(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyFence(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyFramebuffer(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyImage(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyImageView(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyInstance(VK_NULL_HANDLE, NULL);
+    vk::DestroyPipeline(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyPipelineCache(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyPipelineLayout(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyQueryPool(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyRenderPass(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroySampler(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroySemaphore(device(), VK_NULL_HANDLE, NULL);
+    vk::DestroyShaderModule(device(), VK_NULL_HANDLE, NULL);
+
+    VkCommandPool command_pool;
+    VkCommandPoolCreateInfo pool_create_info = vku::InitStructHelper();
+    pool_create_info.queueFamilyIndex = m_device->graphics_queue_node_index_;
+    pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    vk::CreateCommandPool(device(), &pool_create_info, nullptr, &command_pool);
+    VkCommandBuffer command_buffers[3] = {};
+    VkCommandBufferAllocateInfo command_buffer_allocate_info = vku::InitStructHelper();
+    command_buffer_allocate_info.commandPool = command_pool;
+    command_buffer_allocate_info.commandBufferCount = 1;
+    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vk::AllocateCommandBuffers(device(), &command_buffer_allocate_info, &command_buffers[1]);
+    vk::FreeCommandBuffers(device(), command_pool, 3, command_buffers);
+    vk::DestroyCommandPool(device(), command_pool, NULL);
+
+    VkDescriptorPoolSize ds_type_count = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1};
+    VkDescriptorPoolCreateInfo ds_pool_ci = vku::InitStructHelper();
+    ds_pool_ci.maxSets = 1;
+    ds_pool_ci.poolSizeCount = 1;
+    ds_pool_ci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    ds_pool_ci.pPoolSizes = &ds_type_count;
+    vkt::DescriptorPool ds_pool(*m_device, ds_pool_ci);
+
+    const vkt::DescriptorSetLayout ds_layout(
+        *m_device, {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+
+    VkDescriptorSet descriptor_sets[3] = {};
+    VkDescriptorSetAllocateInfo alloc_info = vku::InitStructHelper();
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.descriptorPool = ds_pool;
+    alloc_info.pSetLayouts = &ds_layout.handle();
+    err = vk::AllocateDescriptorSets(device(), &alloc_info, &descriptor_sets[1]);
+    ASSERT_EQ(VK_SUCCESS, err);
+    vk::FreeDescriptorSets(device(), ds_pool, 3, descriptor_sets);
+
+    vk::FreeMemory(device(), VK_NULL_HANDLE, NULL);
+}
+
+TEST_F(PositiveBestPractices, DrawingWithUnboundUnusedSet) {
+    TEST_DESCRIPTION(
+        "Test issuing draw command with pipeline layout that has 2 descriptor sets with first descriptor set begin unused and "
+        "unbound. Its purpose is to catch regression of this bug: "
+        "https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/4597.");
+
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.CreateGraphicsPipeline();
+
+    OneOffDescriptorSet empty_ds(m_device, {});
+    const vkt::PipelineLayout pipeline_layout(*m_device, {&empty_ds.layout_, &empty_ds.layout_});
+
+    m_command_buffer.Begin();
+
+    vk::CmdBindDescriptorSets(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &empty_ds.set_, 0, nullptr);
+
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vkt::Buffer vbo(*m_device, sizeof(float) * 3, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    vk::CmdBindVertexBuffers(m_command_buffer, 1, 1, &vbo.handle(), &kZeroDeviceSize);
+
+    // The draw command will most likely produce a crash in case of a regression.
+    vk::CmdDraw(m_command_buffer, 1, 1, 0, 0);
+
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, DynStateIgnoreAttachments) {
+    TEST_DESCRIPTION("Make sure pAttachments is ignored if dynamic state is enabled");
+
+    AddRequiredExtensions(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::extendedDynamicState3ColorBlendAdvanced);
+    AddRequiredFeature(vkt::Feature::extendedDynamicState3ColorBlendEnable);
+    AddRequiredFeature(vkt::Feature::extendedDynamicState3ColorBlendEquation);
+    AddRequiredFeature(vkt::Feature::extendedDynamicState3ColorWriteMask);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    if (!IsPlatformMockICD()) {
+        // Several drivers have been observed to crash on the legal null pAttachments - restrict to MockICD for now
+        GTEST_SKIP() << "This test only runs on MockICD";
+    }
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+
+    // pAttachments should be ignored with these four states set
+    VkDynamicState dynamic_states[4] = {VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT,
+                                        VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT, VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT};
+    VkPipelineDynamicStateCreateInfo dynamic_create_info = vku::InitStructHelper();
+    dynamic_create_info.pDynamicStates = dynamic_states;
+    dynamic_create_info.dynamicStateCount = 4;
+
+    CreatePipelineHelper pipe(*this);
+    pipe.cb_ci_.pAttachments = nullptr;
+    pipe.gp_ci_.pDynamicState = &dynamic_create_info;
+    pipe.CreateGraphicsPipeline();
+    m_command_buffer.Begin();
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, PipelineLibraryNoRendering) {
+    TEST_DESCRIPTION("Create a pipeline library without a render pass or rendering info");
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::graphicsPipelineLibrary);
+    AddRequiredFeature(vkt::Feature::dynamicRendering);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+
+    VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+    VkPipelineRenderingCreateInfo pipeline_rendering_info = vku::InitStructHelper();
+    pipeline_rendering_info.colorAttachmentCount = 1u;
+    pipeline_rendering_info.pColorAttachmentFormats = &format;
+
+    CreatePipelineHelper pre_raster_lib(*this);
+    const auto vs_spv = GLSLToSPV(VK_SHADER_STAGE_VERTEX_BIT, kVertexMinimalGlsl);
+    vkt::GraphicsPipelineLibraryStage vs_stage(vs_spv, VK_SHADER_STAGE_VERTEX_BIT);
+    pre_raster_lib.InitPreRasterLibInfo(&vs_stage.stage_ci, &pipeline_rendering_info);
+    pre_raster_lib.gp_ci_.renderPass = VK_NULL_HANDLE;
+    pre_raster_lib.gp_ci_.flags |= VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
+    pre_raster_lib.CreateGraphicsPipeline();
+}
+
+TEST_F(PositiveBestPractices, PushConstantSet) {
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+
+    const char* const vsSource = R"glsl(
+        #version 450
+        layout(push_constant, std430) uniform foo { uint x[4]; } constants;
+        void main(){
+           gl_Position = vec4(constants.x[0] * constants.x[1]);
+        }
+    )glsl";
+
+    const char fsSource[] = R"glsl(
+        #version 460
+        layout(push_constant, std430) uniform foo {
+            layout(offset = 16) float x;
+        } constants;
+        layout(location = 0) out vec4 uFragColor;
+        void main(){
+            uFragColor = vec4(0,1,0,constants.x);
+        }
+    )glsl";
+
+    VkShaderObj vs(*m_device, vsSource, VK_SHADER_STAGE_VERTEX_BIT);
+    VkShaderObj fs(*m_device, fsSource, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    uint32_t data[5];
+    std::vector<VkPushConstantRange> push_constant_ranges = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 16},
+                                                             {VK_SHADER_STAGE_FRAGMENT_BIT, 16, 4}};
+
+    CreatePipelineHelper pipe(*this);
+    pipe.shader_stages_ = {vs.GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.pipeline_layout_ = vkt::PipelineLayout(*m_device, {}, push_constant_ranges);
+    pipe.CreateGraphicsPipeline();
+
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vk::CmdPushConstants(m_command_buffer, pipe.pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, data);
+    vk::CmdPushConstants(m_command_buffer, pipe.pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 16, 4, data);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, VertexBufferNotForAllDraws) {
+    TEST_DESCRIPTION("https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/7636");
+    AddRequiredExtensions(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::nullDescriptor);
+    AddRequiredFeature(vkt::Feature::robustBufferAccess);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    VkVertexInputBindingDescription input_binding = {0, 32, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription input_attrib;
+    memset(&input_attrib, 0, sizeof(input_attrib));
+    input_attrib.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    input_attrib.location = 4;
+
+    CreatePipelineHelper pipe0(*this);
+    pipe0.vi_ci_.pVertexBindingDescriptions = &input_binding;
+    pipe0.vi_ci_.vertexBindingDescriptionCount = 1;
+    pipe0.vi_ci_.pVertexAttributeDescriptions = &input_attrib;
+    pipe0.vi_ci_.vertexAttributeDescriptionCount = 1;
+    pipe0.CreateGraphicsPipeline();
+
+    CreatePipelineHelper pipe1(*this);
+    pipe1.CreateGraphicsPipeline();
+
+    vkt::Buffer vbo(*m_device, sizeof(float) * 3, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit | kPerformanceWarningBit);
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindVertexBuffers(m_command_buffer, 0, 1, &vbo.handle(), &kZeroDeviceSize);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe0);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+
+    vk::CmdBindPipeline(m_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe1);
+    vk::CmdDraw(m_command_buffer, 3, 1, 0, 0);
+    m_command_buffer.EndRenderPass();
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, SetDifferentEvents) {
+    TEST_DESCRIPTION("Signal different events");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+    vkt::Event event2(*m_device);
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.SetEvent(event2, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, ResetEventBeforeSet) {
+    TEST_DESCRIPTION("Set event two times with reset in between");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.ResetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, ResetEventBeforeSetMultipleSubmits) {
+    TEST_DESCRIPTION("Set event two times with reset in between from multiple submits");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.ResetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+    m_default_queue->Submit(m_command_buffer);
+
+    vkt::CommandBuffer cb2(*m_device, m_command_pool);
+    cb2.Begin();
+    cb2.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    cb2.End();
+    m_default_queue->SubmitAndWait(cb2);
+}
+
+TEST_F(PositiveBestPractices, ResetEventBeforeSetMultipleSubmits2) {
+    TEST_DESCRIPTION("Set event two times with reset in between using single submit with two batches");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+
+    vkt::CommandBuffer cb2(*m_device, m_command_pool);
+    cb2.Begin();
+    cb2.ResetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    cb2.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    cb2.End();
+
+    VkSubmitInfo submits[2];
+    submits[0] = vku::InitStructHelper();
+    submits[0].commandBufferCount = 1;
+    submits[0].pCommandBuffers = &m_command_buffer.handle();
+    submits[1] = vku::InitStructHelper();
+    submits[1].commandBufferCount = 1;
+    submits[1].pCommandBuffers = &cb2.handle();
+
+    vk::QueueSubmit(m_default_queue->handle(), 2, submits, VK_NULL_HANDLE);
+    m_default_queue->Wait();
+}
+
+TEST_F(PositiveBestPractices, HostResetEventBeforeSet) {
+    TEST_DESCRIPTION("Set event two times with host reset in between");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+
+    m_default_queue->SubmitAndWait(m_command_buffer);
+    event.Reset();
+    m_default_queue->SubmitAndWait(m_command_buffer);
+}
+
+TEST_F(PositiveBestPractices, ResetEventFromSecondary) {
+    TEST_DESCRIPTION("Set event two times with reset in between executed from a secondary command buffer");
+    RETURN_IF_SKIP(InitBestPractices());
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);  // TODO: should be part of BP config
+
+    vkt::Event event(*m_device);
+
+    vkt::CommandBuffer secondary_cb(*m_device, m_command_pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+    secondary_cb.Begin();
+    secondary_cb.ResetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    secondary_cb.End();
+
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.ExecuteCommands(secondary_cb);
+    m_command_buffer.SetEvent(event, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, DestroyEventThenUseAnotherEvent) {
+    TEST_DESCRIPTION("Destroy event that was set in a command buffer");
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+
+    // Scope to destroy event object at the end
+    {
+        vkt::Event event1(*m_device);
+        m_command_buffer.Begin();
+        m_command_buffer.SetEvent(event1);
+        m_command_buffer.End();
+        m_default_queue->SubmitAndWait(m_command_buffer);
+        // event1 is destroyed somewhere here and should not cause troubles in the event code below
+    }
+    vkt::Event event2(*m_device);
+    m_command_buffer.Begin();
+    m_command_buffer.SetEvent(event2);
+    m_command_buffer.End();
+    m_default_queue->SubmitAndWait(m_command_buffer);
+}
+
+TEST_F(PositiveBestPractices, CreateFifoRelaxedSwapchain) {
+    TEST_DESCRIPTION("Test creating fifo relaxed swapchain");
+
+    AddSurfaceExtension();
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    RETURN_IF_SKIP(InitSurface());
+    InitSwapchainInfo();
+
+    VkBool32 supported;
+    vk::GetPhysicalDeviceSurfaceSupportKHR(Gpu(), m_device->graphics_queue_node_index_, m_surface, &supported);
+    if (!supported) {
+        GTEST_SKIP() << "Graphics queue does not support present";
+    }
+
+    bool fifo_relaxed = false;
+    for (const auto& present_mode : m_surface_present_modes) {
+        if (present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+            fifo_relaxed = true;
+            break;
+        }
+    }
+    if (!fifo_relaxed) {
+        GTEST_SKIP() << "fifo relaxed present mode not supported";
+    }
+
+    VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    VkSurfaceTransformFlagBitsKHR preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
+    VkSwapchainCreateInfoKHR swapchain_create_info = vku::InitStructHelper();
+    swapchain_create_info.surface = m_surface;
+    swapchain_create_info.minImageCount = 2;
+    swapchain_create_info.imageFormat = m_surface_formats[0].format;
+    swapchain_create_info.imageColorSpace = m_surface_formats[0].colorSpace;
+    swapchain_create_info.imageExtent = GetSwapchainExtent(m_surface_capabilities);
+    swapchain_create_info.imageArrayLayers = 1;
+    swapchain_create_info.imageUsage = imageUsage;
+    swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapchain_create_info.preTransform = preTransform;
+    swapchain_create_info.compositeAlpha = m_surface_composite_alpha;
+    swapchain_create_info.presentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    swapchain_create_info.clipped = VK_FALSE;
+    swapchain_create_info.oldSwapchain = 0;
+
+    // lazy way to not query
+    m_errorMonitor->SetAllowedFailureMsg("VUID-VkSwapchainCreateInfoKHR-presentMode-02839");
+    m_swapchain.Init(*m_device, swapchain_create_info);
+}
+
+TEST_F(PositiveBestPractices, ShaderObjectDraw) {
+    AddRequiredExtensions(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    AddRequiredExtensions(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::dynamicRendering);
+    AddRequiredFeature(vkt::Feature::shaderObject);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+    InitRenderTarget();
+
+    const char kVertexGlsl[] = R"glsl(
+        #version 460
+        layout(location = 0) in vec4 pos;
+        void main() {
+           gl_Position = pos;
+        }
+    )glsl";
+
+    std::vector<uint32_t> vert_spirv = GLSLToSPV(VK_SHADER_STAGE_VERTEX_BIT, kVertexGlsl);
+    vkt::ShaderEXT vert_shader(*m_device, VK_SHADER_STAGE_VERTEX_BIT, vert_spirv);
+
+    std::vector<uint32_t> frag_spirv = GLSLToSPV(VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentMinimalGlsl);
+    vkt::ShaderEXT frag_shader(*m_device, VK_SHADER_STAGE_FRAGMENT_BIT, frag_spirv);
+
+    m_vertex_buffer = new vkt::Buffer(*m_device, sizeof(float) * 12u, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+    VkVertexInputBindingDescription2EXT binding_desc = vku::InitStructHelper();
+    binding_desc.binding = 0u;
+    binding_desc.stride = sizeof(float) * 3u;
+    binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    binding_desc.divisor = 1u;
+
+    VkVertexInputAttributeDescription2EXT attr_desc = vku::InitStructHelper();
+    attr_desc.location = 0u;
+    attr_desc.binding = 0u;
+    attr_desc.format = VK_FORMAT_R32G32B32_SFLOAT;
+    attr_desc.offset = 0u;
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit | kPerformanceWarningBit);
+    m_command_buffer.Begin();
+    m_command_buffer.BeginRenderingColor(GetDynamicRenderTarget(), GetRenderTargetArea());
+    VkDeviceSize offset = 0u;
+    m_command_buffer.BindShadersEXT(vert_shader, frag_shader);
+    SetDefaultDynamicStatesExcludeEXT();
+    vk::CmdBindVertexBuffers(m_command_buffer, 0u, 1u, &m_vertex_buffer->handle(), &offset);
+    vk::CmdSetVertexInputEXT(m_command_buffer, 1u, &binding_desc, 1u, &attr_desc);
+    vk::CmdDraw(m_command_buffer, 3u, 1u, 0u, 0u);
+    m_command_buffer.EndRendering();
+    m_command_buffer.End();
+}
+
+TEST_F(PositiveBestPractices, CreateDeviceWithFeatures) {
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    const vkt::PhysicalDevice phys_device_obj(gpu_);
+
+    // Now get information correctly
+    vkt::QueueCreateInfoArray queue_info(phys_device_obj.queue_properties_, true);
+    // Only request creation with queuefamilies that have at least one queue
+    std::vector<VkDeviceQueueCreateInfo> create_queue_infos;
+    auto qci = queue_info.Data();
+    for (uint32_t j = 0; j < queue_info.Size(); ++j) {
+        if (qci[j].queueCount) {
+            create_queue_infos.push_back(qci[j]);
+        }
+    }
+
+    VkPhysicalDeviceFeatures features;
+    vk::GetPhysicalDeviceFeatures(gpu_, &features);
+
+    const char* portability_extension = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
+
+    VkDeviceCreateInfo device_ci = vku::InitStructHelper();
+    device_ci.queueCreateInfoCount = create_queue_infos.size();
+    device_ci.pQueueCreateInfos = create_queue_infos.data();
+    device_ci.enabledLayerCount = 0;
+    device_ci.ppEnabledLayerNames = nullptr;
+    device_ci.enabledExtensionCount = 0u;
+    device_ci.ppEnabledExtensionNames = nullptr;
+    device_ci.pEnabledFeatures = &features;
+
+    uint32_t extension_count;
+    vk::EnumerateDeviceExtensionProperties(gpu_, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> extensions(extension_count);
+    vk::EnumerateDeviceExtensionProperties(gpu_, nullptr, &extension_count, extensions.data());
+
+    for (uint32_t i = 0; i < extension_count; ++i) {
+        if (strcmp(extensions[i].extensionName, portability_extension) == 0) {
+            device_ci.enabledExtensionCount = 1u;
+            device_ci.ppEnabledExtensionNames = &portability_extension;
+            break;
+        }
+    }
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit | kPerformanceWarningBit);
+    vkt::Device device(phys_device_obj, device_ci);
+}
+
+TEST_F(PositiveBestPractices, PipelineLibraryRendering) {
+    SetTargetApiVersion(VK_API_VERSION_1_2);
+    AddRequiredExtensions(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+    AddRequiredExtensions(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::graphicsPipelineLibrary);
+    AddRequiredFeature(vkt::Feature::dynamicRendering);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+
+    VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+    VkPipelineRenderingCreateInfo pipeline_rendering_info = vku::InitStructHelper();
+    pipeline_rendering_info.colorAttachmentCount = 1u;
+    pipeline_rendering_info.pColorAttachmentFormats = &format;
+
+    CreatePipelineHelper vertex_input_lib(*this);
+    vertex_input_lib.InitVertexInputLibInfo();
+    vertex_input_lib.CreateGraphicsPipeline(false);
+
+    const auto vs_spv = GLSLToSPV(VK_SHADER_STAGE_VERTEX_BIT, kVertexMinimalGlsl);
+    vkt::GraphicsPipelineLibraryStage vs_stage(vs_spv, VK_SHADER_STAGE_VERTEX_BIT);
+
+    const vkt::PipelineLayout pipeline_layout(*m_device);
+
+    CreatePipelineHelper pre_raster_lib(*this);
+    pre_raster_lib.InitPreRasterLibInfo(&vs_stage.stage_ci, &pipeline_rendering_info);
+    pre_raster_lib.gp_ci_.renderPass = VK_NULL_HANDLE;
+    pre_raster_lib.gp_ci_.layout = pipeline_layout;
+    pre_raster_lib.CreateGraphicsPipeline();
+
+    const auto fs_spv = GLSLToSPV(VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentMinimalGlsl);
+    vkt::GraphicsPipelineLibraryStage fs_stage(fs_spv, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    CreatePipelineHelper frag_shader_lib(*this);
+    frag_shader_lib.InitFragmentLibInfo(&fs_stage.stage_ci, &pipeline_rendering_info);
+    frag_shader_lib.gp_ci_.renderPass = VK_NULL_HANDLE;
+    frag_shader_lib.gp_ci_.pDepthStencilState = &frag_shader_lib.ds_ci_;
+    frag_shader_lib.gp_ci_.layout = pipeline_layout;
+    frag_shader_lib.CreateGraphicsPipeline(false);
+
+    CreatePipelineHelper frag_out_lib(*this);
+    frag_out_lib.InitFragmentOutputLibInfo(&pipeline_rendering_info);
+    frag_out_lib.gp_ci_.renderPass = VK_NULL_HANDLE;
+    frag_out_lib.CreateGraphicsPipeline(false);
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit | kPerformanceWarningBit);
+    vkt::Pipeline exe_pipe(*m_device, {vertex_input_lib, pre_raster_lib, frag_shader_lib, frag_out_lib}, pipeline_layout);
+}
+
+TEST_F(PositiveBestPractices, TransitionImageLayoutCb) {
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    AddRequiredExtensions(VK_KHR_MAINTENANCE_9_EXTENSION_NAME);
+    AddRequiredFeature(vkt::Feature::maintenance9);
+    AddRequiredFeature(vkt::Feature::synchronization2);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+
+    vkt::Image image(*m_device, 32u, 32u, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+
+    vkt::CommandBuffer cb1(*m_device, m_command_pool);
+    vkt::CommandBuffer cb2(*m_device, m_command_pool);
+
+    VkImageMemoryBarrier2 barrier = vku::InitStructHelper();
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    barrier.srcAccessMask = VK_ACCESS_2_NONE;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = range;
+    cb1.Begin();
+    cb1.Barrier(barrier);
+    cb1.End();
+
+    const VkClearColorValue clear_color = {};
+    cb2.Begin();
+    vk::CmdClearColorImage(cb2, image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1u, &range);
+    cb2.End();
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+    m_default_queue->Submit2({cb1, cb2});
+    m_default_queue->Wait();
+}
+
+TEST_F(PositiveBestPractices, DepthStencilResolveAccessMask) {
+    TEST_DESCRIPTION("Depth/stencil resolve attachments are accessed with the color attachment access types");
+    AddRequiredFeature(vkt::Feature::synchronization2);
+    AddRequiredFeature(vkt::Feature::separateDepthStencilLayouts);
+    SetTargetApiVersion(VK_API_VERSION_1_3);
+    RETURN_IF_SKIP(InitBestPracticesFramework());
+    RETURN_IF_SKIP(InitState());
+
+    const VkFormat ds_format = FindSupportedDepthStencilFormat(Gpu());
+    vkt::Image image(*m_device, 32u, 32u, ds_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+
+    m_errorMonitor->ExpectSuccess(kErrorBit | kWarningBit);
+    m_command_buffer.Begin();
+
+    // After a render pass resolved into it, move the resolve attachment to a transfer source
+    VkImageMemoryBarrier2 barrier = vku::InitStructHelper();
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.image = image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0u, 1u, 0u, 1u};
+    m_command_buffer.Barrier(barrier);
+
+    const VkImageAspectFlags depth = VK_IMAGE_ASPECT_DEPTH_BIT;
+    const VkImageAspectFlags stencil = VK_IMAGE_ASPECT_STENCIL_BIT;
+    const VkAccessFlags2 read = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+    const VkAccessFlags2 read_write = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    struct TestCase {
+        VkImageLayout layout;
+        VkImageAspectFlags aspect;
+        VkAccessFlags2 access;
+    };
+    // Resolve attachments are read and written, the multisample attachment is only read and can be in a read-only layout
+    const TestCase test_cases[] = {
+        {VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth | stencil, read_write},
+        {VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depth, read_write},
+        {VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL, stencil, read_write},
+        {VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, stencil, read_write},
+        {VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL, depth, read_write},
+        {VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, depth | stencil, read},
+        {VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, depth, read},
+        {VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL, stencil, read},
+        {VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, depth, read},
+        {VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL, stencil, read},
+    };
+    for (const auto& test_case : test_cases) {
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcAccessMask = test_case.access;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.dstAccessMask = test_case.access;
+        barrier.oldLayout = test_case.layout;
+        barrier.newLayout = test_case.layout;
+        barrier.subresourceRange.aspectMask = test_case.aspect;
+        m_command_buffer.Barrier(barrier);
+    }
+
+    // Same with a synchronization1 barrier
+    VkImageMemoryBarrier barrier1 = vku::InitStructHelper();
+    barrier1.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier1.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier1.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier1.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier1.image = image;
+    barrier1.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0u, 1u, 0u, 1u};
+    vk::CmdPipelineBarrier(m_command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier1);
+
+    m_command_buffer.End();
+}
