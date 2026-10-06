@@ -301,7 +301,33 @@ void EarClip(const std::vector<Vector2>& poly, std::vector<int> work, std::vecto
                 clipped = true;
             }
         }
-        if (!clipped) break; // degenerate polygon; stop and keep what we have
+        if (!clipped) {
+            // No clean ear exists (nearly collinear or touching vertices defeat the strict
+            // test). Stopping here would leave the rest of the polygon unfilled -- a hole in
+            // the ground -- so keep making progress: clip the most convex corner even though
+            // another vertex touches its triangle, or, when nothing is convex any more, drop
+            // the flattest vertex (no area is lost: it is collinear within tolerance).
+            int best = -1;
+            float bestCr = kEps;
+            float flattest = 1e30f;
+            int flattestIdx = 0;
+            for (int i = 0; i < m; i++) {
+                const Vector2& a = poly[work[(i + m - 1) % m]];
+                const Vector2& b = poly[work[i]];
+                const Vector2& c = poly[work[(i + 1) % m]];
+                const float cr = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+                if (cr > bestCr) { bestCr = cr; best = i; }
+                if (std::fabs(cr) < flattest) { flattest = std::fabs(cr); flattestIdx = i; }
+            }
+            if (best >= 0) {
+                tris.push_back(work[(best + m - 1) % m]);
+                tris.push_back(work[best]);
+                tris.push_back(work[(best + 1) % m]);
+                work.erase(work.begin() + best);
+            } else {
+                work.erase(work.begin() + flattestIdx);
+            }
+        }
     }
     if (work.size() == 3) {
         tris.push_back(work[0]);

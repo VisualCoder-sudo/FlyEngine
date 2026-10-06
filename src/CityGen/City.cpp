@@ -582,6 +582,30 @@ void City::ComputeBlocks() {
     for (int v = 0; v < (int)nodes.size(); v++) nodeRing[(size_t)v] = AngularRing(v);
 }
 
+
+// Records outlines whose triangulation does not cover their area (a visible hole or
+// a partly filled park), with the exact vertices, so the bad case can be replayed.
+static void ReportIncompleteFill(const char* what, const std::vector<Vector2>& poly,
+                                 const std::vector<int>& tris) {
+    double covered = 0.0;
+    for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+        const Vector2 &a = poly[tris[i]], &b = poly[tris[i + 1]], &c = poly[tris[i + 2]];
+        covered += 0.5 * std::fabs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y));
+    }
+    const double want = std::fabs((double)citygeom::PolygonArea(poly));
+    if (want < 1e-3 || covered >= want * 0.99) return;
+    static int reported = 0;
+    if (reported++ >= 20) return;
+    TraceLog(LOG_WARNING, "CITY: %s outline only %.0f%% filled (%zu verts); dumped to city_geometry_warnings.txt",
+             what, 100.0 * covered / want, poly.size());
+    if (FILE* f = fopen("city_geometry_warnings.txt", "a")) {
+        fprintf(f, "%s covered=%.3f area=%.3f verts=%zu:", what, covered, want, poly.size());
+        for (const Vector2& v : poly) fprintf(f, " (%.4f,%.4f)", v.x, v.y);
+        fputc('\n', f);
+        fclose(f);
+    }
+}
+
 namespace {
 // Liang-Barsky: does segment a-b touch the axis-aligned rect?
 bool SegHitsRect(Vector2 a, Vector2 b, float minx, float miny, float maxx, float maxy) {
@@ -1156,7 +1180,8 @@ const float roadW = params.RoadWidth();
 
         std::vector<int> tris;
         citygeom::TriangulateSimple(poly, tris);
-const Color padColor = block.park ? Color{ 150, 154, 150, 255 } : Color{ 158, 158, 162, 255 };
+        ReportIncompleteFill("pad", poly, tris);
+        const Color padColor = block.park ? Color{ 150, 154, 150, 255 } : Color{ 158, 158, 162, 255 };
         for (size_t t = 0; t + 2 < tris.size(); t += 3) {
             int base = (int)(mb.verts.size() / 3);
             mb.Vertex({ poly[tris[t]].x, 0.06f + kRoadElevation, poly[tris[t]].y }, padColor);
@@ -1170,6 +1195,7 @@ const Color padColor = block.park ? Color{ 150, 154, 150, 255 } : Color{ 158, 15
         if (block.park && !block.parkPoly.empty()) {
             std::vector<int> ptris;
             citygeom::TriangulateSimple(block.parkPoly, ptris);
+            ReportIncompleteFill("park", block.parkPoly, ptris);
             const Color grassColor{ 108, 158, 94, 255 };
             for (size_t t = 0; t + 2 < ptris.size(); t += 3) {
                 int base = (int)(mb.verts.size() / 3);

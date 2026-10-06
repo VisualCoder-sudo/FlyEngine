@@ -80,6 +80,14 @@ int main() {
             sum += a;
             if (a < -1e-3f) badTri = true;
         }
+        // Every triangle must lie inside the outline: a triangle spanning a concave pocket would
+        // fill ground that is not part of the park.
+        for (size_t t = 0; t + 2 < tris.size() && !badTri; t += 3) {
+            const Vector2 &a = park[tris[t]], &b = park[tris[t + 1]], &c = park[tris[t + 2]];
+            if (std::fabs(TriArea(a, b, c)) < 0.5f) continue;
+            const Vector2 g{ (a.x + b.x + c.x) / 3.0f, (a.y + b.y + c.y) / 3.0f };
+            if (!citygeom::PointInPolygon(g, park)) badTri = true;
+        }
         const float want = citygeom::PolygonArea(park);
         if (badTri || std::fabs(sum - want) > 0.01f * want + 0.05f) {
             if (failures < 5)
@@ -87,6 +95,19 @@ int main() {
                             badTri ? " (has clockwise triangle)" : "");
             ++failures;
         }
+    }
+    // Regression: an outline with a vertex resting exactly on another edge (no clean
+    // ear at that corner) must still be filled completely, not abandoned part-way.
+    {
+        std::vector<Vector2> sq = { {0,0}, {4,0}, {4,2}, {2,2}, {2,2}, {2,2}, {4,2}, {4,4}, {0,4} };
+        std::vector<int> tr;
+        citygeom::TriangulateSimple(sq, tr);
+        double cov = 0;
+        for (size_t i = 0; i + 2 < tr.size(); i += 3) {
+            const Vector2 &a = sq[tr[i]], &b = sq[tr[i+1]], &c = sq[tr[i+2]];
+            cov += 0.5 * std::fabs((b.x-a.x)*(c.y-a.y) - (c.x-a.x)*(b.y-a.y));
+        }
+        if (cov < 15.9) { std::printf("degenerate outline only %.2f of 16 filled\n", cov); ++failures; }
     }
     std::printf("%d outlines (%d fell back to the uninset outline), %d failed\n", polys, insetFailed, failures);
     std::printf(failures ? "city_geometry_test: FAILED\n" : "city_geometry_test: all passed\n");
