@@ -1181,7 +1181,7 @@ const float roadW = params.RoadWidth();
         std::vector<int> tris;
         citygeom::TriangulateSimple(poly, tris);
         ReportIncompleteFill("pad", poly, tris);
-        const Color padColor = block.park ? Color{ 150, 154, 150, 255 } : Color{ 158, 158, 162, 255 };
+        const Color padColor = block.park ? Color{ 108, 158, 94, 255 } : Color{ 158, 158, 162, 255 };
         for (size_t t = 0; t + 2 < tris.size(); t += 3) {
             int base = (int)(mb.verts.size() / 3);
             mb.Vertex({ poly[tris[t]].x, 0.06f + kRoadElevation, poly[tris[t]].y }, padColor);
