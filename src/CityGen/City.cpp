@@ -1196,6 +1196,24 @@ const float roadW = params.RoadWidth();
             std::vector<int> ptris;
             citygeom::TriangulateSimple(block.parkPoly, ptris);
             ReportIncompleteFill("park", block.parkPoly, ptris);
+            {
+                // The grass should be roughly the pad minus an inset margin; far less means
+                // the inset polygon itself is wrong. Dump both outlines for replay.
+                const double padA = std::fabs((double)citygeom::PolygonArea(poly));
+                const double grassA = std::fabs((double)citygeom::PolygonArea(block.parkPoly));
+                double per = 0; for (size_t k = 0; k < poly.size(); k++) per += Vector2Distance(poly[k], poly[(k + 1) % poly.size()]);
+                const double insetUsed = std::min(params.parkInset, params.RoadWidth() * 0.6f);
+                const double expect = padA - per * insetUsed;
+                static int rep = 0;
+                if (grassA < 0.8 * expect && rep++ < 20) {
+                    TraceLog(LOG_WARNING, "CITY: park grass %.0f vs expected %.0f (pad %.0f); dumped", grassA, expect, padA);
+                    if (FILE* f = fopen("city_geometry_warnings.txt", "a")) {
+                        fprintf(f, "PARKPAD:"); for (const Vector2& v : poly) fprintf(f, " (%.4f,%.4f)", v.x, v.y);
+                        fprintf(f, "\nPARKGRASS:"); for (const Vector2& v : block.parkPoly) fprintf(f, " (%.4f,%.4f)", v.x, v.y);
+                        fprintf(f, "\ninset=%.4f\n", insetUsed); fclose(f);
+                    }
+                }
+            }
             const Color grassColor{ 108, 158, 94, 255 };
             for (size_t t = 0; t + 2 < ptris.size(); t += 3) {
                 int base = (int)(mb.verts.size() / 3);
@@ -1682,6 +1700,31 @@ void City::MoveNode(int index, const Vector2& pos, bool rebuildAll) {
     if (index < 0 || (size_t)index >= nodes.size()) return;
     nodes[index].pos = pos;
     if (rebuildAll) RebuildAfterNodeMove(index);
+}
+
+bool City::MoveWouldCross(int index, const Vector2& pos) const {
+    if (index < 0 || (size_t)index >= nodes.size()) return false;
+    auto orient = [](const Vector2& a, const Vector2& b, const Vector2& c) {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    };
+    for (size_t i = 0; i < edges.size(); i++) {
+        const RoadEdge& e = edges[i];
+        if (e.a != index && e.b != index) continue;
+        const int other = (e.a == index) ? e.b : e.a;
+        const Vector2& A = pos;
+        const Vector2& B = nodes[(size_t)other].pos;
+        for (size_t j = 0; j < edges.size(); j++) {
+            const RoadEdge& f = edges[j];
+            if (j == i || f.a == index || f.b == index || f.a == other || f.b == other) continue;
+            const Vector2& C = nodes[(size_t)f.a].pos;
+            const Vector2& D = nodes[(size_t)f.b].pos;
+            const float o1 = orient(A, B, C), o2 = orient(A, B, D), o3 = orient(C, D, A), o4 = orient(C, D, B);
+            if (((o1 > 0) != (o2 > 0)) && ((o3 > 0) != (o4 > 0)) &&
+                std::fabs(o1) > 1e-4f && std::fabs(o2) > 1e-4f && std::fabs(o3) > 1e-4f && std::fabs(o4) > 1e-4f)
+                return true;
+        }
+    }
+    return false;
 }
 
 int City::AddNode(const Vector2& pos, bool boundary) {

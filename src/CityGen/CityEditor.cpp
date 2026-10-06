@@ -118,6 +118,15 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
                                          dl > 1e-4f ? Vector2Scale(dv, minSep / dl) : Vector2{ minSep, 0.0f });
                 }
                 Vector2 cur = city->NodePos(s.dragNode);
+                if (city->MoveWouldCross(s.dragNode, pos)) {
+                    // Slide as far toward the cursor as roads allow instead of crossing one.
+                    float lo = 0.0f, hi = 1.0f;
+                    for (int k = 0; k < 8; k++) {
+                        const float mid = 0.5f * (lo + hi);
+                        if (city->MoveWouldCross(s.dragNode, Vector2Lerp(cur, pos, mid))) hi = mid; else lo = mid;
+                    }
+                    pos = Vector2Lerp(cur, pos, lo);
+                }
                 if (Vector2Distance(pos, cur) > 0.02f) {
                     // First actual move: capture the pre-edit state on the undo stack.
                     if (!s.dragMoved) {
@@ -206,8 +215,11 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         if (d.x != 0.0f || d.y != 0.0f) {
             if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))
                 d = Vector2Scale(d, 0.25f);
-            NotifyCityEdit();
-            city->MoveNode(s.selectedNode, Vector2Add(city->NodePos(s.selectedNode), d));
+            const Vector2 target = Vector2Add(city->NodePos(s.selectedNode), d);
+            if (!city->MoveWouldCross(s.selectedNode, target)) {
+                NotifyCityEdit();
+                city->MoveNode(s.selectedNode, target);
+            }
         }
     }
 
@@ -339,6 +351,9 @@ void DrawCityEditorPanel() {
         bool edited = false;
         edited |= ImGui::DragFloat("Node X", &v.x, 0.1f);
         edited |= ImGui::DragFloat("Node Z", &v.y, 0.1f);
+        if (edited && city->MoveWouldCross(s.selectedNode, v)) {
+            edited = false; // would cross another road
+        }
         if (edited) {
             if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
             city->MoveNode(s.selectedNode, v, true); // incremental rebuild

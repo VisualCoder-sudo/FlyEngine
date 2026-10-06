@@ -165,6 +165,10 @@ public:
     // skips the (expensive) full RebuildAll, which the caller throttles and
     // finalizes on release.
     void MoveNode(int index, const Vector2& pos, bool rebuildAll = true);
+    // True when putting node `index` at `pos` would make one of its roads cross another road.
+    // Crossing roads break the planar block faces (overlapping pads/parks), so the editor refuses
+    // such moves.
+    bool MoveWouldCross(int index, const Vector2& pos) const;
     // Incremental rebuild after node `index` moved (topology unchanged): only the
     // roads, blocks and buildings that depend on that node are regenerated, and
     // the result is identical to RebuildAll(). Falls back to a full rebuild when
