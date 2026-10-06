@@ -198,6 +198,11 @@ public:
     // True when p lies on any block pad or within road width of any road line.
     bool ContainsPoint(const Vector2& p) const;
 
+    // Order-independent hashes of the generated geometry (road/pad/park triangles
+    // and building instances), for tests that compare rebuild paths.
+    struct GeometryHashes { uint64_t road = 0, buildings = 0; size_t roadTris = 0, instances = 0; };
+    GeometryHashes DebugGeometryHashes() const;
+
     // Geometry helpers used by the editor.
     Vector2 NodePos(int i) const;
     Vector2 EdgeMidpoint(int i) const;

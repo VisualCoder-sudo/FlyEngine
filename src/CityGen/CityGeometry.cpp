@@ -255,12 +255,13 @@ bool InsetPolygon(const std::vector<Vector2>& poly, float d,
     return true;
 }
 
-void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris) {
-    const int n = (int)poly.size();
-    if (n < 3) return;
+bool IsSimplePolygonForTest(const std::vector<Vector2>& poly) { return IsPolygonSimple(poly); }
 
-    std::vector<int> idx(n);
-    for (int i = 0; i < n; i++) idx[i] = i;
+namespace {
+
+// Ear clipping of one simple loop. `work` holds indices into `poly`, CCW.
+void EarClip(const std::vector<Vector2>& poly, std::vector<int> work, std::vector<int>& tris) {
+    if (work.size() < 3) return;
 
     auto pointInTri = [](const Vector2& p, const Vector2& a, const Vector2& b,
                          const Vector2& c) {
@@ -273,7 +274,6 @@ void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris)
         return !(hasNeg && hasPos);
     };
 
-    std::vector<int> work = idx;
     while ((int)work.size() > 3) {
         bool clipped = false;
         const int m = (int)work.size();
@@ -309,5 +309,51 @@ void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris)
         tris.push_back(work[2]);
     }
 }
+
+} // namespace
+
+void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris) {
+    const int n = (int)poly.size();
+    if (n < 3) return;
+
+    // A block outline can visit the same node twice: a dead-end road spur sticks
+    // into the block, and walking the face goes out along the spur and back.
+    // Ear clipping cannot handle repeated vertices (the coincident vertex always
+    // blocks the ear), so it used to stop early and leave most of the outline
+    // untriangulated -- a hole in the pad until the nodes were edited. Split the
+    // outline at repeated vertices into separate loops first: the spur becomes a
+    // degenerate loop (dropped) and what remains are ordinary simple polygons.
+    auto samePoint = [](const Vector2& a, const Vector2& b) {
+        return std::fabs(a.x - b.x) < 1e-4f && std::fabs(a.y - b.y) < 1e-4f;
+    };
+    std::vector<std::vector<int>> loops;
+    std::vector<int> path;
+    for (int i = 0; i < n; ++i) {
+        int hit = -1;
+        for (int k = (int)path.size() - 1; k >= 0; --k) {
+            if (samePoint(poly[(size_t)path[(size_t)k]], poly[(size_t)i])) { hit = k; break; }
+        }
+        if (hit < 0) {
+            path.push_back(i);
+        } else {
+            loops.emplace_back(path.begin() + hit, path.end());   // the sub-loop between the two visits
+            path.resize((size_t)hit + 1);                          // keep the junction vertex
+        }
+    }
+    loops.push_back(std::move(path));
+
+    for (std::vector<int>& loop : loops) {
+        if (loop.size() < 3) continue;                             // a spur: no area
+        float area = 0.0f;
+        for (size_t i = 0; i < loop.size(); ++i) {
+            const Vector2& a = poly[(size_t)loop[i]];
+            const Vector2& b = poly[(size_t)loop[(i + 1) % loop.size()]];
+            area += a.x * b.y - b.x * a.y;
+        }
+        if (area <= 2e-3f) continue;                               // degenerate or clockwise (not part of the pad)
+        EarClip(poly, std::move(loop), tris);
+    }
+}
+
 
 } // namespace citygeom

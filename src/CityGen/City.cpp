@@ -1613,6 +1613,45 @@ void City::DrawOverlay3D() {
     }
 }
 
+City::GeometryHashes City::DebugGeometryHashes() const {
+    GeometryHashes h;
+    auto mix = [](uint64_t x) {
+        x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33;
+        return x;
+    };
+    auto q = [](float v) { return (uint64_t)(int64_t)llround((double)v * 256.0); };   // 1/256 m
+    for (const auto& kv : tiles) {
+        const Tile& t = kv.second;
+        for (const Model& mdl : t.roadModels) {
+            for (int mi = 0; mi < mdl.meshCount; ++mi) {
+                const Mesh& m = mdl.meshes[mi];
+                const int tris = m.triangleCount;
+                for (int tr = 0; tr < tris; ++tr) {
+                    uint64_t th = 1469598103934665603ULL;
+                    for (int c = 0; c < 3; ++c) {
+                        const int vi = m.indices ? m.indices[tr * 3 + c] : tr * 3 + c;
+                        for (int k = 0; k < 3; ++k) th = mix(th ^ q(m.vertices[vi * 3 + k]));
+                        if (m.colors) for (int k = 0; k < 4; ++k) th = mix(th ^ (uint64_t)m.colors[vi * 4 + k]);
+                    }
+                    h.road += th;          // sum: independent of chunking/ordering
+                    ++h.roadTris;
+                }
+            }
+        }
+        for (int s2 = 0; s2 < kBuildingShapes; ++s2) {
+            for (const Matrix& m : t.inst[s2]) {
+                const float f[16] = { m.m0, m.m4, m.m8, m.m12, m.m1, m.m5, m.m9, m.m13,
+                                      m.m2, m.m6, m.m10, m.m14, m.m3, m.m7, m.m11, m.m15 };
+                uint64_t ih = (uint64_t)s2 + 77;
+                for (float v : f) ih = mix(ih ^ q(v));
+                h.buildings += ih;
+                ++h.instances;
+            }
+        }
+    }
+    return h;
+}
+
 void City::MoveNode(int index, const Vector2& pos, bool rebuildAll) {
     if (index < 0 || (size_t)index >= nodes.size()) return;
     nodes[index].pos = pos;

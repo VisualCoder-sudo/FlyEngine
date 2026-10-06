@@ -136,6 +136,61 @@ int main() {
         rlUnloadVertexBuffer(instBuf);
     }
 
+    // --- recycled buffers must never show another mesh's data -------------
+    // A buffer released in a frame may still be referenced by a draw recorded earlier
+    // in that frame, so it must not be refilled until the next frame. Each mesh below
+    // is a full-screen quad of one colour; every draw must show its own colour.
+    {
+        auto makeQuad = [](Color c) {
+            Mesh m = { 0 };
+            m.vertexCount = 4;
+            m.triangleCount = 2;
+            m.vertices = (float*)MemAlloc(4 * 3 * sizeof(float));
+            m.texcoords = (float*)MemAlloc(4 * 2 * sizeof(float));
+            m.normals = (float*)MemAlloc(4 * 3 * sizeof(float));
+            m.colors = (unsigned char*)MemAlloc(4 * 4);
+            m.indices = (unsigned short*)MemAlloc(6 * sizeof(unsigned short));
+            const float v[12] = { -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0 };
+            const float t[8] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+            const float n[12] = { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 };
+            const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
+            for (int i = 0; i < 12; ++i) { m.vertices[i] = v[i]; m.normals[i] = n[i]; }
+            for (int i = 0; i < 8; ++i) m.texcoords[i] = t[i];
+            for (int i = 0; i < 4; ++i) { m.colors[i * 4] = c.r; m.colors[i * 4 + 1] = c.g; m.colors[i * 4 + 2] = c.b; m.colors[i * 4 + 3] = 255; }
+            for (int i = 0; i < 6; ++i) m.indices[i] = idx[i];
+            UploadMesh(&m, false);
+            return m;
+        };
+        Material qm = LoadMaterialDefault();
+        const Color palette[4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 }, { 255, 255, 0, 255 } };
+        int wrong = 0;
+        for (int round = 0; round < 40; ++round) {
+            // Within one frame: draw a mesh, release it, create a same-sized mesh and draw that.
+            // The first quad covers the left half of the screen, the second the right half.
+            BeginDrawing();
+            ClearBackground(BLACK);
+            Camera3D cam = { { 0, 0, 3 }, { 0, 0, 0 }, { 0, 1, 0 }, 90.0f, CAMERA_PERSPECTIVE };
+            BeginMode3D(cam);
+            Mesh a = makeQuad(palette[round % 4]);
+            DrawMesh(a, qm, MatrixTranslate(-1.2f, 0, 0));
+            UnloadMesh(a);                                        // released while its draw is pending
+            Mesh b = makeQuad(palette[(round + 1) % 4]);          // same size: would reuse a's buffers
+            DrawMesh(b, qm, MatrixTranslate(1.2f, 0, 0));
+            UnloadMesh(b);
+            EndMode3D();
+            EndDrawing();
+            const char* path = "rl_smoke_recycle.png";
+            TakeScreenshot(path);
+            Image shot = LoadImage(path);
+            std::remove(path);
+            const Color left = GetImageColor(shot, 64, 128), right = GetImageColor(shot, 192, 128);
+            const Color wantL = palette[round % 4], wantR = palette[(round + 1) % 4];
+            if (!Near(left, wantL) || !Near(right, wantR)) ++wrong;
+            UnloadImage(shot);
+        }
+        CHECK(wrong == 0, "recycled mesh buffers showed another mesh's data in %d of 40 frames", wrong);
+    }
+
     // The scene after churn still renders correctly.
     DrawFullscreen(tex);
     CHECK(Near(CenterPixel(), kYellow), "texture still correct after mesh churn and instancing");

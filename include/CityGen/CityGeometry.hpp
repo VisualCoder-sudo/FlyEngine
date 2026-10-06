@@ -37,4 +37,7 @@ bool InsetPolygon(const std::vector<Vector2>& poly, float d,
 // Appends triangle triples (indices into `poly`) to `tris`.
 void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris);
 
+// True when no two non-adjacent edges of `poly` properly cross (tests).
+bool IsSimplePolygonForTest(const std::vector<Vector2>& poly);
+
 } // namespace citygeom

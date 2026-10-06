@@ -72,3 +72,10 @@ target_link_libraries(rl_smoke_test PRIVATE FlyRL)
 add_executable(texture_hash_test texture_hash_test.cpp)
 target_link_libraries(texture_hash_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME texture_hash COMMAND texture_hash_test)
+
+# Property test for the city polygon helpers (park outlines / triangulation).
+add_executable(city_geometry_test city_geometry_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CityGen/CityGeometry.cpp
+    ${CMAKE_SOURCE_DIR}/src/Terrain/Water/WaterNoise.cpp)
+target_include_directories(city_geometry_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/include/rl)
+add_test(NAME city_geometry COMMAND city_geometry_test)
