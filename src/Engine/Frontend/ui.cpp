@@ -1,25 +1,12 @@
 // ui.cpp (fixed)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#include <shellapi.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
-
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
+#include "../../../include/Engine/Graphics.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
@@ -31,8 +18,7 @@
 #include "../../../include/CityGen/CityEditor.hpp"
 #include "raymath.h"
 #include "imgui.h"
-#include "imgui_impl_opengl3.h"
-#include "imgui_impl_raylib.h"
+#include "rlimgui.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
@@ -43,6 +29,7 @@
 #include <utility>
 #include <sstream>
 #include <cctype>
+#include <cmath>
 
 namespace ui {
 
@@ -58,7 +45,7 @@ static Texture2D g_folderIcon = { 0 };
 static Texture2D g_assetSearchIcon = { 0 };
 // Terrain sculpt tool icons (Raise/Lower/Smooth/Flatten/Paint/None), matching
 // BasicTerrain::Tool's ordering.
-enum TerrainToolIconType { TTOOLICON_RAISE = 0, TTOOLICON_LOWER, TTOOLICON_SMOOTH, TTOOLICON_FLATTEN, TTOOLICON_PAINT, TTOOLICON_NONE, TTOOLICON_COUNT };
+enum TerrainToolIconType { TTOOLICON_RAISE = 0, TTOOLICON_LOWER, TTOOLICON_SMOOTH, TTOOLICON_FLATTEN, TTOOLICON_PAINT, TTOOLICON_ERODE, TTOOLICON_NOISE, TTOOLICON_RAMP, TTOOLICON_NONE, TTOOLICON_COUNT };
 static Texture2D g_terrainToolIcons[TTOOLICON_COUNT] = {};
 static Vector3* g_pos = nullptr;
 static Vector3* g_size = nullptr;
@@ -118,9 +105,10 @@ static bool g_clickConsumedThisFrame = false;
 
 // Dear ImGui integration (debug overlay for the migration work)
 static bool g_showDemoWindow = false;
+static bool g_showDebugStats = false;
 
 // Preferences panel: editor/workflow settings only, never game/scene data.
-// Extremely basic for now — a category sidebar with one real setting
+// Extremely basic for now - a category sidebar with one real setting
 // (Language, General tab); more will be added to specific categories later.
 static bool g_showPreferences = false;
 static int  g_prefsCategory = 0; // 0=General 1=API Keys 2=Scripting 3=Plugins 4=Rendering 5=Appearance
@@ -333,89 +321,91 @@ static void DrawTextSel(const char* buf, int cursor, int sel, float textStartX,
                         float y, float height, float fontSize, Color color);
 static void ApplyImGuiTheme();
 
+// Loads one of the engine's bundled icons, taking a name relative to
+// assets/EditorIcons/ (or to assets/ when it starts with "../"). The returned
+// Image is owned by the caller, who must UnloadImage() it after uploading.
+//
+// The icons are black silhouettes that the dark theme recolours to white. A
+// missing file yields a zeroed Image rather than an error, so a partial
+// install degrades to "no icon" instead of failing to start.
+static Image LoadEditorIcon(const std::string& name) {
+    Image img = {};
+    const std::string path = platform::ResolveAsset("assets/EditorIcons/" + name);
+    if (path.empty()) return img;
+    img = LoadImage(path.c_str());
+    if (img.data != nullptr) ImageColorBrightness(&img, 255);
+    return img;
+}
+
 void Init() {
-    if (FileExists("C:/Windows/Fonts/arial.ttf")) {
-        g_arialFont = LoadFontEx("C:/Windows/Fonts/arial.ttf", 32, nullptr, 0);
-    } else if (FileExists("arial.ttf")) {
-        g_arialFont = LoadFontEx("arial.ttf", 32, nullptr, 0);
-    } else {
-        g_arialFont = GetFontDefault();
+    // platform::ResolveFontPath() already applies the precedence: a font in
+    // the working directory wins, then the system candidates. Empty means
+    // nothing was found, and raylib's built-in bitmap font is the fallback.
+    const std::string& fontPath = platform::ResolveFontPath();
+    if (!fontPath.empty()) {
+        g_arialFont = LoadFontEx(fontPath.c_str(), 32, nullptr, 0);
     }
+    if (g_arialFont.texture.id == 0) g_arialFont = GetFontDefault();
     SetTextureFilter(g_arialFont.texture, TEXTURE_FILTER_BILINEAR);
 
     constexpr const char* toolIconNames[] = { "select.png", "move.png", "scale.png", "rotate.png", "import.png" };
     for (int i = 0; i < 5; ++i) {
-        std::string path = std::string("assets/EditorIcons/") + toolIconNames[i];
-        if (!FileExists(path.c_str())) path = std::string("../assets/EditorIcons/") + toolIconNames[i];
-        Image img = LoadImage(path.c_str());
+        Image img = LoadEditorIcon(toolIconNames[i]);
         if (img.data != nullptr) {
-            ImageColorBrightness(&img, 255); // black silhouette -> white for dark theme
             g_toolIcons[i] = LoadTextureFromImage(img);
             UnloadImage(img); // Free CPU RAM immediately after GPU upload
         }
     }
 
     // Load delete icon
-    std::string deletePath = "assets/delete.png";
-    if (!FileExists(deletePath.c_str())) deletePath = "../assets/delete.png";
-    Image delImg = LoadImage(deletePath.c_str());
-    if (delImg.data != nullptr) {
-        ImageColorBrightness(&delImg, 255);
-        g_deleteIcon = LoadTextureFromImage(delImg);
-UnloadImage(delImg);
+    {
+        Image delImg = LoadEditorIcon("../delete.png");
+        if (delImg.data != nullptr) {
+            g_deleteIcon = LoadTextureFromImage(delImg);
+            UnloadImage(delImg);
+        }
     }
 
     constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png" };
     for (int i = 0; i < ROWICON_COUNT; ++i) {
-        std::string path = std::string("assets/EditorIcons/") + rowIconNames[i];
-        if (!FileExists(path.c_str())) path = std::string("../assets/EditorIcons/") + rowIconNames[i];
-        Image img = LoadImage(path.c_str());
+        Image img = LoadEditorIcon(rowIconNames[i]);
         if (img.data != nullptr) {
-            ImageColorBrightness(&img, 255); // black silhouette -> white for dark theme
             g_rowIcons[i] = LoadTextureFromImage(img);
             UnloadImage(img);
         }
     }
 
     {
-        std::string path = "assets/EditorIcons/Folder.png";
-        if (!FileExists(path.c_str())) path = "../assets/EditorIcons/Folder.png";
-        Image img = LoadImage(path.c_str());
+        Image img = LoadEditorIcon("Folder.png");
         if (img.data != nullptr) {
-            ImageColorBrightness(&img, 255);
             g_folderIcon = LoadTextureFromImage(img);
             UnloadImage(img);
         }
     }
     {
-        std::string path = "assets/EditorIcons/search.png";
-        if (!FileExists(path.c_str())) path = "../assets/EditorIcons/search.png";
-        Image img = LoadImage(path.c_str());
+        Image img = LoadEditorIcon("search.png");
         if (img.data != nullptr) {
-            ImageColorBrightness(&img, 255);
             g_assetSearchIcon = LoadTextureFromImage(img);
             UnloadImage(img);
         }
     }
 
     constexpr const char* terrainToolIconNames[TTOOLICON_COUNT] = {
-        "arrowup.png", "arrowdown.png", "smooth.png", "linehoriz.png", "paint.png", "none.png"
+        "arrowup.png", "arrowdown.png", "smooth.png", "linehoriz.png", "paint.png",
+        "erode.png", "noise.png", "ramp.png", "none.png"
     };
     for (int i = 0; i < TTOOLICON_COUNT; ++i) {
-        std::string path = std::string("assets/EditorIcons/") + terrainToolIconNames[i];
-        if (!FileExists(path.c_str())) path = std::string("../assets/EditorIcons/") + terrainToolIconNames[i];
-        Image img = LoadImage(path.c_str());
+        Image img = LoadEditorIcon(terrainToolIconNames[i]);
         if (img.data != nullptr) {
-            ImageColorBrightness(&img, 255); // black silhouette -> white so DrawTexturePro's tint applies
             g_terrainToolIcons[i] = LoadTextureFromImage(img);
             UnloadImage(img);
         }
     }
 
-    // Dear ImGui setup. Runs after InitWindow created the GL context (ScopedUI
-    // in main.cpp), so the OpenGL3 backend can probe the driver safely.
+    // Dear ImGui setup. Runs after InitWindow created the graphics device
+    // (ScopedUI in main.cpp); rlImGuiSetup() creates the context.
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    rlImGuiSetup();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;               // no .ini config persistence for now
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -426,25 +416,22 @@ UnloadImage(delImg);
     fontCfg.OversampleH = 1;
     fontCfg.OversampleV = 1;
     static const ImWchar glyphRanges[] = { 0x20, 0xFF, 0x2190, 0x21FF, 0x2200, 0x22FF, 0x2500, 0x25FF, 0x2600, 0x26FF, 0 };
-    if (FileExists("C:/Windows/Fonts/arial.ttf")) {
-        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/arial.ttf", 15.0f, &fontCfg, glyphRanges);
-    } else if (FileExists("arial.ttf")) {
-        io.Fonts->AddFontFromFileTTF("arial.ttf", 15.0f, &fontCfg, glyphRanges);
+    // Same resolved font the 3D text uses, so the ImGui labels and the scene
+    // text are the same typeface at a consistent size.
+    const std::string& imguiFontPath = platform::ResolveFontPath();
+    if (!imguiFontPath.empty()) {
+        io.Fonts->AddFontFromFileTTF(imguiFontPath.c_str(), 15.0f, &fontCfg, glyphRanges);
     } else {
         io.Fonts->AddFontDefault();
     }
 
     ApplyImGuiTheme();
-    ImGui_ImplRaylib_Init();
-    ImGui_ImplOpenGL3_Init("#version 130");
 }
 
 void Unload() {
-    // ImGui shutdown first: it still needs the GL context which is alive until
-    // the Engine (and thus CloseWindow) is destroyed after ui::Unload().
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplRaylib_Shutdown();
-    ImGui::DestroyContext();
+    // ImGui shutdown first: it still needs the graphics device, which is alive
+    // until the Engine (and thus CloseWindow) is destroyed after ui::Unload().
+    rlImGuiShutdown();
 
     for (int i = 0; i < 5; ++i) {
         if (g_toolIcons[i].id != 0) UnloadTexture(g_toolIcons[i]);
@@ -944,9 +931,7 @@ static ScatteredObject* KeepPrimary(const std::vector<ScatteredObject*>& selecti
 void UpdateInput() {
     // Start the ImGui frame before anything else: widgets must be built every
     // frame and this runs even when the early-return below skips mouse handling.
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplRaylib_NewFrame();
-    ImGui::NewFrame();
+    rlImGuiNewFrame(GetFrameTime());   // also calls ImGui::NewFrame()
 
     if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) return;
 
@@ -1361,7 +1346,7 @@ static void PerformExplorerMenuAction(int i) {
                 if (g_explorerMenuScript < 0 || g_explorerMenuScript >= static_cast<int>(scripts.size())) return;
                 if (i == 0) {
                     g_scriptRenameIndex = g_explorerMenuScript;
-                    strncpy_s(g_scriptNameBuffer, scripts[g_explorerMenuScript].name.c_str(), sizeof(g_scriptNameBuffer) - 1);
+                    snprintf(g_scriptNameBuffer, sizeof(g_scriptNameBuffer), "%s", scripts[g_explorerMenuScript].name.c_str());
                     g_scriptNameBuffer[sizeof(g_scriptNameBuffer) - 1] = '\0';
                     g_cursorPos = static_cast<int>(strlen(g_scriptNameBuffer));
                     g_selStart = -1;
@@ -1392,7 +1377,7 @@ static void OpenExplorerMenu(Vector2 pos, ExplorerMenuMode mode, ScatteredObject
 // ImGui window), so it can never end up hidden behind the Explorer panel.
 static void DrawImGuiExplorerMenu() {
     // g_explorerMenuOpenTime is refreshed on every OpenExplorerMenu() call,
-    // including retargeting an already-open menu to a new row — use it (not
+    // including retargeting an already-open menu to a new row - use it (not
     // IsPopupOpen) to detect "new request", so right-clicking a different
     // row while the menu is open moves it there in one click instead of
     // needing a close-then-reopen.
@@ -1656,20 +1641,83 @@ static void DrawContextMenu() {
 // 1. Top Bar
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// 1. Top Bar (Dear ImGui) — File menu, Import, tool buttons, Play/Stop.
+// 1. Top Bar (Dear ImGui) - File menu, Import, tool buttons, Play/Stop.
 // Called once per frame from DrawImGuiFrame(), between ImGui::NewFrame()
 // (UpdateInput()) and ImGui::Render().
 // ---------------------------------------------------------------------------
 static ImTextureID ToolTex(int i) {
     return g_toolIcons[i].id != 0
-        ? static_cast<ImTextureID>(g_toolIcons[i].id)
+        ? static_cast<ImTextureID>(GetTextureImGuiId(g_toolIcons[i]))
         : static_cast<ImTextureID>(0);
 }
 
 static ImTextureID RowTex(RowIconType i) {
     return g_rowIcons[i].id != 0
-        ? static_cast<ImTextureID>(g_rowIcons[i].id)
+        ? static_cast<ImTextureID>(GetTextureImGuiId(g_rowIcons[i]))
         : static_cast<ImTextureID>(0);
+}
+
+// Launch the standalone player with the current project
+static void LaunchPlayer() {
+    std::string playerExe = platform::ExecutablePath();
+    std::filesystem::path exePath = std::filesystem::u8path(playerExe);
+    
+    // Try to find FlyPlayer in the same directory
+    std::filesystem::path playerPath = exePath.parent_path() / "FlyPlayer";
+    if (!std::filesystem::exists(playerPath)) {
+        // Try case-insensitive search
+        for (auto& entry : std::filesystem::directory_iterator(exePath.parent_path())) {
+            std::string name = entry.path().filename().string();
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            if (lower == "flyplayer") {
+                playerPath = entry.path();
+                break;
+            }
+        }
+    }
+    
+    // Fallback to case variants
+    if (!std::filesystem::exists(playerPath)) {
+        playerPath = exePath.parent_path() / "flyplayer";
+    }
+    if (!std::filesystem::exists(playerPath)) {
+        playerPath = exePath.parent_path() / "FLYPLAYER";
+    }
+    if (!std::filesystem::exists(playerPath)) {
+        playerPath = exePath.parent_path() / "Flyplayer";
+    }
+    
+    // Get current project path
+    const auto& proj = project::GetCurrentProject();
+    if (proj.path.empty()) {
+        return;
+    }
+    
+    // Save current scene to temp file (doesn't overwrite main .flyproj)
+    std::string tempProjectFile = "";
+    
+    // Get legacy terrain from terrain editor state
+    terrain::Terrain* currentTerrain = nullptr;
+    auto& terrainEditorState = terrain::GetTerrainEditorState();
+    currentTerrain = terrainEditorState.selectedTerrainLegacy;
+    
+    if (g_sceneObjects && g_sceneModels) {
+        tempProjectFile = project::SaveProjectFileTemp(proj.path, *g_sceneObjects, *g_sceneModels, currentTerrain);
+        if (!tempProjectFile.empty()) {
+            std::printf("[Play in Player] Saved temp scene to: %s\n", tempProjectFile.c_str());
+        }
+    }
+    
+    // Final fallback to editor executable
+    if (!std::filesystem::exists(playerPath)) {
+        playerPath = std::filesystem::u8path(platform::ExecutablePath());
+    }
+    
+    // Use temp file if created, otherwise use main project
+    std::string launchPath = tempProjectFile.empty() ? proj.path : tempProjectFile;
+    std::vector<std::string> args = {"-play", launchPath, "--noscripts"};
+    platform::LaunchDetached(playerPath.string(), args);
 }
 
 static void DrawImGuiTopBar() {
@@ -1757,6 +1805,15 @@ static void DrawImGuiTopBar() {
         if (i < 3) ImGui::SameLine(0.0f, 12.0f);
     }
 
+    // Play in Player button (launches standalone player), right-aligned next to Play
+    {
+        ImGui::SetCursorPos(ImVec2(barRec.width - 210.0f, 15.0f));
+        if (ImGui::Button("Play in Player", ImVec2(115.0f, 30.0f))) {
+            LaunchPlayer();
+        }
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+
     // Play/Stop button, right-aligned
     {
         const char* playLabel = g_playActive ? "Stop" : "Play";
@@ -1780,7 +1837,7 @@ static void DrawImGuiTopBar() {
 // ---------------------------------------------------------------------------
 // 2. Left Panel (Explorer Window, Dear ImGui)
 // Reuses the existing rename/selection/drag-drop state (g_renameObject,
-// g_explorerDrag*, OpenExplorerMenu, PerformExplorerDrop, ...) — only the
+// g_explorerDrag*, OpenExplorerMenu, PerformExplorerDrop, ...) - only the
 // input/rendering is now driven by ImGui widgets instead of raylib hit tests.
 // Called once per frame from DrawImGuiFrame().
 // ---------------------------------------------------------------------------
@@ -1863,11 +1920,11 @@ static void DrawImGuiExplorer() {
         if (!ExplorerRenameActive() && IsKeyPressed(KEY_F2)) {
             if (g_selectedTerrain) {
                 g_renameTerrain = g_selectedTerrain;
-                strncpy_s(g_nameBuffer, g_selectedTerrain->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g_selectedTerrain->GetName().c_str());
             } else if (terrain::GetTerrainEditorState().selectedTerrainLegacy) {
                 terrain::Terrain* legacy = terrain::GetTerrainEditorState().selectedTerrainLegacy;
                 g_renameLegacyTerrain = legacy;
-                strncpy_s(g_nameBuffer, legacy->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
             } else if (g_primarySelection) {
                 ModelGroup* pm = g_primarySelection->parentModel;
                 bool modelAllSelected = pm && !pm->members.empty();
@@ -1878,10 +1935,10 @@ static void DrawImGuiExplorer() {
                 }
                 if (modelAllSelected) {
                     g_renameModel = pm;
-                    strncpy_s(g_nameBuffer, pm->name.c_str(), sizeof(g_nameBuffer) - 1);
+                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", pm->name.c_str());
                 } else {
                     g_renameObject = g_primarySelection;
-                    strncpy_s(g_nameBuffer, g_primarySelection->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g_primarySelection->GetName().c_str());
                 }
             }
             g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
@@ -1961,7 +2018,7 @@ static void DrawImGuiExplorer() {
                             double now = GetTime();
                             if (g_lastExplorerModelClick == model && now - g_lastExplorerClickTime < 0.35) {
                                 g_renameModel = model;
-                                strncpy_s(g_nameBuffer, model->name.c_str(), sizeof(g_nameBuffer) - 1);
+                                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", model->name.c_str());
                                 g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                                 g_lastExplorerModelClick = nullptr;
                             } else {
@@ -2037,7 +2094,7 @@ static void DrawImGuiExplorer() {
                         rowClickedThisFrame = true;
                         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g_renameTerrain = terr;
-                            strncpy_s(g_nameBuffer, terr->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", terr->GetName().c_str());
                             g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                         }
                     } else if (rightClicked) {
@@ -2084,7 +2141,7 @@ static void DrawImGuiExplorer() {
                         rowClickedThisFrame = true;
                         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g_renameLegacyTerrain = legacy;
-                            strncpy_s(g_nameBuffer, legacy->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
                             g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                         }
                     } else if (rightClicked) {
@@ -2160,7 +2217,7 @@ static void DrawImGuiExplorer() {
                         double now = GetTime();
                         if (g_lastExplorerClick == obj && now - g_lastExplorerClickTime < 0.35) {
                             g_renameObject = obj;
-                            strncpy_s(g_nameBuffer, obj->GetName().c_str(), sizeof(g_nameBuffer) - 1);
+                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", obj->GetName().c_str());
                             g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                             g_lastExplorerClick = nullptr;
                         } else {
@@ -2298,7 +2355,7 @@ static int GetCursorIndexFromMouse(const char* text, float clickX, float textSta
 
     for (int i = 0; i <= len; ++i) {
         char sub[32] = { 0 };
-        strncpy_s(sub, text, static_cast<size_t>(i));
+        memcpy(sub, text, static_cast<size_t>(i));
         sub[i] = '\0';
 
         float charX = textStartX + MeasureTextArial(sub, fontSize);
@@ -2469,7 +2526,7 @@ static bool TextEditKeys(char* buf, int bufSize, int& cursor, int& sel, bool& co
     // ImGui_ImplRaylib_NewFrame() (called once per frame in UpdateInput())
     // already drained raylib's GetCharPressed() queue into ImGui's IO, so a
     // second GetCharPressed() call here would always come back empty. Read
-    // the same characters back out of ImGui's buffered queue instead — it's
+    // the same characters back out of ImGui's buffered queue instead - it's
     // not cleared until the next NewFrame, so it still reflects this frame's
     // typed input. Skip entirely while an ImGui text field (e.g. an Explorer
     // rename box) wants the keyboard, so keystrokes aren't applied twice.
@@ -2606,7 +2663,7 @@ static bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const 
 
     if (isActive) {
         char sub[32] = { 0 };
-        strncpy_s(sub, g_textBuffer, static_cast<size_t>(g_cursorPos));
+        memcpy(sub, g_textBuffer, static_cast<size_t>(g_cursorPos));
         sub[g_cursorPos] = '\0';
 
         float cursorOffsetX = MeasureTextArial(sub, 13.0f);
@@ -3561,8 +3618,10 @@ if (g_selection.size() > 1) {
 
             // Handle folder/clear clicks (meshes only)
             if (folderHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                std::string texPath = ChooseTexturePath();
-                if (!texPath.empty()) {
+                BeginChooseTexturePath(currentProject.path);
+                std::string texPath;
+                if (platform::PollDialogResult({platform::DialogPurpose::ImportTexture}, texPath)
+                    && !texPath.empty()) {
 if (!currentProject.path.empty()) {
                     for (auto* obj : g_selection) {
                         if (obj && obj->HasModel()) {
@@ -3787,6 +3846,12 @@ static void DrawOutputPanel() {
 // the procedural Generate tab (region box + seed + hills/mountains/textures)
 // Bottom half: terrain properties
 // ---------------------------------------------------------------------------
+// Terrain Tool Dropdown State (for deferred rendering on top of all panels)
+static bool g_terrainToolDropdownListPending = false;
+static Rectangle g_terrainToolDropdownListRect = { 0 };
+static int g_terrainToolDropdownActiveTool = -1;
+
+// ---------------------------------------------------------------------------
 static bool g_terrainGenMode = false; // false = Sculpt tab, true = Generate tab
 static float g_terrainPanelScrollY = 0.0f;
 static float g_terrainPanelContentHeight = 0.0f; // measured at the end of the previous frame's draw
@@ -3920,7 +3985,31 @@ static void DrawToolIcon(int kind, Rectangle ir, Color col) {
             DrawLineEx({ c.x + 5.0f, c.y - 5.0f }, { c.x + 5.0f, c.y - 8.0f }, 2.0f, col);
             break;
         }
-        case 5: { // None: cursor/arrow
+        case 5: { // Erode: rain droplet carving a channel
+            // teardrop
+            DrawCircleV({ c.x, c.y - 7.0f }, 2.2f, col);
+            DrawTriangle({ c.x - 2.6f, c.y - 6.0f }, { c.x + 2.6f, c.y - 6.0f }, { c.x, c.y - 1.0f }, col);
+            // channel running downhill
+            DrawLineEx({ c.x - 3.0f, c.y + 1.0f }, { c.x - 5.0f, c.y + 8.0f }, 2.0f, col);
+            DrawLineEx({ c.x + 3.0f, c.y + 1.0f }, { c.x + 5.0f, c.y + 8.0f }, 2.0f, col);
+            DrawLineEx({ c.x - 5.0f, c.y + 8.0f }, { c.x + 5.0f, c.y + 8.0f }, 2.0f, col);
+            break;
+        }
+        case 6: { // Noise: four-point sparkle
+            DrawLineEx({ c.x - 6.5f, c.y - 6.5f }, { c.x + 6.5f, c.y + 6.5f }, 1.8f, col);
+            DrawLineEx({ c.x - 6.5f, c.y + 6.5f }, { c.x + 6.5f, c.y - 6.5f }, 1.8f, col);
+            DrawLineEx({ c.x, c.y - 8.0f }, { c.x, c.y + 8.0f }, 1.8f, col);
+            DrawLineEx({ c.x - 8.0f, c.y }, { c.x + 8.0f, c.y }, 1.8f, col);
+            DrawCircleV(c, 1.6f, col);
+            break;
+        }
+        case 7: { // Ramp: graded slope with start/end ticks
+            DrawLineEx({ ir.x + 3.0f, ir.y + ir.height - 3.0f }, { ir.x + ir.width - 3.0f, ir.y + 3.0f }, 2.5f, col);
+            DrawLineEx({ ir.x + 3.0f, ir.y + ir.height - 7.0f }, { ir.x + 3.0f, ir.y + ir.height - 2.0f }, 2.0f, col);
+            DrawLineEx({ ir.x + ir.width - 3.0f, ir.y + 6.0f }, { ir.x + ir.width - 3.0f, ir.y + 1.0f }, 2.0f, col);
+            break;
+        }
+        case 8: { // None: cursor/arrow
             DrawLineEx({ c.x - 8.0f, c.y + 8.0f }, { c.x, c.y - 8.0f }, 2.5f, col);
             DrawLineEx({ c.x, c.y - 8.0f }, { c.x + 8.0f, c.y + 8.0f }, 2.5f, col);
             DrawLineEx({ c.x - 4.0f, c.y }, { c.x + 4.0f, c.y }, 2.0f, col);
@@ -3946,10 +4035,79 @@ static void DrawTerrainToolIcon(int kind, Rectangle ir, Color col) {
 static void DrawTerrainToolPanel() {
     Rectangle panelRec = GetTerrainPanelBounds();
     if (panelRec.width <= 0.0f) return;
-    BasicTerrain* t = BasicTerrain::GetActive();
-    // The panel is always visible; brush settings are shared by every terrain
-    // so tools can be picked before any terrain exists.
-    BasicTerrain::Brush& br = BasicTerrain::GetBrush();
+    
+    // Get both terrain types
+    BasicTerrain* tBasic = BasicTerrain::GetActive();
+    terrain::Terrain* tChunked = nullptr;
+    auto& terrainEditorState = terrain::GetTerrainEditorState();
+    if (terrainEditorState.selectedTerrainLegacy) {
+        tChunked = terrainEditorState.selectedTerrainLegacy;
+    }
+    
+    // Determine active terrain (prefer explicitly selected chunked terrain, else BasicTerrain)
+    bool useChunked = (tChunked != nullptr);
+    BasicTerrain::Brush& brBasic = BasicTerrain::GetBrush();
+    terrain::TerrainBrush& brChunked = terrainEditorState.brush;
+    
+    // Use a unified brush reference for UI
+    struct UnifiedBrush {
+        BasicTerrain::Tool tool = BasicTerrain::Tool::None;
+        BasicTerrain::Shape shape = BasicTerrain::Shape::Circle;
+        float radius = 25.0f;
+        float strength = 40.0f;
+        float hardness = 0.5f;
+        float targetHeight = 0.0f;
+        int paintLayer = 0;
+        bool paintErase = false;
+        int noiseSeed = 1337;
+        float noiseScale = 40.0f;
+        // Erosion settings
+        float erosionThermal = 0.5f;
+        float erosionHydraulic = 0.8f;
+        float erosionTalusDeg = 3.0f;
+        float erosionRain = 0.05f;
+        float erosionEvaporation = 0.03f;
+        float erosionDeposit = 0.6f;
+        int erosionIterations = 6;
+    };
+    
+    UnifiedBrush br;
+    if (useChunked) {
+        br.tool = static_cast<BasicTerrain::Tool>(brChunked.tool);
+        br.shape = static_cast<BasicTerrain::Shape>(brChunked.shape);
+        br.radius = brChunked.radius;
+        br.strength = brChunked.strength;
+        br.hardness = brChunked.hardness;
+        br.targetHeight = brChunked.targetHeight;
+        br.paintLayer = brChunked.paintLayer;
+        br.paintErase = brChunked.paintErase;
+        br.noiseSeed = brChunked.noiseSeed;
+        br.noiseScale = brChunked.noiseScale;
+        br.erosionThermal = brChunked.erosionThermal;
+        br.erosionHydraulic = brChunked.erosionHydraulic;
+        br.erosionTalusDeg = brChunked.erosionTalusDeg;
+        br.erosionRain = brChunked.erosionRain;
+        br.erosionEvaporation = brChunked.erosionEvaporation;
+        br.erosionDeposit = brChunked.erosionDeposit;
+        br.erosionIterations = brChunked.erosionIterations;
+    } else {
+        br.tool = brBasic.tool;
+        br.shape = brBasic.shape;
+        br.radius = brBasic.radius;
+        br.strength = brBasic.strength;
+        br.hardness = brBasic.hardness;
+        br.targetHeight = brBasic.targetHeight;
+        br.paintLayer = brBasic.paintLayer;
+        br.paintErase = brBasic.paintErase;
+        br.noiseSeed = brBasic.noiseSeed;
+        br.noiseScale = brBasic.noiseScale;
+        // BasicTerrain doesn't have erosion settings in brush, use defaults
+    }
+
+    // Safety: if a terrain is selected but tool is None, default to Raise
+    if ((useChunked || tBasic) && br.tool == BasicTerrain::Tool::None) {
+        br.tool = BasicTerrain::Tool::Raise;
+    }
 
     const float pad = 14.0f;
 
@@ -3990,15 +4148,19 @@ static void DrawTerrainToolPanel() {
     // content height for next frame's scroll clamping. Called before every
     // exit path (the early "no terrain" return and the natural end).
     auto finishPanel = [&]() {
-        EndScissorMode();
-        g_terrainPanelContentHeight = (y - contentTopY) + g_terrainPanelScrollY;
-
+        // Handle dropdown first (including click processing) so tool changes
+        // are captured before we write back the brush state.
         if (g_terrainToolDropdownOpen) {
-            constexpr int numTools = 6;
-            const char* toolNames[numTools] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "None" };
+            constexpr int numTools = 9;
+            const char* toolNames[numTools] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "Erode", "Noise", "Ramp", "None" };
             Rectangle anchor = g_terrainToolDropdownAnchor;
             Rectangle listRec = { anchor.x, anchor.y + anchor.height + 2.0f, anchor.width,
                                    static_cast<float>(numTools) * 26.0f + 8.0f };
+            // 9 items can overhang the bottom of short screens: flip the list
+            // above the anchor when it would not fit below.
+            if (listRec.y + listRec.height > GetScreenHeight() - 8.0f) {
+                listRec.y = anchor.y - listRec.height - 2.0f;
+            }
 
             DrawRectangleRec({ listRec.x + 3.0f, listRec.y + 3.0f, listRec.width, listRec.height }, theme::SHADOW);
             DrawRectangleRounded(listRec, 0.08f, 4, theme::BG_MENU);
@@ -4017,23 +4179,76 @@ static void DrawTerrainToolPanel() {
                 DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f,
                               selected ? theme::TEXT : theme::TEXT_MUTED);
                 if (hovered) MarkHand();
-                if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
                     auto newTool = static_cast<BasicTerrain::Tool>(i);
                     if (newTool == BasicTerrain::Tool::Paint && br.tool != BasicTerrain::Tool::Paint) {
-                        int lc = BasicTerrain::GetLayerCount();
+                        int lc = useChunked ? (int)tChunked->layers.size() : BasicTerrain::GetLayerCount();
                         if (lc > 1) br.paintLayer = 1;
                         else if (lc > 0) br.paintLayer = 0;
                     }
                     br.tool = newTool;
                     g_terrainToolDropdownOpen = false;
+                    g_clickConsumedThisFrame = true;
                 }
             }
 
             if (IsKeyPressed(KEY_ESCAPE)) g_terrainToolDropdownOpen = false;
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame
                 && !CheckCollisionPointRec(mouse, listRec) && !CheckCollisionPointRec(mouse, anchor)) {
                 g_terrainToolDropdownOpen = false;
+                g_clickConsumedThisFrame = true;
             }
+        }
+
+        // If dropdown is open, capture list state for deferred rendering on top of all panels
+        if (g_terrainToolDropdownOpen) {
+            g_terrainToolDropdownListPending = true;
+            constexpr int numTools = 9;
+            Rectangle anchor = g_terrainToolDropdownAnchor;
+            Rectangle listRec = { anchor.x, anchor.y + anchor.height + 2.0f, anchor.width,
+                                   static_cast<float>(numTools) * 26.0f + 8.0f };
+            if (listRec.y + listRec.height > GetScreenHeight() - 8.0f) {
+                listRec.y = anchor.y - listRec.height - 2.0f;
+            }
+            g_terrainToolDropdownListRect = listRec;
+            g_terrainToolDropdownActiveTool = static_cast<int>(br.tool);
+        } else {
+            g_terrainToolDropdownListPending = false;
+        }
+
+        EndScissorMode();
+        g_terrainPanelContentHeight = (y - contentTopY) + g_terrainPanelScrollY;
+
+        // Write back unified brush to actual brushes (AFTER dropdown click handling)
+        if (useChunked) {
+            brChunked.tool = static_cast<terrain::TerrainTool>(br.tool);
+            brChunked.shape = static_cast<terrain::TerrainBrush::Shape>(br.shape);
+            brChunked.radius = br.radius;
+            brChunked.strength = br.strength;
+            brChunked.hardness = br.hardness;
+            brChunked.targetHeight = br.targetHeight;
+            brChunked.paintLayer = br.paintLayer;
+            brChunked.paintErase = br.paintErase;
+            brChunked.noiseSeed = br.noiseSeed;
+            brChunked.noiseScale = br.noiseScale;
+            brChunked.erosionThermal = br.erosionThermal;
+            brChunked.erosionHydraulic = br.erosionHydraulic;
+            brChunked.erosionTalusDeg = br.erosionTalusDeg;
+            brChunked.erosionRain = br.erosionRain;
+            brChunked.erosionEvaporation = br.erosionEvaporation;
+            brChunked.erosionDeposit = br.erosionDeposit;
+            brChunked.erosionIterations = br.erosionIterations;
+        } else {
+            brBasic.tool = br.tool;
+            brBasic.shape = br.shape;
+            brBasic.radius = br.radius;
+            brBasic.strength = br.strength;
+            brBasic.hardness = br.hardness;
+            brBasic.targetHeight = br.targetHeight;
+            brBasic.paintLayer = br.paintLayer;
+            brBasic.paintErase = br.paintErase;
+            brBasic.noiseSeed = br.noiseSeed;
+            brBasic.noiseScale = br.noiseScale;
         }
     };
 
@@ -4070,30 +4285,29 @@ static void DrawTerrainToolPanel() {
 
     // The region-box preview in the viewport only makes sense while the
     // Generate tab is actually open for this terrain.
-    if (t) t->showGenBox = g_terrainGenMode;
+    if (tBasic) tBasic->showGenBox = g_terrainGenMode;
 
     if (g_terrainGenMode) {
         // ================= GENERATE TAB =================
-        if (!t) {
+        bool hasTerrain = (tBasic != nullptr || tChunked != nullptr);
+        if (!hasTerrain) {
             DrawTextArial("Select or spawn a terrain first.", x, y + 4.0f, 12.0f, theme::TEXT_MUTED);
             y += 28.0f;
-        } else {
-            // Snap the box to the terrain footprint once, the first time this
-            // tab is opened for this terrain; afterward the user's own edits
-            // (via the sliders below) are preserved across frames/reopens.
-            if (!t->genBoxInitialized) {
-                t->genBoxPos = { t->position.x, t->position.y + t->GetMaxHeight() * 0.15f, t->position.z };
-                float fw = t->GetWidth() * t->GetScale();
-                float fd = t->GetDepth() * t->GetScale();
-                t->genBoxSize = { fw * 0.5f, std::max(20.0f, (t->GetMaxHeight() - t->GetMinHeight()) * 0.4f), fd * 0.5f };
-                t->genBoxInitialized = true;
+        } else if (tBasic) {
+            // BasicTerrain procedural generation
+            if (!tBasic->genBoxInitialized) {
+                tBasic->genBoxPos = { tBasic->position.x, tBasic->position.y + tBasic->GetMaxHeight() * 0.15f, tBasic->position.z };
+                float fw = tBasic->GetWidth() * tBasic->GetScale();
+                float fd = tBasic->GetDepth() * tBasic->GetScale();
+                tBasic->genBoxSize = { fw * 0.5f, std::max(20.0f, (tBasic->GetMaxHeight() - tBasic->GetMinHeight()) * 0.4f), fd * 0.5f };
+                tBasic->genBoxInitialized = true;
             }
 
             DrawTextArial("SEED", x, y, 11.0f, theme::TEXT_DIM);
             y += 14.0f;
-            float seedF = (float)t->genSeed;
+            float seedF = (float)tBasic->genSeed;
             TerrainSlider("Seed", x, y, innerW - 78.0f, seedF, 0.0f, 999999.0f, "%.0f", 9610u);
-            t->genSeed = (int)seedF;
+            tBasic->genSeed = (int)seedF;
             Rectangle randBtn = { x + innerW - 70.0f, y - 4.0f, 70.0f, 24.0f };
             bool rndHov = CheckCollisionPointRec(mouse, randBtn);
             DrawRectangleRounded(randBtn, 0.2f, 4, rndHov ? theme::BG_WIDGET_HOVER : theme::BG_WIDGET);
@@ -4102,32 +4316,32 @@ static void DrawTerrainToolPanel() {
             DrawTextArial("Random", randBtn.x + (randBtn.width - rndW) * 0.5f, randBtn.y + 6.0f, 11.0f,
                           rndHov ? theme::TEXT : theme::TEXT_MUTED);
             if (rndHov) MarkHand();
-            if (rndHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) t->genSeed = GetRandomValue(0, 999999);
+            if (rndHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) tBasic->genSeed = GetRandomValue(0, 999999);
             y += 34.0f;
 
             DrawTextArial("INCLUDE", x, y, 11.0f, theme::TEXT_DIM);
             y += 14.0f;
-            if (TerrainCheckbox(x, y, "Hills", t->genHills, 9611u)) t->genHills = !t->genHills;
+            if (TerrainCheckbox(x, y, "Hills", tBasic->genHills, 9611u)) tBasic->genHills = !tBasic->genHills;
             y += 24.0f;
-            if (TerrainCheckbox(x, y, "Mountains", t->genMountains, 9612u)) t->genMountains = !t->genMountains;
+            if (TerrainCheckbox(x, y, "Mountains", tBasic->genMountains, 9612u)) tBasic->genMountains = !tBasic->genMountains;
             y += 24.0f;
-            if (TerrainCheckbox(x, y, "Extra Textures", t->genTextures, 9613u)) t->genTextures = !t->genTextures;
+            if (TerrainCheckbox(x, y, "Extra Textures", tBasic->genTextures, 9613u)) tBasic->genTextures = !tBasic->genTextures;
             y += 30.0f;
 
             DrawTextArial("REGION BOX - POSITION", x, y, 11.0f, theme::TEXT_DIM);
             y += 14.0f;
-            float posRangeX = t->GetWidth() * t->GetScale();
-            float posRangeZ = t->GetDepth() * t->GetScale();
-            TerrainSlider("X", x, y, innerW, t->genBoxPos.x, t->position.x - posRangeX, t->position.x + posRangeX, "%.0f m", 9620u); y += 30.0f;
-            TerrainSlider("Y", x, y, innerW, t->genBoxPos.y, t->GetMinHeight(), t->GetMaxHeight(), "%.0f m", 9621u); y += 30.0f;
-            TerrainSlider("Z", x, y, innerW, t->genBoxPos.z, t->position.z - posRangeZ, t->position.z + posRangeZ, "%.0f m", 9622u); y += 32.0f;
+            float posRangeX = tBasic->GetWidth() * tBasic->GetScale();
+            float posRangeZ = tBasic->GetDepth() * tBasic->GetScale();
+            TerrainSlider("X", x, y, innerW, tBasic->genBoxPos.x, tBasic->position.x - posRangeX, tBasic->position.x + posRangeX, "%.0f m", 9620u); y += 30.0f;
+            TerrainSlider("Y", x, y, innerW, tBasic->genBoxPos.y, tBasic->GetMinHeight(), tBasic->GetMaxHeight(), "%.0f m", 9621u); y += 30.0f;
+            TerrainSlider("Z", x, y, innerW, tBasic->genBoxPos.z, tBasic->position.z - posRangeZ, tBasic->position.z + posRangeZ, "%.0f m", 9622u); y += 32.0f;
 
             DrawTextArial("REGION BOX - SIZE", x, y, 11.0f, theme::TEXT_DIM);
             y += 14.0f;
-            float maxVSize = std::max(20.0f, t->GetMaxHeight() - t->GetMinHeight());
-            TerrainSlider("Width",  x, y, innerW, t->genBoxSize.x, 4.0f, posRangeX * 2.0f, "%.0f m", 9623u); y += 30.0f;
-            TerrainSlider("Height", x, y, innerW, t->genBoxSize.y, 4.0f, maxVSize, "%.0f m", 9624u); y += 30.0f;
-            TerrainSlider("Depth",  x, y, innerW, t->genBoxSize.z, 4.0f, posRangeZ * 2.0f, "%.0f m", 9625u); y += 32.0f;
+            float maxVSize = std::max(20.0f, tBasic->GetMaxHeight() - tBasic->GetMinHeight());
+            TerrainSlider("Width",  x, y, innerW, tBasic->genBoxSize.x, 4.0f, posRangeX * 2.0f, "%.0f m", 9623u); y += 30.0f;
+            TerrainSlider("Height", x, y, innerW, tBasic->genBoxSize.y, 4.0f, maxVSize, "%.0f m", 9624u); y += 30.0f;
+            TerrainSlider("Depth",  x, y, innerW, tBasic->genBoxSize.z, 4.0f, posRangeZ * 2.0f, "%.0f m", 9625u); y += 32.0f;
 
             // Generate button
             Rectangle genBtn = { x, y, innerW, 34.0f };
@@ -4140,9 +4354,127 @@ static void DrawTerrainToolPanel() {
             DrawTextArial(genLabel, genBtn.x + (genBtn.width - glw) * 0.5f, genBtn.y + 9.0f, 13.0f, theme::TEXT);
             if (gHov) MarkHand();
             if (gHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                t->GenerateTerrainInBox();
+                tBasic->GenerateTerrainInBox();
             }
             y += 34.0f + 10.0f;
+
+            // ================= EROSION (BasicTerrain) =================
+            DrawLine(static_cast<int>(panelRec.x + pad), static_cast<int>(y),
+                     static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
+            y += 12.0f;
+            DrawTextArial("EROSION", x, y, 11.0f, theme::TEXT_DIM);
+            DrawLine(static_cast<int>(x + 58.0f), static_cast<int>(y + 7.0f),
+                     static_cast<int>(x + innerW), static_cast<int>(y + 7.0f), theme::DIVIDER);
+            y += 18.0f;
+
+            static BasicTerrain::ErosionSettings es;
+            float iterF = (float)es.iterations;
+            TerrainSlider("Iterations", x, y, innerW, iterF, 1.0f, 60.0f, "%.0f", 9640u); es.iterations = (int)iterF; y += 30.0f;
+            TerrainSlider("Thermal",   x, y, innerW, es.thermal,     0.0f, 2.0f, "%.2f", 9641u); y += 30.0f;
+            TerrainSlider("Hydraulic", x, y, innerW, es.hydraulic,   0.0f, 2.0f, "%.2f", 9642u); y += 30.0f;
+            TerrainSlider("Rain",      x, y, innerW, es.rain,        0.0f, 0.2f, "%.3f", 9643u); y += 30.0f;
+            TerrainSlider("Evap",      x, y, innerW, es.evaporation, 0.0f, 0.1f, "%.3f", 9644u); y += 30.0f;
+            TerrainSlider("Deposit",   x, y, innerW, es.deposit,     0.0f, 1.0f, "%.2f", 9645u); y += 34.0f;
+
+            // Convert the region box to a clamped grid-cell rectangle
+            auto regionCells = [&](int& rx0, int& rz0, int& rx1, int& rz1) {
+                const float scaleF = tBasic->GetScale();
+                const float c0x = (tBasic->genBoxPos.x - tBasic->genBoxSize.x * 0.5f - tBasic->position.x) / scaleF + tBasic->GetWidth() * 0.5f;
+                const float c1x = (tBasic->genBoxPos.x + tBasic->genBoxSize.x * 0.5f - tBasic->position.x) / scaleF + tBasic->GetWidth() * 0.5f;
+                const float c0z = (tBasic->genBoxPos.z - tBasic->genBoxSize.z * 0.5f - tBasic->position.z) / scaleF + tBasic->GetDepth() * 0.5f;
+                const float c1z = (tBasic->genBoxPos.z + tBasic->genBoxSize.z * 0.5f - tBasic->position.z) / scaleF + tBasic->GetDepth() * 0.5f;
+                rx0 = (int)std::floor(std::min(c0x, c1x));
+                rx1 = (int)std::ceil(std::max(c0x, c1x));
+                rz0 = (int)std::floor(std::min(c0z, c1z));
+                rz1 = (int)std::ceil(std::max(c0z, c1z));
+            };
+
+            const float btnGap = 6.0f;
+            const float btnW = (innerW - btnGap) * 0.5f;
+            auto erosionButton = [&](const char* label, float bx, uint64_t key, bool region) {
+                Rectangle eBtn = { bx, y, btnW, 28.0f };
+                bool eHov = CheckCollisionPointRec(mouse, eBtn);
+                float eT = HoverProgress(key, eHov);
+                DrawRectangleRounded(eBtn, 0.18f, 4, Mix(theme::ACCENT_SOFT, theme::ACCENT_HOVER, eT));
+                DrawRectangleLinesEx(eBtn, eHov ? 2.0f : 1.0f, eHov ? theme::ACCENT : theme::BORDER);
+                float lw = MeasureTextArial(label, 11.0f);
+                DrawTextArial(label, eBtn.x + (eBtn.width - lw) * 0.5f, eBtn.y + 7.0f, 11.0f,
+                              eHov ? theme::TEXT : theme::TEXT_MUTED);
+                if (eHov) MarkHand();
+                if (eHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (region) {
+                        int rx0, rz0, rx1, rz1;
+                        regionCells(rx0, rz0, rx1, rz1);
+                        tBasic->ErodeRegion(rx0, rz0, rx1, rz1, es);
+                    } else {
+                        tBasic->ErodeRegion(0, 0, tBasic->GetWidth() - 1, tBasic->GetDepth() - 1, es);
+                    }
+                }
+            };
+            erosionButton("Erode Region", x, 9650u, true);
+            erosionButton("Erode All", x + btnW + btnGap, 9651u, false);
+            y += 34.0f + 8.0f;
+        } else if (tChunked) {
+            // Chunked terrain - no procedural generation, but show erosion controls
+            DrawTextArial("CHUNKED TERRAIN (no procedural generation)", x, y + 4.0f, 12.0f, theme::TEXT_MUTED);
+            y += 28.0f;
+            
+            DrawTextArial("REGION BOX - POSITION", x, y, 11.0f, theme::TEXT_DIM);
+            y += 14.0f;
+            float halfW = tChunked->size.x * 0.5f;
+            float halfD = tChunked->size.z * 0.5f;
+            
+            // Use proper region fields from editor state instead of reusing brush fields
+            auto& terrainEditorState = terrain::GetTerrainEditorState();
+            TerrainSlider("Min X", x, y, innerW, terrainEditorState.regionMinX, tChunked->center.x - halfW, tChunked->center.x + halfW, "%.0f m", 9620u); y += 30.0f;
+            TerrainSlider("Max X", x, y, innerW, terrainEditorState.regionMaxX, tChunked->center.x - halfW, tChunked->center.x + halfW, "%.0f m", 9621u); y += 30.0f;
+            TerrainSlider("Min Z", x, y, innerW, terrainEditorState.regionMinZ, tChunked->center.z - halfD, tChunked->center.z + halfD, "%.0f m", 9622u); y += 30.0f;
+            TerrainSlider("Max Z", x, y, innerW, terrainEditorState.regionMaxZ, tChunked->center.z - halfD, tChunked->center.z + halfD, "%.0f m", 9623u); y += 30.0f;
+            y += 10.0f;
+
+            // ================= EROSION (Chunked) =================
+            DrawLine(static_cast<int>(panelRec.x + pad), static_cast<int>(y),
+                     static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
+            y += 12.0f;
+            DrawTextArial("EROSION", x, y, 11.0f, theme::TEXT_DIM);
+            DrawLine(static_cast<int>(x + 58.0f), static_cast<int>(y + 7.0f),
+                     static_cast<int>(x + innerW), static_cast<int>(y + 7.0f), theme::DIVIDER);
+            y += 18.0f;
+
+            // Use brush erosion settings for chunked terrain
+            TerrainSlider("Iterations", x, y, innerW, (float&)br.erosionIterations, 1.0f, 60.0f, "%.0f", 9640u); y += 30.0f;
+            TerrainSlider("Thermal",   x, y, innerW, br.erosionThermal,     0.0f, 2.0f, "%.2f", 9641u); y += 30.0f;
+            TerrainSlider("Hydraulic", x, y, innerW, br.erosionHydraulic,   0.0f, 2.0f, "%.2f", 9642u); y += 30.0f;
+            TerrainSlider("Rain",      x, y, innerW, br.erosionRain,        0.0f, 0.2f, "%.3f", 9643u); y += 30.0f;
+            TerrainSlider("Evap",      x, y, innerW, br.erosionEvaporation, 0.0f, 0.1f, "%.3f", 9644u); y += 30.0f;
+            TerrainSlider("Deposit",   x, y, innerW, br.erosionDeposit,     0.0f, 1.0f, "%.2f", 9645u); y += 34.0f;
+
+            const float btnGap = 6.0f;
+            const float btnW = (innerW - btnGap) * 0.5f;
+            auto erosionButton = [&](const char* label, float bx, uint64_t key, bool region) {
+                Rectangle eBtn = { bx, y, btnW, 28.0f };
+                bool eHov = CheckCollisionPointRec(mouse, eBtn);
+                float eT = HoverProgress(key, eHov);
+                DrawRectangleRounded(eBtn, 0.18f, 4, Mix(theme::ACCENT_SOFT, theme::ACCENT_HOVER, eT));
+                DrawRectangleLinesEx(eBtn, eHov ? 2.0f : 1.0f, eHov ? theme::ACCENT : theme::BORDER);
+                float lw = MeasureTextArial(label, 11.0f);
+                DrawTextArial(label, eBtn.x + (eBtn.width - lw) * 0.5f, eBtn.y + 7.0f, 11.0f,
+                              eHov ? theme::TEXT : theme::TEXT_MUTED);
+                if (eHov) MarkHand();
+                if (eHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    auto& state = terrain::GetTerrainEditorState();
+                    if (region) {
+                        tChunked->ErodeRegion(state.regionMinX, state.regionMinZ, state.regionMaxX, state.regionMaxZ, brChunked);
+                    } else {
+                        // Erode all - use full terrain bounds
+                        tChunked->ErodeRegion(tChunked->center.x - halfW, tChunked->center.z - halfD,
+                                             tChunked->center.x + halfW, tChunked->center.z + halfD, brChunked);
+                    }
+                }
+            };
+            erosionButton("Erode Region", x, 9650u, true);
+            erosionButton("Erode All", x + btnW + btnGap, 9651u, false);
+            y += 34.0f + 8.0f;
         }
 
         // Divider between halves
@@ -4150,11 +4482,11 @@ static void DrawTerrainToolPanel() {
                  static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
         y += 12.0f;
     } else {
-    // Tool selector: a full-width dropdown (Raise/Lower/Smooth/Flatten/Paint/None)
-    // instead of a 6-button icon grid, to save vertical space now that this
-    // panel only gets half the column height.
+    // Tool selector: a full-width dropdown (Raise/Lower/Smooth/Flatten/Paint/
+    // Erode/Noise/Ramp/None) instead of a 9-button icon grid, to save vertical
+    // space now that this panel only gets half the column height.
     {
-        constexpr const char* toolNames[6] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "None" };
+        constexpr const char* toolNames[9] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "Erode", "Noise", "Ramp", "None" };
         int activeTool = static_cast<int>(br.tool);
         Rectangle box = { x, y, innerW, 30.0f };
         bool hov = CheckCollisionPointRec(mouse, box);
@@ -4181,8 +4513,9 @@ static void DrawTerrainToolPanel() {
         }
 
         if (hov) MarkHand();
-        if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
             g_terrainToolDropdownOpen = !g_terrainToolDropdownOpen;
+            g_clickConsumedThisFrame = true;
         }
         // Anchor is captured in screen space (post-scroll), matching where
         // the closed box is actually drawn this frame; the expanded list is
@@ -4221,14 +4554,33 @@ static void DrawTerrainToolPanel() {
     TerrainSlider("Hardness", x, y, innerW, br.hardness,     0.0f, 1.0f,   "%.2f",   9203u); y += 32.0f;
 
     // Target height only matters when flattening (row always reserved)
-    if (t && br.tool == BasicTerrain::Tool::Flatten) {
-        TerrainSlider("Target H", x, y, innerW, br.targetHeight, t->GetMinHeight(), t->GetMaxHeight(), "%.0f m", 9204u);
+    terrain::Terrain* activeChunked = tChunked;
+    BasicTerrain* activeBasic = tBasic;
+    if ((activeBasic && br.tool == BasicTerrain::Tool::Flatten) ||
+        (activeChunked && br.tool == BasicTerrain::Tool::Flatten)) {
+        float minH = activeBasic ? activeBasic->GetMinHeight() : activeChunked->minHeight;
+        float maxH = activeBasic ? activeBasic->GetMaxHeight() : activeChunked->maxHeight;
+        TerrainSlider("Target H", x, y, innerW, br.targetHeight, minH, maxH, "%.0f m", 9204u);
+    }
+
+    // Noise tool settings (seed + feature size) shown only while Noise is active
+    if (br.tool == BasicTerrain::Tool::Noise) {
+        float seedF = (float)br.noiseSeed;
+        TerrainSlider("Seed", x, y, innerW, seedF, 0.0f, 999999.0f, "%.0f", 9205u); y += 30.0f;
+        br.noiseSeed = (int)seedF;
+        TerrainSlider("Feature", x, y, innerW, br.noiseScale, 4.0f, 200.0f, "%.0f m", 9206u); y += 30.0f;
     }
     y += 32.0f;
 
     // Shortcut hint
     if (br.tool == BasicTerrain::Tool::Paint) {
         DrawTextArial("Click: stamp   Drag: paint   [ ] size   Ctrl erase", x, y + 2.0f, 10.0f, theme::TEXT_DIM);
+    } else if (br.tool == BasicTerrain::Tool::Ramp) {
+        DrawTextArial("Drag: grade start -> cursor   [ ] width", x, y + 2.0f, 10.0f, theme::TEXT_DIM);
+    } else if (br.tool == BasicTerrain::Tool::Erode) {
+        DrawTextArial("Click/Drag: erode soil   [ ] size", x, y + 2.0f, 10.0f, theme::TEXT_DIM);
+    } else if (br.tool == BasicTerrain::Tool::Noise) {
+        DrawTextArial("Click/Drag: add noise   [ ] size", x, y + 2.0f, 10.0f, theme::TEXT_DIM);
     } else {
         DrawTextArial("Click: stamp   Drag: paint   [ ] size   Ctrl invert", x, y + 2.0f, 10.0f, theme::TEXT_DIM);
     }
@@ -4245,12 +4597,24 @@ static void DrawTerrainToolPanel() {
                  static_cast<int>(x + innerW), static_cast<int>(y + 7.0f), theme::DIVIDER);
         y += 18.0f;
 
-        int layerCount = BasicTerrain::GetLayerCount();
-        Texture2D* layerTexs = BasicTerrain::GetLayerTextures();
-        const std::string* layerNames = BasicTerrain::GetLayerNames();
+        int layerCount = 0;
+        Texture2D* layerTexs = nullptr;
+        const std::string* layerNames = nullptr;
+
+        if (activeBasic) {
+            layerCount = BasicTerrain::GetLayerCount();
+            layerTexs = BasicTerrain::GetLayerTextures();
+            layerNames = BasicTerrain::GetLayerNames();
+        } else if (activeChunked) {
+            layerCount = (int)activeChunked->layers.size();
+            // Chunked terrain layers don't have static texture access - skip thumbnails for now
+            layerTexs = nullptr;
+            layerNames = nullptr;
+            // Could allocate a temporary array from layer names
+        }
 
         if (layerCount == 0) {
-            DrawTextArial("No textures in TerrainTextures/", x, y, 11.0f, theme::TEXT_MUTED);
+            DrawTextArial("No texture layers.", x, y, 11.0f, theme::TEXT_MUTED);
             y += 18.0f;
         } else {
             float thumbSize = 40.0f;
@@ -4267,7 +4631,7 @@ static void DrawTerrainToolPanel() {
                 DrawRectangleRounded(lr, 0.12f, 4, bg);
                 DrawRectangleLinesEx(lr, active ? 2.0f : 1.0f, active ? theme::ACCENT : theme::BORDER);
 
-                if (available && layerTexs[i].id > 0) {
+                if (available && layerTexs && layerTexs[i].id > 0) {
                     Rectangle src = { 0, 0, (float)layerTexs[i].width, (float)layerTexs[i].height };
                     Rectangle dst = { lr.x + 2.0f, lr.y + 2.0f, thumbSize - 4.0f, thumbSize - 4.0f };
                     DrawTexturePro(layerTexs[i], src, dst, {0,0}, 0.0f, WHITE);
@@ -4279,7 +4643,9 @@ static void DrawTerrainToolPanel() {
                         theme::BG_INPUT);
                 }
 
-                const char* label = available ? layerNames[i].c_str() : "Empty";
+                const char* label = "Layer";
+                if (layerNames && available) label = layerNames[i].c_str();
+                else if (available) label = "Layer";
                 float lw = MeasureTextArial(label, 9.0f);
                 DrawTextArial(label, lr.x + (lr.width - lw) * 0.5f, lr.y + thumbSize - 2.0f, 9.0f,
                     available ? (active ? theme::TEXT : theme::TEXT_MUTED) : theme::TEXT_DIM);
@@ -4324,7 +4690,12 @@ static void DrawTerrainToolPanel() {
              static_cast<int>(x + innerW), static_cast<int>(y + 7.0f), theme::DIVIDER);
     y += 20.0f;
 
-    if (!t) {
+    // Determine which terrain to show properties for
+    BasicTerrain* propBasic = tBasic;
+    terrain::Terrain* propChunked = tChunked;
+    bool hasTerrain = (propBasic != nullptr || propChunked != nullptr);
+
+    if (!hasTerrain) {
         DrawTextArial("No terrain selected.", x, y + 14.0f, 13.0f, theme::TEXT_MUTED);
         DrawTextArial("Pick tools above, then click any terrain to edit.",
                       x, y + 36.0f, 11.0f, theme::TEXT_DIM);
@@ -4341,43 +4712,81 @@ static void DrawTerrainToolPanel() {
     };
 
     char buf[96];
-    snprintf(buf, sizeof(buf), "%d x %d", t->GetWidth(), t->GetDepth());
-    infoRow("Grid", buf, sizeof(buf));
+    if (propBasic) {
+        snprintf(buf, sizeof(buf), "%d x %d", propBasic->GetWidth(), propBasic->GetDepth());
+        infoRow("Grid", buf, sizeof(buf));
 
-    snprintf(buf, sizeof(buf), "%.0f x %.0f m", t->GetWidth() * t->GetScale(), t->GetDepth() * t->GetScale());
-    infoRow("World Size", buf, sizeof(buf));
+        snprintf(buf, sizeof(buf), "%.0f x %.0f m", propBasic->GetWidth() * propBasic->GetScale(), propBasic->GetDepth() * propBasic->GetScale());
+        infoRow("World Size", buf, sizeof(buf));
 
-    snprintf(buf, sizeof(buf), "%.0f, 0, %.0f", t->position.x, t->position.z);
-    infoRow("Position", buf, sizeof(buf));
+        snprintf(buf, sizeof(buf), "%.0f, 0, %.0f", propBasic->position.x, propBasic->position.z);
+        infoRow("Position", buf, sizeof(buf));
 
-    snprintf(buf, sizeof(buf), "%.0f m .. %.0f m", t->GetMinHeight(), t->GetMaxHeight());
-    infoRow("Height Range", buf, sizeof(buf));
-    y += 4.0f;
+        snprintf(buf, sizeof(buf), "%.0f m .. %.0f m", propBasic->GetMinHeight(), propBasic->GetMaxHeight());
+        infoRow("Height Range", buf, sizeof(buf));
+        y += 4.0f;
 
-    // Wireframe toggle
-    if (TerrainCheckbox(x, y, "Show Wireframe", t->showWireframe, 9301u)) {
-        t->showWireframe = !t->showWireframe;
+        // Wireframe toggle
+        if (TerrainCheckbox(x, y, "Show Wireframe", propBasic->showWireframe, 9301u)) {
+            propBasic->showWireframe = !propBasic->showWireframe;
+        }
+        y += 28.0f;
+
+        // Reset flat button
+        Rectangle resetBtn = { x, y, 110.0f, 26.0f };
+        bool rHov = CheckCollisionPointRec(mouse, resetBtn);
+        float rt = HoverProgress(9302u, rHov);
+        DrawRectangleRounded(resetBtn, 0.18f, 4, Mix(theme::BG_WIDGET, theme::BG_WIDGET_PRESSED, rt));
+        DrawRectangleLinesEx(resetBtn, rHov ? 2.0f : 1.0f, rHov ? theme::DANGER : theme::BORDER);
+        float rbw = MeasureTextArial("Reset Flat", 12.0f);
+        DrawTextArial("Reset Flat", resetBtn.x + (resetBtn.width - rbw) * 0.5f, resetBtn.y + 6.0f, 12.0f,
+                      rHov ? theme::DANGER_HOVER : theme::TEXT_MUTED);
+        if (rHov) MarkHand();
+        if (rHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            propBasic->GenerateFlat(0.0f);
+        }
+
+        // Hint about selection state
+        DrawTextArial(propBasic->editActive ? "Editing: LMB drag sculpt" : "Click terrain to edit",
+                      x + 126.0f, y + 6.0f, 11.0f,
+                      propBasic->editActive ? theme::SUCCESS : theme::TEXT_DIM);
+    } else if (propChunked) {
+        snprintf(buf, sizeof(buf), "%d x %d chunks", propChunked->gridWidth, propChunked->gridDepth);
+        infoRow("Grid", buf, sizeof(buf));
+
+        snprintf(buf, sizeof(buf), "%.0f x %.0f m", propChunked->size.x, propChunked->size.z);
+        infoRow("World Size", buf, sizeof(buf));
+
+        snprintf(buf, sizeof(buf), "%.0f, 0, %.0f", propChunked->center.x, propChunked->center.z);
+        infoRow("Position", buf, sizeof(buf));
+
+        snprintf(buf, sizeof(buf), "%.0f m .. %.0f m", propChunked->minHeight, propChunked->maxHeight);
+        infoRow("Height Range", buf, sizeof(buf));
+        y += 4.0f;
+
+        // Wireframe toggle
+        if (TerrainCheckbox(x, y, "Show Wireframe", propChunked->showWireframe, 9301u)) {
+            propChunked->showWireframe = !propChunked->showWireframe;
+        }
+        y += 28.0f;
+
+        // Chunk bounds toggle
+        if (TerrainCheckbox(x, y, "Show Chunk Bounds", propChunked->showChunkBounds, 9302u)) {
+            propChunked->showChunkBounds = !propChunked->showChunkBounds;
+        }
+        y += 28.0f;
+
+        // LOD colors toggle
+        if (TerrainCheckbox(x, y, "Show LOD Colors", propChunked->showLODColors, 9303u)) {
+            propChunked->showLODColors = !propChunked->showLODColors;
+        }
+        y += 28.0f;
+
+        // Hint about selection state
+        DrawTextArial("Editing: LMB drag sculpt",
+                      x + 126.0f, y + 6.0f, 11.0f,
+                      theme::SUCCESS);
     }
-    y += 28.0f;
-
-    // Reset flat button
-    Rectangle resetBtn = { x, y, 110.0f, 26.0f };
-    bool rHov = CheckCollisionPointRec(mouse, resetBtn);
-    float rt = HoverProgress(9302u, rHov);
-    DrawRectangleRounded(resetBtn, 0.18f, 4, Mix(theme::BG_WIDGET, theme::BG_WIDGET_PRESSED, rt));
-    DrawRectangleLinesEx(resetBtn, rHov ? 2.0f : 1.0f, rHov ? theme::DANGER : theme::BORDER);
-    float rbw = MeasureTextArial("Reset Flat", 12.0f);
-    DrawTextArial("Reset Flat", resetBtn.x + (resetBtn.width - rbw) * 0.5f, resetBtn.y + 6.0f, 12.0f,
-                  rHov ? theme::DANGER_HOVER : theme::TEXT_MUTED);
-    if (rHov) MarkHand();
-    if (rHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        t->GenerateFlat(0.0f);
-    }
-
-    // Hint about selection state
-    DrawTextArial(t->editActive ? "Editing: LMB drag sculpt" : "Click terrain to edit",
-                  x + 126.0f, y + 6.0f, 11.0f,
-                  t->editActive ? theme::SUCCESS : theme::TEXT_DIM);
 
     finishPanel();
 }
@@ -4509,6 +4918,47 @@ void Draw() {
         }
 
         // Close if clicked outside list and dropdown (handled in early click processing)
+    }
+
+    // Terrain tool dropdown list (drawn after panels so it's on top of everything)
+    if (g_terrainToolDropdownListPending && g_terrainToolDropdownOpen) {
+        // Defensive: make sure nothing upstream left a scissor rect active
+        EndScissorMode();
+
+        constexpr int numTools = 9;
+        const char* toolNames[numTools] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "Erode", "Noise", "Ramp", "None" };
+        Rectangle listRec = g_terrainToolDropdownListRect;
+        int activeTool = g_terrainToolDropdownActiveTool;
+
+        // Draw list background
+        DrawRectangleRec({ listRec.x + 3.0f, listRec.y + 3.0f, listRec.width, listRec.height }, theme::SHADOW);
+        DrawRectangleRounded(listRec, 0.08f, 4, theme::BG_MENU);
+        DrawRectangleLinesEx(listRec, 1.0f, theme::BORDER_STRONG);
+
+        Vector2 mouse = GetMousePosition();
+        for (int i = 0; i < numTools; ++i) {
+            Rectangle itemRec = { listRec.x + 4.0f, listRec.y + 4.0f + static_cast<float>(i) * 26.0f, listRec.width - 8.0f, 22.0f };
+            bool hovered = CheckCollisionPointRec(mouse, itemRec);
+            bool selected = (i == activeTool);
+            if (hovered || selected) {
+                DrawRectangleRounded(itemRec, 0.15f, 4, hovered ? theme::ACCENT_HOVER : theme::ACCENT_SOFT);
+            }
+            Rectangle iconRec = { itemRec.x + 6.0f, itemRec.y + 3.0f, 16.0f, 16.0f };
+            DrawTerrainToolIcon(i, iconRec, selected ? theme::ACCENT : theme::TEXT_MUTED);
+            DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f,
+                          selected ? theme::TEXT : theme::TEXT_MUTED);
+            if (hovered) MarkHand();
+            if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
+                auto newTool = static_cast<BasicTerrain::Tool>(i);
+                if (newTool == BasicTerrain::Tool::Paint) {
+                    // Note: layer count logic would need the terrain reference here
+                    // For now, just set the tool; the panel will update on next frame
+                }
+                // The actual tool change is handled in the panel's finishPanel lambda
+                // This deferred rendering is purely for visual display
+                // The click will be processed in the panel next frame
+            }
+        }
     }
 
     EndCursorPass();
@@ -4644,7 +5094,7 @@ static std::string CurrentAssetDir() {
 static void SyncAssetPathBuf() {
     std::string disp = "~/";
     disp += JoinAssetPath(g_assetPath);
-    strncpy_s(g_assetPathBuf, disp.c_str(), sizeof(g_assetPathBuf) - 1);
+    snprintf(g_assetPathBuf, sizeof(g_assetPathBuf), "%s", disp.c_str());
     g_assetPathBuf[sizeof(g_assetPathBuf) - 1] = '\0';
 }
 
@@ -4781,10 +5231,7 @@ static void HandleAssetActivate(const AssetEntry& e) {
     } else {
         // RealFile and Model (an imported model's folder) both act as a
         // single leaf asset: reveal it rather than drilling in.
-        std::string winPath = e.fsPath;
-        for (auto& c : winPath) if (c == '/') c = '\\';
-        std::string arg = "/select,\"" + winPath + "\"";
-        ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+        platform::RevealInFileManager(e.fsPath);
     }
 }
 
@@ -4928,7 +5375,7 @@ static void DrawAssetGridItem(int index, const AssetEntry& e, float cellW, float
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
         ImGui::SetDragDropPayload("ASSET_FSPATH", e.fsPath.c_str(), e.fsPath.size() + 1);
         Texture2D dragTex = AssetTextureFor(e);
-        if (dragTex.id != 0) ImGui::Image(static_cast<ImTextureID>(dragTex.id), ImVec2(20.0f, 20.0f));
+        if (dragTex.id != 0) ImGui::Image(static_cast<ImTextureID>(GetTextureImGuiId(dragTex)), ImVec2(20.0f, 20.0f));
         ImGui::SameLine();
         ImGui::TextUnformatted(e.name.c_str());
         ImGui::EndDragDropSource();
@@ -4953,7 +5400,7 @@ static void DrawAssetGridItem(int index, const AssetEntry& e, float cellW, float
         float dw = aw * scale, dh = ah * scale;
         float iconX = screenPos.x + (cellW - dw) * 0.5f;
         float iconY = screenPos.y + 6.0f + (iconSize - dh) * 0.5f;
-        dl->AddImage(static_cast<ImTextureID>(iconTex.id), ImVec2(iconX, iconY), ImVec2(iconX + dw, iconY + dh));
+        dl->AddImage(static_cast<ImTextureID>(GetTextureImGuiId(iconTex)), ImVec2(iconX, iconY), ImVec2(iconX + dw, iconY + dh));
     }
 
     float wrapW = cellW - 4.0f;
@@ -4972,10 +5419,79 @@ static void DrawAssetBackgroundContextMenu() {
         PerformCreateFolder();
     }
     if (ImGui::MenuItem("Import 3D Model...")) {
-        std::string picked = ChooseModelOpenPath();
-        if (!picked.empty()) ImportModelIntoCurrentFolder(picked);
+        // Non-blocking: the chosen path arrives via PollDialogResult below.
+        // Start in the project's assets folder so the picker opens somewhere
+        // sensible; this popup has no local `currentProject` of its own.
+        BeginChooseModelOpenPath(::project::GetCurrentProject().path);
     }
     ImGui::EndPopup();
+}
+
+// Fallback file picker, shown only when neither zenity nor kdialog is
+// installed. Platform owns the state (see platform::GetPathPrompt) so it stays
+// free of ImGui; this just draws it and records the answer.
+void DrawPathPromptModal() {
+    platform::PathPrompt& p = platform::GetPathPrompt();
+    if (!p.active) return;
+
+    ImGui::OpenPopup("##PathPrompt");
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+    // No ImGuiWindowFlags_AlwaysAutoResize here, and that is deliberate.
+    //
+    // AlwaysAutoResize forces AutoFitFramesX/Y = 2 and AutoFitOnlyGrows=false
+    // on every Begin (imgui.cpp:6746), overriding the width this call just
+    // asked for, so the window resizes to its content each frame. Combined with
+    // SetNextItemWidth(-1.0f) below -- which makes the InputText exactly as wide
+    // as the window -- that is a feedback loop: the window shrinks to fit the
+    // input, and the input is sized from the window. It converged on the width
+    // of the longest text, one frame at a time, which is the "frame slowly
+    // reduces its width until it reaches the text" symptom.
+    //
+    // Without the flag, x stays at the requested 560 and only y auto-fits
+    // (size.y <= 0 -> AutoFitFramesY = 2), which is what was wanted.
+    if (ImGui::BeginPopupModal("##PathPrompt", nullptr)) {
+        ImGui::TextUnformatted(p.title.c_str());
+        ImGui::TextDisabled("No zenity/kdialog found -- type or paste the full path.");
+        ImGui::Separator();
+
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputText("##path", p.buffer, sizeof(p.buffer))) {
+            p.accept = false;
+            p.cancel = false;
+        }
+
+        ImGui::Separator();
+        bool ok = ImGui::Button("OK", ImVec2(120.0f, 0.0f));
+        ImGui::SameLine();
+        bool cancel = ImGui::Button("Cancel", ImVec2(120.0f, 0.0f));
+
+        if (ok) {
+            // Reject an empty or non-existent path so a mistyped entry does not
+            // silently become the selected file.
+            const bool valid = p.buffer[0] != '\0' && FileExists(p.buffer);
+            if (!valid) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Enter an existing path.");
+            else p.accept = true;
+        }
+        if (cancel) p.cancel = true;
+
+        // Enter submits, Escape dismisses.
+        if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+            if (p.buffer[0] != '\0' && FileExists(p.buffer)) p.accept = true;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) p.cancel = true;
+
+        ImGui::EndPopup();
+    }
+}
+
+// Delivers a completed "Import 3D Model" dialog to the asset browser. Called
+// from the ImGui frame so the browser is fully built by the time we act on it.
+void PumpAssetBrowserDialogs() {
+    std::string picked;
+    if (platform::PollDialogResult({platform::DialogPurpose::ImportModel}, picked)
+        && !picked.empty()) {
+        ImportModelIntoCurrentFolder(picked);
+    }
 }
 
 static void DrawAssetBrowserGrid() {
@@ -5019,7 +5535,7 @@ static void DrawAssetBrowserGrid() {
 
 static void DrawAssetBrowserToolbar() {
     ImTextureID upTex = g_terrainToolIcons[TTOOLICON_LOWER].id
-        ? static_cast<ImTextureID>(g_terrainToolIcons[TTOOLICON_LOWER].id) : static_cast<ImTextureID>(0);
+        ? static_cast<ImTextureID>(GetTextureImGuiId(g_terrainToolIcons[TTOOLICON_LOWER])) : static_cast<ImTextureID>(0);
     if (upTex) {
         ImGui::Image(upTex, ImVec2(12.0f, 12.0f));
         ImGui::SameLine(0.0f, 4.0f);
@@ -5099,7 +5615,7 @@ static void DrawAssetBrowserToolbar() {
     }
 
     ImGui::SameLine();
-    ImTextureID searchTex = g_assetSearchIcon.id ? static_cast<ImTextureID>(g_assetSearchIcon.id) : static_cast<ImTextureID>(0);
+    ImTextureID searchTex = g_assetSearchIcon.id ? static_cast<ImTextureID>(GetTextureImGuiId(g_assetSearchIcon)) : static_cast<ImTextureID>(0);
     if (searchTex) {
         ImGui::Image(searchTex, ImVec2(14.0f, 14.0f));
         ImGui::SameLine(0.0f, 4.0f);
@@ -5123,14 +5639,11 @@ static void DrawAssetContextMenu() {
         g_assetSelectedIndex = g_assetContextIndex;
     }
     if (ImGui::MenuItem("Reveal in Explorer")) {
-        std::string winPath = e.fsPath;
-        for (auto& c : winPath) if (c == '/') c = '\\';
-        std::string arg = "/select,\"" + winPath + "\"";
-        ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+        platform::RevealInFileManager(e.fsPath);
     }
     if (ImGui::MenuItem("Rename")) {
         g_assetRenameIndex = g_assetContextIndex;
-        strncpy_s(g_assetRenameBuf, e.name.c_str(), sizeof(g_assetRenameBuf) - 1);
+        snprintf(g_assetRenameBuf, sizeof(g_assetRenameBuf), "%s", e.name.c_str());
         g_assetRenameBuf[sizeof(g_assetRenameBuf) - 1] = '\0';
         ImGui::OpenPopup("##AssetRenamePopup");
     }
@@ -5257,7 +5770,7 @@ static void DrawImGuiAssetBrowser(const Camera3D& camera) {
                 if (g_assetEntries[i].kind == AssetKind::RealFolder &&
                     g_assetEntries[i].name == g_assetPendingAutoRenameName) {
                     g_assetRenameIndex = i;
-                    strncpy_s(g_assetRenameBuf, g_assetEntries[i].name.c_str(), sizeof(g_assetRenameBuf) - 1);
+                    snprintf(g_assetRenameBuf, sizeof(g_assetRenameBuf), "%s", g_assetEntries[i].name.c_str());
                     g_assetRenameBuf[sizeof(g_assetRenameBuf) - 1] = '\0';
                     ImGui::OpenPopup("##AssetRenamePopup");
                     break;
@@ -5388,7 +5901,7 @@ static void ApplyImGuiTheme() {
 
 // ---- Preferences panel ----
 // Editor/workflow settings only (font, autosave cadence, external tools,
-// panel layout, etc. as they get added later) — never game or scene data.
+// panel layout, etc. as they get added later) - never game or scene data.
 // That belongs in the Terrain/Object/World property panels instead.
 
 static void DrawPrefsSidebarButton(const char* label, int index, bool enabled = true) {
@@ -5466,7 +5979,7 @@ void DrawImGuiPreferencesWindow() {
         return;
     }
 
-    // Header strip — its own filled background + bottom separator so it reads
+    // Header strip - its own filled background + bottom separator so it reads
     // as a title bar rather than a bare gap with a stray X in it.
     const float headerHeight = 40.0f;
     ImVec2 headerP0 = ImGui::GetCursorScreenPos();
@@ -5536,6 +6049,7 @@ void DrawImGuiPreferencesWindow() {
 
 void DrawImGuiFrame(const Camera3D& camera) {
     if (IsKeyPressed(KEY_F1)) g_showDemoWindow = !g_showDemoWindow;
+    if (IsKeyPressed(KEY_F2)) g_showDebugStats = !g_showDebugStats;
 
     DrawImGuiTopBar();
     DrawImGuiExplorer();
@@ -5545,6 +6059,56 @@ void DrawImGuiFrame(const Camera3D& camera) {
     scriptLauncher::DrawImGuiModal();
     DrawImGuiPreferencesWindow();
     city::DrawCityEditorPanel();
+    PumpAssetBrowserDialogs();
+    DrawPathPromptModal();
+
+    // Debug stats window (Frustum culling, draw calls, etc.)
+    if (g_showDebugStats) {
+        ImGui::Begin("Debug Stats", &g_showDebugStats, ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::Text("RENDERING");
+        ImGui::Separator();
+        ImGui::Text("Draw Calls:  %d", gfx::GetDrawCallCount());
+        ImGui::Text("Triangles:   %d (%.2f K)", gfx::GetTriangleCount(), gfx::GetTriangleCount() / 1000.0f);
+        ImGui::Text("Meshes:      %d", gfx::GetMeshCount());
+        ImGui::Text("Materials:   %d%s", gfx::GetMaterialCount(), gfx::GetStatsSaturated() ? "+" : "");
+        ImGui::Text("Textures:    %d%s", gfx::GetTextureCount(), gfx::GetStatsSaturated() ? "+" : "");
+        ImGui::Text("Rendered:    %d", gfx::GetRenderedEntityCount());
+        ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Culled:      %d", gfx::GetCulledEntityCount());
+        int total = gfx::GetRenderedEntityCount() + gfx::GetCulledEntityCount();
+        if (total > 0) {
+            float pct = (float)gfx::GetCulledEntityCount() / total * 100.0f;
+            ImGui::Text("Cull Rate:   %.1f%%", pct);
+        }
+        ImGui::Separator();
+        ImGui::Text("Frustum Culling: %s", gfx::GetFrustumCullingEnabled() ? "ON" : "OFF");
+        if (ImGui::Button(gfx::GetFrustumCullingEnabled() ? "Disable Culling" : "Enable Culling")) {
+            gfx::SetFrustumCullingEnabled(!gfx::GetFrustumCullingEnabled());
+        }
+        // Per-pass wall time. Engine::Draw() has always computed these; they
+        // were only readable from the stress harness, so there was no way to
+        // see which pass a slow frame went into from inside the editor.
+        ImGui::Separator();
+        ImGui::Text("PASS TIMING (ms)");
+        ImGui::Separator();
+        {
+            const gfx::FrameTimings t = gfx::GetFrameTimings();
+            const double total = t.shadowMs + t.reflectionMs + t.opaqueMs +
+                                 t.transparentMs + t.twoDMs;
+            // Show each pass as a share of the frame so the expensive one is
+            // obvious without doing arithmetic against a frame budget.
+            auto pass = [](const char* label, double ms, double total) {
+                ImGui::Text("%-12s %7.3f  %5.1f%%", label, ms,
+                            total > 0.0 ? (ms / total) * 100.0 : 0.0);
+            };
+            pass("Shadow", t.shadowMs, total);
+            pass("Reflection", t.reflectionMs, total);
+            pass("Opaque", t.opaqueMs, total);
+            pass("Transparent", t.transparentMs, total);
+            pass("2D/UI", t.twoDMs, total);
+            ImGui::Text("%-12s %7.3f", "TOTAL", total);
+        }
+        ImGui::End();
+    }
 
     ImGuiIO& io = ImGui::GetIO();
 
@@ -5555,11 +6119,11 @@ void DrawImGuiFrame(const Camera3D& camera) {
     // Only take over the cursor while the pointer is over an ImGui window;
     // elsewhere the raylib panels drive their own hand/ibeam behavior.
     if (io.WantCaptureMouse) {
-        ImGui_ImplRaylib_UpdateMouseCursor();
+        rlImGuiUpdateMouseCursor();
     }
 
     ImGui::Render();
-    ImGui_ImplRaylib_RenderDrawData(ImGui::GetDrawData());
+    rlImGuiRender();
 }
 
 } // namespace ui

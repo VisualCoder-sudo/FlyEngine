@@ -13,11 +13,12 @@ struct ImportResult {
     std::string warning; // non-fatal: imported, but some dependencies were missing
 };
 
-// Opens a 3D model file picker (obj/gltf/glb/iqm/vox/m3d). Empty on cancel.
-std::string ChooseModelOpenPath();
-
-// Opens an image file picker (png/jpg/bmp/tga/webp). Empty on cancel.
-std::string ChooseTexturePath();
+// Model/texture file pickers. Non-blocking: they start a native dialog and
+// return true if it was started. Poll platform::PollDialogResult() once per
+// frame for DialogPurpose::ImportModel / ImportTexture to get the chosen path
+// (empty means the user cancelled).
+bool BeginChooseModelOpenPath(const std::string& startDir = std::string());
+bool BeginChooseTexturePath(const std::string& startDir = std::string());
 
 // Copies `sourcePath` plus its textures (OBJ .mtl + map_* textures, GLTF
 // external buffers/images) into <projectFolder>/assets/3D/<name>[_N]/

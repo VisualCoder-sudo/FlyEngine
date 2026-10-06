@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../Engine/Backend/Entity.hpp"
+#include "../../Engine/Backend/Frustum.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <vector>
@@ -74,6 +75,10 @@ public:
     void Update(float dt) override;
     void Draw() override;
     void DrawOverlay3D() override;
+
+    // Frustum culling support
+    bool IsVisible(const Frustum& frustum) const override;
+    BoundingBox GetCullBounds() const override { return GetBoundingBox(); }
 
     bool IsTransparent() const override { return true; }
 

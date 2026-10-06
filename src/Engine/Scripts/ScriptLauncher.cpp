@@ -1,19 +1,5 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#include <shellapi.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
-
 #include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 
@@ -117,19 +103,47 @@ std::string FindKnownExe(const std::vector<std::string>& candidates) {
     return {};
 }
 
-std::string FindVSCode() {
-    if (const char* path = std::getenv("PATH")) {
-        std::string envPath(path);
-        size_t start = 0;
-        while (start <= envPath.size()) {
-            size_t sep = envPath.find(';', start);
-            std::string dir = envPath.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
-            fs::path probe = fs::path(dir) / "code.cmd";
-            if (fs::exists(probe)) return probe.string();
-            if (sep == std::string::npos) break;
-            start = sep + 1;
+// Search PATH for one of `names`, returning the first that resolves to an
+// executable file. Windows PATH entries are separated by ';' and need the
+// .cmd/.exe suffix; POSIX uses ':' and bare names.
+std::string FindOnPath(const std::vector<std::string>& names) {
+    const char* pathEnv = std::getenv("PATH");
+    if (!pathEnv) return {};
+    const std::string envPath(pathEnv);
+    const char sep =
+#if defined(_WIN32)
+        ';';
+    const std::vector<std::string> suffixes = {"", ".cmd", ".exe", ".bat"};
+#else
+        ':';
+    const std::vector<std::string> suffixes = {""};
+#endif
+    size_t start = 0;
+    while (start <= envPath.size()) {
+        const size_t end = envPath.find(sep, start);
+        const std::string dir =
+            envPath.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!dir.empty()) {
+            for (const std::string& name : names) {
+                for (const std::string& suffix : suffixes) {
+                    const std::string full = (fs::path(dir) / (name + suffix)).string();
+                    if (FileIsExecutable(full)) return full;
+                }
+            }
         }
+        if (end == std::string::npos) break;
+        start = end + 1;
     }
+    return {};
+}
+
+std::string FindVSCode() {
+    // The official Linux packages (apt/deb, rpm, snap, AUR, tarball) all
+    // install a `code` (or `code-insiders`) launcher on PATH.
+    if (const std::string onPath = FindOnPath({"code-insiders", "code"}); !onPath.empty()) {
+        return onPath;
+    }
+#if defined(_WIN32)
     const char* localAppData = std::getenv("LOCALAPPDATA");
     const char* programFiles = std::getenv("ProgramFiles");
     std::vector<std::string> candidates;
@@ -142,61 +156,57 @@ std::string FindVSCode() {
         candidates.push_back(std::string(programFiles) + "\\Microsoft VS Code Insiders\\Code - Insiders.exe");
     }
     return FindKnownExe(candidates);
+#else
+    // Snap and some distro packages install outside PATH when the app is
+    // confined; these are the conventional locations.
+    return FindKnownExe({
+        "/snap/bin/code",
+        "/var/lib/flatpak/exports/bin/com.visualstudio.code",
+        "/usr/lib/code/code",
+        "/opt/visual-studio-code/code",
+    });
+#endif
 }
 
-std::string RunCommandCaptureOutput(const std::string& command, size_t capacity) {
-    std::vector<char> out(capacity);
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE readPipe = nullptr, writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) return {};
-    STARTUPINFOA si{ sizeof(si) };
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = writePipe;
-    si.hStdError = nullptr;
-    si.hStdInput = nullptr;
-    PROCESS_INFORMATION pi{};
-    if (!CreateProcessA(nullptr, const_cast<char*>(command.c_str()), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        CloseHandle(readPipe);
-        CloseHandle(writePipe);
-        return {};
-    }
-    CloseHandle(writePipe);
-    DWORD total = 0;
-    char buf[1024];
-    DWORD got = 0;
-    while (ReadFile(readPipe, buf, sizeof(buf) - 1, &got, nullptr) && got > 0) {
-        buf[got] = '\0';
-        size_t toCopy = (total + got) < out.size() - 1 ? got : out.size() - 1 - total;
-        memcpy(out.data() + total, buf, toCopy);
-        total += static_cast<DWORD>(toCopy);
-        if (total >= out.size() - 1) break;
-    }
-    CloseHandle(readPipe);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    if (total == 0) return {};
-    out[total] = '\0';
-    std::string result(out.data());
+std::string RunCommandCaptureOutput(const std::string& exe,
+                                    const std::vector<std::string>& args,
+                                    size_t capacity) {
+    const platform::ProcessResult r = platform::RunProcessCapture(exe, args, 10000);
+    if (!r.launched) return {};
+    std::string result = r.output;
     while (!result.empty() && (result.back() == '\n' || result.back() == '\r' ||
                                result.back() == ' ')) {
         result.pop_back();
     }
+    if (result.size() >= capacity) result.resize(capacity - 1);
     return result;
 }
 
 std::string FindVisualStudio() {
+    // Windows only. There is no Linux build of Visual Studio, so the picker
+    // does not offer it (see AvailableEditorKinds).
+#if defined(_WIN32)
     const std::string vswhere =
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
     if (!FileIsExecutable(vswhere)) return {};
-    std::string installPath =
-        RunCommandCaptureOutput("\"" + vswhere + "\" -latest -property installationPath", 4096);
+    std::string installPath = RunCommandCaptureOutput(
+        vswhere, {"-latest", "-property", "installationPath"}, 4096);
     if (installPath.empty()) return {};
-    std::string devenv = installPath + "\\Common7\\IDE\\devenv.exe";
+    const std::string devenv = (fs::path(installPath) / "Common7" / "IDE" / "devenv.exe").string();
     return FileIsExecutable(devenv) ? devenv : std::string{};
+#else
+    return {};
+#endif
 }
 
 std::string FindRider() {
+    // The JetBrains Toolbox and the standalone tarball both drop a launcher on
+    // PATH; fall back to a scan of the conventional install roots.
+    if (const std::string onPath = FindOnPath({"rider"}); !onPath.empty()) {
+        return onPath;
+    }
+
+#if defined(_WIN32)
     const char* programFiles = std::getenv("ProgramFiles");
     if (!programFiles) return {};
     const std::vector<std::string> roots = {
@@ -210,12 +220,65 @@ std::string FindRider() {
         std::string best;
         for (const auto& entry : fs::directory_iterator(root, ec)) {
             if (!entry.is_directory(ec)) continue;
-            std::string candidate = entry.path().string() + "\\bin\\rider64.exe";
+            std::string candidate = (entry.path() / "bin" / "rider64.exe").string();
             if (FileIsExecutable(candidate)) best = candidate;
         }
         if (!best.empty()) return best;
     }
     return {};
+#else
+    // Toolbox installs land in ~/.local/share/JetBrains/Toolbox/apps/*/*/;
+    // tarballs in /opt/JetBrains/*/ or ~/opt/JetBrains/*/.
+    std::vector<fs::path> roots;
+    const std::string home = platform::UserHomeDir();
+    if (!home.empty()) {
+        roots.emplace_back(fs::u8path(home) / ".local" / "share" / "JetBrains" / "Toolbox" / "apps");
+        roots.emplace_back(fs::u8path(home) / "opt" / "JetBrains");
+    }
+    roots.emplace_back("/opt/JetBrains");
+    roots.emplace_back("/usr/local/JetBrains");
+
+    std::string best;
+    for (const fs::path& root : roots) {
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) continue;
+        for (const auto& entry : fs::directory_iterator(root, ec)) {
+            if (!entry.is_directory(ec)) continue;
+            // Toolbox nests one extra level: apps/<vendor>/<product>/<build>/.
+            std::vector<fs::path> dirs{entry.path()};
+            for (const auto& child : fs::directory_iterator(entry.path(), ec)) {
+                if (child.is_directory(ec)) dirs.push_back(child.path());
+            }
+            for (const fs::path& dir : dirs) {
+                for (const char* launcher : {"bin/rider.sh", "bin/rider64.exe", "rider.sh"}) {
+                    const fs::path candidate = dir / launcher;
+                    if (FileIsExecutable(candidate.string())) {
+                        best = candidate.string();
+                        break;
+                    }
+                }
+            }
+        }
+        if (!best.empty()) return best;
+    }
+    return {};
+#endif
+}
+
+// The plain text editor behind EditorKind::Notepad. Notepad is a Windows
+// program; on Linux the equivalent role is played by whichever simple text
+// editor the desktop already ships.
+std::string FindTextEditor() {
+    if (const std::string onPath =
+            FindOnPath({"mousepad", "gedit", "xed", "kate", "pluma", "leafpad"});
+        !onPath.empty()) {
+        return onPath;
+    }
+#if defined(_WIN32)
+    return "notepad.exe";
+#else
+    return "notepad";   // resolved on PATH by the desktop's own compat shim
+#endif
 }
 
 // Resolve an editor kind to an executable path. Empty indicates the OS default
@@ -225,46 +288,37 @@ std::string ResolveEditorPath(EditorKind kind) {
         case EditorKind::VSCode:        return FindVSCode();
         case EditorKind::VisualStudio:  return FindVisualStudio();
         case EditorKind::Rider:         return FindRider();
-        default:                        return {};
+        case EditorKind::Notepad:       return FindTextEditor();
+        default:                        return {};   // Auto-Detect
     }
 }
 
-std::wstring Utf8ToWide(const std::string& s) {
-    std::wstring w;
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (len > 0) {
-        w.resize(static_cast<size_t>(len) - 1);
-        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), len);
-    }
-    return w;
-}
-
-bool ShellOpen(const std::wstring& exe, const std::wstring& args) {
-    HINSTANCE r = ShellExecuteW(nullptr, L"open",
-                                exe.empty() ? nullptr : exe.c_str(),
-                                args.empty() ? nullptr : args.c_str(),
-                                nullptr, SW_SHOWNORMAL);
-    return reinterpret_cast<INT_PTR>(r) > 32;
+bool ShellOpen(const std::string& exe, const std::vector<std::string>& args) {
+    return platform::LaunchDetached(exe, args);
 }
 
 // Actually launch an editor on `file`.
 bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string& file) {
-    std::wstring wideFile = Utf8ToWide(file);
-    if (kind == EditorKind::VSCode) {
-        return ShellOpen(Utf8ToWide(exePath), L"\"" + wideFile + L"\"");
+    if (file.empty()) return false;
+
+    if (kind == EditorKind::VSCode ||
+        kind == EditorKind::Rider ||
+        kind == EditorKind::VisualStudio ||
+        kind == EditorKind::Notepad) {
+        // Each of these takes the file as a plain argument, except Visual
+        // Studio which needs /edit to open an existing file rather than a new
+        // project.
+        std::vector<std::string> args;
+        if (kind == EditorKind::VisualStudio) args.push_back("/edit");
+        args.push_back(file);
+        return ShellOpen(exePath, args);
     }
-    if (kind == EditorKind::VisualStudio) {
-        return ShellOpen(Utf8ToWide(exePath), L"/edit \"" + wideFile + L"\"");
-    }
-    if (kind == EditorKind::Rider) {
-        return ShellOpen(Utf8ToWide(exePath), L"\"" + wideFile + L"\"");
-    }
-    if (kind == EditorKind::Notepad) {
-        // notepad.exe is always on the system PATH.
-        return ShellOpen(L"notepad.exe", L"\"" + wideFile + L"\"");
-    }
-    // Auto / default: OS association.
-    return ShellOpen(wideFile, L"");
+
+    // Auto / default: hand the file to the desktop's own handler. xdg-open
+    // (ShellExecuteW's counterpart) picks the right .cs association, or falls
+    // back to a generic text editor for unknown types.
+    platform::OpenWithDefaultApp(file);
+    return true;
 }
 
 // --- Picker state ----------------------------------------------------------
@@ -294,8 +348,8 @@ struct IdeIcons {
 };
 
 Texture2D LoadIconOrNull(const char* fileName) {
-    std::string path = std::string("assets/EditorIcons/ideicons/") + fileName;
-    if (!FileExists(path.c_str())) path = std::string("../assets/EditorIcons/ideicons/") + fileName;
+    const std::string path =
+        platform::ResolveAsset(std::string("assets/EditorIcons/ideicons/") + fileName);
     Image img = LoadImage(path.c_str());
     Texture2D tex{};
     if (img.data != nullptr) {
@@ -319,7 +373,7 @@ const IdeIcons& GetIdeIcons() {
 }
 
 ImTextureID TexId(const Texture2D& t) {
-    return t.id != 0 ? static_cast<ImTextureID>(t.id) : ImTextureID{};
+    return t.id != 0 ? static_cast<ImTextureID>(GetTextureImGuiId(t)) : ImTextureID{};
 }
 
 } // namespace
@@ -357,7 +411,7 @@ void RequestOpen(const std::string& file) {
     if (file.empty()) return;
     if (g_editorSet) {
         if (LaunchEditor(g_editorKind, g_editorPath, file)) return;
-        // Remembered editor didn't launch (uninstalled/moved) — forget it
+        // Remembered editor didn't launch (uninstalled/moved) - forget it
         // and fall through to asking again below.
         g_editorSet = false;
         g_editorPath.clear();
@@ -365,7 +419,7 @@ void RequestOpen(const std::string& file) {
     g_pendingFile = file;
 }
 
-// Always shows the picker, even when an editor is already remembered — used
+// Always shows the picker, even when an editor is already remembered - used
 // by the right-click "Choose Editor..." action so the user can override or
 // reset their default at any time.
 void RequestChooseEditor(const std::string& file) {
@@ -396,8 +450,14 @@ bool DrawImGuiModal() {
         const Option options[] = {
             { "Rider",          EditorKind::Rider,        &icons.rider },
             { "VS Code",        EditorKind::VSCode,       &icons.vscode },
+#if defined(_WIN32)
+            // No Linux build of Visual Studio exists, so offering it would
+            // only ever produce a launch failure.
             { "Visual Studio",  EditorKind::VisualStudio, &icons.visualStudio },
             { "Notepad",        EditorKind::Notepad,      &icons.notepad },
+#else
+            { "Text Editor",    EditorKind::Notepad,      &icons.notepad },
+#endif
             { "Auto-Detect",    EditorKind::None,         nullptr },
         };
 
@@ -469,7 +529,7 @@ std::string EditStandaloneScript(const std::string& scriptName,
     return file;
 }
 
-// Right-click "Choose Editor..." for an object's script — always shows the
+// Right-click "Choose Editor..." for an object's script - always shows the
 // picker so the user can override or reset their remembered default.
 std::string ChooseEditorForObjectScript(ScatteredObject* obj) {
     if (!obj || obj->script.empty()) return {};

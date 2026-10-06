@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 
-// ScriptCompiler — builds the project's C# scripts into Scripts/FlyScript.dll
+// ScriptCompiler - builds the project's C# scripts into Scripts/FlyScript.dll
 // using the dotnet CLI. The SDK wrapper sources (FlyScript.cs, ScriptHost.cs)
 // are staged into the project alongside the user's *.cs files, then compiled
 // together into a single assembly that CoreCLR loads. This replaces the old

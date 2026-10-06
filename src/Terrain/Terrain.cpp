@@ -5,10 +5,14 @@
 #include "../include/Terrain/TerrainPhysics.hpp"
 #include "../include/Terrain/TerrainEditor.hpp"
 #include "../include/Terrain/TerrainRegistry.hpp"
+#include "../../include/Engine/Platform/Platform.hpp"
+#include "../../include/Engine/Graphics.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 
@@ -80,12 +84,23 @@ void Terrain::Draw() {
     
     Camera3D camera = g_drawCamera ? *g_drawCamera : Camera3D{};
     
+    // Extract frustum for chunk-level culling
+    Frustum frustum = Frustum::ExtractCurrent();
+    
+    gfx::IncrementRenderedEntityCount(0);
+    gfx::IncrementCulledEntityCount(0);
+    
     BeginShaderMode(terrainShader);
     UpdateShaderUniforms(camera);
     
     for (auto& chunk : chunks) {
-        if (chunk.gpuModel.meshCount > 0) {
+        if (chunk.gpuModel.meshCount > 0 && frustum.Intersects(chunk.bounds)) {
             DrawChunk(chunk, camera);
+            gfx::IncrementRenderedEntityCount(1);
+            gfx::IncrementDrawCallCount(1);
+            gfx::AddMeshCount(1);
+        } else {
+            gfx::IncrementCulledEntityCount(1);
         }
     }
     
@@ -94,7 +109,7 @@ void Terrain::Draw() {
     // Debug overlays
     if (showWireframe) {
         for (auto& chunk : chunks) {
-            if (chunk.gpuModel.meshCount > 0) {
+            if (frustum.Intersects(chunk.bounds)) {
                 Vector3 pos = { chunk.transform.m12, chunk.transform.m13, chunk.transform.m14 };
                 DrawModelWires(chunk.gpuModel, pos, 1.0f, RED);
             }
@@ -103,14 +118,16 @@ void Terrain::Draw() {
     
     if (showChunkBounds) {
         for (auto& chunk : chunks) {
-            DrawBoundingBox(chunk.bounds, YELLOW);
+            if (frustum.Intersects(chunk.bounds)) {
+                DrawBoundingBox(chunk.bounds, YELLOW);
+            }
         }
     }
     
     if (showLODColors) {
         static Color lodColors[3] = { GREEN, YELLOW, RED };
         for (auto& chunk : chunks) {
-            if (chunk.gpuModel.meshCount > 0) {
+            if (frustum.Intersects(chunk.bounds)) {
                 Color c = lodColors[std::clamp(chunk.lod, 0, 2)];
                 c.a = 100;
                 Vector3 pos = { chunk.transform.m12, chunk.transform.m13, chunk.transform.m14 };
@@ -118,13 +135,74 @@ void Terrain::Draw() {
             }
         }
     }
+
+    // Brush preview (when editor is active and terrain is selected)
+    if (isSelected && terrain::IsTerrainEditorActive()) {
+        auto& state = terrain::GetTerrainEditorState();
+        if (state.brushValid && state.showBrushPreview && state.mode == TerrainEditorState::Mode::Sculpt) {
+            const TerrainBrush& brush = state.brush;
+            Vector2 center = state.brushWorldPos;
+            float radius = brush.radius;
+
+            Color ring = Color{ 60, 140, 255, 220 };
+
+            if (brush.shape == TerrainBrush::Shape::Square) {
+                const int steps = 48;
+                Vector3 prev{}; 
+                bool has = false;
+                for (int i = 0; i <= steps; i++) {
+                    float s = (float)i / steps * 4.0f;
+                    int side = (int)s; 
+                    float f = s - side;
+                    float u, v;
+                    switch (side) {
+                        case 0: u = -1.0f + f * 2.0f; v = -1.0f; break;
+                        case 1: u = 1.0f;             v = -1.0f + f * 2.0f; break;
+                        case 2: u = 1.0f - f * 2.0f;  v = 1.0f; break;
+                        default: u = -1.0f;           v = 1.0f - f * 2.0f; break;
+                    }
+                    float px = center.x + u * radius;
+                    float pz = center.y + v * radius;
+                    Vector3 p = { px, GetHeightAt(px, pz) + 0.4f, pz };
+                    if (has) DrawLine3D(prev, p, ring);
+                    prev = p; 
+                    has = true;
+                }
+            } else {
+                const int seg = 40;
+                Vector3 prev{};
+                for (int i = 0; i <= seg; i++) {
+                    float ang = (float)i / seg * 2.0f * PI;
+                    float px = center.x + cosf(ang) * radius;
+                    float pz = center.y + sinf(ang) * radius;
+                    Vector3 p = { px, GetHeightAt(px, pz) + 0.4f, pz };
+                    if (i > 0) DrawLine3D(prev, p, ring);
+                    prev = p;
+                }
+            }
+        }
+    }
+}
+void Terrain::DrawOverlay3D() {
+    // Brush preview is now drawn in Draw() for proper shader context
 }
 
-void Terrain::DrawOverlay3D() {
-    // Draw brush preview in editor mode
-    if (isSelected && terrain::IsTerrainEditorActive()) {
-        terrain::DrawTerrainBrushPreview(*g_drawCamera);
+bool Terrain::IsVisible(const Frustum& frustum) const {
+    // Terrain is visible if any chunk is visible
+    for (const auto& chunk : chunks) {
+        if (chunk.gpuModel.meshCount > 0 && frustum.Intersects(chunk.bounds)) {
+            return true;
+        }
     }
+    return false;
+}
+
+BoundingBox Terrain::GetCullBounds() const {
+    // Return the full terrain bounds
+    BoundingBox bounds;
+    bounds.min = { center.x - size.x * 0.5f, minHeight, center.z - size.z * 0.5f };
+    bounds.max = { center.x + size.x * 0.5f, maxHeight, center.z + size.z * 0.5f };
+    return bounds;
 }
 
 // ============================================================================
@@ -470,11 +548,17 @@ void Terrain::NoiseTerrain(Vector2 center, float radius, const NoiseParams& para
     brush.tool = TerrainTool::Noise;
     brush.radius = radius;
     brush.strength = params.amplitude;
+    brush.noiseSeed = params.seed;
+    brush.noiseScale = 1.0f / std::max(0.001f, params.scale); // Convert scale to feature size
     ApplyBrush(brush, center);
 }
 
-void Terrain::ApplyBrush(const TerrainBrush& brush, Vector2 center) {
-    terrain::ApplyBrush(*this, brush, center);
+void Terrain::ErodeRegion(float minX, float minZ, float maxX, float maxZ, const TerrainBrush& brush) {
+    terrain::ApplyErosionToRegion(*this, minX, minZ, maxX, maxZ, brush);
+}
+
+void Terrain::ApplyBrush(const TerrainBrush& brush, Vector2 center, float dt) {
+    terrain::ApplyBrush(*this, brush, center, dt);
     
     if (onHeightmapChanged) onHeightmapChanged();
     needsPhysicsRebuild = true;
@@ -573,10 +657,12 @@ void Terrain::ReloadMaterialTextures(const std::string& baseDir) {
     for (auto& layer : layers) {
         auto resolve = [&](const std::string& p) -> std::string {
             if (p.empty()) return {};
-            // If the stored path is absolute, use it as-is.
-            bool absolute = !p.empty() &&
-                (p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':'));
-            if (absolute || baseDir.empty()) return p;
+            // If the stored path is absolute, use it as-is. std::filesystem
+            // gets this right per-platform (drive letter / UNC on Windows,
+            // leading "/" on POSIX); the previous hand-rolled check disagreed
+            // with ModelImport::IsAbsolutePath about what "absolute" meant.
+            if (std::filesystem::path(std::filesystem::u8path(p)).is_absolute()) return p;
+            if (baseDir.empty()) return p;
             return baseDir + "/" + p;
         };
 
@@ -832,57 +918,43 @@ void Terrain::DequantizeHeightmap(const std::vector<uint16_t>& src, std::vector<
 void Terrain::LoadTerrainShader() {
     if (shaderLoaded) return;
     
-    // Load from files (will create default if not found)
-    terrainShader = LoadShader("shaders/terrain.vert", "shaders/terrain.frag");
-    if (terrainShader.id == 0) {
-        // Fallback: create a simple default shader
-        terrainShader = LoadShaderFromMemory(
-            "#version 330\n"
-            "in vec3 vertexPosition;\n"
-            "in vec3 vertexNormal;\n"
-            "in vec2 vertexTexCoord;\n"
-            "uniform mat4 mvp;\n"
-            "out vec2 texCoord;\n"
-            "out vec3 normal;\n"
-            "void main() {\n"
-            "    texCoord = vertexTexCoord;\n"
-            "    normal = vertexNormal;\n"
-            "    gl_Position = mvp * vec4(vertexPosition, 1.0);\n"
-            "}\n",
-            "#version 330\n"
-            "in vec2 texCoord;\n"
-            "in vec3 normal;\n"
-            "out vec4 fragColor;\n"
-            "uniform sampler2D texture0;\n"
-            "void main() {\n"
-            "    vec3 color = texture(texture0, texCoord).rgb;\n"
-            "    float diff = max(dot(normalize(normal), vec3(0.5, 1.0, 0.3)), 0.0);\n"
-            "    fragColor = vec4(color * diff, 1.0);\n"
-            "}\n"
-        );
-    }
+    // Compiled into the binary from shaders/terrain.glsl (sokol-shdc).
+    terrainShader = LoadShaderProgram("terrain");
     shaderLoaded = true;
     CacheShaderUniforms();
 }
 
 void Terrain::CacheShaderUniforms() {
-    shaderLocs[0] = GetShaderLocation(terrainShader, "viewProj");
-    shaderLocs[1] = GetShaderLocation(terrainShader, "model");
-    shaderLocs[2] = GetShaderLocation(terrainShader, "minHeight");
-    shaderLocs[3] = GetShaderLocation(terrainShader, "maxHeight");
-    shaderLocs[4] = GetShaderLocation(terrainShader, "layerCount");
-    shaderLocs[5] = GetShaderLocation(terrainShader, "albedoTex[0]");
-    shaderLocs[6] = GetShaderLocation(terrainShader, "normalTex[0]");
-    shaderLocs[7] = GetShaderLocation(terrainShader, "roughnessTex[0]");
-    shaderLocs[8] = GetShaderLocation(terrainShader, "tileSize[0]");
-    shaderLocs[9] = GetShaderLocation(terrainShader, "splatmap");
-    shaderLocs[10] = GetShaderLocation(terrainShader, "cameraPos");
-    shaderLocs[11] = GetShaderLocation(terrainShader, "lightDir");
-    shaderLocs[12] = GetShaderLocation(terrainShader, "lightColor");
-    shaderLocs[13] = GetShaderLocation(terrainShader, "ambientColor");
-    shaderLocs[14] = GetShaderLocation(terrainShader, "fogDensity");
-    shaderLocs[15] = GetShaderLocation(terrainShader, "fogColor");
-    // ... more as needed
+    shaderLocs[LocViewProj]      = GetShaderLocation(terrainShader, "viewProj");
+    shaderLocs[LocModel]         = GetShaderLocation(terrainShader, "model");
+    shaderLocs[LocMinHeight]     = GetShaderLocation(terrainShader, "minHeight");
+    shaderLocs[LocMaxHeight]     = GetShaderLocation(terrainShader, "maxHeight");
+    shaderLocs[LocLayerCount]    = GetShaderLocation(terrainShader, "layerCount");
+    shaderLocs[LocAlbedoTex0]    = GetShaderLocation(terrainShader, "albedoTex[0]");
+    shaderLocs[LocNormalTex0]    = GetShaderLocation(terrainShader, "normalTex[0]");
+    shaderLocs[LocRoughnessTex0] = GetShaderLocation(terrainShader, "roughnessTex[0]");
+    shaderLocs[LocTileSize0]     = GetShaderLocation(terrainShader, "tileSize[0]");
+    shaderLocs[LocSplatmap]      = GetShaderLocation(terrainShader, "splatmap");
+    shaderLocs[LocCameraPos]     = GetShaderLocation(terrainShader, "cameraPos");
+    shaderLocs[LocLightDir]      = GetShaderLocation(terrainShader, "lightDir");
+    shaderLocs[LocLightColor]    = GetShaderLocation(terrainShader, "lightColor");
+    shaderLocs[LocAmbientColor]  = GetShaderLocation(terrainShader, "ambientColor");
+    shaderLocs[LocFogDensity]    = GetShaderLocation(terrainShader, "fogDensity");
+    shaderLocs[LocFogColor]      = GetShaderLocation(terrainShader, "fogColor");
+
+    // Every array element is looked up by its own name. The previous code
+    // cached only the [0] element of each array and derived the rest by adding
+    // a stride, which assumed the driver laid the three sampler arrays out
+    // back to back -- not something GLSL guarantees. The stride was also
+    // applied to tileSize, a float array of 4, so "tileSize[1]" was written to
+    // whatever uniform happened to sit four slots later (lightColor), and
+    // layers 2 and 3 went to locations that were never initialised.
+    for (int i = 0; i < 4; ++i) {
+        albedoLoc[i]    = GetShaderLocation(terrainShader, TextFormat("albedoTex[%d]", i));
+        normalLoc[i]    = GetShaderLocation(terrainShader, TextFormat("normalTex[%d]", i));
+        roughnessLoc[i] = GetShaderLocation(terrainShader, TextFormat("roughnessTex[%d]", i));
+        tileSizeLoc[i]  = GetShaderLocation(terrainShader, TextFormat("tileSize[%d]", i));
+    }
 }
 
 void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
@@ -890,35 +962,35 @@ void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
     Matrix view = MatrixLookAt(camera.position, camera.target, camera.up);
     Matrix proj = MatrixPerspective(camera.fovy * DEG2RAD, 16.0f/9.0f, 0.01f, 10000.0f);
     Matrix viewProj = MatrixMultiply(view, proj);
-    SetShaderValueMatrix(terrainShader, shaderLocs[0], viewProj);
-    SetShaderValue(terrainShader, shaderLocs[2], &minHeight, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(terrainShader, shaderLocs[3], &maxHeight, SHADER_UNIFORM_FLOAT);
+    SetShaderValueMatrix(terrainShader, shaderLocs[LocViewProj], viewProj);
+    SetShaderValue(terrainShader, shaderLocs[LocMinHeight], &minHeight, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(terrainShader, shaderLocs[LocMaxHeight], &maxHeight, SHADER_UNIFORM_FLOAT);
     int layerCount = (int)layers.size();
-    SetShaderValue(terrainShader, shaderLocs[4], &layerCount, SHADER_UNIFORM_INT);
+    SetShaderValue(terrainShader, shaderLocs[LocLayerCount], &layerCount, SHADER_UNIFORM_INT);
     Vector3 camPos = camera.position;
-    SetShaderValue(terrainShader, shaderLocs[10], &camPos, SHADER_UNIFORM_VEC3);
+    SetShaderValue(terrainShader, shaderLocs[LocCameraPos], &camPos, SHADER_UNIFORM_VEC3);
     
     // Light direction (simple directional)
     Vector3 lightDir = Vector3Normalize({ -0.5f, -1.0f, -0.3f });
-    SetShaderValue(terrainShader, shaderLocs[11], &lightDir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(terrainShader, shaderLocs[LocLightDir], &lightDir, SHADER_UNIFORM_VEC3);
     Vector3 lightColor = { 1.0f, 0.95f, 0.8f };
-    SetShaderValue(terrainShader, shaderLocs[12], &lightColor, SHADER_UNIFORM_VEC3);
+    SetShaderValue(terrainShader, shaderLocs[LocLightColor], &lightColor, SHADER_UNIFORM_VEC3);
     Vector3 ambient = { 0.2f, 0.2f, 0.25f };
-    SetShaderValue(terrainShader, shaderLocs[13], &ambient, SHADER_UNIFORM_VEC3);
+    SetShaderValue(terrainShader, shaderLocs[LocAmbientColor], &ambient, SHADER_UNIFORM_VEC3);
     
     // Bind layer textures
     for (size_t i = 0; i < layers.size() && i < 4; i++) {
         const TerrainLayer& layer = layers[i];
         if (layer.albedo.id) {
-            SetShaderValueTexture(terrainShader, shaderLocs[5 + i * 4], layer.albedo);
+            SetShaderValueTexture(terrainShader, albedoLoc[i], layer.albedo);
         }
         if (layer.normal.id) {
-            SetShaderValueTexture(terrainShader, shaderLocs[6 + i * 4], layer.normal);
+            SetShaderValueTexture(terrainShader, normalLoc[i], layer.normal);
         }
         if (layer.roughness.id) {
-            SetShaderValueTexture(terrainShader, shaderLocs[7 + i * 4], layer.roughness);
+            SetShaderValueTexture(terrainShader, roughnessLoc[i], layer.roughness);
         }
-        SetShaderValue(terrainShader, shaderLocs[8 + i * 4], &layer.tileSize, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(terrainShader, tileSizeLoc[i], &layer.tileSize, SHADER_UNIFORM_FLOAT);
     }
 }
 
@@ -927,7 +999,7 @@ void Terrain::DrawChunk(const TerrainChunk& chunk, const Camera3D& camera) {
     
     if (model->meshCount == 0) return;
     
-    SetShaderValueMatrix(terrainShader, shaderLocs[1], chunk.transform);
+    SetShaderValueMatrix(terrainShader, shaderLocs[LocModel], chunk.transform);
     
     // Bind splatmap for this chunk (would need texture array or bind per draw)
     // For now, use first chunk's splatmap or a shared one

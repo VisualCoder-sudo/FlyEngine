@@ -105,6 +105,22 @@ struct Block {
     std::vector<Vector2> inset;  // building placement polygon (CCW)
     std::vector<Vector2> parkPoly; // grass polygon for parks (CCW)
     std::vector<Building> buildings;
+    // Persistent ID, assigned once when the block is first created and kept
+    // across rebuilds (unlike its index in City::blocks, which shifts on
+    // every rebuild as blocks are added/removed). This is what a building
+    // override's key stays valid against.
+    uint64_t id = 0;
+};
+
+// A per-building edit that survives regeneration: layout runs as normal, then
+// any override for that building's (blockId, slot) is reapplied on top. Keyed
+// this way rather than stored on Building itself, since Building is rebuilt
+// from scratch by LayoutBlock every time -- only the override survives that.
+struct BuildingOverride {
+    bool hasHeight = false;
+    float height = 0.0f;
+    bool hasOffset = false;
+    Vector2 posOffset{}; // added to the building's laid-out (x, z) center
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +179,19 @@ public:
     void DeleteNode(int index);
     void SetEdgeLaneOverride(int edgeIndex, int lanes);
 
+    // Building overrides. `slot` is the building's index within its block's
+    // `buildings` vector, which LayoutBlock fills deterministically, so the
+    // same (blockId, slot) names the same physical building across rebuilds
+    // as long as that block's polygon hasn't changed shape.
+    void SetBuildingHeightOverride(uint64_t blockId, int slot, float height);
+    void SetBuildingOffsetOverride(uint64_t blockId, int slot, Vector2 offset);
+    void ClearBuildingOverride(uint64_t blockId, int slot);
+    bool HasBuildingOverride(uint64_t blockId, int slot) const;
+    Vector2 GetBuildingOffsetOverride(uint64_t blockId, int slot) const; // {0,0} if none
+    // Ray-picks a building's roof/walls; returns block index (into GetBlocks())
+    // and building slot within it, or false if nothing was hit.
+    bool PickBuilding(const Ray& ray, int& outBlock, int& outSlot, float* outDist = nullptr) const;
+
     // Picking helpers (screen-space ray vs node spheres / road centerlines).
     int  PickNode(const Ray& ray, float tolerance, float* outDist = nullptr) const;
     int  PickRoad(const Ray& ray, float tolerance, float* outParam = nullptr) const;
@@ -197,6 +226,11 @@ private:
     std::vector<RoadNode> nodes;
     std::vector<RoadEdge> edges;
     std::vector<Block> blocks;
+    uint64_t nextBlockId = 1; // 0 is reserved/invalid
+    std::unordered_map<uint64_t, BuildingOverride> buildingOverrides; // key: (blockId<<20)|slot
+    static uint64_t OverrideKey(uint64_t blockId, int slot) { return (blockId << 20) | (uint64_t)(uint32_t)slot; }
+    void ApplyBuildingOverrides(Block& block); // post-pass after LayoutBlock fills block.buildings
+    void RefreshBuildingTile(uint64_t blockId); // rebuilds the one tile a block lives in after an override edit
     // Dead-end road spurs (pruned from face extraction); buildings keep clear of them.
     std::vector<std::pair<Vector2, Vector2>> spurSegs;
 

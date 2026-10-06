@@ -1,5 +1,7 @@
 ﻿#include "../../include/Terrain/BasicTerrain.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
+#include "../../include/Engine/Platform/Platform.hpp"
+#include "../../include/Engine/Graphics.hpp"
 #include "raylib.h"
 #include "raymath.h"
 // Bind splatmap + albedo textures to explicit GL texture slots in Draw() using
@@ -11,50 +13,35 @@
 #include <vector>
 #include <filesystem>
 
-// Debug helper to figure out the working directory
+// Forward decls for the file-local noise helpers (defined below); the Noise
+// brush in ApplyBrush() needs them before their definitions.
+static float TerrainValueNoise(float x, float y, int seed);
+static float TerrainFbm(float x, float y, int seed, int octaves, float persistence, float lacunarity);
+
+// Reports which of the engine's data roots was picked. This used to print the
+// result of probing a dozen hand-written relative paths, which was the only
+// way to diagnose "terrain textures missing" -- now that resolution is
+// centralised, the useful line is the root that won and the ones that did not.
 static void LogTerrainTextureDebug() {
     static bool logged = false;
     if (logged) return;
     logged = true;
 
-    // Log current working directory
-    std::string cwd = std::filesystem::current_path().string();
-    ui::Log("[TerrainPaint] CWD: %s", cwd.c_str());
-
-    // Try all path variants and log which exist
-    const char* dirs[] = {
-        "assets/Textures/TerrainTextures",
-        "../assets/Textures/TerrainTextures",
-        "../../assets/Textures/TerrainTextures",
-        "../../../assets/Textures/TerrainTextures",
-        "../../../../assets/Textures/TerrainTextures"
-    };
-    for (const char* d : dirs) {
-        std::error_code ec;
-        bool exists = std::filesystem::is_directory(d, ec);
-        ui::Log("[TerrainPaint]  dir '%s' -> %s", d, exists ? "FOUND" : "not found");
+    std::error_code ec;
+    ui::Log("[TerrainPaint] CWD: %s", std::filesystem::current_path(ec).string().c_str());
+    ui::Log("[TerrainPaint] EXE: %s", platform::ExecutablePath().c_str());
+    for (const std::string& r : platform::DataSearchRoots()) {
+        ui::Log("[TerrainPaint]  root %s", r.c_str());
     }
-
-    // Also check the shader
-    const char* shaders[] = {
-        "shaders/terrain_paint.vert",
-        "../shaders/terrain_paint.vert",
-        "../../shaders/terrain_paint.vert",
-        "../../../shaders/terrain_paint.vert",
-        "../../../../shaders/terrain_paint.vert",
-        "terrain_paint.vert",
-        "../terrain_paint.vert"
-    };
-    for (const char* s : shaders) {
-        std::error_code ec;
-        bool exists = std::filesystem::is_regular_file(s, ec);
-        ui::Log("[TerrainPaint]  shader '%s' -> %s", s, exists ? "FOUND" : "not found");
-    }
+    const std::string dataRoot = platform::FoundDataRoot();
+    ui::Log("[TerrainPaint]  using data root: %s",
+            dataRoot.empty() ? "NONE FOUND (set FLYENGINE_DATA_DIR)" : dataRoot.c_str());
 }
 
 Camera3D* BasicTerrain::s_activeCamera = nullptr;
 BasicTerrain* BasicTerrain::s_active = nullptr;
 BasicTerrain::Brush BasicTerrain::s_brush{};
+bool BasicTerrain::s_editorActive = false;
 std::vector<BasicTerrain*> BasicTerrain::s_instances{};
 Texture2D BasicTerrain::s_layerTextures[4] = {{0},{0},{0},{0}};
 std::string BasicTerrain::s_layerNames[4] = {"Layer 0","Layer 1","Layer 2","Layer 3"};
@@ -97,80 +84,9 @@ BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
     static bool shaderLoaded = false;
     if (!shaderLoaded) {
         LogTerrainTextureDebug();
-        // Search for the shaders in many locations: the process working dir,
-        // flat copy next to the exe, and relative walks up to the project root.
-        // CMake copies the files both flat (next to the exe) and under shaders/.
-        std::vector<std::string> tryVert = {
-            "shaders/terrain_paint.vert",
-            "terrain_paint.vert",
-            "../terrain_paint.vert",
-            "../../../shaders/terrain_paint.vert",
-            "../../../../shaders/terrain_paint.vert",
-            "../../shaders/terrain_paint.vert",
-            "../shaders/terrain_paint.vert"
-        };
-        std::vector<std::string> tryFrag = {
-            "shaders/terrain_paint.frag",
-            "terrain_paint.frag",
-            "../terrain_paint.frag",
-            "../../../shaders/terrain_paint.frag",
-            "../../../../shaders/terrain_paint.frag",
-            "../../shaders/terrain_paint.frag",
-            "../shaders/terrain_paint.frag"
-        };
-        std::string vertPath, fragPath;
-        for (size_t i = 0; i < tryVert.size(); i++) {
-            if (FileExists(tryVert[i].c_str())) { vertPath = tryVert[i]; fragPath = tryFrag[i]; break; }
-        }
-        if (!vertPath.empty()) {
-            s_terrainShader = LoadShader(vertPath.c_str(), fragPath.c_str());
-            ui::Log("[TerrainPaint] LoadShader('%s','%s') -> %s", vertPath.c_str(), fragPath.c_str(),
-                    IsShaderValid(s_terrainShader) ? "OK" : "FAILED");
-        } else {
-            ui::Log("[TerrainPaint] Could not find terrain_paint shader files anywhere");
-            // Last-resort fallback: embed the shaders so paint always works.
-            s_terrainShader = LoadShaderFromMemory(
-                "#version 330\n"
-                "in vec3 vertexPosition;\n"
-                "in vec2 vertexTexCoord;\n"
-                "in vec3 vertexNormal;\n"
-                "uniform mat4 mvp;\n"
-                "uniform mat4 matModel;\n"
-                "out vec2 texCoord;\n"
-                "out vec3 worldNormal;\n"
-                "void main(){ texCoord=vertexTexCoord; worldNormal=normalize(mat3(transpose(inverse(matModel)))*vertexNormal); gl_Position=mvp*vec4(vertexPosition,1.0); }\n",
-                "#version 330\n"
-                "in vec2 texCoord;\n"
-                "in vec3 worldNormal;\n"
-                "uniform sampler2D splatmap;\n"
-                "uniform sampler2D albedoTex0;\n"
-                "uniform sampler2D albedoTex1;\n"
-                "uniform sampler2D albedoTex2;\n"
-                "uniform sampler2D albedoTex3;\n"
-                "uniform int layerCount;\n"
-                "uniform float textureTiling;\n"
-                "uniform vec3 lightDir;\n"
-                "uniform vec3 lightColor;\n"
-                "uniform vec3 ambientColor;\n"
-                "out vec4 fragColor;\n"
-                "void main(){\n"
-                "  vec2 splatUV=texCoord/max(textureTiling,0.001);\n"
-                "  vec4 weights=texture(splatmap,splatUV).rgba;\n"
-                "  float ws=weights.r+weights.g+weights.b+weights.a;\n"
-                "  if(ws>0.001) weights/=ws; else weights=vec4(1,0,0,0);\n"
-                "  vec3 albedo=vec3(0);\n"
-                "  if(layerCount>0&&weights.r>0.001) albedo+=texture(albedoTex0,texCoord).rgb*weights.r;\n"
-                "  if(layerCount>1&&weights.g>0.001) albedo+=texture(albedoTex1,texCoord).rgb*weights.g;\n"
-                "  if(layerCount>2&&weights.b>0.001) albedo+=texture(albedoTex2,texCoord).rgb*weights.b;\n"
-                "  if(layerCount>3&&weights.a>0.001) albedo+=texture(albedoTex3,texCoord).rgb*weights.a;\n"
-                "  vec3 N=normalize(worldNormal); vec3 L=normalize(-lightDir);\n"
-                "  float ndl=max(dot(N,L),0.0);\n"
-                "  vec3 color=albedo*(ambientColor+lightColor*ndl);\n"
-                "  color=pow(color,vec3(1.0/2.2));\n"
-                "  fragColor=vec4(color,1.0);\n"
-                "}\n");
-            ui::Log("[TerrainPaint] Embedded fallback shader -> %s", IsShaderValid(s_terrainShader) ? "OK" : "FAILED");
-        }
+        // Compiled into the binary from shaders/terrain_paint.glsl (sokol-shdc).
+        s_terrainShader = LoadShaderProgram("terrain_paint");
+        ui::Log("[TerrainPaint] terrain_paint shader -> %s", IsShaderValid(s_terrainShader) ? "OK" : "FAILED");
         if (IsShaderValid(s_terrainShader)) {
             s_shaderSplatmapLoc = GetShaderLocation(s_terrainShader, "splatmap");
             s_shaderAlbedoLocs[0] = GetShaderLocation(s_terrainShader, "albedoTex0");
@@ -190,22 +106,20 @@ BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
     static bool texturesLoaded = false;
     if (!texturesLoaded) { LoadTerrainTextures(); texturesLoaded = true; }
 
-    // Load terrain texture - try multiple paths relative to working directory
-    std::vector<std::string> tryPaths = {
-        "assets/PresetTextures/LeafyGrass.qoi",
-        "../../../assets/PresetTextures/LeafyGrass.qoi",
-        "../../assets/PresetTextures/LeafyGrass.qoi",
-        "../assets/PresetTextures/LeafyGrass.qoi"
-    };
-
-    for (const auto& texPath : tryPaths) {
+    // Default albedo for a fresh terrain. Leaving terrainTexture at {0} is a
+    // valid state the renderer already handles (raylib falls back to its white
+    // 1x1 default), so a missing preset is not fatal.
+    const std::string texPath = platform::ResolveAsset("assets/PresetTextures/LeafyGrass.qoi");
+    if (!texPath.empty()) {
         Image img = LoadImage(texPath.c_str());
         if (img.data) {
             terrainTexture = LoadTextureFromImage(img);
             SetTextureWrap(terrainTexture, TEXTURE_WRAP_REPEAT);
             UnloadImage(img);
-            break;
         }
+    } else {
+        ui::Log("[TerrainPaint] Default albedo assets/PresetTextures/LeafyGrass.qoi not found; "
+                "terrain will render unshaded-white until a texture is assigned");
     }
 
     s_instances.push_back(this);
@@ -407,6 +321,49 @@ void BasicTerrain::ApplyBrush(const Brush& b, Vector2 worldPos, float dt) {
     int minZ = std::max(0, (int)std::floor(cz - pixelRadius));
     int maxZ = std::min(depth - 1, (int)std::ceil(cz + pixelRadius));
 
+    // Erosion is a neighborhood operation, so it can't run inside the per-cell
+    // loop: run the passes over a padded snapshot of the brush footprint, then
+    // blend the resulting height deltas back in by the brush falloff, so the
+    // erosion is shaped like every other tool (smoothstep + hardness).
+    if (b.tool == Tool::Erode) {
+        const int pad = 1;
+        const int ex0 = std::max(0, minX - pad), ex1 = std::min(width - 1, maxX + pad);
+        const int ez0 = std::max(0, minZ - pad), ez1 = std::min(depth - 1, maxZ + pad);
+        const int rw = ex1 - ex0 + 1, rd = ez1 - ez0 + 1;
+        if (rw >= 3 && rd >= 3) {
+            std::vector<float> buf((size_t)rw * rd);
+            for (int z = ez0; z <= ez1; z++)
+                for (int x = ex0; x <= ex1; x++)
+                    buf[(size_t)(z - ez0) * rw + (x - ex0)] = heightmap[(size_t)z * width + x];
+
+            // Strength scales the per-frame pass count so dragging erodes at a
+            // rate rather than a single fixed blast (frame-rate independent).
+            ErosionSettings es;
+            es.iterations = std::clamp((int)(b.strength * 0.05f * dt * 60.0f + 0.5f), 1, 5);
+            RunErosion(buf.data(), rw, rd, scale, es, es.iterations);
+
+            for (int z = ez0; z <= ez1; z++) {
+                for (int x = ex0; x <= ex1; x++) {
+                    const float ddx = x - cx, ddz = z - cz;
+                    float n;
+                    if (b.shape == Shape::Square) n = std::max(std::fabs(ddx), std::fabs(ddz)) / pixelRadius;
+                    else                          n = sqrtf(ddx * ddx + ddz * ddz) / pixelRadius;
+                    if (n >= 1.0f) continue;
+                    float weight = 1.0f - n * n * (3.0f - 2.0f * n);
+                    weight = powf(weight, 1.0f + b.hardness * 4.0f);
+                    if (weight <= 0.0f) continue;
+
+                    const float before = heightmap[(size_t)z * width + x];
+                    const float after  = buf[(size_t)(z - ez0) * rw + (x - ex0)];
+                    heightmap[(size_t)z * width + x] =
+                        std::clamp(before + (after - before) * weight, minHeight, maxHeight);
+                }
+            }
+            meshDirty = true;
+        }
+        return;
+    }
+
     for (int z = minZ; z <= maxZ; z++) {
         for (int x = minX; x <= maxX; x++) {
             float dx = x - cx;
@@ -439,6 +396,21 @@ void BasicTerrain::ApplyBrush(const Brush& b, Vector2 worldPos, float dt) {
                     break;
                 }
                 case Tool::Flatten: h += (b.targetHeight - h) * std::clamp(b.strength * 0.05f * dt, 0.0f, 1.0f) * weight; break;
+                case Tool::Noise: {
+                    // Deterministic FBM displacement; strength scales the amount,
+                    // noiseScale sets the feature size in meters.
+                    const float u = (x + 0.5f) * scale / b.noiseScale;
+                    const float v = (z + 0.5f) * scale / b.noiseScale;
+                    const float n = TerrainFbm(u, v, b.noiseSeed, 3, 0.5f, 2.0f) * 2.0f - 1.0f;
+                    h += n * b.strength * dt * 0.06f * weight;
+                    break;
+                }
+                // Erode is handled above (neighborhood op). Ramp is a one-shot
+                // click-drag in Update(). None is the "no tool" idle state.
+                case Tool::Erode:
+                case Tool::Ramp:
+                case Tool::None:
+                    break;
             }
             h = std::clamp(h, minHeight, maxHeight);
         }
@@ -471,13 +443,81 @@ void BasicTerrain::StampBrush(const Brush& b, Vector2 worldPos) {
             ApplyBrush(fb, worldPos);
             break;
         }
+        case Tool::Erode: {
+            // One click = a short burst of erosion passes
+            Brush eb = b;
+            eb.strength = std::max(b.strength, 60.0f);
+            ApplyBrush(eb, worldPos);   // dt=1 -> 5 passes at strength >= 60
+            break;
+        }
+        case Tool::Noise: {
+            // One click = a few FBM displacement passes
+            Brush nb = b;
+            nb.strength = std::max(b.strength, 50.0f);
+            for (int i = 0; i < 3; i++) ApplyBrush(nb, worldPos);
+            break;
+        }
         case Tool::Paint: {
             Brush pb = b;
             pb.strength = std::max(b.strength, 40.0f);
             for (int i = 0; i < 4; i++) ApplyPaintBrush(pb, worldPos);
             break;
         }
+        // Ramp is drag-based: Update() captures rampStart on press and
+        // commits on release, so there is nothing to stamp here.
+        case Tool::Ramp:
+        case Tool::None:
+            break;
     }
+}
+
+void BasicTerrain::ApplyRamp(Vector2 start, Vector2 end, float strength, float bandWidth) {
+    // World -> grid coordinates
+    const float caX = (start.x - position.x) / scale + width * 0.5f;
+    const float caZ = (start.y - position.z) / scale + depth * 0.5f;
+    const float cbX = (end.x   - position.x) / scale + width * 0.5f;
+    const float cbZ = (end.y   - position.z) / scale + depth * 0.5f;
+
+    const float dx = cbX - caX, dz = cbZ - caZ;
+    const float len2 = dx * dx + dz * dz;
+    const float halfW = std::max(0.5f, bandWidth * 0.5f / scale);
+
+    // Captured *before* any edits so the grade is a single linear ramp.
+    const float hA = GetHeightAt(start.x, start.y);
+    const float hB = GetHeightAt(end.x, end.y);
+
+    const int minX = std::max(0, (int)std::floor(std::min(caX, cbX) - halfW));
+    const int maxX = std::min(width - 1, (int)std::ceil(std::max(caX, cbX) + halfW));
+    const int minZ = std::max(0, (int)std::floor(std::min(caZ, cbZ) - halfW));
+    const int maxZ = std::min(depth - 1, (int)std::ceil(std::max(caZ, cbZ) + halfW));
+
+    // Strength slider 2..200 -> pull factor 0.35..1.0 toward the target grade.
+    const float pull = std::clamp(0.35f + strength / 200.0f * 0.65f, 0.0f, 1.0f);
+
+    for (int z = minZ; z <= maxZ; z++) {
+        for (int x = minX; x <= maxX; x++) {
+            float t = 0.0f, dist;
+            if (len2 > 1e-6f) {
+                t = ((x - caX) * dx + (z - caZ) * dz) / len2;
+                t = std::clamp(t, 0.0f, 1.0f);
+                const float px = caX + dx * t, pz = caZ + dz * t;
+                dist = std::sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
+            } else {
+                // Degenerate drag (start == end): stamp a small mound/pit.
+                dist = std::sqrt((x - caX) * (x - caX) + (z - caZ) * (z - caZ));
+            }
+            if (dist > halfW) continue;
+
+            // Smooth edge falloff inside the band, like the brush tools
+            const float e = std::clamp(dist / halfW, 0.0f, 1.0f);
+            const float fall = 1.0f - e * e * (3.0f - 2.0f * e);
+
+            const float target = hA + (hB - hA) * t;
+            float& h = heightmap[(size_t)z * width + x];
+            h = std::clamp(h + (target - h) * pull * fall, minHeight, maxHeight);
+        }
+    }
+    meshDirty = true;
 }
 
 void BasicTerrain::ApplyPaintBrush(const Brush& b, Vector2 worldPos, float dt) {
@@ -572,18 +612,14 @@ void BasicTerrain::LoadTerrainTextures() {
     }
     s_layerCount = 0;
 
-    std::vector<std::string> tryDirs = {
-        "assets/Textures/TerrainTextures",
-        "../assets/Textures/TerrainTextures",
-        "../../assets/Textures/TerrainTextures",
-        "../../../assets/Textures/TerrainTextures",
-        "../../../../assets/Textures/TerrainTextures"
-    };
-
+    // ResolveAsset only returns files, so ask each data root for the directory
+    // itself. The first root that has it is the one the files came from.
     std::string dirPath;
-    for (const auto& d : tryDirs) {
+    for (const std::string& r : platform::DataSearchRoots()) {
+        const std::string candidate =
+            (std::filesystem::u8path(r) / "assets" / "Textures" / "TerrainTextures").string();
         std::error_code ec;
-        if (std::filesystem::is_directory(d, ec)) { dirPath = d; break; }
+        if (std::filesystem::is_directory(candidate, ec)) { dirPath = candidate; break; }
     }
     ui::Log("[TerrainPaint] LoadTerrainTextures: resolved dir = %s", dirPath.empty() ? "EMPTY" : dirPath.c_str());
     if (dirPath.empty()) return;
@@ -839,7 +875,7 @@ void BasicTerrain::RebuildMesh() {
     // triangles while hills/bumps keep full per-vertex detail. It can bail
     // out (return false) if the terrain is rough enough everywhere that
     // nothing collapses, or in the unlikely case that would still overflow
-    // the 16-bit index buffer — BuildDenseMesh() is the always-correct,
+    // the 16-bit index buffer - BuildDenseMesh() is the always-correct,
     // always-safe fallback for that.
     if (!BuildAdaptiveMesh()) {
         BuildDenseMesh();
@@ -886,7 +922,7 @@ void BasicTerrain::RebuildMesh() {
 // Central-difference surface normal at a single heightmap grid point. Shared
 // by both the dense and adaptive mesh paths so that two quads meeting at the
 // same grid index (whether from adjacent adaptive blocks or the dense grid)
-// always agree on lighting there — no shading seam at merge boundaries.
+// always agree on lighting there - no shading seam at merge boundaries.
 Vector3 BasicTerrain::ComputeGridNormal(int x, int z) const {
     size_t vi = (size_t)(z * width + x);
     float h = heightmap[vi];
@@ -968,7 +1004,7 @@ static constexpr float kAdaptiveFlatEpsilon = 0.12f;
 // ~4x the dense mesh's vertex count. raylib's index buffer here is 16-bit, so
 // bail out to the always-safe BuildDenseMesh() rather than risk overflowing
 // it. In practice this only triggers on maximally noisy heightmaps (e.g. a
-// raw imported noise texture) — any terrain with meaningful flat/planar
+// raw imported noise texture) - any terrain with meaningful flat/planar
 // regions stays well under this.
 static constexpr size_t kAdaptiveMaxVertices = 60000;
 
@@ -1014,7 +1050,7 @@ void BasicTerrain::CollectAdaptiveBlock(int x0, int z0, int x1, int z1,
     int cellsZ = z1 - z0;
 
     // A single cell has no interior samples to deviate, so it's always
-    // trivially "flat" here — it's already the smallest unit, identical to
+    // trivially "flat" here - it's already the smallest unit, identical to
     // what the dense grid would produce for that cell.
     bool flat = (cellsX <= 1 && cellsZ <= 1) || IsBlockFlat(x0, z0, x1, z1);
 
@@ -1095,18 +1131,24 @@ bool BasicTerrain::BuildAdaptiveMesh() {
 // (Re)upload the splatmap CPU buffer to the GPU texture. Cheap enough to call
 // per paint frame; independent of the full mesh rebuild.
 void BasicTerrain::UpdateSplatmapTexture() {
-    if (splatmapTexture.id > 0) UnloadTexture(splatmapTexture);
-    Image splatImg = { 0 };
-    splatImg.data = splatmap.data();
-    splatImg.width = splatWidth;
-    splatImg.height = splatDepth;
-    splatImg.mipmaps = 1;
-    splatImg.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    splatmapTexture = LoadTextureFromImage(splatImg);
-    SetTextureWrap(splatmapTexture, TEXTURE_WRAP_CLAMP);
-    // Bilinear (not point) filtering is what actually makes layer transitions
-    // look like a smooth blend instead of hard, blocky steps between texels.
-    SetTextureFilter(splatmapTexture, TEXTURE_FILTER_BILINEAR);
+    if (splatmapTexture.id > 0 && splatmapTexture.width == splatWidth && splatmapTexture.height == splatDepth) {
+        // Same size: update the existing texture in place. Recreating a 2048x2048
+        // texture on every paint frame costs a GPU allocation (~16 MB) each time.
+        UpdateTexture(splatmapTexture, splatmap.data());
+    } else {
+        if (splatmapTexture.id > 0) UnloadTexture(splatmapTexture);
+        Image splatImg = { 0 };
+        splatImg.data = splatmap.data();
+        splatImg.width = splatWidth;
+        splatImg.height = splatDepth;
+        splatImg.mipmaps = 1;
+        splatImg.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        splatmapTexture = LoadTextureFromImage(splatImg);
+        SetTextureWrap(splatmapTexture, TEXTURE_WRAP_CLAMP);
+        // Bilinear (not point) filtering is what actually makes layer transitions
+        // look like a smooth blend instead of hard, blocky steps between texels.
+        SetTextureFilter(splatmapTexture, TEXTURE_FILTER_BILINEAR);
+    }
     splatmapDirty = false;
     paintColorDirty = true;
 }
@@ -1117,7 +1159,6 @@ void BasicTerrain::UpdateSplatmapTexture() {
 // or multi-texture binding.
 void BasicTerrain::UpdatePaintColorTexture() {
     if (splatmap.empty()) return;
-    if (paintColorTexture.id > 0) UnloadTexture(paintColorTexture);
 
     std::vector<unsigned char> colorData((size_t)splatWidth * splatDepth * 4, 0);
     for (size_t i = 0; i < (size_t)splatWidth * splatDepth; i++) {
@@ -1142,22 +1183,29 @@ void BasicTerrain::UpdatePaintColorTexture() {
         colorData[i * 4 + 3] = 255;
     }
 
-    Image img = { 0 };
-    img.data = colorData.data();
-    img.width = splatWidth;
-    img.height = splatDepth;
-    img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    paintColorTexture = LoadTextureFromImage(img);
-    SetTextureWrap(paintColorTexture, TEXTURE_WRAP_CLAMP);
-    SetTextureFilter(paintColorTexture, TEXTURE_FILTER_BILINEAR);
+    if (paintColorTexture.id > 0 && paintColorTexture.width == splatWidth && paintColorTexture.height == splatDepth) {
+        UpdateTexture(paintColorTexture, colorData.data());
+    } else {
+        if (paintColorTexture.id > 0) UnloadTexture(paintColorTexture);
+        Image img = { 0 };
+        img.data = colorData.data();
+        img.width = splatWidth;
+        img.height = splatDepth;
+        img.mipmaps = 1;
+        img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        paintColorTexture = LoadTextureFromImage(img);
+        SetTextureWrap(paintColorTexture, TEXTURE_WRAP_CLAMP);
+        SetTextureFilter(paintColorTexture, TEXTURE_FILTER_BILINEAR);
+    }
     paintColorDirty = false;
 }
 
 void BasicTerrain::Update(float dt) {
     if (meshDirty) RebuildMesh();
     else if (splatmapDirty) UpdateSplatmapTexture();
-    if (paintColorDirty) UpdatePaintColorTexture();
+    // The flat-colour paint texture is only shown by the fallback (no layer
+    // textures) path, and Draw() bakes it on demand. Baking it here as well cost
+    // a full 2048x2048 CPU pass on every paint frame even with the shader path.
 
     brushValid = false;
 
@@ -1165,6 +1213,13 @@ void BasicTerrain::Update(float dt) {
     if (!cam) return;
 
     bool overUI = ui::IsMouseOverUI();
+
+    // Skip input handling if TerrainEditor is actively editing a terrain
+    if (s_editorActive) {
+        // Still update brush preview for visual feedback, but don't handle input
+        // Track the brush across the WHOLE terrain...
+    }
+    
     Ray ray = GetMouseRay(GetMousePosition(), *cam);
     Vector3 hitPoint{};
     bool hit = Raycast(ray, nullptr, &hitPoint, nullptr);
@@ -1195,9 +1250,21 @@ void BasicTerrain::Update(float dt) {
     }
 
     // Click on terrain -> select, activate the tool panel & stamp once.
+    // A Ramp press starts a drag instead of a stamp (committed on release).
+    // Skip if TerrainEditor is handling input for this terrain
+    bool editorHandling = s_editorActive && s_active == this;
     bool pressedThisFrame = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-    if (!overUI && pressedThisFrame && !ui::WasUIClickConsumed()) {
-        if (brushValid && s_brush.tool != Tool::None) {
+    if (s_brush.tool != Tool::Ramp) rampDragging = false;   // cancel dangling drags
+
+    if (!editorHandling && !overUI && pressedThisFrame && !ui::WasUIClickConsumed()) {
+        if (brushValid && s_brush.tool == Tool::Ramp) {
+            editActive = true;
+            s_active = this;
+            if (!isSelected) ui::SetSelectedTerrain(this);
+            ui::MarkUIClickConsumed();
+            rampStart = brushWorldPos;
+            rampDragging = true;
+        } else if (brushValid && s_brush.tool != Tool::None) {
             editActive = true;
             s_active = this;
             if (!isSelected) ui::SetSelectedTerrain(this);
@@ -1222,6 +1289,13 @@ void BasicTerrain::Update(float dt) {
         }
     }
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        if (rampDragging) {
+            // Commit the ramp from the capture point to the current cursor.
+            // brushWorldPos may be slightly stale if the cursor left the
+            // footprint mid-drag; ApplyRamp clamps all grid coords anyway.
+            ApplyRamp(rampStart, brushWorldPos, s_brush.strength, s_brush.radius * 2.0f);
+            rampDragging = false;
+        }
         editActive = false;
     }
 
@@ -1230,7 +1304,9 @@ void BasicTerrain::Update(float dt) {
         editActive = false;
     }
 
-    if (editActive && !overUI && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && brushValid && s_brush.tool != Tool::None) {
+    // Skip drag handling if TerrainEditor is handling input for this terrain
+    if (editActive && !overUI && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && brushValid &&
+        s_brush.tool != Tool::None && s_brush.tool != Tool::Ramp && !editorHandling) {
         // Drag continues painting gradually (rate-based, frame-rate independent).
         Brush b = s_brush;
         if (b.tool == Tool::Paint) {
@@ -1266,6 +1342,15 @@ void BasicTerrain::Update(float dt) {
 void BasicTerrain::Draw() {
     if (model.meshCount == 0 || model.materialCount == 0) return;
 
+    // Frustum culling for the entire terrain
+    Frustum frustum = Frustum::ExtractCurrent();
+    BoundingBox bounds = GetCullBounds();
+    if (!frustum.Intersects(bounds)) {
+        gfx::IncrementCulledEntityCount(1);
+        return;
+    }
+    gfx::IncrementRenderedEntityCount(1);
+
     Material& mat = model.materials[0];
 
     // Real splat-blended path requires: a compiled terrain shader, at least one
@@ -1290,6 +1375,8 @@ void BasicTerrain::Draw() {
         for (int i = 1; i <= 4; i++) mat.maps[i].texture = Texture2D{0};
 
         DrawModel(model, position, 1.0f, WHITE);
+        gfx::IncrementDrawCallCount(1);
+        gfx::AddMeshCount(1);
         return;
     }
 
@@ -1335,6 +1422,21 @@ void BasicTerrain::Draw() {
     if (s_shaderAmbientColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientColorLoc, &ambientColor, SHADER_UNIFORM_VEC3);
 
     DrawModel(model, position, 1.0f, WHITE);
+    gfx::IncrementDrawCallCount(1);
+    gfx::AddMeshCount(1);
+}
+
+bool BasicTerrain::IsVisible(const Frustum& frustum) const {
+    return frustum.Intersects(GetCullBounds());
+}
+
+BoundingBox BasicTerrain::GetCullBounds() const {
+    float hw = width * scale * 0.5f;
+    float hd = depth * scale * 0.5f;
+    BoundingBox bounds;
+    bounds.min = { position.x - hw, minHeight, position.z - hd };
+    bounds.max = { position.x + hw, maxHeight, position.z + hd };
+    return bounds;
 }
 
 void BasicTerrain::DrawOverlay3D() {
@@ -1365,7 +1467,7 @@ void BasicTerrain::DrawOverlay3D() {
     // Show Wireframe draws the *true* full-resolution heightmap grid directly
     // from `heightmap`, not the current render mesh. The render mesh is now
     // adaptive (RebuildMesh() collapses flat regions into single quads), so
-    // DrawModelWires(model, ...) would only show whatever's left of that —
+    // DrawModelWires(model, ...) would only show whatever's left of that -
     // e.g. a couple of diagonal lines across a flat terrain. Drawing the grid
     // straight from the heightmap keeps this a reliable per-vertex reference
     // view regardless of how aggressively the render mesh has been collapsed.
@@ -1398,8 +1500,9 @@ void BasicTerrain::DrawOverlay3D() {
         rlEnd();
     }
 
-    // Brush outline that follows the terrain surface (shape-aware)
-    if (editActive && brushValid) {
+    // Brush outline that follows the terrain surface (shape-aware).
+    // The Ramp tool gets its own band preview instead of the ring.
+    if (editActive && brushValid && s_brush.tool != Tool::Ramp) {
         Color ring = Color{ 60, 140, 255, 220 };
         if (s_brush.shape == Shape::Square) {
             const int steps = 48;
@@ -1431,6 +1534,44 @@ void BasicTerrain::DrawOverlay3D() {
                 if (i > 0) DrawLine3D(prev, p, ring);
                 prev = p;
             }
+        }
+    } else if (editActive && brushValid && s_brush.tool == Tool::Ramp) {
+        // Ramp preview: a live band from the capture point to the cursor.
+        // Before the drag starts the capture point is the cursor itself, so
+        // the preview collapses to a small marker near the brush.
+        const Vector2 a = rampDragging ? rampStart : brushWorldPos;
+        const float hA = GetHeightAt(a.x, a.y);
+        const float hB = GetHeightAt(brushWorldPos.x, brushWorldPos.y);
+        const Vector3 pa = { a.x, hA + 0.4f, a.y };
+        const Vector3 pb = { brushWorldPos.x, hB + 0.4f, brushWorldPos.y };
+
+        const Color rampCol = Color{ 255, 170, 60, 230 };
+        const float hw = s_brush.radius;
+
+        // Direction + perpendicular across the band (world XZ)
+        Vector2 d = { brushWorldPos.x - a.x, brushWorldPos.y - a.y };
+        const float len = sqrtf(d.x * d.x + d.y * d.y);
+        Vector2 perp{ 0.0f, 0.0f };
+        if (len > 1e-4f) { perp.x = -d.y / len; perp.y = d.x / len; }
+
+        Vector3 q00 = { a.x + perp.x * hw, GetHeightAt(a.x + perp.x * hw, a.y + perp.y * hw) + 0.4f, a.y + perp.y * hw };
+        Vector3 q01 = { a.x - perp.x * hw, GetHeightAt(a.x - perp.x * hw, a.y - perp.y * hw) + 0.4f, a.y - perp.y * hw };
+        Vector3 q10 = { brushWorldPos.x + perp.x * hw, GetHeightAt(brushWorldPos.x + perp.x * hw, brushWorldPos.y + perp.y * hw) + 0.4f, brushWorldPos.y + perp.y * hw };
+        Vector3 q11 = { brushWorldPos.x - perp.x * hw, GetHeightAt(brushWorldPos.x - perp.x * hw, brushWorldPos.y - perp.y * hw) + 0.4f, brushWorldPos.y - perp.y * hw };
+
+        DrawLine3D(q00, q10, rampCol);
+        DrawLine3D(q10, q11, rampCol);
+        DrawLine3D(q11, q01, rampCol);
+        DrawLine3D(q01, q00, rampCol);
+        if (rampDragging) {
+            DrawLine3D(pa, pb, rampCol);
+            // Start marker: small cross on the surface
+            DrawLine3D({ pa.x - 1.5f, pa.y, pa.z }, { pa.x + 1.5f, pa.y, pa.z }, rampCol);
+            DrawLine3D({ pa.x, pa.y, pa.z - 1.5f }, { pa.x, pa.y, pa.z + 1.5f }, rampCol);
+        } else {
+            // Hovering with no drag yet: show the press-start marker
+            DrawLine3D({ pa.x - 1.5f, pa.y + 1.5f, pa.z }, { pa.x + 1.5f, pa.y - 1.5f, pa.z }, rampCol);
+            DrawLine3D({ pa.x - 1.5f, pa.y - 1.5f, pa.z }, { pa.x + 1.5f, pa.y + 1.5f, pa.z }, rampCol);
         }
     }
 }

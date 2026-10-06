@@ -50,6 +50,8 @@ void SetActiveCity(City* c) {
     s.activeCity = c;
     s.selectedNode = -1;
     s.selectedEdge = -1;
+    s.selectedBlockId = 0;
+    s.selectedBuildingSlot = -1;
     s.draggingNode = false;
     s.dragNode = -1;
     if (c) s.prevParams = c->GetParams();
@@ -145,6 +147,7 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         if (node >= 0) {
             s.selectedNode = node;
             s.selectedEdge = -1;
+            s.selectedBlockId = 0; s.selectedBuildingSlot = -1;
             s.draggingNode = true;
             s.dragNode = node;
             s.dragMoved = false;
@@ -156,8 +159,21 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         if (edge >= 0) {
             s.selectedEdge = edge;
             s.selectedNode = -1;
+            s.selectedBlockId = 0; s.selectedBuildingSlot = -1;
             g_clickConsumed = true;
             return true;
+        }
+
+        if (!g_placeRoadNode) {
+            int blockIdx = -1, slot = -1;
+            if (city->PickBuilding(ray, blockIdx, slot)) {
+                s.selectedBlockId = city->GetBlocks()[(size_t)blockIdx].id;
+                s.selectedBuildingSlot = slot;
+                s.selectedNode = -1;
+                s.selectedEdge = -1;
+                g_clickConsumed = true;
+                return true;
+            }
         }
 
         if (g_placeRoadNode) {
@@ -174,6 +190,7 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         if (IsValidPoint(hit) && city->ContainsPoint(hit)) {
             s.selectedNode = -1;
             s.selectedEdge = -1;
+            s.selectedBlockId = 0; s.selectedBuildingSlot = -1;
             g_clickConsumed = true;
             return true;
         }
@@ -355,6 +372,47 @@ void DrawCityEditorPanel() {
             s.selectedEdge = -1;
             if (n >= 0) s.selectedNode = n;
         }
+    }
+
+    // --- Building editing ---
+    if (s.selectedBlockId != 0 && s.selectedBuildingSlot >= 0) {
+        const auto& blocks = city->GetBlocks();
+        int bi = -1;
+        for (int i = 0; i < (int)blocks.size(); i++) if (blocks[(size_t)i].id == s.selectedBlockId) { bi = i; break; }
+        const bool valid = bi >= 0 && (size_t)s.selectedBuildingSlot < blocks[(size_t)bi].buildings.size();
+        ImGui::SeparatorText("Building##panel");
+        if (valid) {
+            const Building& b = blocks[(size_t)bi].buildings[(size_t)s.selectedBuildingSlot];
+            ImGui::Text("Block %llu, building %d", (unsigned long long)s.selectedBlockId, s.selectedBuildingSlot);
+            const bool hasOverride = city->HasBuildingOverride(s.selectedBlockId, s.selectedBuildingSlot);
+            float height = b.size.y;
+            if (ImGui::DragFloat("Height", &height, 0.25f, 0.5f, 400.0f)) {
+                NotifyCityEdit();
+                city->SetBuildingHeightOverride(s.selectedBlockId, s.selectedBuildingSlot, height);
+            }
+            const Vector2 prevPos = { b.center.x, b.center.z };
+            Vector2 pos = prevPos;
+            if (ImGui::DragFloat2("Position", &pos.x, 0.1f)) {
+                NotifyCityEdit();
+                // b.center already has any existing offset baked in (that's what
+                // laid it out here), so the new offset is the old one plus however
+                // far this drag just moved it.
+                const Vector2 existing = city->GetBuildingOffsetOverride(s.selectedBlockId, s.selectedBuildingSlot);
+                const Vector2 delta = Vector2Subtract(pos, prevPos);
+                city->SetBuildingOffsetOverride(s.selectedBlockId, s.selectedBuildingSlot,
+                                                Vector2Add(existing, delta));
+            }
+            ImGui::TextDisabled(hasOverride ? "Custom height/position" : "Using the procedural default");
+            if (hasOverride && ImGui::Button("Reset to default")) {
+                NotifyCityEdit();
+                city->ClearBuildingOverride(s.selectedBlockId, s.selectedBuildingSlot);
+            }
+        } else {
+            ImGui::TextDisabled("This building no longer exists (its block changed shape).");
+        }
+    } else {
+        ImGui::SeparatorText("Building##panel");
+        ImGui::TextDisabled("Click a building in the viewport to select it.");
     }
 
     // --- Stats ---

@@ -1,4 +1,4 @@
-// FlyScript SDK — C# wrapper around the engine's FlyNative_* C API.
+// FlyScript SDK - C# wrapper around the engine's FlyNative_* C API.
 // This assembly is compiled by the engine at runtime when a project is opened.
 // Game scripts reference this as a project reference and call its APIs.
 
@@ -38,11 +38,11 @@ namespace FlyScript
     // The C#-side API. All methods P/Invoke into Flyengine.exe exports.
     public static partial class Native
     {
-        // These P/Invoke calls target "Flyengine" — but the exports actually live
+        // These P/Invoke calls target "Flyengine" - but the exports actually live
         // in Flyengine.exe itself (CoreCLR is embedded in the exe, there is no
         // separate Flyengine.dll). On Windows, LoadLibrary("Flyengine") silently
         // appends ".dll" and looks for a file that doesn't exist, so without this
-        // resolver every call below throws DllNotFoundException — swallowed by
+        // resolver every call below throws DllNotFoundException - swallowed by
         // ScriptHost.Run's catch block and only visible in an attached debugger's
         // Output window, never in the in-editor console. Redirect "Flyengine" to
         // the already-loaded main program module so GetProcAddress can find the
@@ -440,7 +440,7 @@ namespace FlyScript
 
         public static GameObject Find(string name) => new GameObject(Native.FindObject(name));
 
-        // "self" — the object this script is attached to. Returns None if not available.
+        // "self" - the object this script is attached to. Returns None if not available.
         public static GameObject Self => new GameObject(Native.Self);
 
         // Properties

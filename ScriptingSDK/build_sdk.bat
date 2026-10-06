@@ -1,49 +1,73 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Build the FlyScript SDK + sample scripts into FlyScript.dll
+:: Builds the FlyScript SDK + sample scripts into FlyScript.dll
 :: Usage: build_sdk.bat [project_path]
-:: If project_path is given, copies FlyScript.dll to <project>/Scripts/
+:: If project_path is given, the result is copied to <project_path>\Scripts\,
+:: which is where CoreCLRHost looks for it.
 
-call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-if errorlevel 1 (
-    echo [build_sdk] vcvars64.bat failed
-    exit /b 1
+set "SDK_DIR=%~dp0FlyScript"
+
+:: ---------------------------------------------------------------- dotnet
+:: Hardcoding a path here meant the script only ran on the machine it was
+:: written on. Honour DOTNET_ROOT, then a dotnet already on PATH, then the
+:: standard per-user install location.
+set "DOTNET="
+
+if defined DOTNET_ROOT if exist "%DOTNET_ROOT%\dotnet.exe" set "DOTNET=%DOTNET_ROOT%\dotnet.exe"
+
+if not defined DOTNET (
+    for /f "delims=" %%d in ('where dotnet 2^>nul') do (
+        if not defined DOTNET set "DOTNET=%%d"
+    )
 )
 
-set "PATH=C:\Users\Maksym\.dotnet;%PATH%"
-set "DOTNET=C:\Users\Maksym\.dotnet\dotnet.exe"
-set "SDK_DIR=%~dp0..\ScriptingSDK\FlyScript"
+if not defined DOTNET if exist "%USERPROFILE%\.dotnet\dotnet.exe" set "DOTNET=%USERPROFILE%\.dotnet\dotnet.exe"
+
+if not defined DOTNET (
+    echo [build_sdk] error: no dotnet found.
+    echo   Install the .NET 8 SDK, or set DOTNET_ROOT to its location.
+    exit /b 1
+)
 
 if not exist "%SDK_DIR%\FlyScript.csproj" (
-    echo [build_sdk] FlyScript.csproj not found at %SDK_DIR%
+    echo [build_sdk] error: FlyScript.csproj not found at %SDK_DIR%
     exit /b 1
 )
+
+set "RID=%FLYSDK_RID%"
+if not defined RID set "RID=win-x64"
+set "OUT_DIR=%SDK_DIR%\bin\Release\net8.0\publish"
 
 echo.
 echo === Building FlyScript SDK + sample scripts ===
-"%DOTNET%" publish "%SDK_DIR%\FlyScript.csproj" -c Release -o "%SDK_DIR%\bin\Release\net8.0\publish" --nologo -r win-x64 --self-contained false
+echo   dotnet : %DOTNET%
+echo   rid    : %RID%
+echo   out    : %OUT_DIR%
+
+:: Nothing here needs the MSVC toolchain: this is a managed assembly. The old
+:: version shelled out to a hardcoded vcvars64.bat first, which meant a machine
+:: without Visual Studio could not build the C# side at all.
+
+"%DOTNET%" publish "%SDK_DIR%\FlyScript.csproj" -c Release -o "%OUT_DIR%" --nologo -r "%RID%" --self-contained false
 if errorlevel 1 (
     echo [build_sdk] dotnet publish failed
     exit /b 1
 )
 
-:: The publish output has FlyScript.dll
-set "OUTPUT_DLL=%SDK_DIR%\bin\Release\net8.0\publish\FlyScript.dll"
-if not exist "%OUTPUT_DLL%" (
-    echo [build_sdk] FlyScript.dll not found at %OUTPUT_DLL%
+set "DLL=%OUT_DIR%\FlyScript.dll"
+if not exist "%DLL%" (
+    echo [build_sdk] error: FlyScript.dll not found at %DLL%
     exit /b 1
 )
 
-echo [build_sdk] Built FlyScript.dll successfully
+echo [build_sdk] built %DLL%
 
-:: If project path provided, copy to project's Scripts/ folder
-if "%~1" NEQ "" (
-    set "PROJECT_PATH=%~1"
-    set "SCRIPTS_DIR=%PROJECT_PATH%\Scripts"
-    if not exist "%SCRIPTS_DIR%" mkdir "%SCRIPTS_DIR%"
-    copy /Y "%OUTPUT_DLL%" "%SCRIPTS_DIR%\FlyScript.dll" >nul
-    echo [build_sdk] Copied FlyScript.dll to %SCRIPTS_DIR%
+if not "%~1"=="" (
+    set "SCRIPTS_DIR=%~1\Scripts"
+    if not exist "!SCRIPTS_DIR!" mkdir "!SCRIPTS_DIR!"
+    copy /Y "%DLL%" "!SCRIPTS_DIR!\FlyScript.dll" >nul
+    echo [build_sdk] copied to !SCRIPTS_DIR!\FlyScript.dll
 )
 
 echo.

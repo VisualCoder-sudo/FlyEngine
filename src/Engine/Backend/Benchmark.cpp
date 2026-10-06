@@ -1,5 +1,6 @@
 #include "../../../include/Engine/Backend/Benchmark.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "raylib.h"
 #include "raymath.h"
 
@@ -36,24 +37,19 @@ Font g_font = { 0 };
 bool g_customFont = false;
 
 void LoadBenchmarkFont() {
-    static constexpr std::array<const char*, 3> fontPaths = {
-        "arial.ttf",
-        "../arial.ttf",
-        "C:/Windows/Fonts/arial.ttf"
-    };
-
     g_font = GetFontDefault();
     g_customFont = false;
 
-    for (const char* path : fontPaths) {
-        if (FileExists(path)) {
-            g_font = LoadFontEx(path, 32, nullptr, 0);
-            if (g_font.baseSize > 0) {
-                SetTextureFilter(g_font.texture, TEXTURE_FILTER_BILINEAR);
-                g_customFont = true;
-                break;
-            }
-        }
+    // ResolveFontPath() returns the first font that exists, already preferring
+    // one in the working directory over a system install. Previously this
+    // probed a hand-built list that had drifted from the one the editor uses.
+    const std::string& fontPath = platform::ResolveFontPath();
+    if (fontPath.empty()) return;
+
+    g_font = LoadFontEx(fontPath.c_str(), 32, nullptr, 0);
+    if (g_font.baseSize > 0) {
+        SetTextureFilter(g_font.texture, TEXTURE_FILTER_BILINEAR);
+        g_customFont = true;
     }
 }
 

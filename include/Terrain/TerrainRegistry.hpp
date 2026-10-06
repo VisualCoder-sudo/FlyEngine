@@ -4,6 +4,7 @@
 #include "TerrainTypes.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <sstream>

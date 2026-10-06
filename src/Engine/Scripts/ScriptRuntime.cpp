@@ -1,4 +1,4 @@
-// ScriptRuntime.cpp — C++ world context + lifecycle backing the C# script host.
+// ScriptRuntime.cpp - C++ world context + lifecycle backing the C# script host.
 
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Scripts/CoreCLRHost.hpp"
@@ -58,15 +58,23 @@ PlayStateHook GetPlayStateHook() { return g_playStateHook; }
 void SetActiveRuntime(ScriptRuntime* rt) { g_activeRuntime = rt; }
 ScriptRuntime* GetActiveRuntime() { return g_activeRuntime; }
 
-ScriptRuntime::ScriptRuntime() = default;
-ScriptRuntime::~ScriptRuntime() = default;
+ScriptRuntime::ScriptRuntime() {
+    runtimeMagic = RUNTIME_MAGIC;
+}
+ScriptRuntime::~ScriptRuntime() {
+    runtimeMagic = 0;
+}
+
+bool ScriptRuntime::IsValid() const {
+    return runtimeMagic == RUNTIME_MAGIC;
+}
 
 void ScriptRuntime::Update(float dt)
 {
     // The owning CoreCLRHost already forwards dt to the managed host through
     // its delegates; this runtime only needs to keep its play-state in sync,
     // which CoreCLRHost drives via OnPlayStarted()/OnPlayStopped(). Nothing to
-    // step here — scripts are ticked entirely on the managed side.
+    // step here - scripts are ticked entirely on the managed side.
     (void)dt;
 }
 

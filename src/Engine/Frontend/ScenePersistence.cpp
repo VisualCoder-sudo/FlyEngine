@@ -1,30 +1,15 @@
-// Win32 and raylib have several overlapping API names. Rename the Win32
-// declarations while importing the common-dialog API, then remove its A/W
-// aliases before raylib is included through the engine headers.
-#define WIN32_LEAN_AND_MEAN
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#include <commdlg.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
-
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Backend/ModelImport.hpp"
 #include "../../../include/Engine/PhysicsCollision.hpp"
+#include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Terrain/Terrain.hpp"
 #include "../../../include/Terrain/TerrainRegistry.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/CityGen/City.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -34,28 +19,36 @@
 
 namespace {
 
-std::string ChoosePath(bool saving) {
-    char path[MAX_PATH] = "Untitled.simplebuild";
-    OPENFILENAMEA dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFile = path;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.lpstrFilter = "Simple Engine Builds (*.simplebuild)\0*.simplebuild\0All Files\0*.*\0";
-    dialog.lpstrDefExt = "simplebuild";
-    dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (saving ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
-    return (saving ? GetSaveFileNameA(&dialog) : GetOpenFileNameA(&dialog)) ? std::string(path) : std::string();
+const std::vector<platform::FileFilter>& SceneFilters() {
+    static const std::vector<platform::FileFilter> filters = {
+        {"Simple Engine Builds", "*.simplebuild"},
+        {"All Files", "*"},
+    };
+    return filters;
 }
 
 } // namespace
 
-std::string ChooseSceneSavePath() { return ChoosePath(true); }
-std::string ChooseSceneOpenPath() { return ChoosePath(false); }
+void BeginChooseSceneSavePath(const std::string& startDir, bool keepTerrain) {
+    // The purpose tag is what tells the result handler whether the terrain
+    // entity should ride along: Ctrl+S / menu "Save" keep it, "Save As" has
+    // always dropped it.
+    const platform::DialogPurpose purpose = keepTerrain ? platform::DialogPurpose::SaveScene
+                                                        : platform::DialogPurpose::SaveSceneAs;
+    platform::BeginSaveFileDialog(purpose, "Save Scene", startDir, SceneFilters(),
+                                  "Untitled.simplebuild");
+}
+
+void BeginChooseSceneOpenPath(const std::string& startDir) {
+    platform::BeginOpenFileDialog(platform::DialogPurpose::OpenScene, "Open Scene",
+                                  startDir, SceneFilters());
+}
 
 bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& objects,
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 17\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 18\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         const Vector3& pos = *object->GetPosPtr();
@@ -190,6 +183,25 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         }
     }
 
+    // v18: BasicTerrains (all of them stored in one basicterrain.bt sidecar
+    // next to the scene/project; the .flyproj records the count so the loader
+    // restores them from that file). BasicTerrain is an Entity, not a
+    // ScatteredObject, and it never registers in terrain::GetTerrainRegistry(),
+    // so without this section it appeared in none of the counts above and a
+    // scene made of one vanished on save-close-reopen.
+    {
+        const auto& bts = BasicTerrain::GetInstances();
+        file << bts.size() << "\n";
+        if (!bts.empty() && !baseDir.empty()) {
+            std::string btFile = baseDir + "/basicterrain.bt";
+            if (BasicTerrain::WriteCollection(btFile)) {
+                ui::LogAlways("[terrain] saved %zu BasicTerrain(s) to %s", bts.size(), btFile.c_str());
+            } else {
+                ui::LogAlways("[terrain] failed to write %s", btFile.c_str());
+            }
+        }
+    }
+
     return file.good();
 }
 
@@ -213,7 +225,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 17) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 18) return false;
 
     models.clear(); // loading a scene rebuilds model containers from scratch
 
@@ -332,10 +344,16 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     }
 
     // Standalone scripts (v2 only).
-    if (version >= 2 && GetActiveRuntime()) {
+    // Only load scripts if there's a valid, active ScriptRuntime with correct magic
+    ScriptRuntime* runtime = GetActiveRuntime();
+    printf("[ScenePersistence] GetActiveRuntime() = %p, version = %d\n", (void*)runtime, version);
+    if (runtime) {
+        printf("[ScenePersistence] runtime->IsValid() = %d\n", runtime->IsValid());
+    }
+    if (version >= 2 && runtime && runtime->IsValid()) {
         size_t scriptCount = 0;
         if (file >> scriptCount) {
-            auto& scripts = GetActiveRuntime()->StandaloneScripts();
+            auto& scripts = runtime->StandaloneScripts();
             scripts.clear();
             scripts.reserve(scriptCount);
             for (size_t i = 0; i < scriptCount; ++i) {
@@ -566,6 +584,27 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             water->SetGridParams(gp);
 
             engine.AddEntity(std::move(water));
+        }
+    }
+
+    // v18: BasicTerrains stored in one basicterrain.bt sidecar. The count lets
+    // the loader ignore the section entirely when the file predates v18.
+    if (version >= 18) {
+        int basicTerrainCount = 0;
+        if (!(file >> basicTerrainCount)) return false;
+        if (basicTerrainCount > 0 && !baseDir.empty()) {
+            std::string btFile = baseDir + "/basicterrain.bt";
+            int loaded = BasicTerrain::ReadCollection(btFile, [&]() -> BasicTerrain* {
+                auto bt = std::make_unique<BasicTerrain>();
+                BasicTerrain* raw = bt.get();
+                engine.AddEntity(std::move(bt));
+                return raw;
+            });
+            if (loaded == 0) {
+                ui::LogAlways("Failed to load BasicTerrain data from: %s", btFile.c_str());
+            } else {
+                ui::LogAlways("[terrain] loaded %d BasicTerrain(s) from %s", loaded, btFile.c_str());
+            }
         }
     }
 

@@ -1,18 +1,4 @@
-// CoreCLRHost.cpp — embeds CoreCLR in the engine and drives C# scripts.
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
+// CoreCLRHost.cpp - embeds CoreCLR in the engine and drives C# scripts.
 
 #include "../../../include/Engine/Scripts/CoreCLRHost.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
@@ -23,6 +9,7 @@
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -35,12 +22,23 @@
 #include <cstdlib>
 #include <cstdint>
 
+#if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 struct CoreCLRHost::Impl
 {
-    // Module handles
-    HMODULE m_coreclr = nullptr;
+    // Handle to the loaded coreclr module. HMODULE on Windows, a dlopen()
+    // handle elsewhere; nothing outside LoadCoreCLR/Shutdown touches it.
+    void* m_coreclr = nullptr;
 
     // CoreCLR function pointers
     CoreCLRHost::coreclr_initialize_fn      m_init = nullptr;
@@ -76,6 +74,30 @@ struct CoreCLRHost::Impl
     Impl() = default;
     ~Impl() { if (m_ready) Shutdown(); }
 
+    // Compares two "8.0.3"-style runtime directory names numerically on each
+    // dot-separated component, so 10.0.0 correctly beats 8.0.0.
+    static int CompareVersionDir(const std::string& a, const std::string& b)
+    {
+        size_t ai = 0, bi = 0;
+        for (;;) {
+            size_t ae = a.find('.', ai), be = b.find('.', bi);
+            const std::string as = a.substr(ai, ae == std::string::npos ? std::string::npos : ae - ai);
+            const std::string bs = b.substr(bi, be == std::string::npos ? std::string::npos : be - bi);
+            const long av = std::strtol(as.c_str(), nullptr, 10);
+            const long bv = std::strtol(bs.c_str(), nullptr, 10);
+            if (av != bv) return av < bv ? -1 : 1;
+            const bool aDone = ae == std::string::npos;
+            const bool bDone = be == std::string::npos;
+            if (aDone || bDone) return aDone && bDone ? 0 : (aDone ? -1 : 1);
+            ai = ae + 1;
+            bi = be + 1;
+        }
+    }
+
+    static bool VersionDirGreater(const std::string& a, const std::string& b) {
+        return CompareVersionDir(a, b) > 0;
+    }
+
     void Log(const char* fmt, ...) {
         va_list args;
         va_start(args, fmt);
@@ -85,45 +107,53 @@ struct CoreCLRHost::Impl
         ui::LogAlways("[CoreCLRHost] %s", buf);
     }
 
-    // Locate coreclr.dll in the .NET runtime.
+    // Locate and load the CoreCLR runtime, then resolve its three entry points.
+    //
+    // Windows-only for now: this embeds coreclr.dll via LoadLibraryW and binds
+    // the exported coreclr_initialize/create_delegate/shutdown by name. Linux
+    // has an equivalent (libcoreclr.so via dlopen), but it also needs a
+    // different runtime search path, and shipping the editor without C#
+    // scripting is better than shipping it with a half-tested CLR host. Until
+    // that is done the host reports a clear reason and the editor runs with
+    // scripting disabled -- see the soft-fail in Initialize().
     bool LoadCoreCLR()
     {
+#if defined(_WIN32)
         // Try multiple locations for the runtime
         std::vector<fs::path> candidates;
 
         // 1. DOTNET_ROOT env var
-        const wchar_t* dotnet_home = _wgetenv(L"DOTNET_ROOT");
-        if (dotnet_home && *dotnet_home) {
-            candidates.push_back(fs::path(dotnet_home) / "shared" / "Microsoft.NETCore.App");
+        if (const char* dotnet_home = std::getenv("DOTNET_ROOT"); dotnet_home && *dotnet_home) {
+            candidates.push_back(fs::u8path(dotnet_home) / "shared" / "Microsoft.NETCore.App");
         }
 
         // 2. User profile .dotnet (from our SDK install)
-        const wchar_t* user_profile = _wgetenv(L"USERPROFILE");
-        if (user_profile && *user_profile) {
-            candidates.push_back(fs::path(user_profile) / ".dotnet" / "shared" / "Microsoft.NETCore.App");
+        if (const char* user_profile = std::getenv("USERPROFILE"); user_profile && *user_profile) {
+            candidates.push_back(fs::u8path(user_profile) / ".dotnet" / "shared" / "Microsoft.NETCore.App");
         }
 
         // 3. Program Files dotnet (system-wide install)
-        const wchar_t* program_files = _wgetenv(L"ProgramFiles");
-        if (program_files && *program_files) {
-            candidates.push_back(fs::path(program_files) / "dotnet" / "shared" / "Microsoft.NETCore.App");
+        if (const char* program_files = std::getenv("ProgramFiles"); program_files && *program_files) {
+            candidates.push_back(fs::u8path(program_files) / "dotnet" / "shared" / "Microsoft.NETCore.App");
         }
-
-        // 4. Fallback to known path from session
-        candidates.push_back(L"C:\\Users\\Maksym\\.dotnet\\shared\\Microsoft.NETCore.App");
 
         m_runtime_dir.clear();
         m_coreclr_path.clear();
 
-        for (auto& base : candidates) {
-            if (!fs::exists(base)) continue;
-            // Find the latest version directory
+        for (const auto& base : candidates) {
+            std::error_code ec;
+            if (!fs::exists(base, ec)) continue;
+            // Find the latest version directory. .NET uses SemVer, so a plain
+            // string compare orders 8.0.0 before 10.0.0 wrongly; the runtime
+            // directory names are all the same length in practice, so this is
+            // good enough, but sort numerically on the leading component to be
+            // safe.
             fs::path best;
-            for (auto& ent : fs::directory_iterator(base)) {
-                if (ent.is_directory()) {
-                    if (best.empty() || ent.path().filename() > best.filename()) {
-                        best = ent.path();
-                    }
+            for (const auto& ent : fs::directory_iterator(base, ec)) {
+                if (!ent.is_directory(ec)) continue;
+                if (best.empty() || VersionDirGreater(ent.path().filename().string(),
+                                                     best.filename().string())) {
+                    best = ent.path();
                 }
             }
             if (!best.empty() && fs::exists(best / "coreclr.dll")) {
@@ -136,14 +166,14 @@ struct CoreCLRHost::Impl
         if (m_coreclr_path.empty()) {
             std::ostringstream oss;
             oss << "CoreCLR runtime not found. Tried: ";
-            for (auto& c : candidates) oss << c.string() << "; ";
+            for (const auto& c : candidates) oss << c.string() << "; ";
             m_error = oss.str();
             Log("ERROR: %s", m_error.c_str());
             return false;
         }
 
-        Log("Using runtime: %ls", m_runtime_dir.c_str());
-        Log("Loading coreclr.dll from: %ls", m_coreclr_path.c_str());
+        Log("Using runtime: %s", m_runtime_dir.string().c_str());
+        Log("Loading coreclr.dll from: %s", m_coreclr_path.string().c_str());
 
         m_coreclr = LoadLibraryW(m_coreclr_path.c_str());
         if (!m_coreclr) {
@@ -164,6 +194,14 @@ struct CoreCLRHost::Impl
 
         Log("CoreCLR functions resolved successfully");
         return true;
+#else
+        m_error =
+            "C# scripting requires Windows: the CoreCLR host is not implemented on this "
+            "platform. Build with -DFLYENGINE_ENABLE_CSHARP=OFF on Windows, or run without "
+            "scripting on this one.";
+        Log("WARNING: %s", m_error.c_str());
+        return false;
+#endif
     }
 
     // Build the Trusted Platform Assemblies (TPA) list.
@@ -179,7 +217,7 @@ struct CoreCLRHost::Impl
                     tpa.push_back(ent.path().string());
                 }
             }
-            Log("TPA: added %zu runtime DLLs from %ls", tpa.size(), m_runtime_dir.c_str());
+            Log("TPA: added %zu runtime DLLs from %s", tpa.size(), m_runtime_dir.string().c_str());
         }
 
         // FlyScript.dll (the C# SDK + user scripts compiled together)
@@ -187,9 +225,9 @@ struct CoreCLRHost::Impl
         if (fs::exists(flyscript_dll)) {
             tpa.push_back(flyscript_dll.string());
             m_last_asm_write = fs::last_write_time(flyscript_dll);
-            Log("TPA: added FlyScript.dll: %ls", flyscript_dll.c_str());
+            Log("TPA: added FlyScript.dll: %s", flyscript_dll.string().c_str());
         } else {
-            Log("WARNING: FlyScript.dll not found at %ls", flyscript_dll.c_str());
+            Log("WARNING: FlyScript.dll not found at %s", flyscript_dll.string().c_str());
         }
 
         // Any other DLLs the dotnet build copied next to FlyScript.dll (e.g. the
@@ -209,7 +247,7 @@ struct CoreCLRHost::Impl
                 tpa.push_back(ent.path().string());
                 ++added;
             }
-            if (added > 0) Log("TPA: added %d project DLL(s) from %ls", added, scripts_dir.c_str());
+            if (added > 0) Log("TPA: added %d project DLL(s) from %s", added, scripts_dir.string().c_str());
         }
 
         // Join with semicolons
@@ -277,7 +315,9 @@ struct CoreCLRHost::Impl
             m_clr_handle = nullptr;
         }
         if (m_coreclr) {
+#if defined(_WIN32)
             FreeLibrary(m_coreclr);
+#endif
             m_coreclr = nullptr;
         }
         m_ready = false;
@@ -288,31 +328,20 @@ struct CoreCLRHost::Impl
                                int propertyCount, const char* propertyKeys[], const char* propertyValues[],
                                void** hostHandle, unsigned int* domainId)
     {
-        __try {
-            return fn(exePath, appDomainFriendlyName, propertyCount, propertyKeys, propertyValues, hostHandle, domainId);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return 0xC0000005; // Access violation code
-        }
+        FLY_TRY { return fn(exePath, appDomainFriendlyName, propertyCount, propertyKeys, propertyValues, hostHandle, domainId); } FLY_CATCH(return 0xC0000005;)  // Access violation code
     }
 
     static int CallCreateDelegate(coreclr_create_delegate_fn fn, void* hostHandle, unsigned int domainId,
                                   const char* entryPointAssemblyName, const char* entryPointTypeName,
                                   const char* entryPointMethodName, void** delegate)
     {
-        __try {
-            return fn(hostHandle, domainId, entryPointAssemblyName, entryPointTypeName, entryPointMethodName, delegate);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return 0xC0000005;
-        }
+        FLY_TRY { return fn(hostHandle, domainId, entryPointAssemblyName, entryPointTypeName, entryPointMethodName, delegate); } FLY_CATCH(return 0xC0000005;)
     }
 
     static void CallCoreCLRShutdown(coreclr_shutdown_fn fn, void* hostHandle)
     {
-        __try {
-            fn(hostHandle);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            // Ignore shutdown crashes
-        }
+        // Ignore shutdown crashes
+        FLY_TRY { fn(hostHandle); } FLY_CATCH()
     }
 
     bool ShouldReloadAssembly(const fs::path& scripts_dir) const
@@ -364,7 +393,7 @@ bool CoreCLRHost::Initialize(const std::string& projectPath)
 
     // Ensure Scripts directory exists
     if (!fs::exists(scripts_dir)) {
-        m_impl->Log("Scripts directory not found, creating: %ls", scripts_dir.c_str());
+        m_impl->Log("Scripts directory not found, creating: %s", scripts_dir.string().c_str());
         std::error_code ec;
         fs::create_directories(scripts_dir, ec);
         if (ec) {
@@ -403,39 +432,36 @@ bool CoreCLRHost::Initialize(const std::string& projectPath)
 // SEH wrapper for calling the script run delegate
 static void CallScriptRun(CoreCLRHost::ScriptRunDelegate fn, void* host, float dt, int scriptId)
 {
-    __try {
-        fn(host, dt, scriptId);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Logged by caller
-    }
+    // Logged by caller
+    FLY_TRY { fn(host, dt, scriptId); } FLY_CATCH()
 }
 
 // SEH wrappers for arg-less and index-based lifecycle delegates.
 static void CallVoidDelegate(CoreCLRHost::VoidScriptDelegate fn, void* host)
 {
-    __try { fn(host); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    FLY_TRY { fn(host); } FLY_CATCH()
 }
 static void CallObjectDelegate(CoreCLRHost::ObjectScriptDelegate fn, void* host, unsigned long long handle, const char* typeName)
 {
-    __try { fn(host, handle, typeName); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    FLY_TRY { fn(host, handle, typeName); } FLY_CATCH()
 }
 static void CallStandaloneDelegate(CoreCLRHost::StandaloneScriptDelegate fn, void* host, int index, const char* typeName)
 {
-    __try { fn(host, index, typeName); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    FLY_TRY { fn(host, index, typeName); } FLY_CATCH()
 }
 
 // Call C# to enumerate IScript type names into `buffer`. Returns bytes written
 // or -1 on failure/severe (SEH). The delegate writes NUL-terminated UTF-8.
 static int CallScriptTypes(CoreCLRHost::ScriptTypesDelegate fn, void* host, void* buffer, int capacity)
 {
-    __try { return fn(host, buffer, capacity); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    FLY_TRY { return fn(host, buffer, capacity); } FLY_CATCH(return -1;)
 }
 
 // Call C# to evaluate a console snippet, writing the result/error text into
 // `buffer`. Returns 1 on success, 0 on C# error, -1 on severe failure (SEH).
 static int CallConsoleExecute(CoreCLRHost::ConsoleExecuteDelegate fn, void* host, const char* code, void* buffer, int capacity)
 {
-    __try { return fn(host, const_cast<char*>(code), buffer, capacity); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    FLY_TRY { return fn(host, const_cast<char*>(code), buffer, capacity); } FLY_CATCH(return -1;)
 }
 
 void CoreCLRHost::Update(float dt)
@@ -476,7 +502,7 @@ void CoreCLRHost::Shutdown()
     m_impl->Shutdown();
 }
 
-bool CoreCLRHost::IsReady() const { return m_impl->m_ready; }
+bool CoreCLRHost::IsReady() const { return m_impl && m_impl->m_ready; }
 const std::string& CoreCLRHost::GetError() const { return m_impl->m_error; }
 
 bool CoreCLRHost::LoadScriptsAssembly(const std::string& assemblyPath)

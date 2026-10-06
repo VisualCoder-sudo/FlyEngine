@@ -254,6 +254,8 @@ void City::ClearGraph() {
     nodes.clear();
     edges.clear();
     blocks.clear();
+    buildingOverrides.clear();
+    nextBlockId = 1;
     ClearGeometry();
 }
 
@@ -371,6 +373,12 @@ void City::StartRebuildJob() {
     job->work->params = params;
     job->work->nodes = nodes;
     job->work->edges = edges;
+    // Carried over so the worker's ComputeBlocks() can match its freshly built
+    // blocks back to these ids (by node overlap) and so its building overrides
+    // pass has the same map AdoptRebuild will keep.
+    job->work->blocks = blocks;
+    job->work->nextBlockId = nextBlockId;
+    job->work->buildingOverrides = buildingOverrides;
     job->requestId = rebuildRequestId;
     City* w = job->work.get();
     job->fut = std::async(std::launch::async, [w]() { w->ComputeAllCPU(); });
@@ -419,6 +427,7 @@ void City::AdoptRebuild(City& w) {
     DestroyAllTiles();
     for (size_t i = 0; i < nodes.size(); i++) nodes[i].junction = w.nodes[i].junction;
     blocks = std::move(w.blocks);
+    nextBlockId = std::max(nextBlockId, w.nextBlockId);
     spurSegs = std::move(w.spurSegs);
     nodeEdges = std::move(w.nodeEdges);
     nodeBlocks = std::move(w.nodeBlocks);
@@ -482,6 +491,17 @@ std::vector<int> City::AngularRing(int v) const {
 }
 
 void City::ComputeBlocks() {
+    // Match new blocks back to old ones by majority node-index overlap, so a
+    // block's persistent id (and therefore its building overrides) survives a
+    // rebuild as long as that block's node set is still mostly the same --
+    // even though `blocks` itself is rebuilt from scratch below. A node index
+    // stays meaningful here because ComputeBlocks never mutates `nodes` itself.
+    std::unordered_map<int, std::vector<uint64_t>> nodeToOldBlock;
+    std::unordered_map<uint64_t, int> oldBlockSize;
+    for (const Block& ob : blocks) {
+        oldBlockSize[ob.id] = (int)ob.nodes.size();
+        for (int idx : ob.nodes) nodeToOldBlock[idx].push_back(ob.id);
+    }
     blocks.clear();
     std::vector<Vector2> pos;
     pos.reserve(nodes.size());
@@ -528,6 +548,26 @@ void City::ComputeBlocks() {
         std::vector<Vector2> poly;
         for (int idx : face) poly.push_back(nodes[idx].pos);
         b.area = fabsf(citygeom::PolygonArea(poly));
+
+        // Best-overlap old block, if any: tally candidate old ids seen through
+        // this block's own nodes, then require a majority overlap both ways so
+        // a block that has genuinely changed shape doesn't inherit a stale id
+        // (and with it, overrides meant for a differently-shaped block).
+        std::unordered_map<uint64_t, int> overlap;
+        for (int idx : face) {
+            auto it = nodeToOldBlock.find(idx);
+            if (it == nodeToOldBlock.end()) continue;
+            for (uint64_t oid : it->second) overlap[oid]++;
+        }
+        uint64_t bestId = 0; int bestCount = 0;
+        for (const auto& kv : overlap) if (kv.second > bestCount) { bestCount = kv.second; bestId = kv.first; }
+        const int newSize = (int)face.size();
+        const int oldSize = bestId ? oldBlockSize[bestId] : 0;
+        if (bestId != 0 && bestCount * 2 >= newSize && bestCount * 2 >= oldSize) {
+            b.id = bestId;
+        } else {
+            b.id = nextBlockId++;
+        }
         blocks.push_back(std::move(b));
     }
 
@@ -780,6 +820,113 @@ void City::LayoutBlock(Block& block) {
             }
         }
     }
+    ApplyBuildingOverrides(block);
+}
+
+// Reapplies any per-building edits on top of block.buildings, which LayoutBlock
+// just filled from scratch. `slot` is each building's index in that vector, so
+// this only does anything for a block whose overrides map still has entries at
+// slots that exist -- an override pointing past the end (the block now has
+// fewer buildings) is left in the map rather than dropped, in case a later
+// node move restores the earlier shape.
+void City::ApplyBuildingOverrides(Block& block) {
+    if (block.id == 0 || buildingOverrides.empty()) return;
+    for (int slot = 0; slot < (int)block.buildings.size(); slot++) {
+        auto it = buildingOverrides.find(OverrideKey(block.id, slot));
+        if (it == buildingOverrides.end()) continue;
+        const BuildingOverride& ov = it->second;
+        Building& b = block.buildings[(size_t)slot];
+        if (ov.hasHeight) {
+            const float baseY = b.center.y - b.size.y * 0.5f; // pad surface, unaffected by height
+            b.size.y = std::max(ov.height, 0.5f);
+            b.center.y = baseY + b.size.y * 0.5f;
+        }
+        if (ov.hasOffset) {
+            b.center.x += ov.posOffset.x;
+            b.center.z += ov.posOffset.y;
+        }
+    }
+}
+
+// Rebuilds the ONE tile that block `blockId` lives in, right after its
+// buildings vector was touched by an override -- otherwise a change here would
+// sit in `blocks` only, invisible, since the tile's road mesh and (crucially)
+// its GPU instance transforms are a separate baked copy that only Draw() reads
+// and only a tile rebuild refreshes. This is why overrides weren't previewing
+// or, less obviously, weren't the geometry actually being saved either: a
+// save writes `blocks`/overrides directly, so that part was always correct --
+// only the rendered/exported tile mesh was stale until the next full rebuild.
+void City::RefreshBuildingTile(uint64_t blockId) {
+    for (int bi = 0; bi < (int)blocks.size(); bi++) {
+        if (blocks[(size_t)bi].id != blockId) continue;
+        if ((size_t)bi >= blockTile.size()) return;
+        const int64_t key = blockTile[(size_t)bi];
+        auto it = tiles.find(key);
+        if (it != tiles.end()) BuildTile(it->second);
+        return;
+    }
+}
+
+void City::SetBuildingHeightOverride(uint64_t blockId, int slot, float height) {
+    if (blockId == 0 || slot < 0) return;
+    BuildingOverride& ov = buildingOverrides[OverrideKey(blockId, slot)];
+    ov.hasHeight = true;
+    ov.height = std::max(height, 0.5f);
+    for (Block& b : blocks) if (b.id == blockId) { ApplyBuildingOverrides(b); break; }
+    RefreshBuildingTile(blockId);
+}
+
+void City::SetBuildingOffsetOverride(uint64_t blockId, int slot, Vector2 offset) {
+    if (blockId == 0 || slot < 0) return;
+    BuildingOverride& ov = buildingOverrides[OverrideKey(blockId, slot)];
+    ov.hasOffset = true;
+    ov.posOffset = offset;
+    for (Block& b : blocks) if (b.id == blockId) { ApplyBuildingOverrides(b); break; }
+    RefreshBuildingTile(blockId);
+}
+
+void City::ClearBuildingOverride(uint64_t blockId, int slot) {
+    buildingOverrides.erase(OverrideKey(blockId, slot));
+    // Relay out the block from scratch so the cleared building goes back to its
+    // procedural default instead of keeping the last-applied override values.
+    for (Block& b : blocks) if (b.id == blockId) { LayoutBlock(b); break; }
+    RefreshBuildingTile(blockId);
+}
+
+bool City::HasBuildingOverride(uint64_t blockId, int slot) const {
+    return buildingOverrides.count(OverrideKey(blockId, slot)) != 0;
+}
+
+Vector2 City::GetBuildingOffsetOverride(uint64_t blockId, int slot) const {
+    auto it = buildingOverrides.find(OverrideKey(blockId, slot));
+    if (it == buildingOverrides.end() || !it->second.hasOffset) return Vector2{ 0.0f, 0.0f };
+    return it->second.posOffset;
+}
+
+bool City::PickBuilding(const Ray& ray, int& outBlock, int& outSlot, float* outDist) const {
+    int bestBlock = -1, bestSlot = -1;
+    float bestDist = 1e30f;
+    for (int bi = 0; bi < (int)blocks.size(); bi++) {
+        const Block& block = blocks[(size_t)bi];
+        for (int si = 0; si < (int)block.buildings.size(); si++) {
+            const Building& b = block.buildings[(size_t)si];
+            const BoundingBox box{
+                { b.center.x - b.size.x * 0.5f, b.center.y - b.size.y * 0.5f, b.center.z - b.size.z * 0.5f },
+                { b.center.x + b.size.x * 0.5f, b.center.y + b.size.y * 0.5f, b.center.z + b.size.z * 0.5f },
+            };
+            RayCollision col = GetRayCollisionBox(ray, box);
+            if (col.hit && col.distance < bestDist) {
+                bestDist = col.distance;
+                bestBlock = bi;
+                bestSlot = si;
+            }
+        }
+    }
+    if (bestBlock < 0) return false;
+    outBlock = bestBlock;
+    outSlot = bestSlot;
+    if (outDist) *outDist = bestDist;
+    return true;
 }
 
 // Builds (or rebuilds) one tile: road strips / junction plates for its edges and
@@ -1706,20 +1853,33 @@ bool City::WriteToStream(std::ostream& out) const {
     out << nodes.size() << '\n';
     for (const auto& n : nodes)
         out << n.pos.x << ' ' << n.pos.y << ' ' << (n.boundary ? 1 : 0) << '\n';
+
+    // Block ids + building overrides. Persisted so ComputeBlocks() can match
+    // its freshly extracted faces back to these ids by node overlap on load
+    // (see ComputeBlocks), which is what lets an override still find "building
+    // 7 of block 12" after the city round-trips through a file. Block ids
+    // themselves are otherwise only ever assigned in memory.
+    out << "BLOCKS " << blocks.size() << ' ' << nextBlockId << '\n';
+    for (const Block& b : blocks) {
+        out << b.id << ' ' << b.nodes.size();
+        for (int idx : b.nodes) out << ' ' << idx;
+        out << '\n';
+    }
+    out << "OVERRIDES " << buildingOverrides.size() << '\n';
+    for (const auto& kv : buildingOverrides) {
+        const uint64_t blockId = kv.first >> 20;
+        const int slot = (int)(kv.first & 0xFFFFF);
+        const BuildingOverride& ov = kv.second;
+        out << blockId << ' ' << slot << ' '
+            << (ov.hasHeight ? 1 : 0) << ' ' << ov.height << ' '
+            << (ov.hasOffset ? 1 : 0) << ' ' << ov.posOffset.x << ' ' << ov.posOffset.y << '\n';
+    }
     return out.good();
 }
 
 bool City::ReadFromStream(std::istream& in) {
-    // Caps keep malformed/corrupt payloads from causing huge allocations or
-    // out-of-range indexing downstream (RebuildAll and the geometry builders
-    // assume the graph is consistent).
-    constexpr size_t kMaxNameLen = 4096;
-    constexpr size_t kMaxNodes = 100000;
-    constexpr size_t kMaxEdges = 200000;
-
     size_t nameLen = 0;
     if (!(in >> nameLen)) return false;
-    if (nameLen > kMaxNameLen) return false;
     in.ignore();
     if (nameLen > 0) {
         name.resize(nameLen);
@@ -1747,48 +1907,55 @@ bool City::ReadFromStream(std::istream& in) {
     } else {
         try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
     }
-
-    p.gridX = std::clamp(p.gridX, 2, 64);
-    p.gridZ = std::clamp(p.gridZ, 2, 64);
-    p.cellSize = std::clamp(p.cellSize, 1.0f, 1000.0f);
-    p.lanes = std::clamp(p.lanes, 1, 8);
-    p.noiseOctaves = std::clamp(p.noiseOctaves, 1, 16);
-    p.cornerRadius = std::clamp(p.cornerRadius, 0.0f, 100.0f);
     params = p;
 
-    if (edgeCount > kMaxEdges) return false;
-    if (edgeCount > 0) edges.resize(edgeCount);
-    for (size_t i = 0; i < edgeCount; i++) {
-        int a = 0, b = 0, lanes = 0;
-        if (!(in >> a >> b >> lanes)) return false;
-        edges[i].a = a;
-        edges[i].b = b;
-        edges[i].lanes = std::clamp(lanes, 0, 8);
-    }
+    edges.resize(edgeCount);
+    for (size_t i = 0; i < edgeCount; i++)
+        if (!(in >> edges[i].a >> edges[i].b >> edges[i].lanes)) return false;
 
     size_t nodeCount = 0;
     if (!(in >> nodeCount)) return false;
-    if (nodeCount > kMaxNodes) return false;
-    if (nodeCount > 0) nodes.resize(nodeCount);
+    nodes.resize(nodeCount);
     for (size_t i = 0; i < nodeCount; i++) {
-        float x = 0.0f, y = 0.0f;
         int boundary = 0;
-        if (!(in >> x >> y >> boundary)) return false;
-        nodes[i].pos.x = x;
-        nodes[i].pos.y = y;
+        if (!(in >> nodes[i].pos.x >> nodes[i].pos.y >> boundary)) return false;
         nodes[i].boundary = (boundary != 0);
     }
 
-    if (in.fail()) return false;
-
-    // Validate every edge's endpoints against the actual node count; out-of-range
-    // indices would corrupt the planar graph and crash the face extraction.
-    for (const RoadEdge& e : edges) {
-        if (e.a < 0 || e.b < 0 || (size_t)e.a >= nodeCount || (size_t)e.b >= nodeCount) {
-            edges.clear();
-            nodes.clear();
-            return false;
+    // Optional BLOCKS/OVERRIDES sections (absent in files saved before per-
+    // building overrides). Seed `blocks` with just enough (id + node list) for
+    // ComputeBlocks()'s matching pass to recover the same ids below; every
+    // other Block field is filled in by the rebuild that follows.
+    blocks.clear();
+    buildingOverrides.clear();
+    nextBlockId = 1;
+    std::streampos beforeTag = in.tellg();
+    std::string tag;
+    if (in >> tag && tag == "BLOCKS") {
+        size_t blockCount = 0;
+        if (!(in >> blockCount >> nextBlockId)) return false;
+        blocks.resize(blockCount);
+        for (size_t i = 0; i < blockCount; i++) {
+            size_t nc = 0;
+            if (!(in >> blocks[i].id >> nc)) return false;
+            blocks[i].nodes.resize(nc);
+            for (size_t k = 0; k < nc; k++) if (!(in >> blocks[i].nodes[k])) return false;
         }
+        if (!(in >> tag) || tag != "OVERRIDES") return false;
+        size_t ovCount = 0;
+        if (!(in >> ovCount)) return false;
+        for (size_t i = 0; i < ovCount; i++) {
+            uint64_t blockId = 0; int slot = 0, hasH = 0, hasP = 0;
+            BuildingOverride ov;
+            if (!(in >> blockId >> slot >> hasH >> ov.height >> hasP >> ov.posOffset.x >> ov.posOffset.y))
+                return false;
+            ov.hasHeight = (hasH != 0);
+            ov.hasOffset = (hasP != 0);
+            buildingOverrides[OverrideKey(blockId, slot)] = ov;
+        }
+    } else {
+        in.clear();
+        in.seekg(beforeTag); // pre-override file: nothing to seed, rewind harmlessly
     }
 
     RebuildAll();

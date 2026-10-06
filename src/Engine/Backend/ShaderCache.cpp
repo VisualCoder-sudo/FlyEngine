@@ -1,17 +1,3 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
-
 #include "../../../include/Engine/Backend/ShaderCache.hpp"
 #include "raylib.h"
 #include "rlgl.h"

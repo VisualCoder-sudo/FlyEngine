@@ -2,6 +2,7 @@
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Backend/CameraController.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../include/Terrain/Terrain.hpp"
 #include "../../../include/Terrain/TerrainRegistry.hpp"
@@ -26,23 +27,13 @@
 #include <sstream>
 #include <string>
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#include <commdlg.h>
-#include <shellapi.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
-#endif
+static const std::vector<platform::FileFilter>& MeshFilters() {
+    static const std::vector<platform::FileFilter> filters = {
+        {"Model Files", "*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.vox;*.m3d"},
+        {"All Files", "*"},
+    };
+    return filters;
+}
 
 static float WrapDeg(float a) {
     a = fmodf(a + 180.0f, 360.0f);
@@ -296,7 +287,7 @@ bool AxisScaleGrabbable(Vector3 pos, Vector3 size, Vector3 rotation, int axis, c
 
 } // namespace
 
-// Water body move handle length — capped to keep gizmo proportional.
+// Water body move handle length - capped to keep gizmo proportional.
 static float WaterMoveHandleLen(const Vector3& size, int axis) {
     float base = MoveHandleLen(size, axis);
     return fminf(base, 4.0f);
@@ -787,7 +778,72 @@ int ObjectInteractionManager::PickHandle(Vector2 mouse) const {
     return -1;
 }
 
+// Handles results from the non-blocking file pickers.
+//
+// This must run unconditionally once per frame, before any of Update()'s
+// early returns: the pickers are started from menu and button handlers, and
+// their results can arrive many frames later. PollDialogResult() hands the
+// result to whichever caller owns the pending dialog's purpose tag and to
+// nobody else, so it is safe for ui.cpp to be polling at the same time.
+void ObjectInteractionManager::PumpDialogs() {
+    // Which purpose is in flight decides whether the terrain entity rides
+    // along. Ctrl+S and menu "Save" (DialogPurpose::SaveScene) must keep it;
+    // "Save As" (SaveSceneAs) has always dropped it.
+    const platform::DialogPurpose inFlight = platform::PendingDialogPurpose();
+
+    std::string picked;
+
+    if (platform::PollDialogResult({platform::DialogPurpose::SaveScene,
+                                    platform::DialogPurpose::SaveSceneAs}, picked)) {
+        if (picked.empty()) return;   // cancelled
+        terrain::Terrain* terrainPtr = nullptr;
+        if (inFlight == platform::DialogPurpose::SaveScene) {
+            for (auto& entity : engine.GetEntities()) {
+                if (auto* t = dynamic_cast<terrain::Terrain*>(entity.get())) {
+                    terrainPtr = t;
+                    break;
+                }
+            }
+        }
+        ::SaveSceneToFile(objects, models, picked, terrainPtr);
+        return;
+    }
+
+    if (platform::PollDialogResult({platform::DialogPurpose::OpenScene}, picked)) {
+        if (picked.empty()) return;   // cancelled
+
+        // Load first so a bad/cancelled file never destroys the current build.
+        const size_t previousObjectCount = objects.size();
+        const std::vector<city::City*> oldCities = city::GetCityRegistry().GetCities();
+        if (!::LoadSceneFromFile(engine, objects, models, picked, physicsSim)) return;
+
+        undo.Clear();
+        ui::SetSelection({}, nullptr);
+        contextMenuTarget = nullptr;
+        CleanupPendingImports();
+        for (size_t i = 0; i < previousObjectCount; ++i) engine.RemoveEntity(objects[i]);
+        objects.erase(objects.begin(), objects.begin() + previousObjectCount);
+
+        // The previous scene's cities are gone; the scene file registered the
+        // fresh ones (loaded from the city.city sidecar).
+        for (auto* c : oldCities) {
+            if (!c) continue;
+            city::GetCityRegistry().Unregister(c);
+            c->alive = false;
+        }
+        city::SetActiveCity(nullptr);
+        return;
+    }
+
+    if (platform::PollDialogResult({platform::DialogPurpose::ImportMesh}, picked)) {
+        FinishMeshImport(picked);
+    }
+}
+
 void ObjectInteractionManager::Update(float dt) {
+    // Before anything that can return early: a dialog result that arrives
+    // while the user is mid-click must not be starved for a frame.
+    PumpDialogs();
 
     if (ui::IsPlayActive()) return; // editing disabled while physics runs
 
@@ -820,17 +876,9 @@ void ObjectInteractionManager::Update(float dt) {
             }
             project::SaveProjectFile(current.path, objects, models, terrain);
         } else {
-            std::string path = ::ChooseSceneSavePath();
-            if (!path.empty()) {
-                terrain::Terrain* terrainPtr = nullptr;
-                for (auto& entity : engine.GetEntities()) {
-                    if (auto* t = dynamic_cast<terrain::Terrain*>(entity.get())) {
-                        terrainPtr = t;
-                        break;
-                    }
-                }
-                ::SaveSceneToFile(objects, models, path, terrainPtr);
-            }
+            // Non-blocking picker; PumpDialogs() handles the result and
+            // keeps the terrain entity, as this path always did.
+            ::BeginChooseSceneSavePath(current.path, /*keepTerrain=*/true);
         }
         return;
     }
@@ -982,52 +1030,30 @@ void ObjectInteractionManager::Update(float dt) {
                 ui::LogAlways("Failed to save project: %s", current.path.c_str());
             }
         } else {
-            std::string path = ::ChooseSceneSavePath();
-            if (!path.empty()) {
-                terrain::Terrain* terrainPtr = nullptr;
-                for (auto& entity : engine.GetEntities()) {
-                    if (auto* t = dynamic_cast<terrain::Terrain*>(entity.get())) {
-                        terrainPtr = t;
-                        break;
-                    }
-                }
-                ::SaveSceneToFile(objects, models, path, terrainPtr);
-            }
+            ::BeginChooseSceneSavePath(project::GetCurrentProject().path,
+                                       /*keepTerrain=*/true);
         }
         return;
     }
 
     if (action == ui::MenuAction::SaveAs) {
-        std::string path = ::ChooseSceneSavePath();
-        if (!path.empty()) ::SaveSceneToFile(objects, models, path);
+        // "Save As" has always written the scene without the terrain entity.
+        ::BeginChooseSceneSavePath(project::GetCurrentProject().path,
+                                   /*keepTerrain=*/false);
         return;
     }
 
     if (action == ui::MenuAction::OpenScene) {
-        std::string path = ::ChooseSceneOpenPath();
-        if (path.empty()) return;
-
-        // Load first so a bad/cancelled file never destroys the current build.
-        const size_t previousObjectCount = objects.size();
-        const std::vector<city::City*> oldCities = city::GetCityRegistry().GetCities();
-        if (!::LoadSceneFromFile(engine, objects, models, path, physicsSim)) return;
-
-        undo.Clear();
-        ui::SetSelection({}, nullptr);
-        contextMenuTarget = nullptr;
-        CleanupPendingImports();
-        for (size_t i = 0; i < previousObjectCount; ++i) engine.RemoveEntity(objects[i]);
-        objects.erase(objects.begin(), objects.begin() + previousObjectCount);
-
-        // The previous scene's cities are gone; the scene file registered the
-        // fresh ones (loaded from the city.city sidecar).
-        for (auto* c : oldCities) {
-            if (!c) continue;
-            city::GetCityRegistry().Unregister(c);
-            c->alive = false;
-        }
-        city::SetActiveCity(nullptr);
+        ::BeginChooseSceneOpenPath(project::GetCurrentProject().path);
         return;
+    }
+
+    // The mesh import picker is non-blocking too.
+    {
+        std::string picked;
+        if (platform::PollDialogResult({platform::DialogPurpose::ImportMesh}, picked)) {
+            FinishMeshImport(picked);
+        }
     }
 
     if (action == ui::MenuAction::DeleteObject) {
@@ -1391,7 +1417,7 @@ void ObjectInteractionManager::Update(float dt) {
         }
     } else if (!primary || ui::GetActiveTool() == ui::TransformTool::Select ||
                ui::GetActiveTool() == ui::TransformTool::Terrain) {
-        // No water selected or tool doesn't apply — fall through to ScatteredObject logic
+        // No water selected or tool doesn't apply - fall through to ScatteredObject logic
     }
 
     if (primary && ui::GetActiveTool() != ui::TransformTool::Select) {
@@ -1819,25 +1845,21 @@ void ObjectInteractionManager::DrawOverlay3D() {
     }
 }
 
+// The mesh picker is non-blocking (it may shell out to zenity/kdialog), so
+// ImportMesh() only starts it; FinishMeshImport() runs on a later frame once
+// PollDialogResult reports the chosen path. An empty path means cancelled.
 void ObjectInteractionManager::ImportMesh() {
-    char path[MAX_PATH] = "";
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFile = path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = "Model Files\0*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.vox;*.m3d\0All Files\0*.*\0";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameA(&ofn)) return;
-
-    std::string modelPath = path;
-    std::string ext = modelPath.substr(modelPath.find_last_of('.') + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-    // Determine project folder
     const project::Info& current = project::GetCurrentProject();
-    std::string projectDir = current.path.empty() ? "" : current.path;
+    platform::BeginOpenFileDialog(platform::DialogPurpose::ImportMesh, "Import Mesh",
+                                  current.path, MeshFilters());
+}
 
-    // Import the model into the project
+void ObjectInteractionManager::FinishMeshImport(const std::string& modelPath) {
+    if (modelPath.empty()) return;   // cancelled
+
+    const project::Info& current = project::GetCurrentProject();
+    const std::string projectDir = current.path.empty() ? "" : current.path;
+
     ImportResult result = ImportModel(modelPath, projectDir, current.name);
     if (!result.ok) {
         ui::LogAlways("Failed to import model: %s", result.error.c_str());

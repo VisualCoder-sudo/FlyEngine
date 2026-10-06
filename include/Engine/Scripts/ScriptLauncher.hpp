@@ -9,8 +9,8 @@ class ScatteredObject;
 //
 // Before the first open (per selection), a picker window asks the user which
 // editor to use: Rider, VS Code, Visual Studio, Notepad, or auto-detect. That
-// choice is remembered automatically and used for every subsequent open — no
-// prompt — until it fails to launch (editor uninstalled/moved) or the user
+// choice is remembered automatically and used for every subsequent open - no
+// prompt - until it fails to launch (editor uninstalled/moved) or the user
 // explicitly re-picks via a "Choose Editor..." action (see
 // RequestChooseEditor / ChooseEditorForObjectScript / ChooseEditorForStandaloneScript).
 namespace scriptLauncher {
@@ -37,7 +37,7 @@ std::string MaterializeScript(const std::string& className);
 void RequestOpen(const std::string& file);
 
 // Always shows the picker for `file`, even when an editor is already
-// remembered — lets the user override or reset their default. A successful
+// remembered - lets the user override or reset their default. A successful
 // pick here becomes the new remembered default, same as RequestOpen.
 void RequestChooseEditor(const std::string& file);
 

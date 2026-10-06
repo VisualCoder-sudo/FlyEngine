@@ -3,6 +3,7 @@
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/FbxModel.hpp"
+#include "../../../include/Engine/TechnicalTools.hpp"
 #include "raymath.h"
 #include "rlgl.h"
 #include <cmath>
@@ -68,9 +69,7 @@ void DrawShapeModel(ShapeType shape, Vector3 pos, Vector3 size, Matrix rotMat,
 
     Vector3 drawSize = wireframeOverlay ? Vector3Scale(size, 1.02f) : size;
 
-    Matrix scaleMat = MatrixScale(drawSize.x, drawSize.y, drawSize.z);
-    Matrix transMat = MatrixTranslate(pos.x, pos.y, pos.z);
-    model.transform = MatrixMultiply(MatrixMultiply(scaleMat, rotMat), transMat);
+    model.transform = gfx::ComposeTRS(drawSize, rotMat, pos);
 
     if (wireframeOverlay) {
         rlEnableWireMode();
@@ -140,6 +139,9 @@ ScatteredObject::ScatteredObject(Vector3 pos, Vector3 size, Color color, ShapeTy
 
 ScatteredObject::~ScatteredObject() {
     if (hasOwnModel) {
+        // Untrack before unloading: the tracker keys the model on its meshes
+        // array, which UnloadModel is about to free.
+        TechTools::MemoryTracker::Instance().UntrackModel(model);
         UnloadModel(model);
     }
     // Texture is managed by TextureManager via refcount
@@ -260,12 +262,17 @@ bool ScatteredObject::SetModel(const std::string& path) {
     }
 
     if (hasOwnModel) {
+        TechTools::MemoryTracker::Instance().UntrackModel(model);
         UnloadModel(model);
     }
     model = loaded;
     modelPath = path;
     hasOwnModel = true;
     geometryVersion++;
+
+    // Tagged with the model path so a leak report names the asset that is
+    // holding the memory, not just "model, 2 MB".
+    TechTools::MemoryTracker::Instance().TrackModel(model, path);
 
     if (!texturePath.empty()) {
         Texture2D gpuTex = textureManager::GetGPUTexture(texturePath);
@@ -386,6 +393,15 @@ void ScatteredObject::UpdateLOD() {
 }
 
 void ScatteredObject::Draw() {
+    // When the shadow map is being reused, the pass is still entered and every
+    // entity is still called -- Graphics.cpp sets a 0x0 scissor so the
+    // fragments are all discarded. Everything below (LOD, frustum extraction,
+    // the 8-corner bounding box, DrawModel) is therefore pure waste.
+    // City::Draw() has always bailed out here; this brings the loose objects in
+    // line. Must stay the very first statement: the skip has to happen before
+    // UpdateLOD, which is not free either.
+    if (gfx::IsInShadowPass() && gfx::IsShadowPassReused()) return;
+
     // Lazy texture bind: was deferred from SetTexturePath to avoid blocking
     if (textureNeedsBind && hasOwnModel && !texturePath.empty() && model.materials != nullptr) {
         Texture2D gpuTex = textureManager::GetGPUTexture(texturePath);
@@ -402,6 +418,16 @@ void ScatteredObject::Draw() {
     // Update LOD before drawing
     UpdateLOD();
 
+    // Frustum culling: skip rendering if outside the view frustum
+    // (Physics and collisions are still processed in Update())
+    Frustum frustum = Frustum::ExtractCurrent();
+    if (!frustum.Intersects(GetBoundingBox())) {
+        gfx::IncrementCulledEntityCount(1);
+        return;
+    }
+
+    gfx::IncrementRenderedEntityCount(1);
+
     // Apply transparency to alpha channel (0 = visible, 1 = invisible)
     Color drawColor = color;
     drawColor.a = (unsigned char)(color.a * (1.0f - transparency));
@@ -410,18 +436,32 @@ void ScatteredObject::Draw() {
         Matrix rotMat = useRenderRotation
             ? renderRotation
             : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
-        Matrix scaleMat = MatrixScale(size.x, size.y, size.z);
-        Matrix transMat = MatrixTranslate(pos.x, pos.y, pos.z);
-        model.transform = MatrixMultiply(MatrixMultiply(scaleMat, rotMat), transMat);
+        model.transform = gfx::ComposeTRS(size, rotMat, pos);
+        // Feed the debug overlay's resource counters. DrawModel binds these
+        // materials internally, so this is the last point we can see them; the
+        // ids are deduplicated per frame by gfx, so a hundred objects sharing
+        // one texture count as one.
+        for (int m = 0; m < model.materialCount; ++m) {
+            gfx::NoteMaterialUsed(model.materials[m].shader.id);
+            if (model.materials[m].maps) {
+                for (int k = 0; k < gfx::kMaterialMapCount; ++k) {
+                    gfx::NoteTextureBound(model.materials[m].maps[k].texture.id);
+                }
+            }
+        }
         DrawModel(model, Vector3Zero(), 1.0f, drawColor);
+        gfx::IncrementDrawCallCount(1);
+        gfx::AddMeshCount(1);
 
         if (isSelected) {
-            Matrix ws = MatrixScale(size.x * 1.02f, size.y * 1.02f, size.z * 1.02f);
-            model.transform = MatrixMultiply(MatrixMultiply(ws, rotMat), transMat);
+            // Selection outline: the same transform at 102% scale, drawn as
+            // wireframe, then the solid transform is restored.
+            const Vector3 outlineScale = { size.x * 1.02f, size.y * 1.02f, size.z * 1.02f };
+            model.transform = gfx::ComposeTRS(outlineScale, rotMat, pos);
             rlEnableWireMode();
             DrawModel(model, Vector3Zero(), 1.0f, WHITE);
             rlDisableWireMode();
-            model.transform = MatrixMultiply(MatrixMultiply(scaleMat, rotMat), transMat);
+            model.transform = gfx::ComposeTRS(size, rotMat, pos);
         }
         return;
     }
@@ -430,6 +470,8 @@ void ScatteredObject::Draw() {
         ? renderRotation
         : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
     DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false);
+    gfx::IncrementDrawCallCount(1);
+    gfx::AddMeshCount(1);
 
     if (isSelected) {
         DrawShapeModel(shape, pos, size, rotMat, WHITE, GetTexture(), true);
@@ -597,4 +639,8 @@ const pcoll::Collider& ScatteredObject::GetCollider() const {
     colliderCacheKey = key;
     colliderCache = pcoll::BuildCollider(GetCollisionAccuracy(), tris);
     return colliderCache;
+}
+
+bool ScatteredObject::IsVisible(const Frustum& frustum) const {
+    return frustum.Intersects(GetBoundingBox());
 }

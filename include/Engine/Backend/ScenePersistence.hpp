@@ -20,8 +20,17 @@ bool LoadSceneFromFile(Engine& engine, std::vector<ScatteredObject*>& objects,
                        const std::string& path,
                        phys::Simulation* physicsSim = nullptr,
                        terrain::Terrain** outTerrain = nullptr);
-std::string ChooseSceneSavePath();
-std::string ChooseSceneOpenPath();
+// Scene open/save pickers. These are non-blocking: they start a native dialog
+// and return immediately. Poll platform::PollDialogResult() once per frame and
+// look for DialogPurpose::OpenScene / SaveScene / SaveSceneAs to get the chosen
+// path (an empty path means the user cancelled).
+//
+// `keepTerrain` selects between the two save purposes: Ctrl+S and menu "Save"
+// pass true so the terrain entity is written into the scene file, "Save As"
+// passes false and has always dropped it.
+void BeginChooseSceneSavePath(const std::string& startDir = std::string(),
+                              bool keepTerrain = false);
+void BeginChooseSceneOpenPath(const std::string& startDir = std::string());
 
 // Stream variants so a scene can be embedded inside another file (a .flyproj
 // project). The stream is positioned exactly at the "SIMPLE_ENGINE_BUILD"

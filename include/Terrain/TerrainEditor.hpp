@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BasicTerrain.hpp"
+#include "TerrainTypes.hpp"
 #include "raylib.h"
 #include <vector>
 
@@ -26,7 +27,7 @@ struct TerrainEditorState {
     enum class Mode { None, Sculpt, Paint, Select } mode = Mode::None;
     class BasicTerrain* selectedTerrain = nullptr;
     class terrain::Terrain* selectedTerrainLegacy = nullptr;
-    BasicTerrain::Brush brush;
+    terrain::TerrainBrush brush;
     int paintLayerIndex = 0;
     bool paintErase = false;
     
@@ -34,6 +35,12 @@ struct TerrainEditorState {
     bool showBrushPreview = true;
     Vector2 brushWorldPos = {0, 0};
     bool brushValid = false;
+    
+    // Generate tab region box (world-space bounds)
+    float regionMinX = -500.0f;
+    float regionMaxX = 500.0f;
+    float regionMinZ = -500.0f;
+    float regionMaxZ = 500.0f;
     
     // Import dialog
     bool showImportDialog = false;

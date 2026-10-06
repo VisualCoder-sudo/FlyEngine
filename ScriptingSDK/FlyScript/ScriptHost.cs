@@ -1,4 +1,4 @@
-// ScriptHost.cs — the C# entry point that the C++ CoreCLRHost calls each frame.
+// ScriptHost.cs - the C# entry point that the C++ CoreCLRHost calls each frame.
 // Maintains a registry of script instances and drives their coroutines.
 
 using System;
@@ -34,14 +34,14 @@ namespace FlyScript
             => new ScriptInstance(id, target, script);
 
         // Advance the coroutine by one frame. Returns true if it should continue.
-        // Throws on failure — callers are responsible for logging with context
+        // Throws on failure - callers are responsible for logging with context
         // (which script, which id) and removing the instance.
         public bool Tick(float dt)
         {
             if (!Coroutine.MoveNext()) return false;
 
             object current = Coroutine.Current;
-            // Support yielding Tick.Wait(frames) — we just tick down the frames.
+            // Support yielding Tick.Wait(frames) - we just tick down the frames.
             if (current is Tick wait)
             {
                 // The host doesn't have a per-coroutine timer; we just return true
@@ -55,7 +55,7 @@ namespace FlyScript
         }
     }
 
-    // Diagnostic helpers — turns a caught exception into a message plus a short
+    // Diagnostic helpers - turns a caught exception into a message plus a short
     // actionable suggestion, and reports it through Native.Log so it lands in
     // the in-editor OUTPUT panel instead of only an attached debugger.
     internal static class ScriptDiagnostics
@@ -70,7 +70,7 @@ namespace FlyScript
             string suggestion = Suggest(real);
 
             // ex.ToString() (not real.ToString()) so we keep the full outer chain
-            // too — includes "at Namespace.Type.Method() in File.cs:line N" frames
+            // too - includes "at Namespace.Type.Method() in File.cs:line N" frames
             // when the assembly's PDB is present next to FlyScript.dll.
             Native.Log($"[FlyScript] {context} FAILED: {real.GetType().Name}: {real.Message}");
             if (!string.IsNullOrEmpty(suggestion))
@@ -82,9 +82,9 @@ namespace FlyScript
         {
             DllNotFoundException => "A native P/Invoke target couldn't be loaded. Confirm the DllImportResolver in FlyScript.cs targets \"Flyengine\" and returns NativeLibrary.GetMainProgramHandle().",
             EntryPointNotFoundException epnf => $"Native function '{epnf.Message}' wasn't found. Confirm it has __declspec(dllexport) in FlyScriptApi.cpp and the engine was rebuilt.",
-            NullReferenceException => "Something was used before it was set — check whether a GameObject handle is valid (obj.IsValid) or whether BindWorld()/BindRuntime() ran before this script started.",
-            InvalidCastException => "A property or Native.* call received a value of the wrong type — check the argument types against the SDK signature.",
-            MissingMethodException or MissingMemberException => "The compiled FlyScript.dll is out of date relative to this source — force a rebuild (delete Scripts/FlyScript.dll and the obj/bin folders under Scripts/).",
+            NullReferenceException => "Something was used before it was set - check whether a GameObject handle is valid (obj.IsValid) or whether BindWorld()/BindRuntime() ran before this script started.",
+            InvalidCastException => "A property or Native.* call received a value of the wrong type - check the argument types against the SDK signature.",
+            MissingMethodException or MissingMemberException => "The compiled FlyScript.dll is out of date relative to this source - force a rebuild (delete Scripts/FlyScript.dll and the obj/bin folders under Scripts/).",
             _ => string.Empty
         };
     }
@@ -115,14 +115,14 @@ namespace FlyScript
             {
                 s_loggedFirstRun = true;
                 // If you don't see this line at all, ScriptHost.Run is never being
-                // called from C++ — check CoreCLRHost::Update()'s delegate call, not
+                // called from C++ - check CoreCLRHost::Update()'s delegate call, not
                 // this file. If you DO see it, C++ -> C# dispatch works and any
                 // problem is below this point (native calls, script logic, etc).
                 // If Native.Log itself throws here, no P/Invoke call is reaching
-                // native code at all — the DllImportResolver/dllexport fix isn't
+                // native code at all - the DllImportResolver/dllexport fix isn't
                 // taking effect yet (stale build?), and nothing below this point
                 // will be visible in-editor either, only via an attached debugger.
-                try { Native.Log("[FlyScript] ScriptHost.Run reached for the first time — C++ -> C# dispatch is working."); }
+                try { Native.Log("[FlyScript] ScriptHost.Run reached for the first time - C++ -> C# dispatch is working."); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[FlyScript] Native.Log itself failed: {ex}"); }
             }
 

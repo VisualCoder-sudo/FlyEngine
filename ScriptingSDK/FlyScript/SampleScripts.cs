@@ -1,4 +1,4 @@
-// SampleScripts.cs — sample C# scripts for testing the FlyScript SDK.
+// SampleScripts.cs - sample C# scripts for testing the FlyScript SDK.
 // Compiled into FlyScript.dll along with the SDK.
 
 using System;

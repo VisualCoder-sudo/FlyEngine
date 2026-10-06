@@ -13,7 +13,7 @@ struct Camera3D;
 namespace phys { class Simulation; }
 class ScriptRuntime;
 
-// CoreCLRHost — embeds the .NET CoreCLR runtime inside the Flyengine process
+// CoreCLRHost - embeds the .NET CoreCLR runtime inside the Flyengine process
 // and drives C# script coroutines from the engine's Update loop.
 //
 // Inherits from Entity so it can be added to the Engine and get Update(dt)
@@ -57,7 +57,7 @@ public:
     // Returns true on success.
     bool Initialize(const std::string& projectPath);
 
-    // Entity::Update override — drives all active script coroutines for this frame.
+    // Entity::Update override - drives all active script coroutines for this frame.
     void Update(float dt) override;
 
     // Shutdown and release CoreCLR.

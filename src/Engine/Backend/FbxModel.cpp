@@ -144,9 +144,13 @@ bool LoadFBXIntoModel(const std::string& path, Model& out) {
             for (size_t v = 0; v < m->num_vertices; ++v) {
                 const ufbx_matrix mat = ufbx_get_skin_vertex_matrix(skin, v, &geometryToWorld);
                 worldPos[v] = ufbx_transform_position(&mat, m->vertex_position.values.data[v]);
-                if (m->vertex_normal.exists)
-                    worldNorm[v] = ufbx_transform_direction(&ufbx_matrix_for_normals(&mat),
+                if (m->vertex_normal.exists) {
+                    // Not a temporary: taking the address of a function return
+                    // value is an MSVC extension that GCC/Clang reject.
+                    const ufbx_matrix normalMat = ufbx_matrix_for_normals(&mat);
+                    worldNorm[v] = ufbx_transform_direction(&normalMat,
                                                             m->vertex_normal.values.data[v]);
+                }
             }
         } else {
             for (size_t v = 0; v < m->num_vertices; ++v) {

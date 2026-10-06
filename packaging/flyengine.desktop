@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Flyengine
+GenericName=Game Engine
+Comment=3D game engine and editor with terrain, water and physics
+Exec=flyengine %F
+TryExec=flyengine
+Icon=flyengine
+Terminal=false
+StartupNotify=true
+StartupWMClass=flyengine
+Categories=Development;IDE;Graphics;
+Keywords=game;engine;editor;3d;terrain;vulkan;
+MimeType=application/x-flyengine-project;
+
+# No Path= here on purpose. The engine locates its own assets/ and shaders/
+# relative to the executable and via the compiled-in FLYENGINE_DATA_DIR, so a
+# working directory is not needed to find data. Pinning Path= would also make
+# the engine prefer a stray ./assets directory that happens to sit in the
+# launcher's working directory.

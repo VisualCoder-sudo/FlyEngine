@@ -1,6 +1,6 @@
 #pragma once
 
-// Ken Perlin's improved Simplex noise — standalone module.
+// Ken Perlin's improved Simplex noise - standalone module.
 // CPU implementation matches GPU GLSL in shaders/water.vert exactly
 // (same permutation table, same gradient vectors, same algorithm).
 

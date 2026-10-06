@@ -17,9 +17,12 @@
 
 #include "../../../include/Engine/Backend/fcloudint.hpp"
 
+#include "../../../include/Engine/Frontend/ui.hpp"
+
+#if FLYENGINE_ENABLE_FLYCLOUD
+
 #include "../../../include/Engine/Backend/FlyCloudModule.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
-#include "../../../include/Engine/Frontend/ui.hpp"
 
 #include <curl/curl.h>
 
@@ -105,3 +108,21 @@ void Update() {
 }
 
 } // namespace fcloud
+
+#else // FLYENGINE_ENABLE_FLYCLOUD
+
+namespace fcloud {
+
+void DispatchCommand(const std::string& full_command) {
+    (void)full_command;
+    ui::ClearLog();
+    ui::LogWithSeverity(ui::LogSeverity::Error,
+        "[fcloud] FlyCloud support is disabled in this build (-DFLYENGINE_ENABLE_FLYCLOUD=OFF).");
+}
+
+void Update() {
+}
+
+} // namespace fcloud
+
+#endif // FLYENGINE_ENABLE_FLYCLOUD

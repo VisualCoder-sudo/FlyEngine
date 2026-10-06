@@ -11,6 +11,8 @@ public:
     // sensible distance. Used by the editor's F-key focus.
     void FocusOn(Vector3 target);
 
+    bool IsEditorOnly() const override { return true; }
+
 private:
     Camera3D& camera;
     float yaw = 0.0f;

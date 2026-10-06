@@ -181,7 +181,7 @@ void ExecuteCommand(const std::string& line) {
         ui::Log("[console] %s", trimmed.c_str());
         ui::Log("[console] %s", result.c_str());
         if (result.rfind("CS ", 0) == 0) {
-            ui::Log("[console] Tip: this console evaluates C# — or type 'fcloud --help' for cloud commands.");
+            ui::Log("[console] Tip: this console evaluates C# - or type 'fcloud --help' for cloud commands.");
         }
     } else {
         std::string text = (result == "OK") ? ("> " + trimmed) : ("> " + trimmed + "  ->  " + result);
@@ -348,7 +348,7 @@ void Draw() {
     float promptX = bar.x + 8.0f;
     float textY = bar.y + (bar.height - FONT_SIZE) * 0.5f;
 
-    // Feedback auto-clears (errors included) and is drawn INSIDE the bar —
+    // Feedback auto-clears (errors included) and is drawn INSIDE the bar -
     // the area directly above the bar is the ImGui Asset Browser, which would
     // otherwise cover an error toast and make it look permanently stuck.
     double feedbackAge = GetTime() - feedback.time;

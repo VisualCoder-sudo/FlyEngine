@@ -23,7 +23,20 @@ uniform float fogDensity;
 uniform vec3 fogColor;
 uniform bool useTriplanar;
 
+// Also declared in terrain.vert. GLSL uniforms are not shared between stages
+// the way varyings are: each stage has to declare what it uses, or the
+// identifier is simply undefined. (Varyings must match *by name* across
+// stages; uniforms are per-stage globals and only the name has to agree so the
+// program linker can match their storage.)
+uniform vec3 cameraPos;
+uniform float tileSize[4];
+
 out vec4 fragColor;
+
+// PI is a preprocessor macro in rlgl.h, not a GLSL builtin, and LoadShader
+// does not inject rlgl's defines into a shader loaded from a file. Declaring
+// it here is what the other shaders in this project do.
+const float PI = 3.14159265358979323846;
 
 // Triplanar mapping helper
 vec3 TriplanarSample(sampler2D tex, vec3 worldPos, vec3 normal, float scale) {
@@ -68,6 +81,36 @@ vec3 ApplyNormalMap(sampler2D normalMap, vec2 uv, vec3 worldNormal, vec3 tangent
     return normalize(tbn * normalMapSample);
 }
 
+// Blends one layer into the accumulators.
+//
+// GLSL 3.30 forbids indexing a sampler array with anything other than a
+// constant expression, so the samplers are taken as parameters -- passing
+// albedoTex[0] as a sampler2D is legal, reading it as albedoTex[i] inside a
+// loop is not. `idx` is still used to index texCoord and tileSize, which are
+// ordinary (non-opaque) arrays and may be indexed by a runtime value.
+void BlendLayer(sampler2D albedoMap, sampler2D normalMap, sampler2D roughMap,
+                int idx, float w,
+                inout vec3 albedo, inout vec3 normal, inout float roughness) {
+    vec3 layerAlbedo, layerNormal;
+    float layerRoughness;
+
+    if (useTriplanar && (abs(worldNormal.y) < 0.7)) {
+        // Triplanar for steep slopes, so cliffs do not smear.
+        float invTile = 1.0 / tileSize[idx];
+        layerAlbedo = TriplanarSample(albedoMap, worldPos, worldNormal, invTile);
+        layerNormal = TriplanarNormal(normalMap, worldPos, worldNormal, invTile);
+        layerRoughness = TriplanarSample(roughMap, worldPos, worldNormal, invTile).r;
+    } else {
+        layerAlbedo = texture(albedoMap, texCoord[idx]).rgb;
+        layerNormal = ApplyNormalMap(normalMap, texCoord[idx], worldNormal, tangent, bitangent);
+        layerRoughness = texture(roughMap, texCoord[idx]).r;
+    }
+
+    albedo    += layerAlbedo * w;
+    normal     = normalize(normal + (layerNormal - worldNormal) * w);
+    roughness += layerRoughness * w;
+}
+
 void main() {
     // Sample splatmap weights
     vec4 weights = texture(splatmap, texCoord[0]).rgba;
@@ -84,33 +127,19 @@ void main() {
     vec3 albedo = vec3(0.0);
     vec3 normal = worldNormal;
     float roughness = 0.5;
-    float metallic = 0.0;
     
-    for (int i = 0; i < 4; i++) {
-        if (i >= layerCount) break;
-        if (weights[i] <= 0.0) continue;
-        
-        float w = weights[i];
-        
-        vec3 layerAlbedo, layerNormal;
-        float layerRoughness;
-        
-        if (useTriplanar && (abs(worldNormal.y) < 0.7)) {
-            // Use triplanar for steep slopes
-            layerAlbedo = TriplanarSample(albedoTex[i], worldPos, worldNormal, 1.0 / tileSize[i]);
-            layerNormal = TriplanarNormal(normalTex[i], worldPos, worldNormal, 1.0 / tileSize[i]);
-            layerRoughness = TriplanarSample(roughnessTex[i], worldPos, worldNormal, 1.0 / tileSize[i]).r;
-        } else {
-            // Standard UV mapping
-            layerAlbedo = texture(albedoTex[i], texCoord[i]).rgb;
-            layerNormal = ApplyNormalMap(normalTex[i], texCoord[i], worldNormal, tangent, bitangent);
-            layerRoughness = texture(roughnessTex[i], texCoord[i]).r;
-        }
-        
-        albedo += layerAlbedo * w;
-        normal = normalize(normal + (layerNormal - worldNormal) * w);
-        roughness += layerRoughness * w;
-    }
+    // Unrolled rather than looped: see BlendLayer() for why the samplers cannot
+    // be indexed by a loop variable. The layerCount and weight guards are what
+    // the loop's "if (i >= layerCount) break;" and "if (weights[i] <= 0.0)
+    // continue;" did.
+    if (0 < layerCount && weights[0] > 0.0)
+        BlendLayer(albedoTex[0], normalTex[0], roughnessTex[0], 0, weights[0], albedo, normal, roughness);
+    if (1 < layerCount && weights[1] > 0.0)
+        BlendLayer(albedoTex[1], normalTex[1], roughnessTex[1], 1, weights[1], albedo, normal, roughness);
+    if (2 < layerCount && weights[2] > 0.0)
+        BlendLayer(albedoTex[2], normalTex[2], roughnessTex[2], 2, weights[2], albedo, normal, roughness);
+    if (3 < layerCount && weights[3] > 0.0)
+        BlendLayer(albedoTex[3], normalTex[3], roughnessTex[3], 3, weights[3], albedo, normal, roughness);
     
     // Lighting (simple PBR)
     vec3 N = normalize(normal);

@@ -4,6 +4,7 @@
 #include "../../include/Engine/Graphics.hpp"
 #include "../../include/Engine/Backend/Box3DWrapper.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
+#include "../../include/Engine/TechnicalTools.hpp"
 #include "raymath.h"
 #include <algorithm>
 #include <cmath>
@@ -198,6 +199,22 @@ void Simulation::SetBodyAngularVelocity(ScatteredObject* object, Vector3 velocit
     }
 }
 
+void Simulation::ApplyForceToBody(ScatteredObject* object, Vector3 force, bool wake) {
+    auto it = bodyMap.find(object);
+    if (it != bodyMap.end() && b3Body_IsValid(it->second.bodyId)) {
+        if (b3Body_GetType(it->second.bodyId) == b3_staticBody) return;
+        b3Body_ApplyForceToCenter(it->second.bodyId, {force.x, force.y, force.z}, wake);
+    }
+}
+
+void Simulation::ApplyImpulseToBody(ScatteredObject* object, Vector3 impulse, bool wake) {
+    auto it = bodyMap.find(object);
+    if (it != bodyMap.end() && b3Body_IsValid(it->second.bodyId)) {
+        if (b3Body_GetType(it->second.bodyId) == b3_staticBody) return;
+        b3Body_ApplyLinearImpulseToCenter(it->second.bodyId, {impulse.x, impulse.y, impulse.z}, wake);
+    }
+}
+
 void Simulation::Update(float dt) {
     if (ui::ConsumePlayToggle()) {
         // Legacy script-safety gate removed: scripts are compiled C# classes
@@ -214,21 +231,34 @@ void Simulation::Update(float dt) {
     }
     if (!playing) return;
 
+    // Live cvar reads, so `physics.fixed_dt` / `physics.max_substeps` (or a
+    // config.cfg) actually take effect without a rebuild.
+    fixedDt = TechTools::CVarSystem::Instance().GetFloat("physics.fixed_dt", fixedDt);
+    maxStepsPerFrame = TechTools::CVarSystem::Instance().GetInt("physics.max_substeps", maxStepsPerFrame);
+
+    // A timestep of zero would make `accumulator -= 0` loop forever, and a
+    // negative one would run the sim backwards. Clamp rather than trust the
+    // config file, which is user-editable text.
+    if (!(fixedDt > 0.0f) || fixedDt > 0.1f) fixedDt = kDefaultFixedDt;
+    if (maxStepsPerFrame < 1) maxStepsPerFrame = 1;
+    if (maxStepsPerFrame > 16) maxStepsPerFrame = 16;
+
     accumulator += dt;
     int steps = 0;
-    while (accumulator >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
+    double stepStartTime = GetTime();
+    while (accumulator >= fixedDt && steps < maxStepsPerFrame) {
         contactBeginEvents.clear();
         contactHitEvents.clear();
         ApplyBuoyancy();
-        world->Step(FIXED_DT, SUB_STEPS);
+        world->Step(fixedDt, SUB_STEPS);
         ProcessEvents();
-        accumulator -= FIXED_DT;
+        accumulator -= fixedDt;
         ++steps;
     }
-    if (steps == MAX_STEPS_PER_FRAME) accumulator = 0.0f;
+    if (steps == maxStepsPerFrame) accumulator = 0.0f;
+    lastStepTimeMs = (GetTime() - stepStartTime) * 1000.0;
 
     WriteBack();
-    if (debugDrawEnabled) DrawDebug();
 }
 
 void Simulation::StartPlay() {
@@ -243,6 +273,12 @@ void Simulation::StartPlay() {
     playStartTime = GetTime();
 
     b3WorldDef def = b3DefaultWorldDef();
+    // The cvar was registered with a -19.62 (Moon) default that nothing read,
+    // while the sim actually ran at -9.81. The fallback here is -9.81 so the
+    // engine keeps simulating exactly what it did before; the cvar's own
+    // default is corrected separately in RegisterBuiltinCommands.
+    gravity = TechTools::CVarSystem::Instance().GetFloat("physics_gravity", gravity);
+    if (gravity > 0.0f) gravity = 0.0f;  // this is a Y-up world
     def.gravity = b3Vec3{ 0.0f, gravity, 0.0f };
     def.enableSleep = true;
     def.enableContinuous = true;
@@ -267,6 +303,11 @@ void Simulation::StartPlay() {
         bool anchored = obj->anchored;
         b3BodyType type = anchored ? b3_staticBody : b3_dynamicBody;
 
+        // Check if this is the player character - make it kinematic
+        if (obj->GetName() == "PlayerCharacter") {
+            type = b3_kinematicBody;
+        }
+
         b3BodyId bodyId = b3wrap::CreateBody(world->GetId(), pos, ori, type);
         b3Body_SetName(bodyId, obj->GetName().c_str());
 
@@ -289,6 +330,7 @@ void Simulation::StartPlay() {
 
     ui::Log("Playtest Session Started(%d bodies)", (int)bodyMap.size());
     ui::Log("Attempting to start Playtest");
+    playing = true;
 }
 
 void Simulation::CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId) {
@@ -432,7 +474,7 @@ void Simulation::CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId) {
     }
 }
 
-void Simulation::SpawnBodyForObject(ScatteredObject* obj) {
+void Simulation::SpawnBodyForObject(ScatteredObject* obj, b3BodyType type) {
     if (!obj || !playing || !world) return;
     if (bodyMap.find(obj) != bodyMap.end()) return;
 
@@ -442,9 +484,9 @@ void Simulation::SpawnBodyForObject(ScatteredObject* obj) {
         MatrixRotateXYZ({ DEG2RAD * rot.x, DEG2RAD * rot.y, DEG2RAD * rot.z }));
 
     bool anchored = obj->anchored;
-    b3BodyType type = anchored ? b3_staticBody : b3_dynamicBody;
+    b3BodyType bodyType = anchored ? b3_staticBody : type;
 
-    b3BodyId bodyId = b3wrap::CreateBody(world->GetId(), pos, ori, type);
+    b3BodyId bodyId = b3wrap::CreateBody(world->GetId(), pos, ori, bodyType);
     b3Body_SetName(bodyId, obj->GetName().c_str());
 
     CreateShapeForObject(obj, bodyId);
@@ -456,6 +498,13 @@ void Simulation::SpawnBodyForObject(ScatteredObject* obj) {
     rec.startAngVel = Vector3Zero();
     rec.wasAnchored = anchored;
     bodyMap[obj] = rec;
+}
+
+void Simulation::SetBodyType(ScatteredObject* obj, b3BodyType type) {
+    if (!obj || !world || !world->IsValid()) return;
+    auto it = bodyMap.find(obj);
+    if (it == bodyMap.end() || !b3Body_IsValid(it->second.bodyId)) return;
+    b3Body_SetType(it->second.bodyId, type);
 }
 
 void Simulation::RemoveObject(ScatteredObject* obj) {
@@ -543,7 +592,7 @@ void Simulation::ApplyBuoyancy() {
             float buoyancyAccel = GRAVITY * densityRatio * submergedFraction;
             b3Body_ApplyForceToCenter(rec.bodyId, { 0.0f, mass * buoyancyAccel, 0.0f }, true);
 
-            // Water surface gradient — drives horizontal wave push
+            // Water surface gradient - drives horizontal wave push
             float hL = water->GetHeightAt(pos.x - SAMPLE_EPS, pos.z);
             float hR = water->GetHeightAt(pos.x + SAMPLE_EPS, pos.z);
             float hD = water->GetHeightAt(pos.x, pos.z - SAMPLE_EPS);
@@ -596,11 +645,17 @@ void Simulation::WriteBack() {
         if (!obj || !b3Body_IsValid(rec.bodyId)) continue;
 
         bool anchored = obj->anchored;
-        b3BodyType targetType = anchored ? b3_staticBody : b3_dynamicBody;
         b3BodyType currentType = b3Body_GetType(rec.bodyId);
-        if (currentType != targetType) {
-            b3Body_SetType(rec.bodyId, targetType);
-            if (!anchored && rec.wasAnchored) b3wrap::SetBodyAwake(rec.bodyId, true);
+        // Kinematic bodies (e.g. the player CharacterController) are driven manually
+        // via SetBodyPosition and must never be auto-retyped to dynamic here - doing
+        // so made the world's own gravity/contact solver fight the controller's
+        // teleport every step (tiny jump, slow/wrong fall speed).
+        if (currentType != b3_kinematicBody) {
+            b3BodyType targetType = anchored ? b3_staticBody : b3_dynamicBody;
+            if (currentType != targetType) {
+                b3Body_SetType(rec.bodyId, targetType);
+                if (!anchored && rec.wasAnchored) b3wrap::SetBodyAwake(rec.bodyId, true);
+            }
         }
         rec.wasAnchored = anchored;
 
@@ -664,8 +719,13 @@ void Simulation::DestroyJoint(b3JointId jointId) {
 }
 
 RaycastHit Simulation::RayCast(Vector3 origin, Vector3 end) {
+    return RayCast(origin, Vector3Normalize(Vector3Subtract(end, origin)), Vector3Distance(origin, end), nullptr);
+}
+
+RaycastHit Simulation::RayCast(Vector3 origin, Vector3 direction, float maxDistance, ScatteredObject* ignore) {
     RaycastHit result;
     if (!world || !world->IsValid()) return result;
+    Vector3 end = Vector3Add(origin, Vector3Scale(direction, maxDistance));
     b3wrap::RaycastResult r = b3wrap::RayCastClosest(world->GetId(), origin, end);
     result.hit = r.hit;
     result.point = r.point;
@@ -674,8 +734,23 @@ RaycastHit Simulation::RayCast(Vector3 origin, Vector3 end) {
     if (r.hit && b3Shape_IsValid(r.shapeId)) {
         b3BodyId bodyId = b3Shape_GetBody(r.shapeId);
         result.object = FindObjectByBody(bodyToObject, bodyId);
+        if (result.object == ignore) {
+            result.hit = false;
+        }
     }
     return result;
+}
+
+void Simulation::MoveKinematic(ScatteredObject* obj, Vector3 delta) {
+    if (!obj || !world || !world->IsValid()) return;
+    auto it = bodyMap.find(obj);
+    if (it == bodyMap.end() || !b3Body_IsValid(it->second.bodyId)) return;
+    if (b3Body_GetType(it->second.bodyId) == b3_staticBody) return;
+
+    Vector3 pos = b3wrap::GetBodyPosition(it->second.bodyId);
+    Vector3 newPos = Vector3Add(pos, delta);
+    b3wrap::SetBodyTransform(it->second.bodyId, newPos, b3wrap::GetBodyRotation(it->second.bodyId));
+    b3wrap::SetBodyAwake(it->second.bodyId, true);
 }
 
 void Simulation::ProcessEvents() {
@@ -703,42 +778,25 @@ void Simulation::ProcessEvents() {
     }
 }
 
-void Simulation::DrawDebug() {
+bool Simulation::GetBodyTransform(ScatteredObject* obj, Vector3& outPos, Quaternion& outRot) const {
+    if (!obj) return false;
+    auto it = bodyMap.find(const_cast<ScatteredObject*>(obj));
+    if (it == bodyMap.end()) return false;
+    if (!b3Body_IsValid(it->second.bodyId)) return false;
+    outPos = b3wrap::GetBodyPosition(it->second.bodyId);
+    outRot = b3wrap::GetBodyRotation(it->second.bodyId);
+    return true;
+}
+
+void Simulation::GetJointSegments(std::vector<std::pair<Vector3, Vector3>>& out) const {
+    out.clear();
     if (!world || !world->IsValid()) return;
-
-    for (auto& [obj, rec] : bodyMap) {
-        if (!obj || !b3Body_IsValid(rec.bodyId)) continue;
-        if (b3Body_GetType(rec.bodyId) == b3_staticBody) continue;
-
-        Vector3 pos = b3wrap::GetBodyPosition(rec.bodyId);
-        Quaternion ori = b3wrap::GetBodyRotation(rec.bodyId);
-        Vector3 size = *obj->GetSizePtr();
-        Vector3 halfExtents = Vector3Scale(size, 0.5f);
-
-        Color wireColor = { 0, 200, 255, 180 };
-        BoundingBox bb;
-        bb.min = Vector3Subtract(pos, halfExtents);
-        bb.max = Vector3Add(pos, halfExtents);
-        DrawBoundingBox(bb, wireColor);
-
-        Vector3 forward = Vector3RotateByQuaternion(Vector3{ 0, 0, 1 }, ori);
-        Vector3 up = Vector3RotateByQuaternion(Vector3{ 0, 1, 0 }, ori);
-        DrawLine3D(pos, Vector3Add(pos, Vector3Scale(forward, halfExtents.z * 1.5f)), BLUE);
-        DrawLine3D(pos, Vector3Add(pos, Vector3Scale(up, halfExtents.y * 1.5f)), GREEN);
-    }
-
     for (auto j : joints) {
         if (!b3Joint_IsValid(j)) continue;
         b3BodyId bA = b3Joint_GetBodyA(j);
         b3BodyId bB = b3Joint_GetBodyB(j);
-        Vector3 pA = b3wrap::GetBodyPosition(bA);
-        Vector3 pB = b3wrap::GetBodyPosition(bB);
-        DrawLine3D(pA, pB, YELLOW);
-    }
-
-    for (auto& ev : contactHitEvents) {
-        DrawSphere(ev.point, 0.02f, RED);
-        DrawLine3D(ev.point, Vector3Add(ev.point, Vector3Scale(ev.normal, 0.1f)), ORANGE);
+        if (!b3Body_IsValid(bA) || !b3Body_IsValid(bB)) continue;
+        out.emplace_back(b3wrap::GetBodyPosition(bA), b3wrap::GetBodyPosition(bB));
     }
 }
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Teaches the desktop environment that a .flyproj file is a Flyengine project,
+  so double-clicking one in a file manager opens the editor with it loaded and
+  "Open With" offers Flyengine. Installed into
+  $prefix/share/mime/packages/flyengine.xml.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-flyengine-project">
+    <comment>Flyengine project</comment>
+    <glob pattern="*.flyproj"/>
+    <sub-class-of type="application/x-zip"/>
+    <generic-icon name="flyengine"/>
+  </mime-type>
+</mime-info>

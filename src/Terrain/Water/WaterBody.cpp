@@ -4,10 +4,12 @@
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <fstream>
+#include <cstdint>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
@@ -38,9 +40,7 @@ WaterBody::~WaterBody() {
 
 void WaterBody::ReleaseGpuResources() {
     for (auto& [key, chunk] : chunks) {
-        if (chunk.mesh.vertexCount > 0) {
-            UnloadMesh(chunk.mesh);
-        }
+        ReleaseChunkResources(chunk);
     }
     chunks.clear();
 
@@ -64,10 +64,16 @@ int WaterBody::GetLodForDistance(float dist) const {
 }
 
 void WaterBody::ReleaseChunkResources(Chunk& chunk) {
-    if (chunk.mesh.vertexCount > 0) {
+    // The GPU buffers belong to the model's copy of the mesh (UploadMesh ran on
+    // chunk.model.meshes[0]); chunk.mesh shares its CPU arrays. Unloading the
+    // model frees both. Unloading only chunk.mesh -- whose vaoId was never set --
+    // leaked every chunk's vertex/index buffers and the model's arrays.
+    if (chunk.model.meshes != nullptr) {
+        UnloadModel(chunk.model);
+    } else if (chunk.mesh.vertexCount > 0) {
         UnloadMesh(chunk.mesh);
-        chunk.mesh = { 0 };
     }
+    chunk.mesh = { 0 };
     chunk.model = { 0 };
     chunk.currentLod = -1;
 }
@@ -75,15 +81,10 @@ void WaterBody::ReleaseChunkResources(Chunk& chunk) {
 void WaterBody::InitializeShader() {
     WaterNoise::Initialize();
 
-    shader = LoadShader("water.vert", "water.frag");
-    if (shader.id == 0 || shader.locs == nullptr) {
-        shader = LoadShader(0, 0);
-        customShader = false;
-        shaderLoaded = (shader.id != 0);
-    } else {
-        customShader = true;
-        shaderLoaded = true;
-    }
+    // Compiled into the binary from shaders/water.glsl (sokol-shdc).
+    shader = LoadShaderProgram("water");
+    customShader = IsShaderValid(shader);
+    shaderLoaded = (shader.id != 0);
 
     wModelLoc = GetShaderLocation(shader, "wModel");
     wViewLoc = GetShaderLocation(shader, "wView");
@@ -251,7 +252,7 @@ void WaterBody::WriteCoverageMap(const Camera3D& camera, const char* path, int c
             bool shellCovers = d2 > shellRim * shellRim;
             // Mirrors the fixed Draw() cull: a chunk is skipped ONLY when it is
             // behind the camera AND the far shell still covers it (outside the
-            // rim) — near-camera cells must never be left unbacked.
+            // rim) - near-camera cells must never be left unbacked.
             bool behindCam = dx * cfx + dz * cfz < -CHUNK_SIZE;
             bool culled = hasChunk && behindCam && shellCovers;
             char c;
@@ -364,7 +365,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
     // Build meshes gradually (max per frame) so a fast camera pan can't spawn
     // thousands of meshes in one frame and hitch. NO direction gating: the near
     // disk (20 m cells) is a full ring around the camera. Everything beyond it is
-    // covered by the full-body far shell (see BuildFarShell — a single always-
+    // covered by the full-body far shell (see BuildFarShell - a single always-
     // present mesh from the disk edge out to the water body boundary), so there is
     // exactly one seam (disk → shell) and no band of water can ever be absent: the
     // shell is tied to the body, not to chunk streaming.
@@ -417,7 +418,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
 
             auto it = chunks.find(key);
             if (it == chunks.end()) {
-                // New chunk — created fully opaque so coverage never lags invisibly.
+                // New chunk - created fully opaque so coverage never lags invisibly.
                 if (buildsThisFrame >= buildBudget || (int)chunks.size() >= MAX_ACTIVE_CHUNKS) continue;
                 Chunk& chunk = chunks[key];
                 chunk.gridX = gx;
@@ -429,7 +430,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
                 chunk.currentLod = newLod;
                 buildsThisFrame++;
             } else {
-                // Existing chunk — update LOD if the camera has clearly crossed a
+                // Existing chunk - update LOD if the camera has clearly crossed a
                 // LOD boundary. The hysteresis margin (24 m) stops panning along a
                 // boundary from rebuilding the same mesh every frame, which is what
                 // made the old all-directions version feel laggy.
@@ -521,7 +522,7 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
     if (reflParamsLoc >= 0) {
         float enabled = gfx::IsReflectionsEnabled() ? 1.0f : 0.0f;
         // distanceFade is a 0..1 knob; scale so the planar reflection falls off
-        // symmetrically with fragment distance (fragDist, meters) — full fade at
+        // symmetrically with fragment distance (fragDist, meters) - full fade at
         // ~125 m for the default 0.4. The short radius keeps mirrored detail only
         // on water near the camera; the far ocean settles to one uniform ambient,
         // so the reflection can't form a camera-following center-vs-sides band.
@@ -563,6 +564,12 @@ void WaterBody::Draw() {
     }
 
     if (chunks.empty()) return;
+
+    // Extract frustum for culling
+    Frustum frustum = Frustum::ExtractCurrent();
+
+    gfx::IncrementRenderedEntityCount(0);
+    gfx::IncrementCulledEntityCount(0);
 
     BeginShaderMode(shader);
     UpdateShaderUniforms(camera, globalTime);
@@ -608,11 +615,12 @@ void WaterBody::Draw() {
     // Far shell: covers the water body from the edge of the detailed chunk disk
     // all the way to the body boundary, closing the "unloaded" gap on huge oceans.
     // Vertices are world XZ at y = 0, so the model matrix lifts them to the actual
-    // water surface (y = 0 would bury the shell below the chunks — the bug that
+    // water surface (y = 0 would bury the shell below the chunks - the bug that
     // made the far ocean read as an unloaded void); the rim clip (farRimParams)
     // keeps it off the near disk where chunks already render, so the two layers
     // never double-blend.
-    if (farShellBuilt && farShellModel.meshes != nullptr) {
+    if (farShellBuilt && farShellModel.meshes != nullptr && frustum.Intersects(GetBoundingBox())) {
+        gfx::IncrementRenderedEntityCount(1);
         SetShaderValueMatrix(shader, wModelLoc, MatrixTranslate(0.0f, waterHeight, 0.0f));
         if (chunkFadeLoc >= 0) {
             float one = 1.0f;
@@ -625,9 +633,11 @@ void WaterBody::Draw() {
             SetShaderValue(shader, farRimLoc, &rim, SHADER_UNIFORM_VEC2);
         }
         DrawModel(farShellModel, { 0.0f, 0.0f, 0.0f }, 1.0f, WHITE);
+        gfx::IncrementDrawCallCount(1);
+        gfx::AddMeshCount(1);
     }
 
-    // Chunks render inside the disk — disable the shell's rim clip for them.
+    // Chunks render inside the disk - disable the shell's rim clip for them.
     if (farRimLoc >= 0) {
         Vector2 rimOff = { 0.0f, 0.0f };
         SetShaderValue(shader, farRimLoc, &rimOff, SHADER_UNIFORM_VEC2);
@@ -648,7 +658,17 @@ void WaterBody::Draw() {
         float toChunkX = cx - camera.position.x;
         float toChunkZ = cz - camera.position.z;
 
-        // Cull chunks behind the camera — BUT only where the far shell already
+        // Frustum culling for chunks
+        BoundingBox chunkBounds;
+        chunkBounds.min = { cx - cellHalf, waterHeight - 10.0f, cz - cellHalf };
+        chunkBounds.max = { cx + cellHalf, waterHeight + 10.0f, cz + cellHalf };
+        if (!frustum.Intersects(chunkBounds)) {
+            gfx::IncrementCulledEntityCount(1);
+            continue;
+        }
+        gfx::IncrementRenderedEntityCount(1);
+
+        // Cull chunks behind the camera - BUT only where the far shell already
         // covers them (outside its rim, r > MAX_RENDER_DISTANCE + CHUNK_SIZE*0.25).
         // Culling near cells the shell clips would leave a void behind the camera
         // (the pixelated "unloaded square" around the body center): within the
@@ -664,6 +684,8 @@ void WaterBody::Draw() {
         }
 
         DrawModel(chunk.model, { 0.0f, 0.0f, 0.0f }, 1.0f, WHITE);
+        gfx::IncrementDrawCallCount(1);
+        gfx::AddMeshCount(1);
     }
 
     EndShaderMode();
@@ -707,7 +729,7 @@ float WaterBody::GetHeightAt(float x, float z) const {
         return waterHeight;
     }
 
-    // Match GPU vertex shader exactly: absolute world XZ (not entity-local —
+    // Match GPU vertex shader exactly: absolute world XZ (not entity-local -
     // the GPU samples worldPos post-wModel, which is already in world space),
     // time as the Y dimension for organic evolution, plus directional flow
     // drift (noise.direction) so buoyancy stays in sync with the rendered
@@ -742,6 +764,11 @@ bool WaterBody::IntersectsXZ(const BoundingBox& box) const {
     float halfD = size.z * 0.5f;
     return !(box.max.x < position.x - halfW || box.min.x > position.x + halfW ||
              box.max.z < position.z - halfD || box.min.z > position.z + halfD);
+}
+
+bool WaterBody::IsVisible(const Frustum& frustum) const {
+    // WaterBody is visible if its bounds intersect the frustum
+    return frustum.Intersects(GetBoundingBox());
 }
 
 bool WaterBody::SaveToFile(const std::string& path) const {

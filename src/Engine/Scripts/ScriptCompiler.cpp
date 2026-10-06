@@ -1,22 +1,10 @@
-// ScriptCompiler.cpp — builds the project's C# scripts into Scripts/FlyScript.dll
+// ScriptCompiler.cpp - builds the project's C# scripts into Scripts/FlyScript.dll
 // via the dotnet CLI. Stages the SDK wrapper sources next to the user's *.cs
 // files and compiles them all into one assembly CoreCLRHost then loads.
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define CloseWindow Win32CloseWindow
-#define ShowCursor Win32ShowCursor
-#define Rectangle Win32Rectangle
-#include <windows.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-
 #include "../../../include/Engine/Scripts/ScriptCompiler.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -40,9 +28,10 @@ std::string PlainArg(const fs::path& p) {
 // relative to the executable's directory (Flyengine.exe sits in the build dir,
 // which is a sibling of ScriptingSDK).
 fs::path FindSdkDir() {
-    wchar_t exe[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    fs::path exePath(exe);
+    // GetModuleFileNameW on Windows, readlink("/proc/self/exe") on Linux.
+    const std::string exe = platform::ExecutablePath();
+    if (exe.empty()) return {};
+    fs::path exePath = fs::u8path(exe);
     fs::path candidate = exePath.parent_path().parent_path() / "ScriptingSDK" / "FlyScript";
     if (fs::exists(candidate / "FlyScript.cs")) return candidate;
 
@@ -94,48 +83,13 @@ const char* kCsprojContent =
 // Run `dotnet` with arguments and capture the exit code.
 bool RunDotnet(const std::string& dotnetExe, const std::vector<std::string>& args,
                std::string& outLog) {
-    std::string cmd = "\"" + dotnetExe + "\"";
-    for (auto& a : args) {
-        cmd += " \"" + a + "\"";
-    }
-
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE readPipe = nullptr, writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) return false;
-
-    STARTUPINFOA si{ sizeof(si) };
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = writePipe;
-    si.hStdError = writePipe;
-    PROCESS_INFORMATION pi{};
-
-    bool ok = CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) != 0;
-    if (!ok) {
-        CloseHandle(readPipe);
-        CloseHandle(writePipe);
-        outLog = "CreateProcess failed: " + std::to_string(GetLastError());
-        return false;
-    }
-
-    CloseHandle(writePipe);
-    std::string log;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(readPipe, buf, sizeof(buf) - 1, &got, nullptr) && got > 0) {
-        buf[got] = '\0';
-        log.append(buf, got);
-    }
-    CloseHandle(readPipe);
-
-    WaitForSingleObject(pi.hProcess, 600000);
-    DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    outLog = log;
-    return code == 0;
+    // posix_spawn on Linux, CreateProcess on Windows, both with a pipe for the
+    // child's stdout+stderr. 10-minute cap, matching the old
+    // WaitForSingleObject(pi.hProcess, 600000).
+    platform::ProcessResult r = platform::RunProcessCapture(dotnetExe, args, 600000);
+    outLog = r.output;
+    if (!r.launched) return false;
+    return r.exitCode == 0;
 }
 
 } // namespace
@@ -180,10 +134,17 @@ bool EnsureBuilt(const std::string& projectFolder)
     }
 
     // 3. Invoke the dotnet CLI. Prefer the per-user .dotnet SDK, then PATH.
+    //    The SDK install script drops `dotnet` (no extension) in ~/.dotnet on
+    //    Unix and `dotnet.exe` on Windows.
     std::string dotnet = {};
-    const wchar_t* userProfile = _wgetenv(L"USERPROFILE");
-    if (userProfile && *userProfile) {
-        fs::path candidate = fs::path(userProfile) / ".dotnet" / "dotnet.exe";
+    const std::string home = platform::UserHomeDir();
+    if (!home.empty()) {
+#if defined(_WIN32)
+        const char* exeName = "dotnet.exe";
+#else
+        const char* exeName = "dotnet";
+#endif
+        fs::path candidate = fs::u8path(home) / ".dotnet" / exeName;
         if (fs::exists(candidate)) dotnet = candidate.string();
     }
     if (dotnet.empty()) dotnet = "dotnet"; // fall back to PATH

@@ -13,12 +13,12 @@
 // Rendering entry points are replaced by tests/city_shims.h so no window/GL is
 // needed: generation is pure CPU.
 
-#include "City.hpp"
-#include "CityEditor.hpp"
-#include "CityGeometry.hpp"
+#include "../include/CityGen/City.hpp"
+#include "../include/CityGen/CityEditor.hpp"
+#include "../include/CityGen/CityGeometry.hpp"
 #include "Engine.hpp"
-#include "Graphics.hpp"
-#include "ui.hpp"
+#include "../include/Engine/Graphics.hpp"
+#include "../include/Engine/Frontend/ui.hpp"
 
 #include <algorithm>
 #include <array>

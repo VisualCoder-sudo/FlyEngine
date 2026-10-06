@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 class ScatteredObject;
 class ModelGroup;
@@ -14,7 +15,7 @@ namespace phys {
 class Simulation;
 }
 
-// ScriptRuntime — the C++ side world context + lifecycle for C# scripting.
+// ScriptRuntime - the C++ side world context + lifecycle for C# scripting.
 //
 // Replaces the legacy flyscript::Runtime. It does NOT interpret Flyscript
 // source anymore: scripts are C# classes (IScript implementations) compiled
@@ -44,6 +45,16 @@ public:
         bool runOnPlay = true;
     };
 
+    // Plugin entry (forward declared from CPluginAPI.h)
+    struct FlyPluginEntry;
+
+    // Magic number for validating active runtime
+    static constexpr uint32_t RUNTIME_MAGIC = 0x53435254; // 'SCRT'
+    uint32_t runtimeMagic = 0; // Set to RUNTIME_MAGIC in constructor when fully initialized
+
+    // Validation helper
+    bool IsValid() const;
+
     // Bind the live world context. Called once after the project scene loads;
     // references (not copies) are kept, so the caller's objects must outlive
     // this runtime.
@@ -56,6 +67,12 @@ public:
 
     // The owning host (may be null when the CLR never loaded).
     CoreCLRHost* GetHost() const { return hostPtr; }
+
+    // Project info (set by editor/player on initialization)
+    void SetProjectPath(const std::string& path) { m_projectPath = path; }
+    void SetProjectName(const std::string& name) { m_projectName = name; }
+    const std::string& GetProjectPath() const { return m_projectPath; }
+    const std::string& GetProjectName() const { return m_projectName; }
 
     // ---- world services (read by FlyNative_* / C#) ----
     const std::vector<ScatteredObject*>& GetObjects() const { return *objectsPtr; }
@@ -110,6 +127,9 @@ public:
     void LogCreatedObject(ScatteredObject* obj);
     void RollbackCreatedObjects();
 
+    // Plugin registration (for native C/C++ plugins)
+    void RegisterPluginEntry(const FlyPluginEntry* entry) { (void)entry; /* TODO: store for multi-plugin support */ }
+
 private:
     phys::Simulation* sim = nullptr;
     Engine* engine = nullptr;
@@ -122,6 +142,10 @@ private:
     std::vector<ScatteredObject*> playCreatedObjects;
     bool isPlaying = false;
     ScatteredObject* scriptSelf = nullptr;
+
+    // Project info
+    std::string m_projectPath;
+    std::string m_projectName;
 };
 
 // Global play-state hook: phys::Simulation calls it (with the new play state)

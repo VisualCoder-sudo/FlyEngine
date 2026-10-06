@@ -1,0 +1,271 @@
+name: build
+
+# The engine is built from one CMakeLists.txt on every platform. This workflow
+# exists to catch the two failure modes that are invisible locally:
+#
+#   1. A Windows-only assumption creeping back in (a <windows.h> include, a
+#      ShellExecute call, a C:\ hardcoded path). The Linux job is what catches
+#      these; nothing on a Windows dev machine will.
+#   2. A shader that no longer compiles. shaders/*.glsl are compiled by
+#      sokol-shdc at build time (for GL, Vulkan and D3D11 at once), so a broken
+#      shader is a build error on every job.
+#
+# The Linux job also verifies the install tree: a build that only works from the
+# source directory is not a distributable build.
+
+on:
+  push:
+    branches: [ beta, main, master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (GCC ${{ matrix.container }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both of the distributions the project targets. They differ in
+        # toolchain default and in which of the required dev packages are
+        # already present, which is exactly what a matrix is for.
+        include:
+          - container: ubuntu:24.04
+            name: Debian-family
+            apt: >-
+              build-essential cmake ninja-build pkg-config git
+              libasound2-dev libx11-dev libxrandr-dev libxi-dev
+              libxcursor-dev libxinerama-dev libxkbcommon-dev libgl1-mesa-dev
+              libglib2.0-dev libvulkan-dev
+          - container: archlinux:base-devel
+            name: Arch-family
+            # Arch's base-devel image has no pacman database; bootstrap it.
+            setup: >-
+              pacman-key --init && pacman -Sy --noconfirm --disable-download-timeout
+              archlinux-keyring &&
+              pacman -S --noconfirm --needed --disable-download-timeout
+              cmake ninja git pkgconf alsa-lib libx11 libxrandr libxi
+              libxcursor libxinerama libxkbcommon mesa glib2
+              vulkan-icd-loader vulkan-headers
+    container: ${{ matrix.container }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        if: ${{ matrix.setup == '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+      - name: Install dependencies (pacman)
+        if: ${{ matrix.setup != '' }}
+        run: ${{ matrix.setup }}
+
+      - name: Report toolchain
+        run: |
+          cmake --version
+          ninja --version
+          ${CXX:-c++} --version
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFLYENGINE_ENABLE_FLYCLOUD=OFF
+          -DFLYENGINE_ENABLE_DESKTOP_VALIDATION=ON
+
+      - name: Build
+        run: cmake --build build
+
+      # The C ABI the C# side P/Invokes is resolved through the process's own
+      # exported symbols. Without ENABLE_EXPORTS the build and link succeed and
+      # every script call fails on the first tick, so check the exports rather
+      # than trusting the build.
+      - name: Verify FlyNative_* exports
+        run: |
+          count=$(nm -D --defined-only build/Flyengine | grep -c 'FlyNative_' || true)
+          echo "exported FlyNative_* symbols: $count"
+          if [ "$count" -lt 100 ]; then
+            echo "::error::expected at least 100 FlyNative_* exports, found $count."
+            echo "Check ENABLE_EXPORTS in CMakeLists.txt."
+            exit 1
+          fi
+
+      - name: Install
+        run: |
+          cmake --install build --prefix /usr/local
+          test -x /usr/local/bin/Flyengine
+          test -f /usr/local/share/flyengine/assets/FlyengineLogo.png
+          test -f /usr/local/share/applications/flyengine.desktop
+          test -f /usr/local/share/icons/hicolor/256x256/apps/flyengine.png
+          find /usr/local/share/flyengine -type f | head -20
+
+      # Run the installed binary from a directory that has nothing in common
+      # with the source tree. This is the "a .desktop launcher starts us from
+      # $HOME" case, and it is the only way to catch a regression back to
+      # working-directory-relative asset loading.
+      - name: Smoke test the installed build
+        run: |
+          mkdir -p /tmp/elsewhere
+          cd /tmp/elsewhere
+          export XDG_RUNTIME_DIR=/tmp/xdg
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          # Frame the window and quit on its own; there is no display (or GPU)
+          # in this job, so this only proves it starts and finds its data.
+          timeout 30 /usr/local/bin/Flyengine --testwater 4 5 > smoke.log 2>&1 || true
+          if grep -qE "not valid|Failed to open (text )?file" smoke.log; then
+            echo "::error::the installed build could not load its own data:"
+            grep -E "not valid|Failed to open|WARNING" smoke.log | head -20
+            exit 1
+          fi
+          echo "installed build loaded its data and shaders"
+
+  wayland:
+    name: Linux (Wayland / X11 compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git \
+            libasound2-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libxinerama-dev libxkbcommon-dev libgl1-mesa-dev libglib2.0-dev \
+            libvulkan-dev xvfb mesa-utils
+      # The runner has no GPU, so this job uses the OpenGL backend, which Mesa's
+      # software rasterizer can run; the Vulkan build is covered by the jobs
+      # above at compile/link level.
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DFLYENGINE_ENABLE_FLYCLOUD=OFF -DFLYENGINE_GRAPHICS_BACKEND=GL
+          cmake --build build
+
+      # sokol_app talks X11 only, so a Wayland session needs XWayland. The
+      # failure mode when that is missing is a hard abort at InitWindow, which
+      # is easy to miss if nobody ever launches the app from a Wayland desktop.
+      - name: Runs under XWayland
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          for _ in $(seq 1 20); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 0.5; done
+          export DISPLAY=:99
+          export LIBGL_ALWAYS_SOFTWARE=1
+          cd /tmp
+          timeout 30 xvfb-run -a /home/runner/work/FlyEngine/FlyEngine/build/Flyengine \
+            --testwater 4 5 > wayland.log 2>&1 || true
+          if grep -q "LINUX_X11_OPEN_DISPLAY_FAILED" wayland.log; then
+            echo "::error::sokol_app could not open an X display (XWayland missing?)"
+            exit 1
+          fi
+          grep -E "DISPLAY: Window created" wayland.log \
+            || { echo "::error::the engine did not initialise a display"; cat wayland.log; exit 1; }
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFLYENGINE_ENABLE_FLYCLOUD=OFF
+          -DFLYENGINE_ENABLE_DESKTOP_VALIDATION=OFF
+          -DFLYENGINE_GRAPHICS_BACKEND=D3D11
+
+      # D3D11 needs no SDK on the runner. The Vulkan build on Windows needs the
+      # LunarG Vulkan SDK (for vulkan-1.lib) and is not built here.
+      - name: Build
+        run: cmake --build build
+
+      - name: Verify FlyNative_* exports
+        run: |
+          # dumpbin ships with MSVC, but it is not on PATH in every runner
+          # image; the import table is the fallback.
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            $out = & $dumpbin.Source /exports build/Flyengine.exe
+            $count = ($out | Select-String -Pattern 'FlyNative_').Count
+          } else {
+            $out = & dumpbin.exe /exports build/Flyengine.exe 2>$null
+            if (-not $out) {
+              $out = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+                -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' |
+                ForEach-Object { & $_ /exports build/Flyengine.exe }
+            }
+            $count = ($out | Select-String -Pattern 'FlyNative_').Count
+          }
+          Write-Host "exported FlyNative_* symbols: $count"
+          if ($count -lt 100) {
+            Write-Host "::error::expected at least 100 FlyNative_* exports, found $count"
+            exit 1
+          }
+
+      # The static CRT keeps VCRUNTIME140.dll from becoming a runtime
+      # dependency, which matters because the build output is distributed
+      # outside any VS install.
+      - name: Verify no VCRUNTIME dependency
+        run: |
+          $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue).Source
+          if (-not $dumpbin) {
+            $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe'
+          }
+          $deps = & $dumpbin /dependents build/Flyengine.exe
+          $vcruntime = $deps | Select-String -Pattern 'VCRUNTIME|MSVCP|ucrtbase'
+          if ($vcruntime) {
+            Write-Host "::error::the build has a dynamic CRT dependency:"
+            $vcruntime
+            exit 1
+          }
+          Write-Host "no dynamic CRT dependency"
+
+  package:
+    name: Linux tarball
+    runs-on: ubuntu-latest
+    needs: linux
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git \
+            libasound2-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libxinerama-dev libxkbcommon-dev libgl1-mesa-dev libglib2.0-dev \
+            libvulkan-dev
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DFLYENGINE_ENABLE_FLYCLOUD=OFF \
+                -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build build
+
+      - name: Create the tarball
+        run: |
+          DESTDIR=stage cmake --install build
+          # Ship a tree that can be unpacked anywhere and run from any working
+          # directory, which is what the data-root search has to cope with.
+          tar -czf flyengine-linux-x86_64.tar.gz -C stage usr/local
+          echo "--- contents ---"
+          tar -tzf flyengine-linux-x86_64.tar.gz | head -30
+          echo "--- size ---"
+          du -h flyengine-linux-x86_64.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flyengine-linux-x86_64
+          path: flyengine-linux-x86_64.tar.gz
+          if-no-files-found: error

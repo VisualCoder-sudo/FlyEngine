@@ -42,11 +42,18 @@ public:
     Vector3 GetBodyAngularVelocity(ScatteredObject* object) const;
     void SetBodyAngularVelocity(ScatteredObject* object, Vector3 velocity);
 
-    void SpawnBodyForObject(ScatteredObject* obj);
+    void ApplyForceToBody(ScatteredObject* object, Vector3 force, bool wake = true);
+    void ApplyImpulseToBody(ScatteredObject* object, Vector3 impulse, bool wake = true);
+
+    void StartPlay();  // Made public for player auto-start
+    void SpawnBodyForObject(ScatteredObject* obj, b3BodyType type = b3_dynamicBody);
     // Removes the physical body for an object that is being destroyed. Must be
     // called before the ScatteredObject is freed so bodyMap/bodyToObject never
     // hold dangling pointers (the editor can delete objects mid-play).
     void RemoveObject(ScatteredObject* obj);
+
+    // Change body type (for player controller kinematic movement)
+    void SetBodyType(ScatteredObject* obj, b3BodyType type);
 
     b3JointId CreateRevoluteJoint(ScatteredObject* a, ScatteredObject* b, Vector3 anchor);
     b3JointId CreateDistanceJoint(ScatteredObject* a, ScatteredObject* b, Vector3 anchorA, Vector3 anchorB);
@@ -55,12 +62,30 @@ public:
     void DestroyJoint(b3JointId jointId);
 
     RaycastHit RayCast(Vector3 origin, Vector3 end);
+    RaycastHit RayCast(Vector3 origin, Vector3 direction, float maxDistance, ScatteredObject* ignore = nullptr);
+
+    // Move a kinematic body by delta (for CharacterController)
+    void MoveKinematic(ScatteredObject* obj, Vector3 delta);
 
     const std::vector<ContactEvent>& GetContactBeginEvents() const { return contactBeginEvents; }
     const std::vector<ContactEvent>& GetContactHitEvents() const { return contactHitEvents; }
 
-    void SetDebugDrawEnabled(bool enabled) { debugDrawEnabled = enabled; }
-    bool IsDebugDrawEnabled() const { return debugDrawEnabled; }
+    // Debug draw. This class collects the data (contact events, body transforms,
+    // joint endpoints) and the PhysicsDebugVisualizer in TechnicalTools.cpp
+    // draws it, because that is where the F2 toggles live. This used to also
+    // carry a second, self-contained renderer behind its own "debug draw
+    // enabled" flag that nothing ever set, so it never ran and its drawing logic
+    // rotted. Having one renderer means the toggles and the drawing cannot
+    // disagree about what is being shown.
+    //
+    // Authoritative transform of an object's physics body. The object's own
+    // position is synced by WriteBack(), but its euler rotation is not (that
+    // goes to the render matrix), so a debug overlay reading *GetRotationPtr()
+    // would show a stale orientation during play.
+    bool GetBodyTransform(ScatteredObject* obj, Vector3& outPos, Quaternion& outRot) const;
+
+    // World-space endpoints of every joint, for the debug overlay.
+    void GetJointSegments(std::vector<std::pair<Vector3, Vector3>>& out) const;
 
     void SetGravity(float g) { gravity = g; }
     float GetGravity() const { return gravity; }
@@ -70,15 +95,21 @@ public:
     float GetRestitution() const { return restitutionBase; }
 
     b3WorldId GetWorldId() const;
+    
+    // Debug stats
+    int GetBodyCount() const { return (int)bodyMap.size(); }
+    int GetContactCount() const { return (int)(contactBeginEvents.size() + contactHitEvents.size()); }
+    double GetLastStepTimeMs() const { return lastStepTimeMs; }
+    
+    // Check if object has a physics body
+    bool HasBody(ScatteredObject* obj) const { return bodyMap.find(obj) != bodyMap.end(); }
 
 private:
-    void StartPlay();
     void StopPlay();
     void CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId);
     void WriteBack();
     void ApplyBuoyancy();
     void ProcessEvents();
-    void DrawDebug();
 
     std::vector<ScatteredObject*>& objects;
     bool playing = false;
@@ -109,15 +140,29 @@ private:
     std::vector<ContactEvent> contactBeginEvents;
     std::vector<ContactEvent> contactHitEvents;
 
-    bool debugDrawEnabled = false;
-
+    // Overwritten from the "physics_gravity" cvar in StartPlay(), where the
+    // box3d world is built. Kept at -9.81 (Earth), which is what the engine
+    // has always simulated: Box3DWrapper.hpp and CharacterController.hpp both
+    // hardcode the same value, so this is the real baseline. The cvar used to
+    // advertise -19.62 while nothing read it, which made the documented default
+    // and the actual one disagree; the cvar is now the side that changed.
     float gravity = -9.81f;
     float friction = 0.4f;
     float restitutionBase = 0.7f;
+    double lastStepTimeMs = 0.0;
 
-    static constexpr float FIXED_DT = 1.0f / 120.0f;
-    static constexpr int MAX_STEPS_PER_FRAME = 8;
+    // The fixed timestep and the per-frame sub-step cap are the two knobs that
+    // decide how the simulation trades accuracy for CPU. They used to be
+    // `static constexpr` and unreadable at runtime, with matching cvars
+    // ("physics.fixed_dt", "physics.max_substeps") registered alongside them
+    // that nothing ever consulted. Sampling the cvar in Step() is a map lookup
+    // per frame, which is nothing next to the box3d solve it governs.
+    static constexpr float kDefaultFixedDt = 1.0f / 120.0f;
+    static constexpr int kDefaultMaxStepsPerFrame = 8;
     static constexpr int SUB_STEPS = 4;
+
+    float fixedDt = kDefaultFixedDt;
+    int maxStepsPerFrame = kDefaultMaxStepsPerFrame;
 };
 
 } // namespace phys

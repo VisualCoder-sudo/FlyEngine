@@ -244,7 +244,7 @@ void Run(int argc, char** argv) {
     }
 
     // Coverage-geometry probes: ASCII maps of what Draw() actually renders at
-    // several camera poses, plus matching screenshots — pinpoints any VOID
+    // several camera poses, plus matching screenshots - pinpoints any VOID
     // (unloaded) region and its shape around the body center.
     gfx::SetReflectionsEnabled(true);
     auto dumpCoverage = [&](const char* label, Vector3 pos, Vector3 tgt) {
@@ -310,7 +310,7 @@ void Run(int argc, char** argv) {
     TimingStats phase2;
     int framesFrozen = framesDone;
 
-    // Phase 2: identical scene, reflections OFF — isolates the mirror pass cost.
+    // Phase 2: identical scene, reflections OFF - isolates the mirror pass cost.
     gfx::SetReflectionsEnabled(false);
     for (int i = 0; i < frameCount; i++) {
         double t0 = GetTime();

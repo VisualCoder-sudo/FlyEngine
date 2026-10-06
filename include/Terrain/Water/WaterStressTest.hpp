@@ -12,3 +12,10 @@ namespace watertest {
 void Run(int argc, char** argv);
 
 } // namespace watertest
+// `Flyengine --testscene [frames]`: terrain painting/sculpting + city + shapes
+// (src/SceneTest.cpp). Run from a Debug build so sokol's validation is active.
+namespace scenetest {
+
+int Run(int argc, char** argv);
+
+} // namespace scenetest

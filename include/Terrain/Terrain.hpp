@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Engine/Backend/Entity.hpp"
+#include "../Engine/Backend/Frustum.hpp"
 #include "TerrainTypes.hpp"
 #include "raylib.h"
 #include <string>
@@ -34,6 +35,10 @@ public:
     void Draw() override;
     void DrawOverlay3D() override;
 
+    // Frustum culling support
+    bool IsVisible(const Frustum& frustum) const override;
+    BoundingBox GetCullBounds() const override;
+
     // Heightmap operations
     bool LoadHeightmap(const std::string& path, const HeightmapImportSettings& settings = {});
     bool SaveHeightmap(const std::string& path) const;
@@ -49,7 +54,8 @@ public:
     void NoiseTerrain(Vector2 center, float radius, const NoiseParams& params);
 
     // Generic brush application
-    void ApplyBrush(const TerrainBrush& brush, Vector2 center);
+    // dt scales Raise/Lower (units per second) so painting is frame-rate independent; one-shot stamps pass dt = 1.
+    void ApplyBrush(const TerrainBrush& brush, Vector2 center, float dt = 1.0f);
 
     // Query
     float GetHeightAt(float x, float z) const;
@@ -70,6 +76,9 @@ public:
     const TerrainLayer& GetLayer(int index) const { return layers[index]; }
     TerrainLayer& GetLayer(int index) { return layers[index]; }
     void PaintLayer(Vector2 center, float radius, float strength, int layerIndex, bool erase = false);
+
+    // Erosion: apply thermal/hydraulic erosion to a world-space rectangular region
+    void ErodeRegion(float minX, float minZ, float maxX, float maxZ, const TerrainBrush& brush);
 
     // Reload the material albedo/normal/roughness textures for every layer from
     // the paths stored in the terrain file. `baseDir` resolves project-relative
@@ -97,7 +106,7 @@ public:
     bool WriteToStream(std::ostream& out) const;
     bool ReadFromStream(std::istream& in);
 
-    // Transform interface (for gizmo) — size is authoritative
+    // Transform interface (for gizmo) - size is authoritative
     // size.x = width, size.z = depth, size.y = vertical scale (unused)
     Vector3* GetPosPtr() { return &center; }
     Vector3* GetSizePtr() { return &size; }
@@ -159,7 +168,38 @@ public:
     std::vector<TerrainLayer> layers;
     Shader terrainShader = {0};
     bool shaderLoaded = false;
-    int shaderLocs[32] = {-1};              // Cached uniform locations
+
+    // Cached uniform locations. The scalar uniforms are indexed by the Loc
+    // enum below; the per-layer array elements get their own arrays because
+    // GLSL does not promise that albedoTex[0..3], normalTex[0..3] and
+    // roughnessTex[0..3] are laid out at consecutive locations, so a base
+    // location plus a fixed stride is not safe.
+    enum Loc : int {
+        LocViewProj = 0,
+        LocModel,
+        LocMinHeight,
+        LocMaxHeight,
+        LocLayerCount,
+        LocAlbedoTex0,
+        LocNormalTex0,
+        LocRoughnessTex0,
+        LocTileSize0,
+        LocSplatmap,
+        LocCameraPos,
+        LocLightDir,
+        LocLightColor,
+        LocAmbientColor,
+        LocFogDensity,
+        LocFogColor,
+        LocCount,
+    };
+    int shaderLocs[LocCount] = {-1};
+
+    // Locations of the array elements, looked up by explicit name.
+    int albedoLoc[4] = {-1, -1, -1, -1};
+    int normalLoc[4] = {-1, -1, -1, -1};
+    int roughnessLoc[4] = {-1, -1, -1, -1};
+    int tileSizeLoc[4] = {-1, -1, -1, -1};
 
     // Physics
     PhysicsMode physicsMode = PhysicsMode::Heightfield;

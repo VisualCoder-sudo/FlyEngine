@@ -25,6 +25,8 @@ public:
     void Update(float dt) override;
     void DrawOverlay3D() override;
 
+    bool IsEditorOnly() const override { return true; }
+
     void SetPhysicsSimulation(phys::Simulation* ps) { physicsSim = ps; }
 
 private:
@@ -89,7 +91,15 @@ private:
     bool hasPendingUndo = false;
 
     // Top-bar Import button: file dialog -> copy into project -> spawn + select.
+    // Starts the (non-blocking) mesh file picker. FinishMeshImport() is called
+    // on a later frame with the chosen path, or an empty path if cancelled.
     void ImportMesh();
+    void FinishMeshImport(const std::string& modelPath);
+
+    // Delivers results from the non-blocking file pickers (scene open/save,
+    // mesh import). Called first thing in Update() so a result is never
+    // starved behind one of Update()'s early returns.
+    void PumpDialogs();
     void CleanupPendingImports();
     void ClearPendingImports();
     int PickHandle(Vector2 mouse) const;

@@ -32,14 +32,14 @@ out float noiseValue;
 flat out vec2 vsCamXZ;
 out float fragDist;
 
-// 12 gradient vectors — must match CPU WaterNoise.cpp exactly.
+// 12 gradient vectors - must match CPU WaterNoise.cpp exactly.
 const vec3 grad3[12] = vec3[12](
     vec3(1,1,0), vec3(-1,1,0), vec3(1,-1,0), vec3(-1,-1,0),
     vec3(1,0,1), vec3(-1,0,1), vec3(1,0,-1), vec3(-1,0,-1),
     vec3(0,1,1), vec3(0,-1,1), vec3(0,1,-1), vec3(0,-1,-1)
 );
 
-// Improved Simplex 3D — same algorithm as CPU WaterNoise::Simplex3D().
+// Improved Simplex 3D - same algorithm as CPU WaterNoise::Simplex3D().
 // Returns value in approximately [-1, 1].
 float simplex3D(vec3 p, int seed) {
     const float F3 = 1.0 / 3.0;
@@ -143,7 +143,7 @@ void main() {
     vec4 worldPos4 = wModel * vec4(localPos, 1.0);
     vec2 worldXZ = worldPos4.xz;
 
-    // Fragment distance from the camera (symmetric in azimuth) — used for a
+    // Fragment distance from the camera (symmetric in azimuth) - used for a
     // reflection distance fade that does not depend on screen position.
     fragDist = distance(cameraPos, worldPos4.xyz);
 

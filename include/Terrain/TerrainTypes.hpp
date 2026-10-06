@@ -22,9 +22,11 @@ enum class TerrainTool {
     Lower,        // Subtract height
     Smooth,       // Average neighbors (laplacian)
     Flatten,      // Set to target height
-    Ramp,         // Linear gradient between two points
+    Paint,        // Paint texture layers
+    Erode,        // Thermal/hydraulic erosion
     Noise,        // Add procedural noise
-    Erosion       // Thermal/hydraulic (future)
+    Ramp,         // Linear gradient between two points
+    None          // No tool selected
 };
 
 enum class PhysicsMode {
@@ -46,10 +48,31 @@ enum class HeightmapFormat {
 struct TerrainBrush {
     TerrainTool tool = TerrainTool::Raise;
     float radius = 10.0f;           // World units
-    float strength = 0.1f;          // Per-second for continuous, absolute for single
+    float strength = 40.0f;         // Per-second for continuous, absolute for single (matches BasicTerrain)
     float hardness = 0.5f;          // 0=soft, 1=hard edge
     float targetHeight = 0.0f;      // For Flatten
     bool addMode = true;            // Raise vs Lower (toggle)
+
+    // Brush shape
+    enum class Shape { Circle, Square };
+    Shape shape = Shape::Circle;
+
+    // Paint tool settings
+    int paintLayer = 0;      // Which texture layer to paint (0-3)
+    bool paintErase = false;  // True = erase mode (decrease selected layer)
+
+    // Noise tool settings
+    int noiseSeed = 1337;           // Deterministic seed for noise
+    float noiseScale = 40.0f;       // Feature size in meters (larger = broader features)
+
+    // Erosion tool settings (mirrors BasicTerrain::ErosionSettings)
+    float erosionThermal = 0.5f;       // Amount of talus relaxation per pass
+    float erosionHydraulic = 0.8f;     // Amount of rain-flow carving per pass
+    float erosionTalusDeg = 3.0f;      // Repose angle in degrees; steeper slopes erode
+    float erosionRain = 0.05f;         // Rainfall per pass (water added)
+    float erosionEvaporation = 0.03f;  // Fraction of water lost per pass
+    float erosionDeposit = 0.6f;       // Fraction of eroded soil re-deposited (0 = washed away)
+    int erosionIterations = 6;         // Passes to run per action
 };
 
 struct HeightmapImportSettings {

@@ -23,6 +23,11 @@
 //   Anchored CanCollide CollisionAccuracy Mass Transparency
 //   (plus the model-part fields mirorred below.)
 
+// Supplies FLY_API (export decoration) and the FLY_TRY/FLY_CATCH SEH guard.
+// Must come before the extern "C" block: Platform.hpp pulls in <string> and
+// <vector>, which are C++ headers.
+#include "../Platform/Platform.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,105 +36,105 @@ extern "C" {
 
 // Finds a scene object by display name. Returns an id64 handle (0 = not found).
 // `modelMember`: if non-null, searches model parts too (model name "Model.Part").
-__declspec(dllexport) unsigned long long FlyNative_FindObject(const char* name);
+FLY_API unsigned long long FlyNative_FindObject(const char* name);
 
 // The object the currently-running script is attached to (self). 0 if none.
-__declspec(dllexport) unsigned long long FlyNative_GetSelf(void);
+FLY_API unsigned long long FlyNative_GetSelf(void);
 
 // ---- Object properties ----
 
 // vec3 getters/setters
-__declspec(dllexport) short FlyNative_GetPosition(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetPosition(unsigned long long h, float x, float y, float z);
-__declspec(dllexport) short FlyNative_GetSize(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetSize(unsigned long long h, float x, float y, float z);
-__declspec(dllexport) short FlyNative_GetRotation(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetRotation(unsigned long long h, float x, float y, float z);
-__declspec(dllexport) short FlyNative_GetOrigin(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetOrigin(unsigned long long h, float x, float y, float z);
-__declspec(dllexport) short FlyNative_GetVelocity(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetVelocity(unsigned long long h, float x, float y, float z);
-__declspec(dllexport) short FlyNative_GetAngularVelocity(unsigned long long h, float* x, float* y, float* z);
-__declspec(dllexport) short FlyNative_SetAngularVelocity(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetPosition(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetPosition(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetSize(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetSize(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetRotation(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetRotation(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetOrigin(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetOrigin(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetVelocity(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetVelocity(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_GetAngularVelocity(unsigned long long h, float* x, float* y, float* z);
+FLY_API short FlyNative_SetAngularVelocity(unsigned long long h, float x, float y, float z);
 
 // color getter/setter (r,g,b 0..255)
-__declspec(dllexport) short FlyNative_GetColor(unsigned long long h, unsigned char* r, unsigned char* g, unsigned char* b);
-__declspec(dllexport) short FlyNative_SetColor(unsigned long long h, unsigned char r, unsigned char g, unsigned char b);
+FLY_API short FlyNative_GetColor(unsigned long long h, unsigned char* r, unsigned char* g, unsigned char* b);
+FLY_API short FlyNative_SetColor(unsigned long long h, unsigned char r, unsigned char g, unsigned char b);
 
 // scalar/boolean properties
-__declspec(dllexport) short FlyNative_GetAnchored(unsigned long long h);
-__declspec(dllexport) void  FlyNative_SetAnchored(unsigned long long h, short value);
-__declspec(dllexport) short FlyNative_GetCanCollide(unsigned long long h);
-__declspec(dllexport) void  FlyNative_SetCanCollide(unsigned long long h, short value);
-__declspec(dllexport) float FlyNative_GetMass(unsigned long long h);
-__declspec(dllexport) void  FlyNative_SetMass(unsigned long long h, float mass);
-__declspec(dllexport) float FlyNative_GetTransparency(unsigned long long h);
-__declspec(dllexport) void  FlyNative_SetTransparency(unsigned long long h, float t);
+FLY_API short FlyNative_GetAnchored(unsigned long long h);
+FLY_API void  FlyNative_SetAnchored(unsigned long long h, short value);
+FLY_API short FlyNative_GetCanCollide(unsigned long long h);
+FLY_API void  FlyNative_SetCanCollide(unsigned long long h, short value);
+FLY_API float FlyNative_GetMass(unsigned long long h);
+FLY_API void  FlyNative_SetMass(unsigned long long h, float mass);
+FLY_API float FlyNative_GetTransparency(unsigned long long h);
+FLY_API void  FlyNative_SetTransparency(unsigned long long h, float t);
 
 // CollisionAccuracy is an enum = Box(0) Hull(1) Default(2) Precise(3).
 // Returns -1 on invalid handle.
-__declspec(dllexport) int FlyNative_GetCollisionAccuracy(unsigned long long h);
-__declspec(dllexport) void FlyNative_SetCollisionAccuracy(unsigned long long h, int accuracy);
+FLY_API int FlyNative_GetCollisionAccuracy(unsigned long long h);
+FLY_API void FlyNative_SetCollisionAccuracy(unsigned long long h, int accuracy);
 
 // ---- World services (the old game.* properties) ----
 
-__declspec(dllexport) short FlyNative_IsPlaying(void);
+FLY_API short FlyNative_IsPlaying(void);
 
-__declspec(dllexport) short FlyNative_GetShadowsEnabled(void);
-__declspec(dllexport) void  FlyNative_SetShadowsEnabled(short on);
-__declspec(dllexport) int   FlyNative_GetShadowQuality(void);
-__declspec(dllexport) void  FlyNative_SetShadowQuality(int q);
-__declspec(dllexport) float FlyNative_GetAmbient(float* intensity); // returns 1.0 (single value); prop is scalar
-__declspec(dllexport) void  FlyNative_SetAmbient(float intensity);
-__declspec(dllexport) short FlyNative_GetGridVisible(void);
-__declspec(dllexport) void  FlyNative_SetGridVisible(short on);
-__declspec(dllexport) short FlyNative_GetWireframe(void);
-__declspec(dllexport) void  FlyNative_SetWireframe(short on);
-__declspec(dllexport) float FlyNative_GetFov(float* fov);
-__declspec(dllexport) void  FlyNative_SetFov(float fov);
+FLY_API short FlyNative_GetShadowsEnabled(void);
+FLY_API void  FlyNative_SetShadowsEnabled(short on);
+FLY_API int   FlyNative_GetShadowQuality(void);
+FLY_API void  FlyNative_SetShadowQuality(int q);
+FLY_API float FlyNative_GetAmbient(float* intensity); // returns 1.0 (single value); prop is scalar
+FLY_API void  FlyNative_SetAmbient(float intensity);
+FLY_API short FlyNative_GetGridVisible(void);
+FLY_API void  FlyNative_SetGridVisible(short on);
+FLY_API short FlyNative_GetWireframe(void);
+FLY_API void  FlyNative_SetWireframe(short on);
+FLY_API float FlyNative_GetFov(float* fov);
+FLY_API void  FlyNative_SetFov(float fov);
 
-// Physics (game.Physics.* — routed to the simulation).
-__declspec(dllexport) float FlyNative_GetGravity(void);
-__declspec(dllexport) void  FlyNative_SetGravity(float g);
-__declspec(dllexport) float FlyNative_GetFriction(void);
-__declspec(dllexport) void  FlyNative_SetFriction(float f);
-__declspec(dllexport) float FlyNative_GetRestitution(void);
-__declspec(dllexport) void  FlyNative_SetRestitution(float r);
+// Physics (game.Physics.* - routed to the simulation).
+FLY_API float FlyNative_GetGravity(void);
+FLY_API void  FlyNative_SetGravity(float g);
+FLY_API float FlyNative_GetFriction(void);
+FLY_API void  FlyNative_SetFriction(float f);
+FLY_API float FlyNative_GetRestitution(void);
+FLY_API void  FlyNative_SetRestitution(float r);
 
 // ---- Object creation / destruction ----
 
 // Creates a primitive object (Cube, Sphere, Cylinder, Wedge). Returns a handle
 // or 0 on failure. The object is spawned into the simulation when playing.
-__declspec(dllexport) unsigned long long FlyNative_CreateObject(const char* shapeName);
+FLY_API unsigned long long FlyNative_CreateObject(const char* shapeName);
 
 // ---- Scripting helpers ----
 
 // Prints a line from C# to the engine log.
-__declspec(dllexport) void FlyNative_Print(const char* text);
+FLY_API void FlyNative_Print(const char* text);
 
 // ---- Script lifecycle (called from editor UI, forwarded to C# ScriptHost) ----
 // Returns script ID (>0) or 0 on failure.
-__declspec(dllexport) unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName);
-__declspec(dllexport) void FlyNative_StopObjectScript(unsigned long long objectHandle);
-__declspec(dllexport) short FlyNative_IsObjectScriptRunning(unsigned long long objectHandle);
+FLY_API unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName);
+FLY_API void FlyNative_StopObjectScript(unsigned long long objectHandle);
+FLY_API short FlyNative_IsObjectScriptRunning(unsigned long long objectHandle);
 
-__declspec(dllexport) unsigned long long FlyNative_StartStandaloneScript(int index, const char* typeName);
-__declspec(dllexport) void FlyNative_StopStandaloneScript(int index);
-__declspec(dllexport) short FlyNative_IsStandaloneScriptRunning(int index);
+FLY_API unsigned long long FlyNative_StartStandaloneScript(int index, const char* typeName);
+FLY_API void FlyNative_StopStandaloneScript(int index);
+FLY_API short FlyNative_IsStandaloneScriptRunning(int index);
 
 // Clear all scripts (called when play mode stops).
-__declspec(dllexport) void FlyNative_ClearAllScripts(void);
+FLY_API void FlyNative_ClearAllScripts(void);
 
 // ---- Runtime binding ----
 
 // Binds the CoreCLR host pointer so C# can call back into C++ via P/Invoke.
 // Called by the engine after CoreCLR initialization.
-__declspec(dllexport) void FlyNative_BindRuntime(void* hostPtr);
+FLY_API void FlyNative_BindRuntime(void* hostPtr);
 
 // ---- Scripting helpers ----
 
 // Prints a line from C# to the engine log.
-__declspec(dllexport) void FlyNative_Print(const char* text);
+FLY_API void FlyNative_Print(const char* text);
 
 #ifdef __cplusplus
 } // extern "C"

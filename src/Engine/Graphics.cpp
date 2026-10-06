@@ -1,11 +1,13 @@
 #include "../../include/Engine/Graphics.hpp"
-#include "../../include/Engine/Backend/ShaderCache.hpp"
+#include "../../include/Engine/TechnicalTools.hpp"
 #include "raymath.h"
 #include "rlgl.h"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <string>
 
 namespace fs = std::filesystem;
 
@@ -28,19 +30,19 @@ Matrix reflViewProj = MatrixIdentity();
 int QualityToResolution(int quality) {
     // Shadow acne fix (3): raise the texel budget for a given quality slider.
     // Base shifted 8 -> 9 (log2), so default 52 now yields 2048 (4x texels of
-    // the old 1024) — the generated shadow map is sharper and each acne stripe
+    // the old 1024) - the generated shadow map is sharper and each acne stripe
     // is a few texels narrower, cutting the visible flicker. Low 512 barely
     // differs; High reaches 8192 for crisp silhouettes from up high.
     quality = Clamp(quality, 5, 100);
     float t = (float)(quality - 5) / 95.0f;
-    int log2 = 9 + (int)(t * 4.0f + 0.5f);
+    int log2 = 9 + (int)std::lroundf(t * 4.0f);
     return 1 << log2;
 }
 
 int ReflectionQualityToResolution(int quality) {
     quality = Clamp(quality, 5, 100);
     float t = (float)(quality - 5) / 95.0f;
-    return 360 + (int)(t * 1080.0f + 0.5f); // 360..1440
+    return 360 + (int)std::lroundf(t * 1080.0f); // 360..1440
 }
 
 const Vector3 kLightDir = Vector3Normalize({ -0.4f, -1.0f, -0.3f });
@@ -53,6 +55,7 @@ bool inShadowPass = false;
 bool shadowReuseEnabled = true;
 std::atomic<bool> shadowsDirty{ true };
 bool shadowPassReused = false;
+float shadowStableHalf = 0.0f; // hysteresis-held shadow box half-size (m)
 bool shadowHaveRendered = false;
 Vector3 shadowLastCenter{};
 float shadowLastHalf = 0.0f;
@@ -75,18 +78,20 @@ bool SceneInputActivity() {
 // Persistent instance buffers.
 bool instanceBuffersEnabled = true;
 
-// rlSetVertexAttribute() takes an int offset in newer raylib and a const void*
-// pointer in older ones; this picks whichever the linked rlgl.h declares.
-template <typename T = int>
-auto SetInstAttr(unsigned int idx, T offset, int)
-    -> decltype(rlSetVertexAttribute(idx, 4, RL_FLOAT, false, 64, offset), void()) {
-    rlSetVertexAttribute(idx, 4, RL_FLOAT, false, 64, offset);
+// Raise the camera near plane with altitude: depth precision grows ~1/near, so a
+// higher camera can afford a much larger near plane and far-away layers stop
+// z-fighting. rlSetClipPlanes()/rlGetCullDistanceFar() only exist from raylib
+// 5.5 onward; on older raylib this is a no-op -- the road shader's bias still
+// adapts on its own.
+#if defined(RAYLIB_VERSION_MAJOR) && \
+    (RAYLIB_VERSION_MAJOR > 5 || (RAYLIB_VERSION_MAJOR == 5 && RAYLIB_VERSION_MINOR >= 5))
+void ApplyNearPlane(double nearP) {
+    rlSetClipPlanes(nearP, rlGetCullDistanceFar());
 }
-template <typename T = int>
-auto SetInstAttr(unsigned int idx, T offset, long)
-    -> decltype(rlSetVertexAttribute(idx, 4, RL_FLOAT, false, 64, (const void*)(size_t)offset), void()) {
-    rlSetVertexAttribute(idx, 4, RL_FLOAT, false, 64, (const void*)(size_t)offset);
-}
+#else
+void ApplyNearPlane(double) {}
+#endif
+
 Camera3D shadowViewCamera{};   // last camera seen by UpdateLighting (the shadow frustum follows it)
 bool haveShadowViewCamera = false;
 constexpr float kShadowNear = 1.0f;
@@ -145,283 +150,8 @@ Matrix lightView = MatrixIdentity();
 Matrix lightProj = MatrixIdentity();
 Matrix lightViewProj = MatrixIdentity();
 
-const char* kVertexShader = R"(
-#version 330
-
-in vec3 vertexPosition;
-in vec2 vertexTexCoord;
-in vec3 vertexNormal;
-in vec4 vertexColor;
-
-uniform mat4 mvp;
-uniform mat4 matNormal;
-uniform mat4 matModel;
-uniform mat4 lightVP;
-
-out vec2 fragTexCoord;
-out vec4 fragColor;
-out vec3 fragNormal;
-out vec4 fragShadowCoord;
-out vec3 fragWorldPos;
-
-void main()
-{
-    fragTexCoord = vertexTexCoord;
-    fragColor = vertexColor;
-    fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
-    fragShadowCoord = lightVP * matModel * vec4(vertexPosition, 1.0);
-    fragWorldPos = vec3(matModel * vec4(vertexPosition, 1.0));
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
-}
-)";
-
-// Road variant of the lit vertex shader: identical output, but gl_Position.z is
-// biased by a constant window-depth offset (1.0/1048576.0 of clip w) so roads --
-// which lie ~0.01-0.03 above the ground plane -- win the depth test against it at
-// altitude, where perspective depth precision is much coarser than that gap.
-const char* kVertexShaderRoad = R"(
-#version 330
-
-in vec3 vertexPosition;
-in vec2 vertexTexCoord;
-in vec3 vertexNormal;
-in vec4 vertexColor;
-
-uniform mat4 mvp;
-uniform mat4 matNormal;
-uniform mat4 matModel;
-uniform mat4 lightVP;
-uniform mat4 matProjection; // set by raylib when the shader's projection loc is registered
-
-out vec2 fragTexCoord;
-out vec4 fragColor;
-out vec3 fragNormal;
-out vec4 fragShadowCoord;
-out vec3 fragWorldPos;
-
-void main()
-{
-    fragTexCoord = vertexTexCoord;
-    fragColor = vertexColor;
-    fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
-    fragShadowCoord = lightVP * matModel * vec4(vertexPosition, 1.0);
-    fragWorldPos = vec3(matModel * vec4(vertexPosition, 1.0));
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
-    // World-space depth bias: pull the vertex toward the camera by a fixed number
-    // of METRES (independent of viewing distance, so the city never seems to
-    // rise or sink as the camera moves). The base amount beats the ground
-    // plane; the height term (y above the 0.04 road elevation) orders the
-    // stacked road layers against each other.
-    float layer = max(vertexPosition.y - 0.04, 0.0);
-    float dz = 0.02 + layer * 2.0;
-    if (matProjection[3][3] > 0.5) {
-        gl_Position.z += matProjection[2][2] * dz;                    // orthographic
-    } else {
-        gl_Position.z += matProjection[3][2] * dz / gl_Position.w;    // perspective
-    }
-}
-)";
-
-const char* kFragmentShader = R"(
-#version 330
-
-in vec2 fragTexCoord;
-in vec4 fragColor;
-in vec3 fragNormal;
-in vec4 fragShadowCoord;
-in vec3 fragWorldPos;
-
-uniform sampler2D texture0;
-uniform vec4 colDiffuse;
-uniform vec3 lightDir;
-uniform vec3 ambient;
-uniform sampler2D shadowMap;
-uniform float shadowsEnabled;
-uniform float waterSurfaceY;
-
-// Shadow acne fixes (shared by every lit mesh).
-// 1) clip-space light VP is needed in the fragment stage for normal-based bias.
-uniform mat4 lightVP;
-
-out vec4 finalColor;
-
-vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec2 mod289v2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
-
-float snoise(vec2 v) {
-    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
-                        -0.577350269189626, 0.024390243902439);
-    vec2 i  = floor(v + dot(v, C.yy));
-    vec2 x0 = v - i + dot(i, C.xx);
-    vec2 i1;
-    i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-    vec4 x12 = x0.xyxy + C.xxzz;
-    x12.xy -= i1;
-    i = mod289v2(i);
-    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
-                             + i.x + vec3(0.0, i1.x, 1.0));
-    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy),
-                             dot(x12.zw, x12.zw)), 0.0);
-    m = m * m;
-    m = m * m;
-    vec3 x = 2.0 * fract(p * C.www) - 1.0;
-    vec3 h = abs(x) - 0.5;
-    vec3 ox = floor(x + 0.5);
-    vec3 a0 = x - ox;
-    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
-    vec3 g;
-    g.x = a0.x * x0.x + h.x * x0.y;
-    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-    return 130.0 * dot(m, g);
-}
-
-float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal) {
-    // Combined anti-acne scheme (shared by every lit mesh).
-    //
-    // (A) NORMAL-BASED BIAS — shift the shadow comparison point along the
-    //     surface normal in WORLD space before projecting to light space. This
-    //     is a fixed world-units offset, so it stays correct at every camera
-    //     altitude (the acne never returns no matter how high the flyer is).
-    //     World offset ~1 light-space texel (ortho 70 wide / 1024..4096).
-    vec4 biasedLightPos = lightVP * vec4(fragWorldPos + normalize(normal) * 0.02, 1.0);
-    vec3 projCoords = biasedLightPos.xyz / biasedLightPos.w;
-    projCoords = projCoords * 0.5 + 0.5;
-
-    float currentDepth = projCoords.z;
-    float shadow = 0.0;
-
-    if (projCoords.x >= 0.0 && projCoords.x <= 1.0 &&
-        projCoords.y >= 0.0 && projCoords.y <= 1.0 &&
-        currentDepth <= 1.0)
-    {
-        // (B) SLOPE-SCALE DEPTH BIAS — bias grows as the surface tilts away
-        //     from the light: 1.0 - dot(normal, -lightDir) is 0 for a surface
-        //     facing the light dead-on and reaches 1.0 at grazing incidence.
-        //     Acne is worst exactly at grazing, so acne-prone surfaces get the
-        //     largest bias while flat-lit faces stay acne-free and acne across
-        //     a shallow sun / low-elevation directional light is suppressed.
-        float facing = 1.0 - dot(normal, normalize(-lightDir));
-        float bias = max(0.0037 * facing * facing, 0.00093); // tuned for the 1..430 shadow depth range
-        vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
-
-        // 3x3 box PCF to soften the shadow edge
-        for (int x = -1; x <= 1; ++x) {
-            for (int y = -1; y <= 1; ++y) {
-                float closestDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
-                shadow += (currentDepth - bias) > closestDepth ? 1.0 : 0.0;
-            }
-        }
-        shadow /= 9.0;
-    }
-
-    return shadow;
-}
-
-void main()
-{
-    vec3 normal = normalize(fragNormal);
-    float diffuse = max(dot(normal, -lightDir), 0.0);
-    float shadow = ShadowCalculation(fragShadowCoord, normal) * shadowsEnabled;
-
-    vec4 texelColor = texture(texture0, fragTexCoord);
-    vec3 lit = (ambient + (1.0 - shadow) * diffuse) * texelColor.rgb * colDiffuse.rgb * fragColor.rgb;
-
-    float depthBelow = waterSurfaceY - fragWorldPos.y;
-    if (depthBelow > 0.0) {
-        float t = clamp(depthBelow * 0.3, 0.0, 1.0);
-        vec3 waterTint = vec3(0.6, 0.75, 0.9);
-        lit = mix(lit, lit * waterTint, t * 0.25);
-        float luma = dot(lit, vec3(0.299, 0.587, 0.114));
-        lit = mix(lit, vec3(luma), t * 0.1);
-    }
-
-    finalColor = vec4(lit, texelColor.a * colDiffuse.a);
-}
-)";
-
-// Instanced variant of the lit vertex shader: the model matrix comes from the
-// per-instance `instanceTransform` attribute (DrawMeshInstanced binds location
-// 9+), while mvp/matNormal/lightVP are still supplied by raylib/our pass.
-const char* kVertexShaderInstanced = R"(
-#version 330
-
-in vec3 vertexPosition;
-in vec2 vertexTexCoord;
-in vec3 vertexNormal;
-in vec4 vertexColor;
-in mat4 instanceTransform;
-
-uniform mat4 mvp;
-uniform mat4 matNormal;
-uniform mat4 matModel;
-uniform mat4 lightVP;
-
-out vec2 fragTexCoord;
-out vec4 fragColor;
-out vec3 fragNormal;
-out vec4 fragShadowCoord;
-out vec3 fragWorldPos;
-
-void main()
-{
-    // Per-instance tint rides in the (otherwise unused) bottom row of the
-    // transform: m3,m7,m11 == instanceTransform[0..2][3]. That lets every colour of
-    // a shape share one draw call. Zeroed again so the matrix stays affine; an
-    // all-zero tint (e.g. editor markers) means "no per-instance tint".
-    mat4 model = instanceTransform;
-    vec3 instTint = vec3(model[0][3], model[1][3], model[2][3]);
-    model[0][3] = 0.0;
-    model[1][3] = 0.0;
-    model[2][3] = 0.0;
-    if (dot(instTint, instTint) < 1e-6) instTint = vec3(1.0);
-
-    vec4 worldPos = model * vec4(vertexPosition, 1.0);
-    fragTexCoord = vertexTexCoord;
-    fragColor = vec4(vertexColor.rgb * instTint, vertexColor.a);
-    fragNormal = normalize(mat3(model) * vertexNormal);
-    fragShadowCoord = lightVP * worldPos;
-    fragWorldPos = worldPos.xyz;
-    gl_Position = mvp * worldPos;
-}
-)";
-
-RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
-    RenderTexture2D target = { 0 };
-
-    target.id = rlLoadFramebuffer();
-    target.texture.width = width;
-    target.texture.height = height;
-
-    if (target.id > 0) {
-        rlEnableFramebuffer(target.id);
-
-        target.texture.id = rlLoadTexture(NULL, width, height, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
-        target.texture.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-        target.texture.mipmaps = 1;
-        rlFramebufferAttach(target.id, target.texture.id, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_TEXTURE2D, 0);
-
-        target.depth.id = rlLoadTextureDepth(width, height, false);
-        target.depth.width = width;
-        target.depth.height = height;
-        target.depth.format = 19;
-        target.depth.mipmaps = 1;
-
-        rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
-
-        if (rlFramebufferComplete(target.id)) {
-            TraceLog(LOG_INFO, "FBO: [ID %i] Framebuffer object created successfully", target.id);
-        } else {
-            TraceLog(LOG_WARNING, "FBO: [ID %i] Framebuffer object is not complete", target.id);
-        }
-
-        rlDisableFramebuffer();
-    } else {
-        TraceLog(LOG_WARNING, "FBO: Framebuffer object can not be created");
-    }
-
-    return target;
-}
+// The lit, road and instanced shaders live in shaders/lit.glsl and are compiled
+// into the binary by sokol-shdc (programs "lit", "lit_road", "lit_instanced").
 
 Texture2D GenerateGridTexture() {
     const int texSize = 400;
@@ -675,22 +405,17 @@ Mesh GenerateCitySlantMesh() {
 
 namespace gfx {
 
+Matrix ComposeTRS(Vector3 scale, Matrix rotation, Vector3 position) {
+    const Matrix scaleMat = MatrixScale(scale.x, scale.y, scale.z);
+    const Matrix transMat = MatrixTranslate(position.x, position.y, position.z);
+    return MatrixMultiply(MatrixMultiply(scaleMat, rotation), transMat);
+}
+
 void Init() {
     if (initialized) return;
 
-    // Initialize shader cache
-    {
-        fs::path exeDir = fs::current_path();
-        shaderCache::Init((exeDir / ".shader_cache").generic_string());
-    }
-
-    // Try loading lit shader from binary cache
-    if (!shaderCache::LoadBinary("lit_shader_v2", litShader)) {
-        litShader = LoadShaderFromMemory(kVertexShader, kFragmentShader);
-        if (litShader.id != 0) {
-            shaderCache::SaveBinary("lit_shader_v2", litShader);
-        }
-    }
+    // Shaders are compiled into the binary (shaders/lit.glsl via sokol-shdc).
+    litShader = LoadShaderProgram("lit");
     lightDirLoc = GetShaderLocation(litShader, "lightDir");
     ambientLoc = GetShaderLocation(litShader, "ambient");
     lightVPLoc = GetShaderLocation(litShader, "lightVP");
@@ -706,20 +431,14 @@ void Init() {
 
     // Road shader: same lighting as litShader but with a depth bias so the flat
     // road mesh always wins against the near-coplanar ground plane at altitude.
-    if (!shaderCache::LoadBinary("lit_shader_road_v4", roadShader)) {
-        roadShader = LoadShaderFromMemory(kVertexShaderRoad, kFragmentShader);
-        if (roadShader.id != 0) {
-            shaderCache::SaveBinary("lit_shader_road_v4", roadShader);
-        }
-    }
-    // Loud diagnostic: this is the ONLY place a real-GPU link failure can silently
-    // hide (raylib returns id==0 and falls back to the default shader, losing the
-    // depth bias -> coplanar roads re-fight the ground at altitude). The headless
+    roadShader = LoadShaderProgram("lit_road");
+    // Loud diagnostic: this is the ONLY place a real-GPU shader failure can
+    // silently hide (the load falls back to the default shader, losing the depth
+    // bias -> coplanar roads re-fight the ground at altitude). The headless
     // harness stubs GetRoadShader() so it can never see this; the file + loud log
     // let the real application surface it.
-    if (roadShader.id == 0) {
-        FILE* dzD = nullptr;
-        fopen_s(&dzD, "road_shader_status.txt", "w");
+    if (!IsShaderValid(roadShader)) {
+        FILE* dzD = std::fopen("road_shader_status.txt", "w");
         if (dzD) {
             fputs("ROAD_SHADER_LINK_FAILED - road depth bias INACTIVE, expect z-fighting.\n", dzD);
             fclose(dzD);
@@ -727,15 +446,14 @@ void Init() {
         TraceLog(LOG_ERROR, "ROAD SHADER LINK FAILED (id=0): depth bias inactive, "
                             "roads will z-fight the ground at altitude. Check road_shader_status.txt");
     } else {
-        FILE* dzD = nullptr;
-        fopen_s(&dzD, "road_shader_status.txt", "w");
+        FILE* dzD = std::fopen("road_shader_status.txt", "w");
         if (dzD) {
             fputs("ROAD_SHADER_LINK_OK - depth bias active (constant world-space offset).\n", dzD);
             fclose(dzD);
         }
         TraceLog(LOG_INFO, "Road shader linked OK (id=%i): depth bias active.", roadShader.id);
     }
-    // raylib only uploads matProjection to shaders whose projection loc is registered.
+    // DrawMesh uploads matProjection to shaders whose projection loc is registered.
     if (roadShader.id != 0 && roadShader.locs)
         roadShader.locs[SHADER_LOC_MATRIX_PROJECTION] = GetShaderLocation(roadShader, "matProjection");
     roadLightDirLoc = GetShaderLocation(roadShader, "lightDir");
@@ -747,12 +465,7 @@ void Init() {
     if (roadShadowMapLoc != -1) SetShaderValue(roadShader, roadShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
 
     // Instanced lit shader (city buildings). Own uniforms mirror litShader's.
-    if (!shaderCache::LoadBinary("instanced_lit_shader_v3", cityInstancedShader)) {
-        cityInstancedShader = LoadShaderFromMemory(kVertexShaderInstanced, kFragmentShader);
-        if (cityInstancedShader.id != 0) {
-            shaderCache::SaveBinary("instanced_lit_shader_v3", cityInstancedShader);
-        }
-    }
+    cityInstancedShader = LoadShaderProgram("lit_instanced");
     if (cityInstancedShader.id != 0) {
         cityLightDirLoc = GetShaderLocation(cityInstancedShader, "lightDir");
         cityAmbientLoc = GetShaderLocation(cityInstancedShader, "ambient");
@@ -792,10 +505,9 @@ void Init() {
     groundModel.materials[0].shader = litShader;
     groundModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = groundTexture;
 
-    shadowMap = LoadShadowmapRenderTexture(shadowMapResolution, shadowMapResolution);
-    if (shadowMap.depth.id > 0) {
-        SetTextureFilter(shadowMap.depth, TEXTURE_FILTER_BILINEAR);
-    }
+    // Depth-only target: the lit shaders sample it through a comparison
+    // sampler (hardware PCF), so no color attachment is needed.
+    shadowMap = LoadRenderTextureDepth(shadowMapResolution, shadowMapResolution);
 
     reflectionTarget = LoadRenderTexture(reflectionResolution, reflectionResolution);
     SetTextureFilter(reflectionTarget.texture, TEXTURE_FILTER_BILINEAR);
@@ -821,7 +533,7 @@ void Shutdown() {
     UnloadModel(groundModel);
     UnloadTexture(defaultTexture);
     UnloadTexture(groundTexture);
-    if (shadowMap.id > 0) rlUnloadFramebuffer(shadowMap.id);
+    if (shadowMap.id > 0) UnloadRenderTexture(shadowMap);
     if (reflectionTarget.id > 0) UnloadRenderTexture(reflectionTarget);
     if (cityInstancedShader.id != 0) UnloadShader(cityInstancedShader);
     if (roadShader.id != 0) UnloadShader(roadShader);
@@ -829,7 +541,6 @@ void Shutdown() {
     cityInstancedMaterial = {};
     UnloadShader(litShader);
 
-    shaderCache::Shutdown();
     initialized = false;
 }
 
@@ -872,15 +583,10 @@ void SetShadowQuality(int quality) {
     shadowsDirty = true;
 
     if (shadowMap.id > 0) {
-        UnloadTexture(shadowMap.texture);
-        UnloadTexture(shadowMap.depth);
-        rlUnloadFramebuffer(shadowMap.id);
+        UnloadRenderTexture(shadowMap);
         shadowMap = { 0 };
     }
-    shadowMap = LoadShadowmapRenderTexture(shadowMapResolution, shadowMapResolution);
-    if (shadowMap.depth.id > 0) {
-        SetTextureFilter(shadowMap.depth, TEXTURE_FILTER_BILINEAR);
-    }
+    shadowMap = LoadRenderTextureDepth(shadowMapResolution, shadowMapResolution);
 }
 
 int GetShadowQuality() { return shadowQuality; }
@@ -911,25 +617,40 @@ void BeginShadowPass() {
 
     inShadowPass = true;
 
-    // The shadow frustum follows the viewer. It used to be a fixed 70 m box at the
-    // world origin, so anything further away (most of a city) got no shadows and
-    // tall buildings were clipped by the near plane of a light only 40 m up.
+    // The shadow frustum follows the viewer, but it must be STABLE while the
+    // viewer only rotates: centring it on where the view ray hits the ground made
+    // the box jump by hundreds of metres (and rescale) with tiny pitch changes at
+    // street level, which showed up as shadows popping and glitching inside the
+    // city. So:
+    //   * size depends on camera HEIGHT only, with hysteresis (no per-frame rescale);
+    //   * the centre sits ahead of the camera along its HORIZONTAL look direction
+    //     (pitch-independent), blending to the ground-hit point only when the
+    //     camera looks steeply down (top-down editing).
     Vector3 focus = { 0.0f, 0.0f, 0.0f };
-    float half = kShadowMinHalf;
+    float half = shadowStableHalf > 0.0f ? shadowStableHalf : kShadowMinHalf;
     if (haveShadowViewCamera) {
         const Camera3D& cam = shadowViewCamera;
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+        const float camH = fmaxf(cam.position.y, 0.0f);
+
+        const float targetHalf = fminf(fmaxf(64.0f + 0.6f * camH, kShadowMinHalf), kShadowMaxHalf);
+        if (shadowStableHalf <= 0.0f || fabsf(targetHalf - shadowStableHalf) > 12.0f)
+            shadowStableHalf = ceilf(targetHalf / 8.0f) * 8.0f;
+        half = shadowStableHalf;
+
+        Vector3 fh = { fwd.x, 0.0f, fwd.z };
+        const float fl = Vector3Length(fh);
+        fh = fl > 1e-3f ? Vector3Scale(fh, 1.0f / fl) : Vector3{ 0.0f, 0.0f, -1.0f };
+        const Vector3 ahead = { cam.position.x + fh.x * half * 0.35f, 0.0f,
+                                cam.position.z + fh.z * half * 0.35f };
+        Vector3 hit = ahead;
         if (cam.position.y > 0.0f && fwd.y < -0.05f) {
-            const float t = fminf(-cam.position.y / fwd.y, 800.0f);
-            focus = Vector3Add(cam.position, Vector3Scale(fwd, t));
-            focus.y = 0.0f;
-        } else {
-            focus = Vector3Add(cam.position, Vector3Scale(fwd, 60.0f));
-            focus.y = 0.0f;
+            const float tHit = fminf(-cam.position.y / fwd.y, 800.0f);
+            hit = Vector3Add(cam.position, Vector3Scale(fwd, tHit));
+            hit.y = 0.0f;
         }
-        const float dist = Vector3Distance(cam.position, focus);
-        half = fminf(fmaxf(0.7f * dist + 30.0f, kShadowMinHalf), kShadowMaxHalf);
-        half = ceilf(half / 10.0f) * 10.0f; // quantize so the map scale doesn't swim
+        const float w = fminf(fmaxf((-fwd.y - 0.5f) / 0.3f, 0.0f), 1.0f);
+        focus = Vector3Lerp(ahead, hit, w);
     }
 
     // Snap the frustum centre to whole shadow texels in light space (no shimmering
@@ -1080,6 +801,11 @@ void UpdateLighting(const Camera3D& camera) {
     shadowViewCamera = camera;
     haveShadowViewCamera = true;
 
+    if (camera.projection == CAMERA_PERSPECTIVE) {
+        const double h = fabs((double)camera.position.y);
+        ApplyNearPlane(fmin(fmax(h * 0.03, 0.05), 2.0));
+    }
+
     SetShaderValue(litShader, lightDirLoc, &kLightDir, SHADER_UNIFORM_VEC3);
     SetShaderValue(litShader, ambientLoc, &ambient, SHADER_UNIFORM_VEC3);
     SetShaderValueMatrix(litShader, lightVPLoc, lightViewProj);
@@ -1121,11 +847,20 @@ void DrawCityInstances(Mesh mesh, const std::vector<Matrix>& transforms, int sta
     if (!inShadowPass) SetupInstancedLighting();
     cityInstancedMaterial.maps[MATERIAL_MAP_DIFFUSE].color = tint;
     DrawMeshInstanced(mesh, cityInstancedMaterial, transforms.data() + start, count);
+    IncrementDrawCallCount(1);
+    AddMeshCount(1);
+    AddTriangleCount(mesh.triangleCount * count);
+    NoteMaterialUsed(cityInstancedMaterial.shader.id);
+    if (cityInstancedMaterial.maps) {
+        for (int m = 0; m < kMaterialMapCount; ++m) {
+            NoteTextureBound(cityInstancedMaterial.maps[m].texture.id);
+        }
+    }
 }
 
 unsigned int CreateInstanceBuffer(const std::vector<Matrix>& transforms) {
     if (transforms.empty()) return 0;
-    // GL wants column-major float16 (m0,m1,m2,...), NOT the Matrix struct's memory order.
+    // Column-major float16 (m0,m1,m2,...), NOT the Matrix struct's memory order.
     std::vector<float16> data(transforms.size());
     for (size_t i = 0; i < transforms.size(); i++) data[i] = MatrixToFloatV(transforms[i]);
     return rlLoadVertexBuffer(data.data(), (int)(data.size() * sizeof(float16)), false);
@@ -1139,78 +874,25 @@ void SetInstanceBuffersEnabled(bool enabled) { instanceBuffersEnabled = enabled;
 bool GetInstanceBuffersEnabled() { return instanceBuffersEnabled; }
 
 bool InstanceBuffersActive() {
-    if (!instanceBuffersEnabled || !cityInstancedReady) return false;
-    const int ver = rlGetVersion();
-    if (ver != RL_OPENGL_33 && ver != RL_OPENGL_43 && ver != RL_OPENGL_ES_30) return false;
-    return cityInstancedShader.locs != nullptr &&
-           cityInstancedShader.locs[SHADER_LOC_MATRIX_MODEL] != -1 &&
-           cityInstancedShader.locs[SHADER_LOC_MATRIX_MVP] != -1;
+    return instanceBuffersEnabled && cityInstancedReady && cityInstancedShader.locs != nullptr &&
+           cityInstancedShader.locs[SHADER_LOC_VERTEX_INSTANCETRANSFORM] != -1;
 }
 
-// Same state setup as raylib's DrawMeshInstanced(), but the per-instance
-// transforms come from a persistent VBO instead of being uploaded every call.
+// Same as DrawCityInstances(), but the per-instance transforms come from a
+// persistent buffer instead of being uploaded on every call.
 void DrawCityInstancesBuffered(Mesh mesh, unsigned int instanceVbo, int count, Color tint) {
     if (!InstanceBuffersActive() || count <= 0 || instanceVbo == 0 || mesh.vaoId == 0) return;
     if (!inShadowPass) SetupInstancedLighting();
-
-    const Shader& sh = cityInstancedShader;
-    rlEnableShader(sh.id);
-
-    if (sh.locs[SHADER_LOC_COLOR_DIFFUSE] != -1) {
-        const float v[4] = { tint.r / 255.0f, tint.g / 255.0f, tint.b / 255.0f, tint.a / 255.0f };
-        rlSetUniform(sh.locs[SHADER_LOC_COLOR_DIFFUSE], v, SHADER_UNIFORM_VEC4, 1);
-    }
-    if (sh.locs[SHADER_LOC_COLOR_SPECULAR] != -1) {
-        const Color sc = cityInstancedMaterial.maps[MATERIAL_MAP_SPECULAR].color;
-        const float v[4] = { sc.r / 255.0f, sc.g / 255.0f, sc.b / 255.0f, sc.a / 255.0f };
-        rlSetUniform(sh.locs[SHADER_LOC_COLOR_SPECULAR], v, SHADER_UNIFORM_VEC4, 1);
-    }
-
-    const Matrix matView = rlGetMatrixModelview();
-    const Matrix matProjection = rlGetMatrixProjection();
-    if (sh.locs[SHADER_LOC_MATRIX_VIEW] != -1) rlSetUniformMatrix(sh.locs[SHADER_LOC_MATRIX_VIEW], matView);
-    if (sh.locs[SHADER_LOC_MATRIX_PROJECTION] != -1) rlSetUniformMatrix(sh.locs[SHADER_LOC_MATRIX_PROJECTION], matProjection);
-
-    // Point the mesh VAO's instance attributes at this tile's buffer.
-    const int locModel = sh.locs[SHADER_LOC_MATRIX_MODEL];
-    rlEnableVertexArray(mesh.vaoId);
-    rlEnableVertexBuffer(instanceVbo);
-    for (unsigned int i = 0; i < 4; i++) {
-        rlEnableVertexAttribute((unsigned int)locModel + i);
-        SetInstAttr((unsigned int)locModel + i, (int)(i * sizeof(Vector4)), 0);
-        rlSetVertexAttributeDivisor((unsigned int)locModel + i, 1);
-    }
-    rlDisableVertexBuffer();
-    rlDisableVertexArray();
-
-    const Matrix matModel = MatrixIdentity();
-    const Matrix matModelView = MatrixMultiply(rlGetMatrixTransform(), matView);
-    if (sh.locs[SHADER_LOC_MATRIX_NORMAL] != -1)
-        rlSetUniformMatrix(sh.locs[SHADER_LOC_MATRIX_NORMAL], MatrixTranspose(MatrixInvert(matModel)));
-
-    // Diffuse map (the only map the city material uses).
+    cityInstancedMaterial.maps[MATERIAL_MAP_DIFFUSE].color = tint;
+    DrawMeshInstancedBuffer(mesh, cityInstancedMaterial, instanceVbo, count);
+    IncrementDrawCallCount(1);
+    AddMeshCount(1);
+    AddTriangleCount(mesh.triangleCount * count);
     const Texture2D& tex = cityInstancedMaterial.maps[MATERIAL_MAP_DIFFUSE].texture;
     if (tex.id > 0) {
-        rlActiveTextureSlot(MATERIAL_MAP_DIFFUSE);
-        rlEnableTexture(tex.id);
-        const int slot = MATERIAL_MAP_DIFFUSE;
-        if (sh.locs[SHADER_LOC_MAP_DIFFUSE] != -1)
-            rlSetUniform(sh.locs[SHADER_LOC_MAP_DIFFUSE], &slot, SHADER_UNIFORM_INT, 1);
+        NoteTextureBound(tex.id);
+        NoteMaterialUsed(cityInstancedShader.id);
     }
-
-    rlEnableVertexArray(mesh.vaoId);
-    rlSetUniformMatrix(sh.locs[SHADER_LOC_MATRIX_MVP], MatrixMultiply(matModelView, matProjection));
-    if (mesh.indices != nullptr) rlDrawVertexArrayElementsInstanced(0, mesh.triangleCount * 3, 0, count);
-    else rlDrawVertexArrayInstanced(0, mesh.vertexCount, count);
-
-    if (tex.id > 0) {
-        rlActiveTextureSlot(MATERIAL_MAP_DIFFUSE);
-        rlDisableTexture();
-    }
-    rlDisableVertexArray();
-    rlDisableVertexBuffer();
-    rlDisableVertexBufferElement();
-    rlDisableShader();
 }
 
 void SetShadowReuseEnabled(bool enabled) { shadowReuseEnabled = enabled; shadowsDirty = true; }
@@ -1232,4 +914,94 @@ void DrawGround() {
     DrawModel(groundModel, Vector3Zero(), 1.0f, WHITE);
 }
 
+} // namespace
+
+// Per-frame render statistics. Reset once per frame by ResetFrameStats() and
+// read by the player debug overlay.
+static int g_drawCallCount = 0;
+static int g_triangleCount = 0;
+static int g_meshCount = 0;
+
+// Frustum culling statistics (for debug overlay)
+static int g_culledEntityCount = 0;
+static int g_renderedEntityCount = 0;
+
+// Global frustum culling toggle (for A/B comparison)
+static bool g_frustumCullingEnabled = true;
+
+// Last frame's per-pass wall times, published by Engine::Draw(). Not reset by
+// ResetFrameStats(): these describe the frame that just finished, so zeroing
+// them there would blank the overlay for the frame currently being built.
+static gfx::FrameTimings g_frameTimings;
+
+namespace {
+
+// Fixed-capacity distinct-id set for the texture/material counters. A linear
+// scan is fine at this size and keeps the frame allocation-free, which matters
+// because this runs inside the render loop we are trying to measure. The cap is
+// generous for a debug overlay; past it we record that we saturated instead of
+// growing, so a wildly-textured frame degrades to an undercount rather than to
+// a stutter.
+constexpr int kDistinctIdCap = 1024;
+
+struct DistinctIdSet {
+    int ids[kDistinctIdCap];
+    int count = 0;
+    bool saturated = false;
+
+    // Returns true if id was already present. Ids <= 0 are not resources and
+    // are reported as already-seen so callers never have to guard.
+    bool Add(int id) {
+        if (id <= 0) return true;
+        for (int i = 0; i < count; ++i) {
+            if (ids[i] == id) return true;
+        }
+        if (count >= kDistinctIdCap) { saturated = true; return false; }
+        ids[count++] = id;
+        return false;
+    }
+
+    void Reset() { count = 0; saturated = false; }
+};
+
+DistinctIdSet g_textures;
+DistinctIdSet g_materials;
+
+} // namespace
+
+int gfx::GetDrawCallCount() { return g_drawCallCount; }
+void gfx::IncrementDrawCallCount(int count) { g_drawCallCount += count; }
+
+int gfx::GetTriangleCount() { return g_triangleCount; }
+void gfx::AddTriangleCount(int count) { g_triangleCount += count; }
+
+int gfx::GetMeshCount() { return g_meshCount; }
+void gfx::AddMeshCount(int count) { g_meshCount += count; }
+
+int gfx::GetCulledEntityCount() { return g_culledEntityCount; }
+int gfx::GetRenderedEntityCount() { return g_renderedEntityCount; }
+void gfx::IncrementCulledEntityCount(int count) { g_culledEntityCount += count; }
+void gfx::IncrementRenderedEntityCount(int count) { g_renderedEntityCount += count; }
+
+int gfx::GetTextureCount() { return g_textures.count; }
+int gfx::GetMaterialCount() { return g_materials.count; }
+bool gfx::GetStatsSaturated() { return g_textures.saturated || g_materials.saturated; }
+
+void gfx::NoteTextureBound(int id) { g_textures.Add(id); }
+void gfx::NoteMaterialUsed(int id) { g_materials.Add(id); }
+
+void gfx::ResetFrameStats() {
+    g_drawCallCount = 0;
+    g_triangleCount = 0;
+    g_meshCount = 0;
+    g_culledEntityCount = 0;
+    g_renderedEntityCount = 0;
+    g_textures.Reset();
+    g_materials.Reset();
 }
+
+bool gfx::GetFrustumCullingEnabled() { return g_frustumCullingEnabled; }
+void gfx::SetFrustumCullingEnabled(bool enabled) { g_frustumCullingEnabled = enabled; }
+
+void gfx::SetFrameTimings(const FrameTimings& timings) { g_frameTimings = timings; }
+gfx::FrameTimings gfx::GetFrameTimings() { return g_frameTimings; }

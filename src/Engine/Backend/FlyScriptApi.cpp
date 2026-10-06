@@ -1,4 +1,4 @@
-// FlyScriptApi.cpp — C API bridge between C++ engine and C# scripting runtime.
+// FlyScriptApi.cpp - C API bridge between C++ engine and C# scripting runtime.
 // Provides 55 FlyNative_* functions for object manipulation, world services, and script control.
 
 #include "../include/Engine/Scripts/FlyScriptApi.hpp"
@@ -7,10 +7,13 @@
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <excpt.h>
+#if defined(_MSC_VER)
+    #include <excpt.h>   // EXCEPTION_EXECUTE_HANDLER, for FLY_CATCH
+#endif
 
 namespace {
 
@@ -336,9 +339,9 @@ extern "C" {
 
 // Vec3 getters
 #define WRAP_VEC3_GET(PropName) \
-    __declspec(dllexport) short FlyNative_Get##PropName(unsigned long long h, float* x, float* y, float* z) { \
-        __try { return impl::FlyNative_Get##PropName##_Impl(h, x, y, z); } \
-        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } \
+    FLY_API short FlyNative_Get##PropName(unsigned long long h, float* x, float* y, float* z) { \
+        FLY_TRY {  return impl::FlyNative_Get##PropName##_Impl(h, x, y, z); } \
+        FLY_CATCH(return 0;) \
     }
 
 WRAP_VEC3_GET(Position)
@@ -350,9 +353,9 @@ WRAP_VEC3_GET(AngularVelocity)
 
 // Vec3 setters
 #define WRAP_VEC3_SET(PropName) \
-    __declspec(dllexport) short FlyNative_Set##PropName(unsigned long long h, float x, float y, float z) { \
-        __try { return impl::FlyNative_Set##PropName##_Impl(h, x, y, z); } \
-        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } \
+    FLY_API short FlyNative_Set##PropName(unsigned long long h, float x, float y, float z) { \
+        FLY_TRY {  return impl::FlyNative_Set##PropName##_Impl(h, x, y, z); } \
+        FLY_CATCH(return 0;) \
     }
 
 WRAP_VEC3_SET(Position)
@@ -363,22 +366,22 @@ WRAP_VEC3_SET(Velocity)
 WRAP_VEC3_SET(AngularVelocity)
 
 // Color
-__declspec(dllexport) short FlyNative_GetColor(unsigned long long h, unsigned char* r, unsigned char* g, unsigned char* b) {
-    __try { return impl::FlyNative_GetColor_Impl(h, r, g, b); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API short FlyNative_GetColor(unsigned long long h, unsigned char* r, unsigned char* g, unsigned char* b) {
+    FLY_TRY { return impl::FlyNative_GetColor_Impl(h, r, g, b); } FLY_CATCH(return 0;)
 }
-__declspec(dllexport) short FlyNative_SetColor(unsigned long long h, unsigned char r, unsigned char g, unsigned char b) {
-    __try { return impl::FlyNative_SetColor_Impl(h, r, g, b); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API short FlyNative_SetColor(unsigned long long h, unsigned char r, unsigned char g, unsigned char b) {
+    FLY_TRY { return impl::FlyNative_SetColor_Impl(h, r, g, b); } FLY_CATCH(return 0;)
 }
 
 // Booleans/scalars
 #define WRAP_SCALAR_GET(PropName) \
-    __declspec(dllexport) short FlyNative_Get##PropName(unsigned long long h) { \
-        __try { return impl::FlyNative_Get##PropName##_Impl(h); } \
-        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } \
+    FLY_API short FlyNative_Get##PropName(unsigned long long h) { \
+        FLY_TRY {  return impl::FlyNative_Get##PropName##_Impl(h); } \
+        FLY_CATCH(return 0;) \
     }
 #define WRAP_SCALAR_SET(PropName) \
-    __declspec(dllexport) void FlyNative_Set##PropName(unsigned long long h, short v) { \
-        __try { impl::FlyNative_Set##PropName##_Impl(h, v); } __except (EXCEPTION_EXECUTE_HANDLER) { } \
+    FLY_API void FlyNative_Set##PropName(unsigned long long h, short v) { \
+        FLY_TRY { impl::FlyNative_Set##PropName##_Impl(h, v); } FLY_CATCH() \
     }
 
 WRAP_SCALAR_GET(Anchored)
@@ -386,100 +389,100 @@ WRAP_SCALAR_SET(Anchored)
 WRAP_SCALAR_GET(CanCollide)
 WRAP_SCALAR_SET(CanCollide)
 
-__declspec(dllexport) float FlyNative_GetMass(unsigned long long h) {
-    __try { return impl::FlyNative_GetMass_Impl(h); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.0f; }
+FLY_API float FlyNative_GetMass(unsigned long long h) {
+    FLY_TRY { return impl::FlyNative_GetMass_Impl(h); } FLY_CATCH(return 0.0f;)
 }
-__declspec(dllexport) void FlyNative_SetMass(unsigned long long h, float m) {
-    __try { impl::FlyNative_SetMass_Impl(h, m); } __except (EXCEPTION_EXECUTE_HANDLER) { }
-}
-
-__declspec(dllexport) float FlyNative_GetTransparency(unsigned long long h) {
-    __try { return impl::FlyNative_GetTransparency_Impl(h); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.0f; }
-}
-__declspec(dllexport) void FlyNative_SetTransparency(unsigned long long h, float t) {
-    __try { impl::FlyNative_SetTransparency_Impl(h, t); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_SetMass(unsigned long long h, float m) {
+    FLY_TRY { impl::FlyNative_SetMass_Impl(h, m); } FLY_CATCH()
 }
 
-__declspec(dllexport) int FlyNative_GetCollisionAccuracy(unsigned long long h) {
-    __try { return impl::FlyNative_GetCollisionAccuracy_Impl(h); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+FLY_API float FlyNative_GetTransparency(unsigned long long h) {
+    FLY_TRY { return impl::FlyNative_GetTransparency_Impl(h); } FLY_CATCH(return 0.0f;)
 }
-__declspec(dllexport) void FlyNative_SetCollisionAccuracy(unsigned long long h, int a) {
-    __try { impl::FlyNative_SetCollisionAccuracy_Impl(h, a); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_SetTransparency(unsigned long long h, float t) {
+    FLY_TRY { impl::FlyNative_SetTransparency_Impl(h, t); } FLY_CATCH()
+}
+
+FLY_API int FlyNative_GetCollisionAccuracy(unsigned long long h) {
+    FLY_TRY { return impl::FlyNative_GetCollisionAccuracy_Impl(h); } FLY_CATCH(return -1;)
+}
+FLY_API void FlyNative_SetCollisionAccuracy(unsigned long long h, int a) {
+    FLY_TRY { impl::FlyNative_SetCollisionAccuracy_Impl(h, a); } FLY_CATCH()
 }
 
 // World services
-__declspec(dllexport) short FlyNative_IsPlaying(void) { __try { return impl::FlyNative_IsPlaying_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
+FLY_API short FlyNative_IsPlaying(void) { FLY_TRY { return impl::FlyNative_IsPlaying_Impl(); } FLY_CATCH(return 0;) }
 
-__declspec(dllexport) short FlyNative_GetShadowsEnabled(void) { __try { return impl::FlyNative_GetShadowsEnabled_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-__declspec(dllexport) void  FlyNative_SetShadowsEnabled(short on) { __try { impl::FlyNative_SetShadowsEnabled_Impl(on); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) int   FlyNative_GetShadowQuality(void) { __try { return impl::FlyNative_GetShadowQuality_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-__declspec(dllexport) void  FlyNative_SetShadowQuality(int q) { __try { impl::FlyNative_SetShadowQuality_Impl(q); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) float FlyNative_GetAmbient(float* intensity) { __try { return impl::FlyNative_GetAmbient_Impl(intensity); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.0f; } }
-__declspec(dllexport) void  FlyNative_SetAmbient(float a) { __try { impl::FlyNative_SetAmbient_Impl(a); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) short FlyNative_GetGridVisible(void) { __try { return impl::FlyNative_GetGridVisible_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-__declspec(dllexport) void  FlyNative_SetGridVisible(short on) { __try { impl::FlyNative_SetGridVisible_Impl(on); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) short FlyNative_GetWireframe(void) { __try { return impl::FlyNative_GetWireframe_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-__declspec(dllexport) void  FlyNative_SetWireframe(short on) { __try { impl::FlyNative_SetWireframe_Impl(on); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) float FlyNative_GetFov(float* fov) { __try { return impl::FlyNative_GetFov_Impl(fov); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.0f; } }
-__declspec(dllexport) void FlyNative_SetFov(float f) { __try { impl::FlyNative_SetFov_Impl(f); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
+FLY_API short FlyNative_GetShadowsEnabled(void) { FLY_TRY { return impl::FlyNative_GetShadowsEnabled_Impl(); } FLY_CATCH(return 0;) }
+FLY_API void  FlyNative_SetShadowsEnabled(short on) { FLY_TRY { impl::FlyNative_SetShadowsEnabled_Impl(on); } FLY_CATCH() }
+FLY_API int   FlyNative_GetShadowQuality(void) { FLY_TRY { return impl::FlyNative_GetShadowQuality_Impl(); } FLY_CATCH(return 0;) }
+FLY_API void  FlyNative_SetShadowQuality(int q) { FLY_TRY { impl::FlyNative_SetShadowQuality_Impl(q); } FLY_CATCH() }
+FLY_API float FlyNative_GetAmbient(float* intensity) { FLY_TRY { return impl::FlyNative_GetAmbient_Impl(intensity); } FLY_CATCH(return 0.0f;) }
+FLY_API void  FlyNative_SetAmbient(float a) { FLY_TRY { impl::FlyNative_SetAmbient_Impl(a); } FLY_CATCH() }
+FLY_API short FlyNative_GetGridVisible(void) { FLY_TRY { return impl::FlyNative_GetGridVisible_Impl(); } FLY_CATCH(return 0;) }
+FLY_API void  FlyNative_SetGridVisible(short on) { FLY_TRY { impl::FlyNative_SetGridVisible_Impl(on); } FLY_CATCH() }
+FLY_API short FlyNative_GetWireframe(void) { FLY_TRY { return impl::FlyNative_GetWireframe_Impl(); } FLY_CATCH(return 0;) }
+FLY_API void  FlyNative_SetWireframe(short on) { FLY_TRY { impl::FlyNative_SetWireframe_Impl(on); } FLY_CATCH() }
+FLY_API float FlyNative_GetFov(float* fov) { FLY_TRY { return impl::FlyNative_GetFov_Impl(fov); } FLY_CATCH(return 0.0f;) }
+FLY_API void FlyNative_SetFov(float f) { FLY_TRY { impl::FlyNative_SetFov_Impl(f); } FLY_CATCH() }
 
-__declspec(dllexport) float FlyNative_GetGravity(void) { __try { return impl::FlyNative_GetGravity_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return -19.62f; } }
-__declspec(dllexport) void FlyNative_SetGravity(float g) { __try { impl::FlyNative_SetGravity_Impl(g); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) float FlyNative_GetFriction(void) { __try { return impl::FlyNative_GetFriction_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.4f; } }
-__declspec(dllexport) void FlyNative_SetFriction(float f) { __try { impl::FlyNative_SetFriction_Impl(f); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
-__declspec(dllexport) float FlyNative_GetRestitution(void) { __try { return impl::FlyNative_GetRestitution_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.7f; } }
-__declspec(dllexport) void FlyNative_SetRestitution(float r) { __try { impl::FlyNative_SetRestitution_Impl(r); } __except (EXCEPTION_EXECUTE_HANDLER) { } }
+FLY_API float FlyNative_GetGravity(void) { FLY_TRY { return impl::FlyNative_GetGravity_Impl(); } FLY_CATCH(return -19.62f;) }
+FLY_API void FlyNative_SetGravity(float g) { FLY_TRY { impl::FlyNative_SetGravity_Impl(g); } FLY_CATCH() }
+FLY_API float FlyNative_GetFriction(void) { FLY_TRY { return impl::FlyNative_GetFriction_Impl(); } FLY_CATCH(return 0.4f;) }
+FLY_API void FlyNative_SetFriction(float f) { FLY_TRY { impl::FlyNative_SetFriction_Impl(f); } FLY_CATCH() }
+FLY_API float FlyNative_GetRestitution(void) { FLY_TRY { return impl::FlyNative_GetRestitution_Impl(); } FLY_CATCH(return 0.7f;) }
+FLY_API void FlyNative_SetRestitution(float r) { FLY_TRY { impl::FlyNative_SetRestitution_Impl(r); } FLY_CATCH() }
 
 // ---- create ----
 
-__declspec(dllexport) unsigned long long FlyNative_CreateObject(const char* shapeName) {
-    __try { return impl::FlyNative_CreateObject_Impl(shapeName); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API unsigned long long FlyNative_CreateObject(const char* shapeName) {
+    FLY_TRY { return impl::FlyNative_CreateObject_Impl(shapeName); } FLY_CATCH(return 0;)
 }
 
 // ---- script control (forwarded to C# ScriptHost) ----
 
-__declspec(dllexport) unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName) {
-    __try { return impl::FlyNative_StartObjectScript_Impl(objectHandle, typeName); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName) {
+    FLY_TRY { return impl::FlyNative_StartObjectScript_Impl(objectHandle, typeName); } FLY_CATCH(return 0;)
 }
 
-__declspec(dllexport) void FlyNative_StopObjectScript(unsigned long long objectHandle) {
-    __try { impl::FlyNative_StopObjectScript_Impl(objectHandle); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_StopObjectScript(unsigned long long objectHandle) {
+    FLY_TRY { impl::FlyNative_StopObjectScript_Impl(objectHandle); } FLY_CATCH()
 }
-__declspec(dllexport) short FlyNative_IsObjectScriptRunning(unsigned long long objectHandle) { __try { return impl::FlyNative_IsObjectScriptRunning_Impl(objectHandle); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
+FLY_API short FlyNative_IsObjectScriptRunning(unsigned long long objectHandle) { FLY_TRY { return impl::FlyNative_IsObjectScriptRunning_Impl(objectHandle); } FLY_CATCH(return 0;) }
 
-__declspec(dllexport) unsigned long long FlyNative_StartStandaloneScript(int index, const char* typeName) {
-    __try { return impl::FlyNative_StartStandaloneScript_Impl(index, typeName); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API unsigned long long FlyNative_StartStandaloneScript(int index, const char* typeName) {
+    FLY_TRY { return impl::FlyNative_StartStandaloneScript_Impl(index, typeName); } FLY_CATCH(return 0;)
 }
-__declspec(dllexport) void FlyNative_StopStandaloneScript(int index) {
-    __try { impl::FlyNative_StopStandaloneScript_Impl(index); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_StopStandaloneScript(int index) {
+    FLY_TRY { impl::FlyNative_StopStandaloneScript_Impl(index); } FLY_CATCH()
 }
-__declspec(dllexport) short FlyNative_IsStandaloneScriptRunning(int index) { __try { return impl::FlyNative_IsStandaloneScriptRunning_Impl(index); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
+FLY_API short FlyNative_IsStandaloneScriptRunning(int index) { FLY_TRY { return impl::FlyNative_IsStandaloneScriptRunning_Impl(index); } FLY_CATCH(return 0;) }
 
-__declspec(dllexport) void FlyNative_ClearAllScripts(void) {
-    __try { impl::FlyNative_ClearAllScripts_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_ClearAllScripts(void) {
+    FLY_TRY { impl::FlyNative_ClearAllScripts_Impl(); } FLY_CATCH()
 }
 
 // ---- runtime binding ----
 
-__declspec(dllexport) void FlyNative_BindRuntime(void* hostPtr) {
-    __try { impl::FlyNative_BindRuntime_Impl(hostPtr); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_BindRuntime(void* hostPtr) {
+    FLY_TRY { impl::FlyNative_BindRuntime_Impl(hostPtr); } FLY_CATCH()
 }
 
 // ---- print ----
 
-__declspec(dllexport) void FlyNative_Print(const char* text) {
-    __try { impl::FlyNative_Print_Impl(text); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_Print(const char* text) {
+    FLY_TRY { impl::FlyNative_Print_Impl(text); } FLY_CATCH()
 }
 
 // FindObject and GetSelf
-__declspec(dllexport) unsigned long long FlyNative_FindObject(const char* name) {
-    __try { return impl::FlyNative_FindObject_Impl(name); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API unsigned long long FlyNative_FindObject(const char* name) {
+    FLY_TRY { return impl::FlyNative_FindObject_Impl(name); } FLY_CATCH(return 0;)
 }
-__declspec(dllexport) unsigned long long FlyNative_GetSelf(void) {
-    __try { return impl::FlyNative_GetSelf_Impl(); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+FLY_API unsigned long long FlyNative_GetSelf(void) {
+    FLY_TRY { return impl::FlyNative_GetSelf_Impl(); } FLY_CATCH(return 0;)
 }
-__declspec(dllexport) void FlyNative_BindSelf(unsigned long long handle) {
-    __try { impl::FlyNative_BindSelf_Impl(handle); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+FLY_API void FlyNative_BindSelf(unsigned long long handle) {
+    FLY_TRY { impl::FlyNative_BindSelf_Impl(handle); } FLY_CATCH()
 }
 
 } // extern "C"

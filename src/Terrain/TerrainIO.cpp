@@ -6,7 +6,9 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <cstring>
 
 namespace terrain {
 

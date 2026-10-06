@@ -1,6 +1,7 @@
 #include "../../include/Terrain/TerrainMesh.hpp"
 #include "raylib.h"
 #include "raymath.h"
+#include <cfloat>
 #include <vector>
 #include <cmath>
 

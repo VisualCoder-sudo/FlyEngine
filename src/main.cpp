@@ -14,6 +14,9 @@
 #include "../include/Terrain/Water/WaterBody.hpp"
 #include "../include/Terrain/Water/WaterStressTest.hpp"
 #include "raylib.h"
+#include "Engine/Platform/Platform.hpp"
+
+#include "../include/Engine/Scripts/NativeScriptHost.hpp"
 
 #include <array>
 #include <exception>
@@ -21,7 +24,9 @@
 #include <vector>
 #include <filesystem>
 
-#include <crtdbg.h>
+#if defined(_MSC_VER)
+    #include <crtdbg.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -42,23 +47,17 @@ void ShowSplashWindow(float displaySeconds) {
     constexpr int windowHeight = 250;
     constexpr float targetLogoHeight = 130.0f;
 
-    InitWindow(windowWidth, windowHeight, "Ascend Softworks Flyengine Raylib C Splash screen");
+    InitWindow(windowWidth, windowHeight, "Ascend Softworks Flyengine Splash Screen");
     SetTargetFPS(5);
 
     project::ApplyWindowIcon();
 
-    static constexpr std::array<const char*, 2> logoPaths = {
-        "assets/FlyengineLogo.png",
-        "../assets/FlyengineLogo.png"
-    };
+    // ResolveAsset knows about the source tree, the install prefix and the
+    // build directory, so this works the same however the process was started.
+    const std::string logoPath = platform::ResolveAsset("assets/FlyengineLogo.png");
 
     Texture2D logo = { 0 };
-    for (const char* path : logoPaths) {
-        if (FileExists(path)) {
-            logo = LoadTexture(path);
-            break;
-        }
-    }
+    if (!logoPath.empty()) logo = LoadTexture(logoPath.c_str());
 
     const bool isLogoLoaded = (logo.id > 0);
 
@@ -75,21 +74,15 @@ void ShowSplashWindow(float displaySeconds) {
     const Vector2 verPos{ textX, 156.0f };
     const Vector2 rightsPos{ textX, 215.0f };
 
-    static constexpr std::array<const char*, 3> fontPaths = {
-        "arial.ttf",
-        "../arial.ttf",
-        "C:/Windows/Fonts/arial.ttf"
-    };
-
+    // Same font resolution the editor UI uses, so the splash does not flash a
+    // different typeface than the window that follows it.
     Font arialFont = GetFontDefault();
     bool isCustomFont = false;
 
-    for (const char* path : fontPaths) {
-        if (FileExists(path)) {
-            arialFont = LoadFont(path);
-            isCustomFont = true;
-            break;
-        }
+    const std::string& fontPath = platform::ResolveFontPath();
+    if (!fontPath.empty()) {
+        arialFont = LoadFont(fontPath.c_str());
+        isCustomFont = true;
     }
 
     const double startTime = GetTime();
@@ -153,7 +146,7 @@ void RunEditor(const project::Info& info) {
         ui::LogAlways("CoreCLR host initialized for project: %s", info.path.c_str());
         engine.AddEntity(std::move(coreClrHost));
     } else {
-        ui::LogAlways("CoreCLR host initialization failed (C# scripting disabled): %s", coreClrHost->GetError().c_str());
+        ui::LogAlways("CoreCLR host failed, C# Scripting unable to load: %s", coreClrHost->GetError().c_str());
     }
 
     project::Info loaded = info;
@@ -162,7 +155,7 @@ void RunEditor(const project::Info& info) {
     {
         BeginDrawing();
         ClearBackground(Color{36, 38, 44, 255});
-        const char* label = TextFormat("Loading project: %s ...", info.name.c_str());
+        const char* label = TextFormat("Attempting to open project: %s ...", info.name.c_str());
         int tw = MeasureText(label, 20);
         DrawText(label, GetScreenWidth()/2 - tw/2, GetScreenHeight()/2 - 10, 20, LIGHTGRAY);
         EndDrawing();
@@ -174,7 +167,7 @@ void RunEditor(const project::Info& info) {
 
     terrain::Terrain* loadedTerrain = nullptr;
     if (!project::OpenProjectFile(info.path, engine, rawObjectPtrs, sceneModels, loaded, &simRef, &loadedTerrain)) {
-        ui::LogAlways("Could not open project '%s'. Starting empty.", info.path.c_str());
+        ui::LogAlways("Failed to open project '%s'. Starting empty.", info.path.c_str());
     }
 
     // Bind the loaded world into the script runtime so FlyNative_* and standalone
@@ -186,7 +179,7 @@ void RunEditor(const project::Info& info) {
         // explorer's SCRIPTS group (and run on Play), not just saved entries.
         coreClrHostPtr->SyncStandaloneScripts();
     }
-    
+
     // If terrain was loaded, set it up with editor
     if (loadedTerrain) {
         ui::HandleTerrainSelection(loadedTerrain, true);
@@ -198,10 +191,18 @@ void RunEditor(const project::Info& info) {
     // Defer it so the scene appears instantly; run after first frame.
     bool needsVerify = !rawObjectPtrs.empty();
 
+    // Native plugins: SetEngine must come before Initialize, which loads
+    // plugins/nat/*/build/*.so and calls on_load. The engine owns the host
+    // and ticks it each frame (also handles hot-reload).
+    auto nativeHost = std::make_unique<NativeScript::NativeScriptHost>();
+    nativeHost->SetEngine(&engine);
+    nativeHost->Initialize(info.path);
+    engine.AddEntity(std::move(nativeHost));
+
     engine.Run();
 
     // This will only run after engine.Run() returns (editor closed)
-    // VerifyAndRebuild removed from startup path — it's a housekeeping
+    // VerifyAndRebuild removed from startup path - it's a housekeeping
     // step that reads every texture file for SHA256 hashing.
     // We skip it entirely; ref counting works fine without it.
 
@@ -242,13 +243,41 @@ int main(int argc, char* argv[]) {
         std::abort();
     });
 
-    // Headless-style water system stress test — bypasses the splash screen and
+    // Headless-style water system stress test - bypasses the splash screen and
     // project manager entirely:
     //   Flyengine.exe --testwater [objectCount] [frames]
+    //   Flyengine.exe --create-project <name> [path] [--template <template>]
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--testwater") {
             watertest::Run(argc, argv);
             return 0;
+        }
+        if (std::string(argv[i]) == "--testscene") {
+            return scenetest::Run(argc, argv);
+        }
+        if (std::string(argv[i]) == "--create-project") {
+            if (i + 1 >= argc) {
+                ui::LogAlways("ERROR: --create-project requires a project name");
+                return 1;
+            }
+            std::string name = argv[++i];
+            std::string templateName = "Empty";
+            
+            // Parse optional arguments
+            for (int j = i + 1; j < argc; j++) {
+                if (std::string(argv[j]) == "--template" && j + 1 < argc) {
+                    templateName = argv[++j];
+                }
+            }
+            
+            // Create project using ProjectManager
+            if (project::CreateProject(name, templateName)) {
+                ui::LogAlways("Project '%s' created successfully", name.c_str());
+                return 0;
+            } else {
+                ui::LogAlways("ERROR: Failed to create project '%s'", name.c_str());
+                return 1;
+            }
         }
     }
 

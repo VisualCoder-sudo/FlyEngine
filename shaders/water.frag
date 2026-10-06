@@ -71,7 +71,7 @@ void main() {
 
     // Capillary micro-detail: perturb the smooth wave normal with high-frequency
     // ripples so the specular highlight breaks into scattered glints instead of
-    // one flat sweep. Pure shading — no geometry or physics impact. The field
+    // one flat sweep. Pure shading - no geometry or physics impact. The field
     // scrolls with time (and its detail octave reshapes) so the glints shimmer
     // instead of sitting fixed on the wave.
     float detailIntensity = waterBodyDetailParams.x;
@@ -96,7 +96,7 @@ void main() {
     vec3 microN = normalize(N + (T * grad.x + B * grad.y) * detailIntensity);
 
     // Planar reflection: project this fragment into the mirrored camera and sample
-    // the captured world image there (standard mirror trick — no manual ray math).
+    // the captured world image there (standard mirror trick - no manual ray math).
     vec4 reflClip = reflViewProj * vec4(worldPos, 1.0);
     vec2 reflUV = reflClip.xy / max(reflClip.w, 0.0001) * 0.5 + 0.5;
 

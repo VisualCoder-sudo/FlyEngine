@@ -1,5 +1,6 @@
 #pragma once
 #include "Entity.hpp"
+#include "Frustum.hpp"
 #include "../PhysicsCollision.hpp"
 #include "raylib.h"
 #include "raymath.h"
@@ -35,7 +36,7 @@ public:
     ~ScatteredObject() override;
 
     // Owns a GPU texture handle when a custom one is loaded, so copying
-    // would double-free it — keep this non-copyable.
+    // would double-free it - keep this non-copyable.
     ScatteredObject(const ScatteredObject&) = delete;
     ScatteredObject& operator=(const ScatteredObject&) = delete;
 
@@ -139,6 +140,10 @@ public:
     // Unit-space collider built from the current mesh/primitive geometry
     // (cached; invalidated when the accuracy or the mesh geometry changes).
     const pcoll::Collider& GetCollider() const;
+
+    // Frustum culling support
+    bool IsVisible(const Frustum& frustum) const override;
+    BoundingBox GetCullBounds() const override { return GetBoundingBox(); }
 
     // Transparency: 0 = fully visible/opaque, 1 = fully invisible/transparent
     float GetTransparency() const;

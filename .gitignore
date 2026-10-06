@@ -1,7 +1,8 @@
 # --- Build output ---
 out/
-cmake-build-debug/
+cmake-build-*/
 build/
+/build-*/
 CMakeCache.txt
 CMakeFiles/
 ninja.exe
@@ -14,6 +15,7 @@ ninja.exe
 *.o
 *.dll
 *.def
+!curl/lib/libcurl.def
 *.tlog
 *.recipe
 *.lastbuildstate
@@ -39,6 +41,7 @@ __pycache__/
 .shader_cache/
 .texture_gpu_cache.json
 .texture_cache.json
+.texture_cache_v2.json
 crashlog.txt
 road_shader_status.txt
 *.log
@@ -70,3 +73,6 @@ Desktop.ini
 /build_log.txt
 /build_out.txt
 /build_output.txt
+# Local pre-migration source snapshot
+.migration-backup/
+/tools/sokol-shdc/sokol-shdc*

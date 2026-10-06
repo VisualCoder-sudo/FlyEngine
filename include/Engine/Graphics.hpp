@@ -13,6 +13,18 @@ namespace gfx {
 void Init();
 void Shutdown();
 
+// Builds a raylib model matrix from a scale, an already-computed rotation, and
+// a translation. Equivalent to
+//     MatrixMultiply(MatrixMultiply(MatrixScale(s...), rot), MatrixTranslate(p...))
+// which was open-coded at four sites in ScatteredObject.cpp -- including the
+// selection-outline pass, which needed a separate slightly-enlarged scale and
+// so could not be folded into a naive find-and-replace.
+//
+// Rotation is a Matrix rather than Euler angles because the callers already
+// have one in hand (a render-rotation override, or MatrixRotateXYZ), and
+// recomputing it here would change the call order of the rotations.
+Matrix ComposeTRS(Vector3 scale, Matrix rotation, Vector3 position);
+
 Shader& GetLitShader();
 Shader& GetRoadShader(); // lit shader with a baked depth bias (roads win against the ground plane)
 Model& GetShapeModel(ShapeType type); // fits in a 1x1x1 box; scale it via the model's transform
@@ -89,5 +101,80 @@ RenderTexture2D GetReflectionTarget(); // color image rendered during the reflec
 int GetReflectionTextureSlot();
 void SetReflectionQuality(int quality); // 5..100 (recreates the target at a higher resolution)
 int GetReflectionQuality();
+
+// raylib's Material.maps is a bare pointer with no length field, and the
+// MAX_MATERIAL_MAPS constant that older raylib exported no longer exists -- the
+// current header only mentions it in a comment. Deriving the length from the
+// last enumerator keeps it correct if the enum ever grows, instead of baking in
+// a literal that would quietly under- or over-read.
+constexpr int kMaterialMapCount = MATERIAL_MAP_BRDF + 1;
+
+// Per-frame render statistics. The player debug overlay reads these, so they
+// exist to answer "what did this frame cost" rather than to be exhaustive
+// instrumentation.
+//
+// Coverage is partial by nature: the counters are fed from the engine's own
+// draw sites (the city instance batches, and the per-entity Draw() loop), not
+// from inside raylib. Anything drawn by raylib on our behalf without going
+// through those sites is not counted. Draw calls in particular were already
+// approximate -- the per-entity loop charges one call per entity regardless of
+// how many meshes that entity actually submits -- and the mesh count inherits
+// that same approximation. Treat these as a relative signal between frames,
+// not as GPU-truth.
+int GetDrawCallCount();
+int GetTriangleCount();
+
+// Feed the draw-call, mesh and triangle counters. Call these at the same place
+// you issue a draw.
+void IncrementDrawCallCount(int count = 1);
+void AddMeshCount(int count = 1);
+void AddTriangleCount(int count);
+
+// Meshes submitted this frame.
+int GetMeshCount();
+
+// Distinct textures and materials touched this frame. "Distinct" matters: a
+// city tile drawn from 300 instances touches one texture 300 times, and
+// reporting 300 tells you nothing. Ids are deduplicated with a fixed-capacity
+// set, so a frame that touches more than the cap undercounts rather than
+// allocating; GetStatsSaturated() reports when that happened so a clamped
+// number is visible instead of silently wrong.
+int GetTextureCount();
+int GetMaterialCount();
+bool GetStatsSaturated();
+
+// Feed the texture/material counters. Ids at or below 0 are ignored, so callers
+// can pass an unset Texture2D.id or a 0 shader id without guarding.
+void NoteTextureBound(int id);
+void NoteMaterialUsed(int id);
+
+// Frustum culling statistics (for debug overlay)
+int GetCulledEntityCount();
+int GetRenderedEntityCount();
+void IncrementCulledEntityCount(int count = 1);
+void IncrementRenderedEntityCount(int count = 1);
+
+// Call once at the top of the frame, before any drawing.
+void ResetFrameStats();
+
+// Per-pass wall-clock cost of the last completed frame, in milliseconds.
+// Engine::Draw() publishes these because it already calls GetTime() around
+// every pass to fill in Engine::lastShadowMs and friends; without a copy on
+// this side the numbers were computed and then only reachable from the stress
+// harness, which is the one program that is not trying to find out why the
+// editor feels slow.
+struct FrameTimings {
+    double shadowMs = 0.0;
+    double reflectionMs = 0.0;
+    double opaqueMs = 0.0;
+    double transparentMs = 0.0;
+    double twoDMs = 0.0;
+};
+void SetFrameTimings(const FrameTimings& timings);
+FrameTimings GetFrameTimings();
+
+// Global frustum culling toggle (for A/B comparison)
+bool GetFrustumCullingEnabled();
+void SetFrustumCullingEnabled(bool enabled);
 
 } // namespace gfx

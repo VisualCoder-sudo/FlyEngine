@@ -1,9 +1,5 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <commdlg.h>
-
 #include "../../../include/Engine/Backend/ModelImport.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "ufbx.h"
 
 #include <algorithm>
@@ -292,33 +288,33 @@ std::string FormatMissing(const std::vector<std::string> &missing, const std::st
 
 }
 
-std::string ChooseModelOpenPath() {
-    char path[MAX_PATH] = "";
-    OPENFILENAMEA dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFile = path;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.lpstrFilter =
-        "3D Models (*.obj;*.gltf;*.glb;*.fbx;*.iqm;*.vox;*.m3d)\0*.obj;*.gltf;*.glb;*.fbx;*.iqm;*.vox;*.m3d\0"
-        "OBJ (*.obj)\0*.obj\0"
-        "glTF (*.gltf;*.glb)\0*.gltf;*.glb\0"
-        "FBX (*.fbx)\0*.fbx\0"
-        "All Files\0*.*\0";
-    dialog.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-    return GetOpenFileNameA(&dialog) ? std::string(path) : std::string();
+const std::vector<platform::FileFilter>& ModelFilters() {
+    static const std::vector<platform::FileFilter> filters = {
+        {"3D Models", "*.obj;*.gltf;*.glb;*.fbx;*.iqm;*.vox;*.m3d"},
+        {"OBJ", "*.obj"},
+        {"glTF", "*.gltf;*.glb"},
+        {"FBX", "*.fbx"},
+        {"All Files", "*"},
+    };
+    return filters;
 }
 
-std::string ChooseTexturePath() {
-    char path[MAX_PATH] = "";
-    OPENFILENAMEA dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFile = path;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.lpstrFilter =
-        "Images (*.png;*.jpg;*.bmp;*.tga;*.webp)\0*.png;*.jpg;*.bmp;*.tga;*.webp\0"
-        "All Files\0*.*\0";
-    dialog.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-    return GetOpenFileNameA(&dialog) ? std::string(path) : std::string();
+const std::vector<platform::FileFilter>& TextureFilters() {
+    static const std::vector<platform::FileFilter> filters = {
+        {"Images", "*.png;*.jpg;*.bmp;*.tga;*.webp"},
+        {"All Files", "*"},
+    };
+    return filters;
+}
+
+bool BeginChooseModelOpenPath(const std::string& startDir) {
+    return platform::BeginOpenFileDialog(platform::DialogPurpose::ImportModel, "Import 3D Model",
+                                         startDir, ModelFilters());
+}
+
+bool BeginChooseTexturePath(const std::string& startDir) {
+    return platform::BeginOpenFileDialog(platform::DialogPurpose::ImportTexture, "Import Texture",
+                                         startDir, TextureFilters());
 }
 
 ImportResult ImportModel(const std::string& sourcePath,
@@ -402,9 +398,16 @@ std::string ResolveStoredAssetPath(const std::string& stored, const std::string&
 }
 
 bool IsAbsolutePath(const std::string& p) {
-    if (p.size() >= 3 && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':') return true;
-    if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return true;
-    return false;
+    if (p.empty()) return false;
+    // std::filesystem handles every case correctly per-platform: "C:\x" and
+    // "\\server\share" on Windows, a leading "/" on POSIX. The previous
+    // hand-rolled check only recognised a drive letter or a leading "//", so a
+    // normal POSIX path like "/home/u/proj/a.png" was treated as *relative* and
+    // re-resolved against the project directory.
+    // is_absolute() is a pure query over the path grammar: it cannot
+    // touch the filesystem, so there is no error_code overload and no
+    // reason to want one.
+    return fs::path(fs::u8path(p)).is_absolute();
 }
 
 std::string PathRelativeTo(const std::string& p, const std::string& base) {

@@ -67,7 +67,7 @@ public:
                 return;
             }
 
-            // 3.5 fcloud change --project --name "<NEW_NAME>" — rename the cloud
+            // 3.5 fcloud change --project --name "<NEW_NAME>" - rename the cloud
             //     project and point this local project's config at the new name.
             if (args.size() >= 5 && args[1] == "change" && args[2] == "--project" && args[3] == "--name") {
                 std::string new_name = args[4];
@@ -111,7 +111,7 @@ public:
 
                     if (server_ok && !server_has_versions) {
                         version = "1.0.0";
-                        on_log("ℹ No versions on the server for this project — starting at v" + version + ".", false);
+                        on_log("ℹ No versions on the server for this project - starting at v" + version + ".", false);
                     } else if (server_ok) {
                         version = IncrementPatchVersion(server_latest);
                         on_log("ℹ Auto-incremented release version to v" + version + " (newest on server: v" + server_latest + ").", false);
@@ -132,7 +132,7 @@ public:
                 return;
             }
 
-            // 7. fcloud delete <...> — remove versions from the server's
+            // 7. fcloud delete <...> - remove versions from the server's
             //    version control. Multiple deletion forms share one endpoint.
             if (args.size() >= 2 && args[1] == "delete") {
                 DispatchDelete(args, server_url, api_key, project_name, on_log);
@@ -257,7 +257,7 @@ private:
             cfg["project_name"] = trimmed;
             cfg["project_name_override"] = trimmed;
             SaveConfig(config_path, cfg);
-            on_log("✓ Project renamed to '" + trimmed + "'. Local config updated — future pushes and deletes will use the new name.", false);
+            on_log("✓ Project renamed to '" + trimmed + "'. Local config updated - future pushes and deletes will use the new name.", false);
             return;
         }
 
@@ -648,7 +648,7 @@ private:
             return;
         }
 
-        // fcloud delete --project [-y] — delete the entire cloud project
+        // fcloud delete --project [-y] - delete the entire cloud project
         // (all versions + the project's storage on the server). Local files
         // are never touched.
         if (HasArg(args, "--project")) {
