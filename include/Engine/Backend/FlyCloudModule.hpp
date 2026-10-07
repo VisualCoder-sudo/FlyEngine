@@ -9,6 +9,7 @@
 #include <regex>
 #include <cstdio>
 #include <cctype>
+#include <cstdlib>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include "miniz.h"
@@ -18,7 +19,12 @@ namespace FlyEngine {
 class FlyCloudModule {
 public:
     using LogCallback = std::function<void(const std::string& message, bool is_error)>;
-    inline static const std::string DEFAULT_TAILSCALE_URL = "http://100.66.223.107:8000";
+    // No built-in server address: set "server_url" in <project>/fcloud_config.json
+    // or the FLYENGINE_CLOUD_URL environment variable.
+    static std::string DefaultServerUrl() {
+        const char* env = std::getenv("FLYENGINE_CLOUD_URL");
+        return env ? std::string(env) : std::string();
+    }
 
     static void DispatchCommandAsync(
         const std::string& full_command,
@@ -33,7 +39,11 @@ public:
 
                 std::string config_path = project_root + "/fcloud_config.json";
                 nlohmann::json cfg = LoadConfig(config_path);
-                std::string server_url = ConfigGetString(cfg, "server_url", DEFAULT_TAILSCALE_URL);
+                std::string server_url = ConfigGetString(cfg, "server_url", DefaultServerUrl());
+                if (server_url.empty()) {
+                    on_log("✕ No server configured. Set \"server_url\" in fcloud_config.json or the FLYENGINE_CLOUD_URL environment variable.", true);
+                    return;
+                }
                 std::string api_key = ConfigGetString(cfg, "api_key", "");
                 // A project name chosen with 'fcloud change --project --name' is
                 // stored in the config and wins over the local folder name, so
