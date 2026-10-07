@@ -948,9 +948,14 @@ void ObjectInteractionManager::Update(float dt) {
         }
     }
 
-    // Delete terrain: works independently of object selection
+    // Delete terrain / water: works independently of object selection
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen()) {
         if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
+            if (WaterBody* water = ui::GetSelectedWater()) {
+                PushUndoNow();
+                DeleteWaterBody(water);
+                return;
+            }
             BasicTerrain* terrain = ui::GetSelectedTerrain();
             if (terrain) {
                 ui::SetSelectedTerrain(nullptr);
@@ -1006,9 +1011,6 @@ void ObjectInteractionManager::Update(float dt) {
         if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
             PushUndoNow();
             DeleteSelection();
-            if (WaterBody* water = ui::GetSelectedWater()) {
-                DeleteWaterBody(water);
-            }
             return;
         }
         if (IsKeyPressed(KEY_F) && cameraController) {
