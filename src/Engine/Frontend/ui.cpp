@@ -2878,6 +2878,17 @@ static void DrawColorPickerPopupWindow() {
     }
 }
 
+// Shared look for every hand-drawn dropdown header/row: grey frame around a
+// dark-teal box, switching to bright cyan when active (hovered, selected, or open).
+static void DrawDropdownBox(const Rectangle& r, bool active) {
+    const Color frame = Color{ 58, 58, 58, 255 };
+    const Color rest  = Color{ 14, 60, 64, 255 };
+    const Color lit   = Color{ 42, 212, 226, 255 };
+    DrawRectangleRounded(r, 0.2f, 4, frame);
+    Rectangle inner = { r.x + 2.0f, r.y + 2.0f, r.width - 4.0f, r.height - 4.0f };
+    DrawRectangleRounded(inner, 0.2f, 4, active ? lit : rest);
+}
+
 static void DrawCollisionPopup() {
     if (!g_collisionPopupOpen || !g_selectedObject) return;
 
@@ -2915,13 +2926,9 @@ static void DrawCollisionPopup() {
         Rectangle item = { popupRec.x + 3.0f, popupRec.y + 3.0f + static_cast<float>(i) * itemH,
                            popupRec.width - 6.0f, itemH - 4.0f };
         bool hovered = CheckCollisionPointRec(mouse, item);
-        float t = HoverProgress(26U + static_cast<uint64_t>(i), hovered);
-        if (t > 0.0f) {
-            DrawRectangleRounded(item, 0.15f, 4, Mix(theme::ACCENT, theme::ACCENT_HOVER, t));
-        }
         bool current = g_selectedObject->GetCollisionAccuracy() == acc;
-        DrawTextArial(pcoll::CollisionAccuracyName(acc), item.x + 10.0f, item.y + 5.0f, 13.0f,
-            current ? theme::ACCENT : (hovered ? theme::TEXT : theme::TEXT_MUTED));
+        DrawDropdownBox(item, hovered || current);
+        DrawTextArial(pcoll::CollisionAccuracyName(acc), item.x + 10.0f, item.y + 5.0f, 13.0f, theme::TEXT);
         if (hovered) MarkHand();
         if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             g_collisionPopupOpen = false;
@@ -3287,10 +3294,12 @@ if (g_selection.size() > 1) {
         Rectangle accCombo = { inputX, y, inputWidth, inputHeight };
         bool accHovered = CheckCollisionPointRec(mouse, accCombo);
         float accT = HoverProgress(25, accHovered && accSupported);
-        Color accBg = accSupported ? Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, accT) : theme::BG_WIDGET;
-        DrawRectangleRounded(accCombo, 0.2f, 4, accBg);
-        DrawRectangleLinesEx(accCombo, (accHovered && accSupported) ? 2.0f : 1.0f,
-            (accHovered && accSupported) ? theme::ACCENT : theme::BORDER);
+        (void)accT;
+        if (accSupported) DrawDropdownBox(accCombo, (accHovered && accSupported) || g_collisionPopupOpen);
+        else {
+            DrawRectangleRounded(accCombo, 0.2f, 4, theme::BG_WIDGET);
+            DrawRectangleLinesEx(accCombo, 1.0f, theme::BORDER);
+        }
         DrawTextArial(pcoll::CollisionAccuracyName(acc), inputX + 8.0f, y + 4.0f, 13.0f,
             accSupported ? theme::TEXT : theme::TEXT_MUTED);
         if (accSupported) {
@@ -3480,11 +3489,7 @@ if (g_selection.size() > 1) {
             bool refreshBtnHovered = CheckCollisionPointRec(mouse, refreshBtnRect);
 
             // Draw dropdown background
-            float dropdownT = HoverProgress(300, dropdownHovered);
-            Color dropdownBg = Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, dropdownT);
-            DrawRectangleRounded(dropdownRect, 0.2f, 4, dropdownBg);
-            DrawRectangleLinesEx(dropdownRect, dropdownHovered ? 2.0f : 1.0f,
-                dropdownHovered ? theme::ACCENT : theme::BORDER);
+            DrawDropdownBox(dropdownRect, dropdownHovered || g_presetDropdownOpen);
             if (dropdownHovered) MarkHand();
 
             // Auto-detect current texture among presets
@@ -4193,13 +4198,10 @@ static void DrawTerrainToolPanel() {
                 Rectangle itemRec = { listRec.x + 4.0f, listRec.y + 4.0f + static_cast<float>(i) * 26.0f, listRec.width - 8.0f, 22.0f };
                 bool hovered = CheckCollisionPointRec(mouse, itemRec);
                 bool selected = (i == activeTool);
-                if (hovered || selected) {
-                    DrawRectangleRounded(itemRec, 0.15f, 4, hovered ? theme::ACCENT_HOVER : theme::ACCENT_SOFT);
-                }
+                DrawDropdownBox(itemRec, hovered || selected);
                 Rectangle iconRec = { itemRec.x + 6.0f, itemRec.y + 3.0f, 16.0f, 16.0f };
-                DrawTerrainToolIcon(i, iconRec, selected ? theme::ACCENT : theme::TEXT_MUTED);
-                DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f,
-                              selected ? theme::TEXT : theme::TEXT_MUTED);
+                DrawTerrainToolIcon(i, iconRec, theme::TEXT);
+                DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f, theme::TEXT);
                 if (hovered) MarkHand();
                 if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
                     auto newTool = static_cast<BasicTerrain::Tool>(i);
@@ -4512,20 +4514,16 @@ static void DrawTerrainToolPanel() {
         int activeTool = static_cast<int>(br.tool);
         Rectangle box = { x, y, innerW, 30.0f };
         bool hov = CheckCollisionPointRec(mouse, box);
-        float ht = HoverProgress(9100u, hov);
-        Color bg = Mix(theme::BG_WIDGET, theme::BG_WIDGET_HOVER, ht);
-        DrawRectangleRounded(box, 0.15f, 4, bg);
-        DrawRectangleLinesEx(box, g_terrainToolDropdownOpen ? 2.0f : 1.0f,
-                              g_terrainToolDropdownOpen ? theme::ACCENT : theme::BORDER);
+        DrawDropdownBox(box, hov || g_terrainToolDropdownOpen);
 
         Rectangle iconRec = { box.x + 8.0f, box.y + 7.0f, 16.0f, 16.0f };
-        DrawTerrainToolIcon(activeTool, iconRec, theme::ACCENT);
+        DrawTerrainToolIcon(activeTool, iconRec, theme::TEXT);
         DrawTextArial(toolNames[activeTool], box.x + 32.0f, box.y + 8.0f, 13.0f, theme::TEXT);
 
         // Chevron
         float cx = box.x + box.width - 18.0f;
         float cy = box.y + box.height * 0.5f;
-        Color chevCol = hov ? theme::TEXT : theme::TEXT_MUTED;
+        Color chevCol = theme::TEXT;
         if (g_terrainToolDropdownOpen) {
             DrawLineEx({ cx - 5.0f, cy + 2.0f }, { cx, cy - 3.0f }, 2.0f, chevCol);
             DrawLineEx({ cx, cy - 3.0f }, { cx + 5.0f, cy + 2.0f }, 2.0f, chevCol);
@@ -4920,7 +4918,6 @@ void Draw() {
 
         // Draw list background
         DrawRectangleRounded(listRect, 0.2f, 4, theme::BG_PANEL);
-        DrawRectangleLinesEx(listRect, 1.0f, theme::BORDER);
 
         // Draw items
         Vector2 mousePos = GetMousePosition();
@@ -4930,13 +4927,10 @@ void Draw() {
                                  listRect.width, itemHeight };
             bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
 
-            if (itemHovered) {
-                DrawRectangleRounded(itemRect, 0.2f, 4, theme::BG_INPUT_HOVER);
-            }
+            DrawDropdownBox(itemRect, itemHovered || i == g_presetDropdownSelected);
 
             float itemTextY = itemRect.y + (itemRect.height - 13.0f) * 0.5f;
-            DrawTextArial(items[i].c_str(), itemRect.x + 8.0f, itemTextY, 13.0f,
-                itemHovered ? theme::ACCENT : theme::TEXT);
+            DrawTextArial(items[i].c_str(), itemRect.x + 8.0f, itemTextY, 13.0f, theme::TEXT);
         }
 
         // Close if clicked outside list and dropdown (handled in early click processing)
