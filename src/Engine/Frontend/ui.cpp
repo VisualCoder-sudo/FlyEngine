@@ -1495,6 +1495,17 @@ MenuAction ProcessContextMenu() {
     return MenuAction::None;
 }
 
+// Shared look for every hand-drawn dropdown header/row: dark-teal fill inside a
+// border that is grey at rest and bright cyan when active (hovered, selected, or open).
+static void DrawDropdownBox(const Rectangle& r, bool active, float alpha = 1.0f) {
+    const Color rest   = Color{ 58, 58, 58, 255 };
+    const Color lit    = Color{ 42, 212, 226, 255 };
+    const Color fill   = Color{ 14, 60, 64, 255 };
+    DrawRectangleRounded(r, 0.2f, 4, Fade(active ? lit : rest, alpha));
+    Rectangle inner = { r.x + 2.0f, r.y + 2.0f, r.width - 4.0f, r.height - 4.0f };
+    DrawRectangleRounded(inner, 0.2f, 4, Fade(fill, alpha));
+}
+
 static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool isObjectTarget, bool isWaterTarget, bool showSubMenu, double menuOpenTime) {
     auto anim = static_cast<float>((GetTime() - menuOpenTime) / 0.09);
     if (anim > 1.0f) anim = 1.0f;
@@ -1578,14 +1589,8 @@ static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool is
     bool hoverAdd = CheckCollisionPointRec(mouse, rowAdd);
     bool hoverSpace = CheckCollisionPointRec(mouse, rowSpace);
 
-    if (hoverAdd || (showSubMenu && hoveringMain && !hoverSpace)) {
-        Rectangle mainInner = rowAdd;
-        DrawRectangleRounded(mainInner, 0.12f, 4, Fade(theme::BG_ROW_HOVER, 0.9f * anim));
-    }
-    float st = HoverProgress(21U, hoverSpace);
-    if (st > 0.0f) {
-        DrawRectangleRounded(rowSpace, 0.12f, 4, Fade(Mix(theme::BG_WIDGET, theme::ACCENT, st), st * anim));
-    }
+    DrawDropdownBox(rowAdd, hoverAdd || (showSubMenu && hoveringMain && !hoverSpace), anim);
+    DrawDropdownBox(rowSpace, hoverSpace, anim);
     if (hoverAdd) MarkHand();
 
     DrawTextArial("Add object", rowAdd.x + 8.0f, rowAdd.y + 7.0f, 14.0f, Fade(theme::TEXT, anim));
@@ -1617,13 +1622,8 @@ static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool is
             Rectangle itemRec = { subBody.x + 4.0f, subBody.y + 4.0f + (static_cast<float>(i) * 30.0f), subBody.width - 8.0f, 26.0f };
             bool itemHovered = CheckCollisionPointRec(mouse, itemRec);
 
-            float t = HoverProgress(static_cast<uint64_t>(i) * 2U + 200U, itemHovered);
-            if (t > 0.0f) {
-                DrawRectangleRounded(itemRec, 0.15f, 4, Fade(Mix(theme::ACCENT, theme::ACCENT_HOVER, t), t * anim));
-                DrawTextArial(items[i], itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f, Fade(theme::TEXT, anim));
-            } else {
-                DrawTextArial(items[i], itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f, Fade(theme::TEXT_MUTED, anim));
-            }
+            DrawDropdownBox(itemRec, itemHovered, anim);
+            DrawTextArial(items[i], itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f, Fade(theme::TEXT, anim));
             if (itemHovered) MarkHand();
         }
     }
@@ -2876,17 +2876,6 @@ static void DrawColorPickerPopupWindow() {
             if (obj && obj != g_selectedObject) *obj->GetColorPtr() = *g_color;
         }
     }
-}
-
-// Shared look for every hand-drawn dropdown header/row: dark-teal fill inside a
-// border that is grey at rest and bright cyan when active (hovered, selected, or open).
-static void DrawDropdownBox(const Rectangle& r, bool active) {
-    const Color rest   = Color{ 58, 58, 58, 255 };
-    const Color lit    = Color{ 42, 212, 226, 255 };
-    const Color fill   = Color{ 14, 60, 64, 255 };
-    DrawRectangleRounded(r, 0.2f, 4, active ? lit : rest);
-    Rectangle inner = { r.x + 2.0f, r.y + 2.0f, r.width - 4.0f, r.height - 4.0f };
-    DrawRectangleRounded(inner, 0.2f, 4, fill);
 }
 
 static void DrawCollisionPopup() {
