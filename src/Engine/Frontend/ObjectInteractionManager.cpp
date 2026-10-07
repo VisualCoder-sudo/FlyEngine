@@ -604,6 +604,37 @@ void ObjectInteractionManager::DeleteSelection() {
     ui::SetSelection({}, nullptr);
 }
 
+bool ObjectInteractionManager::DeleteSelectedAnything() {
+    if (WaterBody* water = ui::GetSelectedWater()) {
+        PushUndoNow();
+        DeleteWaterBody(water);
+        return true;
+    }
+    if (BasicTerrain* terrain = ui::GetSelectedTerrain()) {
+        ui::SetSelectedTerrain(nullptr);
+        terrain->alive = false;
+        return true;
+    }
+    // Full terrain::Terrain (chunked) deletion. Slot renumbering is
+    // automatic: Unregister shifts all later terrains down, and since
+    // nothing references the TERRAIN# slot, Explorer names stay valid.
+    if (terrain::Terrain* legacy = terrain::GetTerrainEditorState().selectedTerrainLegacy) {
+        terrain::HandleTerrainSelection(legacy, false);
+        auto& registry = terrain::GetTerrainRegistry();
+        registry.Unregister(legacy);
+        legacy->alive = false;
+        const project::Info& proj = project::GetCurrentProject();
+        if (!proj.path.empty()) registry.WriteFile(proj.path + "/terrain.terrain");
+        return true;
+    }
+    if (!selectedObjects.empty()) {
+        PushUndoNow();
+        DeleteSelection();
+        return true;
+    }
+    return false;
+}
+
 void ObjectInteractionManager::DeleteWaterBody(WaterBody* target) {
     if (!target) return;
     engine.RemoveEntity(target);
@@ -948,33 +979,10 @@ void ObjectInteractionManager::Update(float dt) {
         }
     }
 
-    // Delete terrain / water: works independently of object selection
+    // Delete/Backspace: one path for every deletable thing (objects, water, terrain).
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen()) {
         if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
-            if (WaterBody* water = ui::GetSelectedWater()) {
-                PushUndoNow();
-                DeleteWaterBody(water);
-                return;
-            }
-            BasicTerrain* terrain = ui::GetSelectedTerrain();
-            if (terrain) {
-                ui::SetSelectedTerrain(nullptr);
-                terrain->alive = false;
-                return;
-            }
-            // Full terrain::Terrain (chunked) deletion. Slot renumbering is
-            // automatic: Unregister shifts all later terrains down, and since
-            // nothing references the TERRAIN# slot, Explorer names stay valid.
-            terrain::Terrain* legacy = terrain::GetTerrainEditorState().selectedTerrainLegacy;
-            if (legacy) {
-                terrain::HandleTerrainSelection(legacy, false);
-                auto& registry = terrain::GetTerrainRegistry();
-                registry.Unregister(legacy);
-                legacy->alive = false;
-                const project::Info& proj = project::GetCurrentProject();
-                if (!proj.path.empty()) registry.WriteFile(proj.path + "/terrain.terrain");
-                return;
-            }
+            if (DeleteSelectedAnything()) return;
         }
     }
 
@@ -1006,11 +1014,6 @@ void ObjectInteractionManager::Update(float dt) {
                 }
             }
             ui::SetSelection(copies, newPrimary);
-            return;
-        }
-        if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
-            PushUndoNow();
-            DeleteSelection();
             return;
         }
         if (IsKeyPressed(KEY_F) && cameraController) {
@@ -1065,10 +1068,7 @@ void ObjectInteractionManager::Update(float dt) {
         return;
     }
     if (action == ui::MenuAction::DeleteWaterBody) {
-        PushUndoNow();
-        if (WaterBody* water = ui::GetSelectedWater()) {
-            DeleteWaterBody(water);
-        }
+        DeleteSelectedAnything();
         return;
     }
 

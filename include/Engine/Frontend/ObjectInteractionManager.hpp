@@ -71,6 +71,8 @@ private:
     void ToggleModel(ModelGroup* model);
     void DeleteObject(ScatteredObject* target);
     void DeleteSelection();
+    // Deletes whatever is selected (water, terrain, or objects). False if nothing was.
+    bool DeleteSelectedAnything();
     void DeleteWaterBody(WaterBody* target);
     void RemoveObjectFromScene(ScatteredObject* target);
     void RemoveEmptyModels();
