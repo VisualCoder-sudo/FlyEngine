@@ -1589,8 +1589,8 @@ static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool is
     bool hoverAdd = CheckCollisionPointRec(mouse, rowAdd);
     bool hoverSpace = CheckCollisionPointRec(mouse, rowSpace);
 
-    DrawDropdownBox(rowAdd, hoverAdd || (showSubMenu && hoveringMain && !hoverSpace), anim);
-    DrawDropdownBox(rowSpace, hoverSpace, anim);
+    if (hoverAdd || (showSubMenu && hoveringMain && !hoverSpace)) DrawDropdownBox(rowAdd, true, anim);
+    if (hoverSpace) DrawDropdownBox(rowSpace, true, anim);
     if (hoverAdd) MarkHand();
 
     DrawTextArial("Add object", rowAdd.x + 8.0f, rowAdd.y + 7.0f, 14.0f, Fade(theme::TEXT, anim));
@@ -1622,8 +1622,9 @@ static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool is
             Rectangle itemRec = { subBody.x + 4.0f, subBody.y + 4.0f + (static_cast<float>(i) * 30.0f), subBody.width - 8.0f, 26.0f };
             bool itemHovered = CheckCollisionPointRec(mouse, itemRec);
 
-            DrawDropdownBox(itemRec, itemHovered, anim);
-            DrawTextArial(items[i], itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f, Fade(theme::TEXT, anim));
+            if (itemHovered) DrawDropdownBox(itemRec, true, anim);
+            DrawTextArial(items[i], itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f,
+                          Fade(itemHovered ? theme::TEXT : theme::TEXT_MUTED, anim));
             if (itemHovered) MarkHand();
         }
     }
