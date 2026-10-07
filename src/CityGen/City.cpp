@@ -1646,7 +1646,9 @@ void City::DrawOverlay3D() {
     if (hasHover)
         gfx::DrawCityInstances(markerMesh, { &hoverXf, &hoverXf + 1 }, 0, 1, Color{ 255, 160, 60, 255 });
     if (hasSel)
-        gfx::DrawCityInstances(markerMesh, { &selXf, &selXf + 1 }, 0, 1, Color{ 255, 220, 80, 255 });
+        gfx::DrawCityInstances(markerMesh, { &selXf, &selXf + 1 }, 0, 1,
+                               (state.draggingNode && state.dragBlocked) ? Color{ 235, 70, 60, 255 }
+                                                                          : Color{ 255, 220, 80, 255 });
 
     if (state.activeCity == this && state.selectedEdge >= 0 &&
         (size_t)state.selectedEdge < edges.size()) {

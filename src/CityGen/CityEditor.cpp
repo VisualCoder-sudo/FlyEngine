@@ -118,7 +118,9 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
                                          dl > 1e-4f ? Vector2Scale(dv, minSep / dl) : Vector2{ minSep, 0.0f });
                 }
                 Vector2 cur = city->NodePos(s.dragNode);
+                s.dragBlocked = false;
                 if (city->MoveWouldCross(s.dragNode, pos)) {
+                    s.dragBlocked = true;
                     // Slide as far toward the cursor as roads allow instead of crossing one.
                     float lo = 0.0f, hi = 1.0f;
                     for (int k = 0; k < 8; k++) {

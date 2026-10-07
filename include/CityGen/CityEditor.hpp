@@ -20,6 +20,7 @@ namespace city {
         int dragNode = -1;
         Vector2 dragStartNodePos{};
         bool dragMoved = false;
+        bool dragBlocked = false;   // last drag/nudge step was stopped to keep roads from crossing
 
         // Keyboard nudge step (Shift scales it down for fine control).
         float nudgeStep = 1.0f;
