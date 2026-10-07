@@ -3581,6 +3581,12 @@ if (g_selection.size() > 1) {
             DrawTextArial("Could not load preset textures", inputX, y + 3.0f, 13.0f, theme::TEXT_DIM);
         }
 
+        // Advance past texture section: always 1 more row to get past the
+        // dropdown/error row (or the label row if neither is shown). Must run
+        // for primitives too, not just meshes, or the Position header overlaps
+        // the dropdown.
+        y += rowHeight;
+
         // Folder + Clear buttons (only for imported meshes)
         if (hasMesh && !g_playActive) {
             // Folder button [📁]
@@ -3621,8 +3627,7 @@ if (g_selection.size() > 1) {
                 BeginChooseTexturePath(currentProject.path);
                 std::string texPath;
                 if (platform::PollDialogResult({platform::DialogPurpose::ImportTexture}, texPath)
-                    && !texPath.empty()) {
-if (!currentProject.path.empty()) {
+                    && !texPath.empty() && !currentProject.path.empty()) {
                     for (auto* obj : g_selection) {
                         if (obj && obj->HasModel()) {
                             obj->SetTexturePath(
@@ -3633,20 +3638,15 @@ if (!currentProject.path.empty()) {
                     }
                 }
             }
-if (clearHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                if (!currentProject.path.empty()) {
-                    for (auto* obj : g_selection) {
-                        if (obj && obj->HasModel()) {
-                            obj->ClearTexture(currentProject.path);
-                        }
+            if (clearHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !currentProject.path.empty()) {
+                for (auto* obj : g_selection) {
+                    if (obj && obj->HasModel()) {
+                        obj->ClearTexture(currentProject.path);
                     }
-}
+                }
+            }
         }
-        // Advance past texture section: always 1 more row to get past the
-        // dropdown/error row (or the label row if neither is shown).
-        y += rowHeight;
     }
-}
     y += groupGap;
 
     // --- Position ---
@@ -3757,7 +3757,6 @@ if (clearHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
     }
 
     EndScissorMode();
-}
 }
 
 static void DrawOutputPanel() {
