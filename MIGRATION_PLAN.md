@@ -7,7 +7,7 @@ backend; OpenGL 4.1 and D3D11 are compile-time alternatives
 ## Decisions
 
 | Decision | Choice |
-|---|---|
+|:-|:-|
 | Path | Port onto sokol's GL backend first, then switch to Vulkan (done) |
 | Windowing | sokol_app, driven step-by-step (`src/Engine/RL/flyapp.h`) so the engine's existing `while (!WindowShouldClose())` loops keep working |
 | Platforms | Linux (Vulkan, X11/XWayland) and Windows (Vulkan, D3D11 fallback). No macOS |
@@ -55,7 +55,10 @@ Key points:
   rendering into: such bindings are replaced with a dummy texture.
 - **Buffer recycling.** Vulkan in sokol gives every buffer its own allocation;
   streaming water chunks spent most of the frame in vkAllocateMemory. Mesh
-  buffers ≤256 KB are recycled by size (rl_models.cpp).
+  buffers ≤256 KB are recycled by size (rl_models.cpp). Drivers also cap live
+  device allocations (4096 on NVIDIA), so idle pooled buffers are limited to 1024,
+  trimmed by age and total size, and flushed and retried if a buffer still cannot
+  be created.
 
 ## Done
 
@@ -74,13 +77,19 @@ Key points:
 - [x] Fallback executables (`-fallback`): the Vulkan build checks the GPU before
       creating a window and hands over to an OpenGL/D3D11 build when it cannot run
 - [x] `sokol-shdc` pinned by commit and SHA-256
+- [x] City editor and generation fixes made along the way: park grass no longer
+      turns into a star on regular grids (collinear vertices in the inset),
+      ear clipping always finishes an outline, node drags cannot make roads
+      cross (the node turns red while a move is blocked), park pads share the
+      grass colour and the grass tucks under road edges
+- [x] glTF model import checked on Vulkan (rl_smoke_test)
 - [x] Terrain painting updates its textures in place; buffer pool has age and size limits
 - [x] Fixed on the way: Vulkan dropped every vertex buffer after the first unused
       slot (instanced draws were invisible, chunked-terrain tangents lost); an
       NVIDIA OpenGL miscompile of the instanced vertex shader; Player crash on
       exit (destruction order); texture de-duplication hash (SHA-256 had a typo
       and did not hash the file contents)
-- [x] Verified on Linux/NVIDIA: editor, player and `--testwater` on GL and Vulkan;
+- [x] Verified on Linux/NVIDIA: editor, player and the water test scene (`Flyengine` with the testwater flag) on GL and Vulkan;
       screenshots on both
 - [x] CI: Linux builds Vulkan, the display smoke test builds GL (software GL in
       CI), Windows builds D3D11
@@ -92,7 +101,11 @@ Key points:
 - [ ] Khronos validation layers not run (not installed on the dev machine):
       install them and run a Debug build (they are picked up automatically)
 - [x] City roads/instancing, terrain painting and shapes checked on GL and Vulkan
-      (`--testscene`); glTF model import checked on Vulkan (rl_smoke_test)
+      (the testscene flag); model import is covered by the smoke test
+- [ ] A single frame that rebuilds thousands of meshes (the long park run of the
+      testscene, about 19,000 rebuilds before the first present) still aborts with a
+      Vulkan delete queue panic, because freed buffers are only reclaimed per frame.
+      Normal editing is not affected
 - [ ] Gamepad input (sokol_app has none) — stubbed
 - [ ] Cubemaps — not supported by the layer
 - [ ] Partial `UpdateTextureRec` — only full-size updates
