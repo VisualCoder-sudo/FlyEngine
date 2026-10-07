@@ -76,3 +76,6 @@ Desktop.ini
 # Local pre-migration source snapshot
 .migration-backup/
 /tools/sokol-shdc/sokol-shdc*
+
+# Project exclude paths
+/.claude/worktrees/
