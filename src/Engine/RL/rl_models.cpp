@@ -70,7 +70,11 @@ const void* MeshArray(const Mesh& mesh, int attrib) {
 // buffer is refilled with sg_update_buffer() by the next mesh of the same size.
 // sokol allows one update per buffer per frame and keeps in-flight frames safe.
 constexpr size_t kPooledMaxSize = 256 * 1024;
-constexpr size_t kPoolMaxPerKey = 1024;
+constexpr size_t kPoolMaxPerKey = 256;
+// Vulkan drivers cap live device-memory allocations (4096 on NVIDIA), and sokol
+// gives every buffer its own, so idle pooled buffers must stay well below that.
+constexpr size_t kPoolMaxCount = 1024;
+size_t g_pooledCount = 0;
 // Pooled buffers are cheap to keep but not free: terrain sculpting rebuilds
 // meshes at constantly changing sizes, so without a limit every size ever used
 // would stay resident. Entries unused for kPoolMaxAgeFrames are destroyed, and
@@ -91,6 +95,8 @@ uint64_t PoolKey(size_t size, bool index) { return ((uint64_t)size << 1) | (inde
 
 uint64_t FrameIndex() { return (uint64_t)Gfx().frameCounter; }
 
+void FlushBufferPool();
+
 sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, const char* label) {
     const bool pooled = !dynamic && data && size <= kPooledMaxSize;
     if (pooled) {
@@ -103,6 +109,7 @@ sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, co
             if (g_lastUpdate[pb.buffer.id] == frame) continue;
             free.erase(free.begin() + (std::ptrdiff_t)i);
             g_pooledBytes -= size;
+            --g_pooledCount;
             sg_update_buffer(pb.buffer, sg_range{ data, size });
             g_lastUpdate[pb.buffer.id] = frame;
             g_pooledKeys[pb.buffer.id] = key;
@@ -121,6 +128,13 @@ sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, co
     }
     d.label = label;
     sg_buffer b = sg_make_buffer(&d);
+    if (sg_query_buffer_state(b) != SG_RESOURCESTATE_VALID) {
+        // Slot pool exhausted (many rebuilds within a few frames leave thousands of
+        // recycled buffers waiting): give them all back and try once more.
+        sg_destroy_buffer(b);
+        FlushBufferPool();
+        b = sg_make_buffer(&d);
+    }
     if ((dynamic || pooled) && data) {
         sg_update_buffer(b, sg_range{ data, size });
         g_lastUpdate[b.id] = FrameIndex();
@@ -138,6 +152,15 @@ void DestroyPooled(const PooledBuffer& pb) {
     sg_destroy_buffer(pb.buffer);
 }
 
+void FlushBufferPool() {
+    for (auto& [key, list] : g_bufferPool) {
+        for (const PooledBuffer& pb : list) DestroyPooled(pb);
+        list.clear();
+    }
+    g_pooledBytes = 0;
+    g_pooledCount = 0;
+}
+
 void ReleaseBuffer(sg_buffer b) {
     if (!b.id) return;
     auto it = g_pooledKeys.find(b.id);
@@ -146,9 +169,10 @@ void ReleaseBuffer(sg_buffer b) {
         auto& free = g_bufferPool[key];
         g_pooledKeys.erase(it);
         const size_t size = (size_t)(key >> 1);
-        if (free.size() < kPoolMaxPerKey) {
+        if (free.size() < kPoolMaxPerKey && g_pooledCount < kPoolMaxCount) {
             free.push_back({ b, FrameIndex() });
             g_pooledBytes += size;
+            ++g_pooledCount;
             return;
         }
     }
@@ -345,7 +369,7 @@ void TrimBufferPool() {
         for (size_t i = 0; i < list.size(); ++i) {
             if (frame - list[i].releasedFrame > kPoolMaxAgeFrames) {
                 DestroyPooled(list[i]);
-                g_pooledBytes -= size;
+                g_pooledBytes -= size; --g_pooledCount;
             } else {
                 list[keep++] = list[i];
             }
@@ -365,7 +389,7 @@ void TrimBufferPool() {
         if (oldestFrame == UINT64_MAX) break;
         auto& list = g_bufferPool[oldestKey];
         DestroyPooled(list[oldestIdx]);
-        g_pooledBytes -= (size_t)(oldestKey >> 1);
+        g_pooledBytes -= (size_t)(oldestKey >> 1); --g_pooledCount;
         list.erase(list.begin() + (std::ptrdiff_t)oldestIdx);
     }
 }
@@ -375,7 +399,7 @@ void ModelsShutdown() {
     g_meshes.assign(1, MeshRec{});
     g_freeMeshes.clear();
     g_bufferPool.clear();
-    g_pooledBytes = 0;
+    g_pooledBytes = 0; g_pooledCount = 0;
     g_pooledKeys.clear();
     g_lastUpdate.clear();
 }

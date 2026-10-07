@@ -658,7 +658,7 @@ void City::LayoutBlock(Block& block) {
 
         if (isPark) {
             block.park = true;
-            if (!citygeom::InsetPolygon(poly, std::min(p.parkInset, roadW * 0.6f), block.parkPoly)) {
+            if (!citygeom::InsetPolygon(poly, std::min(p.parkInset, roadW * 0.4f), block.parkPoly)) {
                 block.parkPoly = poly;
             }
             return;
@@ -1202,7 +1202,7 @@ const float roadW = params.RoadWidth();
                 const double padA = std::fabs((double)citygeom::PolygonArea(poly));
                 const double grassA = std::fabs((double)citygeom::PolygonArea(block.parkPoly));
                 double per = 0; for (size_t k = 0; k < poly.size(); k++) per += Vector2Distance(poly[k], poly[(k + 1) % poly.size()]);
-                const double insetUsed = std::min(params.parkInset, params.RoadWidth() * 0.6f);
+                const double insetUsed = std::min(params.parkInset, params.RoadWidth() * 0.4f);
                 const double expect = padA - per * insetUsed;
                 static int rep = 0;
                 if (grassA < 0.8 * expect && rep++ < 20) {
