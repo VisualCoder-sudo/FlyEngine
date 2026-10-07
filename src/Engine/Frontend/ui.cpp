@@ -2878,15 +2878,15 @@ static void DrawColorPickerPopupWindow() {
     }
 }
 
-// Shared look for every hand-drawn dropdown header/row: grey frame around a
-// dark-teal box, switching to bright cyan when active (hovered, selected, or open).
+// Shared look for every hand-drawn dropdown header/row: dark-teal fill inside a
+// border that is grey at rest and bright cyan when active (hovered, selected, or open).
 static void DrawDropdownBox(const Rectangle& r, bool active) {
-    const Color frame = Color{ 58, 58, 58, 255 };
-    const Color rest  = Color{ 14, 60, 64, 255 };
-    const Color lit   = Color{ 42, 212, 226, 255 };
-    DrawRectangleRounded(r, 0.2f, 4, frame);
+    const Color rest   = Color{ 58, 58, 58, 255 };
+    const Color lit    = Color{ 42, 212, 226, 255 };
+    const Color fill   = Color{ 14, 60, 64, 255 };
+    DrawRectangleRounded(r, 0.2f, 4, active ? lit : rest);
     Rectangle inner = { r.x + 2.0f, r.y + 2.0f, r.width - 4.0f, r.height - 4.0f };
-    DrawRectangleRounded(inner, 0.2f, 4, active ? lit : rest);
+    DrawRectangleRounded(inner, 0.2f, 4, fill);
 }
 
 static void DrawCollisionPopup() {
