@@ -2917,8 +2917,9 @@ static void DrawCollisionPopup() {
                            popupRec.width - 6.0f, itemH - 4.0f };
         bool hovered = CheckCollisionPointRec(mouse, item);
         bool current = g_selectedObject->GetCollisionAccuracy() == acc;
-        DrawDropdownBox(item, hovered || current);
-        DrawTextArial(pcoll::CollisionAccuracyName(acc), item.x + 10.0f, item.y + 5.0f, 13.0f, theme::TEXT);
+        if (hovered || current) DrawDropdownBox(item, true);
+        DrawTextArial(pcoll::CollisionAccuracyName(acc), item.x + 10.0f, item.y + 5.0f, 13.0f,
+            (hovered || current) ? theme::TEXT : theme::TEXT_MUTED);
         if (hovered) MarkHand();
         if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             g_collisionPopupOpen = false;
@@ -4188,10 +4189,12 @@ static void DrawTerrainToolPanel() {
                 Rectangle itemRec = { listRec.x + 4.0f, listRec.y + 4.0f + static_cast<float>(i) * 26.0f, listRec.width - 8.0f, 22.0f };
                 bool hovered = CheckCollisionPointRec(mouse, itemRec);
                 bool selected = (i == activeTool);
-                DrawDropdownBox(itemRec, hovered || selected);
+                const bool itemActive = hovered || selected;
+                if (itemActive) DrawDropdownBox(itemRec, true);
                 Rectangle iconRec = { itemRec.x + 6.0f, itemRec.y + 3.0f, 16.0f, 16.0f };
-                DrawTerrainToolIcon(i, iconRec, theme::TEXT);
-                DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f, theme::TEXT);
+                DrawTerrainToolIcon(i, iconRec, itemActive ? theme::TEXT : theme::TEXT_MUTED);
+                DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f,
+                              itemActive ? theme::TEXT : theme::TEXT_MUTED);
                 if (hovered) MarkHand();
                 if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
                     auto newTool = static_cast<BasicTerrain::Tool>(i);
@@ -4917,10 +4920,12 @@ void Draw() {
                                  listRect.width, itemHeight };
             bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
 
-            DrawDropdownBox(itemRect, itemHovered || i == g_presetDropdownSelected);
+            const bool itemActive = itemHovered || i == g_presetDropdownSelected;
+            if (itemActive) DrawDropdownBox(itemRect, true);
 
             float itemTextY = itemRect.y + (itemRect.height - 13.0f) * 0.5f;
-            DrawTextArial(items[i].c_str(), itemRect.x + 8.0f, itemTextY, 13.0f, theme::TEXT);
+            DrawTextArial(items[i].c_str(), itemRect.x + 8.0f, itemTextY, 13.0f,
+                itemActive ? theme::TEXT : theme::TEXT_MUTED);
         }
 
         // Close if clicked outside list and dropdown (handled in early click processing)
