@@ -1791,18 +1791,41 @@ static void DrawImGuiTopBar() {
     constexpr TransformTool toolEnums[] = { TransformTool::Select, TransformTool::Move, TransformTool::Scale, TransformTool::Rotate };
     for (int i = 0; i < 4; ++i) {
         bool selected = (g_activeTool == toolEnums[i]);
-        if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0 / 255.0f, 190 / 255.0f, 200 / 255.0f, 0.7f)); // theme::ACCENT
+
+        // One pill per tool: rounded icon tile on the left, label on the right.
+        constexpr float pillH = 34.0f;
+        constexpr float tile = 26.0f;
+        constexpr float padX = 4.0f;
+        constexpr float gap = 8.0f;
+        const float textW = ImGui::CalcTextSize(toolNames[i]).x;
+        const ImVec2 pillSize(padX + tile + gap + textW + 12.0f, pillH);
+
+        ImGui::PushID(i);
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##tool", pillSize)) g_activeTool = toolEnums[i];
+        const bool hov = ImGui::IsItemHovered();
+        if (hov) MarkHand();
+        ImGui::PopID();
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p1(p0.x + pillSize.x, p0.y + pillSize.y);
+        ImU32 bg = selected ? IM_COL32(0, 190, 200, 180)
+                 : hov      ? IM_COL32(63, 67, 78, 255)
+                            : IM_COL32(48, 51, 60, 255);
+        dl->AddRectFilled(p0, p1, bg, 10.0f);
+
+        const ImVec2 t0(p0.x + padX, p0.y + (pillH - tile) * 0.5f);
+        const ImVec2 t1(t0.x + tile, t0.y + tile);
+        dl->AddRectFilled(t0, t1, selected ? IM_COL32(255, 255, 255, 40) : IM_COL32(255, 255, 255, 22), 8.0f);
+        if (ImTextureID tex = ToolTex(i)) {
+            constexpr float icon = 16.0f;
+            const float o = (tile - icon) * 0.5f;
+            dl->AddImage(tex, ImVec2(t0.x + o, t0.y + o), ImVec2(t0.x + o + icon, t0.y + o + icon));
         }
-        if (ToolTex(i)) {
-            ImGui::Image(ToolTex(i), ImVec2(16.0f, 16.0f));
-            ImGui::SameLine(0.0f, 6.0f);
-        }
-        if (ImGui::Button(toolNames[i], ImVec2(0.0f, 30.0f))) {
-            g_activeTool = toolEnums[i];
-        }
-        if (selected) ImGui::PopStyleColor();
-        if (i < 3) ImGui::SameLine(0.0f, 12.0f);
+        dl->AddText(ImVec2(t1.x + gap, p0.y + (pillH - ImGui::GetTextLineHeight()) * 0.5f),
+                    IM_COL32(232, 232, 238, 255), toolNames[i]);
+
+        if (i < 3) ImGui::SameLine(0.0f, 10.0f);
     }
 
     // Play in Player button (launches standalone player), right-aligned next to Play
