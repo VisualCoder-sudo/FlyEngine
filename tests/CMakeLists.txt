@@ -67,6 +67,7 @@ add_test(NAME projection_depth_range COMMAND projection_depth_range_test)
 # have no GPU); run it by hand: build/tests/rl_smoke_test
 add_executable(rl_smoke_test rl_smoke_test.cpp)
 target_link_libraries(rl_smoke_test PRIVATE FlyRL)
+target_compile_definitions(rl_smoke_test PRIVATE FLY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Known-answer test for the texture manager's SHA-256.
 add_executable(texture_hash_test texture_hash_test.cpp)

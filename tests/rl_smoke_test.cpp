@@ -195,6 +195,35 @@ int main() {
     DrawFullscreen(tex);
     CHECK(Near(CenterPixel(), kYellow), "texture still correct after mesh churn and instancing");
 
+    // Model import: a glTF loaded from disk must produce meshes that draw.
+    {
+        const char* glb = FLY_SOURCE_DIR "/src/Engine/Backend/tinygltf/models/box01.glb";
+        Model mdl = LoadModel(glb);
+        CHECK(mdl.meshCount > 0, "LoadModel(box01.glb) produced no meshes");
+        if (mdl.meshCount > 0) {
+            BeginDrawing();
+            ClearBackground(BLACK);
+            Camera3D cam = { { 0, 0, 6 }, { 0, 0, 0 }, { 0, 1, 0 }, 45.0f, CAMERA_PERSPECTIVE };
+            BeginMode3D(cam);
+            DrawModel(mdl, Vector3{ 0, 0, 0 }, 1.0f, WHITE);
+            EndMode3D();
+            EndDrawing();
+            const char* path = "rl_smoke_model.png";
+            TakeScreenshot(path);
+            Image shot = LoadImage(path);
+            std::remove(path);
+            int lit = 0;
+            for (int y = 0; y < shot.height; y += 4)
+                for (int x = 0; x < shot.width; x += 4) {
+                    const Color c = GetImageColor(shot, x, y);
+                    if (c.r + c.g + c.b > 30) ++lit;
+                }
+            CHECK(lit > 20, "imported model drew nothing (%d lit samples)", lit);
+            UnloadImage(shot);
+        }
+        UnloadModel(mdl);
+    }
+
     UnloadTexture(tex);
     CloseWindow();
     std::printf(g_failures ? "rl_smoke_test: %d FAILED\n" : "rl_smoke_test: all passed\n", g_failures);

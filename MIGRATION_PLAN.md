@@ -92,7 +92,7 @@ Key points:
 - [ ] Khronos validation layers not run (not installed on the dev machine):
       install them and run a Debug build (they are picked up automatically)
 - [x] City roads/instancing, terrain painting and shapes checked on GL and Vulkan
-      (`--testscene`); model import not checked
+      (`--testscene`); glTF model import checked on Vulkan (rl_smoke_test)
 - [ ] Gamepad input (sokol_app has none) — stubbed
 - [ ] Cubemaps — not supported by the layer
 - [ ] Partial `UpdateTextureRec` — only full-size updates
