@@ -115,8 +115,6 @@ struct CityParams {
         { "Other", { 200, 40, 40, 255 }, 5.0f, true } };
     bool routedTraffic = true;            // cars drive to destinations (shortest route, busier downtown) instead of wandering
     bool rushHours = false;               // the number of cars follows the time of day (peaks 7-9 and 16-19, quiet at night)
-    float timeOfDay = 12.0f;              // hours, 0..24 (12 = noon). Not part of the layout: changing it never rebuilds
-    float dayLengthMinutes = 0.0f;        // real minutes per 24 h; 0 = the time stays where it is set
     float trafficDetailDistance = 150.0f; // cars farther than this from the camera run the cheap model (0 = always detailed)
 
     float RoadWidth() const {

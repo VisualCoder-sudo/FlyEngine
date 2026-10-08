@@ -76,6 +76,15 @@ bool IsShadowPassReused(); // true inside a shadow pass whose depth map is being
 // Ambient lighting intensity (0..2 scales the default ambient term).
 void SetAmbientIntensity(float intensity);
 
+// Scene-wide lighting settings (the Lighting section of the Explorer). Saved with the scene.
+struct LightingSettings {
+    float timeOfDay = 12.0f;          // hours, 0..24 (12 = noon)
+    float dayLengthMinutes = 0.0f;    // real minutes per 24 h; 0 = the time stays where it is set
+};
+LightingSettings& Lighting();
+void ResetLighting();                 // back to noon, no running cycle (a new scene starts like this)
+void TickLighting(float dt);          // advances the time of day when a day length is set
+
 // Time of day in hours (0..24, 12 = noon, the default and the unchanged look). Dims the sun and ambient
 // light, darkens the sky and drives the emissive window/street light/car light glow of the city shaders.
 void SetTimeOfDay(float hours);

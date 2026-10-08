@@ -48,11 +48,11 @@ int ReflectionQualityToResolution(int quality) {
 const Vector3 kLightDir = Vector3Normalize({ -0.4f, -1.0f, -0.3f });
 const Vector3 kAmbient = { 0.35f, 0.35f, 0.35f };
 Vector3 ambient = kAmbient;
-float timeOfDay = 12.0f;   // hours
+gfx::LightingSettings lightingSettings;
 // 1 in daylight, 0 at night, easing through dawn (5:00-7:30) and dusk (16:30-19:00).
 float DayAmount() {
     auto ss = [](float a, float b, float x) { const float t = fminf(fmaxf((x - a) / (b - a), 0.0f), 1.0f); return t * t * (3.0f - 2.0f * t); };
-    const float h = fmodf(fmodf(timeOfDay, 24.0f) + 24.0f, 24.0f);
+    const float h = fmodf(fmodf(lightingSettings.timeOfDay, 24.0f) + 24.0f, 24.0f);
     return ss(5.0f, 7.5f, h) * (1.0f - ss(16.5f, 19.0f, h));
 }
 bool gridVisible = true;
@@ -1188,9 +1188,15 @@ Vector3 EffectiveAmbient() {
 
 void SetTimeOfDay(float hours) {
     const float h = fmodf(fmodf(hours, 24.0f) + 24.0f, 24.0f);
-    timeOfDay = h;
+    lightingSettings.timeOfDay = h;
 }
-float GetTimeOfDay() { return timeOfDay; }
+float GetTimeOfDay() { return lightingSettings.timeOfDay; }
+LightingSettings& Lighting() { return lightingSettings; }
+void ResetLighting() { lightingSettings = LightingSettings{}; }
+void TickLighting(float dt) {
+    if (lightingSettings.dayLengthMinutes > 0.0f)
+        lightingSettings.timeOfDay = fmodf(lightingSettings.timeOfDay + dt * 24.0f / (lightingSettings.dayLengthMinutes * 60.0f), 24.0f);
+}
 float GetNightAmount() { return 1.0f - DayAmount(); }
 void SetNightLights(const Vector4* lights, int count) {
     count = Clamp(count, 0, 32);

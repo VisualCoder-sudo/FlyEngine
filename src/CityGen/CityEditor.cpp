@@ -1133,14 +1133,6 @@ void DrawCityEditorPanel() {
                         ts.cars, ts.nearCars, ts.farCars, ts.peds, ts.avgSpeed, ts.stopped, ts.minGap, ts.stepMs, ts.maxWalkerSpeed, ts.overlaps, ts.jumps);
     }
 
-    ImGui::SeparatorText("Time of day");
-    {
-        CityParams& cp = city->GetParams();
-        ImGui::SliderFloat("Hour", &cp.timeOfDay, 0.0f, 24.0f, "%.1f h");
-        ImGui::DragFloat("Day length (real min, 0 = fixed)", &cp.dayLengthMinutes, 0.1f, 0.0f, 240.0f, "%.1f");
-        ImGui::TextDisabled("Dims the sun and sky and lights windows, street lamps and car headlights at night.");
-    }
-
     ImGui::SeparatorText("Performance");
     {
         bool persistent = gfx::GetInstanceBuffersEnabled();

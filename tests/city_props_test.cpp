@@ -4,6 +4,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
+#include "Engine/Graphics.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <cmath>
@@ -50,7 +51,7 @@ int main() {
 
     // Night: street lamps light the road and sidewalk around them (light pools); screenshot for a visual check.
     {
-        c.GetParams().timeOfDay = 21.0f;
+        gfx::SetTimeOfDay(21.0f);
         Vector3 pos; float yaw;
         if (c.FindInstance(kPropLamp, c.CountInstances(kPropLamp) / 3, pos, yaw)) {
             const Vector3 toRoad = { sinf(yaw), 0.0f, cosf(yaw) };
@@ -66,7 +67,7 @@ int main() {
 
     // Buses: auto-generated transit, run the sim for a while, then a close-up of a moving bus and of a stop.
     {
-        c.GetParams().timeOfDay = 12.0f;
+        gfx::SetTimeOfDay(12.0f);
         c.GetParams().cars = 0;
         c.AutoTransit(3, 6);
         CHECK(c.CountInstances(kPropBusStop) > 0);     // stops are data now: generated transit places the shelters

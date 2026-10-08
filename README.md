@@ -267,9 +267,10 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   (several at once, draggable); building height fades smoothly from a district's centre
   and each district can set the building style. *Auto* puts a downtown in the middle.
   Blocks can be painted into a district.
-- **Day and night:** *Time of day* in the panel (optionally a running cycle) dims the sun and
-  sky; windows, lamps, car and bus lights glow at night and lamps and headlights light the
-  road, sidewalk and facades around them.
+- **Day and night:** the game time is a scene-wide setting, not a city setting: select
+  *Lighting > Time* in the Explorer (optionally with a running day length). The sun and sky
+  dim, and windows, lamps, car and bus lights glow at night; lamps and headlights light the
+  road, sidewalk and facades around them. The time is saved with the scene.
 - **Routed traffic:** cars drive to destinations along the fastest route (downtown attracts
   more trips); *Rush hours* scales the car count with the hour.
 - **Public transit:** bus stops and lines, generated automatically (*Auto-generate transit*) or

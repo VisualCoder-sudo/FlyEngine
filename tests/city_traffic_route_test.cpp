@@ -3,6 +3,7 @@
 // step; needs a display (mesh upload), so it is not registered with ctest:
 //   build/tests/city_traffic_route_test
 #include "raylib.h"
+#include "Engine/Graphics.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <cmath>
@@ -49,10 +50,10 @@ int main() {
 
     // Rush hours: fewer cars at 03:00 than at 08:00, changing gradually.
     c.GetParams().rushHours = true;
-    c.GetParams().timeOfDay = 3.0f;
+    gfx::SetTimeOfDay(3.0f);
     for (int i = 0; i < 100; i++) c.TrafficStepForTest(0.05f);
     const int night = CountCars(c);
-    c.GetParams().timeOfDay = 8.0f;
+    gfx::SetTimeOfDay(8.0f);
     for (int i = 0; i < 100; i++) c.TrafficStepForTest(0.05f);
     const int rush = CountCars(c);
     std::printf("rush hours: %d cars at 03:00, %d at 08:00 (of 24)\n", night, rush);

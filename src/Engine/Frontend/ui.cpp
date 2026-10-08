@@ -70,6 +70,7 @@ static ScatteredObject* g_lastExplorerClick = nullptr;
 static ModelGroup* g_lastExplorerModelClick = nullptr;
 static double g_lastExplorerClickTime = 0.0;
 static WaterBody* g_selectedWater = nullptr;
+static bool g_lightingTimeSelected = false;   // the Lighting > Time row of the explorer is selected
 static BasicTerrain* g_selectedTerrain = nullptr;
 static char g_nameBuffer[64] = "";
 static float g_colorPickerAnchorY = -1.0f;
@@ -2313,6 +2314,35 @@ static void DrawImGuiExplorer() {
                 }
             }
         }
+    }
+
+    // --- Lighting: scene-wide settings (for now just Time); its settings open in the properties area ---
+    {
+        if (!g_selection.empty() || g_selectedWater || g_selectedTerrain) g_lightingTimeSelected = false;   // selecting anything else leaves it
+        ImGui::Spacing();
+        ImGui::TextDisabled("LIGHTING");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+##insertlighting")) ImGui::OpenPopup("##InsertLighting");
+        if (ImGui::BeginPopup("##InsertLighting")) {
+            ImGui::TextDisabled("Insert");
+            ImGui::Separator();
+            ImGui::MenuItem("Time (built in)", nullptr, false, false);
+            ImGui::TextDisabled("More lighting items will go here.");
+            ImGui::EndPopup();
+        }
+        ImGui::PushID("lighting_time");
+        bool timeRightClicked = false;
+        const bool timeClicked = ExplorerRowIcon(ROWICON_OBJECT, "Time", g_lightingTimeSelected, &timeRightClicked);
+        if (timeClicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+            SetSelection({}, nullptr);
+            if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
+            if (g_selectedTerrain) { g_selectedTerrain->isSelected = false; g_selectedTerrain = nullptr; }
+            BasicTerrain::SetActive(nullptr);
+            terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
+            g_lightingTimeSelected = true;
+        }
+        if (timeRightClicked) rightClickHandled = true;
+        ImGui::PopID();
     }
 
     if (ScriptRuntime* rt = GetActiveRuntime()) {
@@ -6058,12 +6088,46 @@ void DrawImGuiPreferencesWindow() {
     ImGui::PopStyleVar(3); // rounding, border size, outer padding
 }
 
+// Settings of the selected Lighting item, shown over the properties area.
+static void DrawImGuiLightingPanel() {
+    if (!g_lightingTimeSelected) return;
+    Rectangle rec = GetPropertiesPanelBounds();
+    ImGui::SetNextWindowPos(ImVec2(rec.x, rec.y));
+    ImGui::SetNextWindowSize(ImVec2(rec.width, rec.height));
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGui::Begin("##LightingProps", nullptr, flags);
+    ImGui::TextColored(ImVec4(0 / 255.0f, 190 / 255.0f, 200 / 255.0f, 1.0f), "LIGHTING");
+    ImGui::TextDisabled("Time");
+    ImGui::Separator();
+    gfx::LightingSettings& L = gfx::Lighting();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::SliderFloat("##hour", &L.timeOfDay, 0.0f, 24.0f, "");
+    const int totalMin = static_cast<int>(L.timeOfDay * 60.0f + 0.5f) % (24 * 60);
+    ImGui::Text("Game time  %02d:%02d", totalMin / 60, totalMin % 60);
+    if (ImGui::Button("Dawn")) L.timeOfDay = 6.5f;
+    ImGui::SameLine();
+    if (ImGui::Button("Noon")) L.timeOfDay = 12.0f;
+    ImGui::SameLine();
+    if (ImGui::Button("Dusk")) L.timeOfDay = 18.0f;
+    ImGui::SameLine();
+    if (ImGui::Button("Night")) L.timeOfDay = 23.0f;
+    ImGui::Spacing();
+    ImGui::TextDisabled("Day length (real minutes per day)");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::DragFloat("##daylen", &L.dayLengthMinutes, 0.1f, 0.0f, 240.0f, L.dayLengthMinutes > 0.0f ? "%.1f min" : "off (time stays put)");
+    ImGui::Spacing();
+    ImGui::TextWrapped("The whole scene follows this time: sun and sky, window and street lights, car and bus lights. It is saved with the scene.");
+    ImGui::End();
+}
+
 void DrawImGuiFrame(const Camera3D& camera) {
     if (IsKeyPressed(KEY_F1)) g_showDemoWindow = !g_showDemoWindow;
     if (IsKeyPressed(KEY_F2)) g_showDebugStats = !g_showDebugStats;
 
     DrawImGuiTopBar();
     DrawImGuiExplorer();
+    DrawImGuiLightingPanel();
     DrawImGuiExplorerMenu();
     DrawImGuiAssetBrowser(camera);
     DrawImGuiAssetBrowserPopups();

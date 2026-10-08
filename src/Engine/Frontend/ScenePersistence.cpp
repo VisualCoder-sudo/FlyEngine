@@ -9,6 +9,7 @@
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/CityGen/City.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 
 #include <algorithm>
@@ -48,7 +49,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 18\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 19\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         const Vector3& pos = *object->GetPosPtr();
@@ -202,6 +203,9 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         }
     }
 
+    // v19: scene-wide lighting (the Lighting section of the Explorer).
+    file << "LIGHTING " << gfx::Lighting().timeOfDay << ' ' << gfx::Lighting().dayLengthMinutes << "\n";
+
     return file.good();
 }
 
@@ -225,7 +229,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 18) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 19) return false;
+    gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
 
@@ -610,6 +615,16 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             } else {
                 ui::LogAlways("[terrain] loaded %d BasicTerrain(s) from %s", loaded, btFile.c_str());
             }
+        }
+    }
+
+    // v19: scene-wide lighting.
+    if (version >= 19) {
+        std::string tag;
+        float tod = 12.0f, len = 0.0f;
+        if (file >> tag >> tod >> len && tag == "LIGHTING") {
+            gfx::Lighting().timeOfDay = std::clamp(tod, 0.0f, 24.0f);
+            gfx::Lighting().dayLengthMinutes = std::max(len, 0.0f);
         }
     }
 

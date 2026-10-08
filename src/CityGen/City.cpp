@@ -284,9 +284,6 @@ namespace { bool g_simActive = false; }   // Play mode (editor Play or the stand
 void City::Update(float dt) {
     PumpRebuild();
     trafficClock += dt;   // signal clock runs in the editor too (heads animate while editing)
-    if (params.dayLengthMinutes > 0.0f) {
-        params.timeOfDay = fmodf(params.timeOfDay + dt * 24.0f / (params.dayLengthMinutes * 60.0f), 24.0f);
-    }
     if (g_simActive && hasGeometry && !rebuild) StepTraffic(std::min(dt, 0.1f));
     else if (!g_simActive && !agents.empty()) agents.clear();
 }
@@ -894,7 +891,7 @@ void City::StepTraffic(float dt) {
     int carChangeBudget = 1 << 20;   // cars added/removed this step (rush hours change the count gradually)
     if (params.rushHours) {
         static const float kPts[10][2] = { {0,0.2f},{5,0.2f},{7,1.0f},{9.5f,1.0f},{11,0.6f},{15.5f,0.6f},{17,1.0f},{19.5f,1.0f},{22,0.25f},{24,0.2f} };
-        const float h = fmodf(params.timeOfDay, 24.0f);
+        const float h = fmodf(gfx::GetTimeOfDay(), 24.0f);   // the global game time
         float density = 1.0f;
         for (int k = 0; k < 9; k++)
             if (h >= kPts[k][0] && h <= kPts[k + 1][0]) {
@@ -3902,7 +3899,6 @@ void City::RebuildAfterNodeMove(int ni) {
 
 void City::Draw() {
     if (!hasGeometry || tiles.empty()) return;
-    gfx::SetTimeOfDay(params.timeOfDay);   // the scene's light follows the city (read by the next lighting update)
 
     const bool shadowPass = gfx::IsInShadowPass();
     // The shadow map is being kept (nothing changed): skip submitting the casters.
@@ -5181,8 +5177,6 @@ bool City::WriteToStream(std::ostream& out) const {
     }
     if (!params.routedTraffic || params.rushHours)
         out << "TRAFFIC " << (params.routedTraffic ? 1 : 0) << ' ' << (params.rushHours ? 1 : 0) << '\n';
-    if (params.timeOfDay != 12.0f || params.dayLengthMinutes != 0.0f)
-        out << "DAY " << params.timeOfDay << ' ' << params.dayLengthMinutes << '\n';
     // Last on purpose: a reader that predates districts stops at the first tag it does not know,
     // so everything it understands has to come before this.
     if (!districts.empty()) {
@@ -5291,8 +5285,6 @@ bool City::ReadFromStream(std::istream& in) {
         params.carColors = CityParams{}.carColors;
         params.routedTraffic = true;
         params.rushHours = false;
-        params.timeOfDay = 12.0f;
-        params.dayLengthMinutes = 0.0f;
         // Optional trailing sections in any order: KINDS, COLL, PLACED.
         for (;;) {
             const std::streampos before = in.tellg();
@@ -5412,10 +5404,8 @@ bool City::ReadFromStream(std::istream& in) {
                 params.routedTraffic = routed != 0;
                 params.rushHours = rush != 0;
             } else if (tag == "DAY") {
-                float tod = 12.0f, len = 0.0f;
+                float tod = 12.0f, len = 0.0f;       // older files kept the time per city: it is a scene setting now
                 if (!(in >> tod >> len)) return false;
-                params.timeOfDay = Clamp(tod, 0.0f, 24.0f);
-                params.dayLengthMinutes = std::max(len, 0.0f);
             } else if (tag == "DISTRICTS") {
                 size_t dc = 0;
                 if (!(in >> dc)) return false;

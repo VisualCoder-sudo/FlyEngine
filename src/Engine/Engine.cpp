@@ -58,6 +58,7 @@ void Engine::SetTimeScale(float s) {
 
 void Engine::Update(float deltaTime) {
     console::Update();
+    gfx::TickLighting(deltaTime);
     if (!isPlayerBuild) ui::UpdateInput();
 
     // Decide whether entities tick this frame. A paused engine skips the entity
