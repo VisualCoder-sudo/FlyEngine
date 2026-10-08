@@ -14,7 +14,10 @@
 namespace {
     constexpr float CAPSULE_RADIUS = 0.4f;
     constexpr float CAPSULE_HEIGHT = 1.8f;
-    constexpr float CAMERA_HEIGHT = 1.6f;
+    constexpr float CAMERA_HEIGHT = 1.6f;   // eye height above the FEET
+    // The body position is the capsule's centre, so the eye sits this far above it (not CAMERA_HEIGHT:
+    // that put the eyes 2.5 m up, far above a 1.72 m pedestrian).
+    constexpr float CAMERA_OFFSET = CAMERA_HEIGHT - CAPSULE_HEIGHT * 0.5f;
     constexpr float GROUND_CHECK_DIST = 0.1f;
 
     // Report a ground-check raycast to the physics debug overlay (F2). The
@@ -49,7 +52,7 @@ CharacterController::CharacterController(Engine& engine, Camera3D* camera, phys:
     if (body) {
         Vector3 spawnPos = {0, 5, 0};  // Spawn 5 units up
         *body->GetPosPtr() = spawnPos;
-        camera->position = {spawnPos.x, spawnPos.y + CAMERA_HEIGHT, spawnPos.z};
+        camera->position = {spawnPos.x, spawnPos.y + CAMERA_OFFSET, spawnPos.z};
     }
     
     // Capture mouse for first-person control (sokol_app's mouse lock already
@@ -87,7 +90,7 @@ void CharacterController::EnsurePhysicsBody() {
         Vector3 spawnPos = {0, 3, 0};
         sim.SetBodyPosition(body, spawnPos);
         *body->GetPosPtr() = spawnPos;
-        camera->position = {spawnPos.x, spawnPos.y + CAMERA_HEIGHT, spawnPos.z};
+        camera->position = {spawnPos.x, spawnPos.y + CAMERA_OFFSET, spawnPos.z};
         
         // Sync gravity from physics simulation (in case it was changed)
         gravity = sim.GetGravity();
@@ -138,7 +141,7 @@ Vector3 CharacterController::GetVelocity() const {
 Vector3 CharacterController::GetPosition() const {
     if (!body) return camera->position;
     Vector3 pos = *body->GetPosPtr();
-    pos.y += CAMERA_HEIGHT;
+    pos.y += CAMERA_OFFSET;
     return pos;
 }
 
@@ -167,7 +170,7 @@ void CharacterController::Update(float dt) {
     // Sync camera position to body FIRST
     if (body) {
         Vector3 pos = *body->GetPosPtr();
-        camera->position = {pos.x, pos.y + CAMERA_HEIGHT, pos.z};
+        camera->position = {pos.x, pos.y + CAMERA_OFFSET, pos.z};
     }
     
     // THEN update camera target from new position

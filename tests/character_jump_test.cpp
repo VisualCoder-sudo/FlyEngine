@@ -40,6 +40,15 @@ int main() {
     const float expected = cc.jumpForce * cc.jumpForce / (2.0f * -cc.gravity);   // apex height of one jump
     std::printf("expected apex rise %.2f m\n", expected);
 
+    // Eye height: standing on the roof (top at y = 0) the camera should sit about 1.6 m above the feet,
+    // a little below a 1.72 m pedestrian's head. It used to be measured from the capsule's centre (2.5 m).
+    {
+        for (int i = 0; i < 300; i++) { sim.Update(dt); cc.Update(dt); }
+        const float eye = engine.GetCamera().position.y;
+        std::printf("standing eye height %.2f m above the ground (pedestrian is 1.72 m tall)\n", eye);
+        CHECK(eye > 1.4f && eye < 1.72f);
+    }
+
     for (float dropFrom : { 1.5f, 3.0f, 6.0f, 12.0f, 25.0f, 50.0f }) {
         sim.SetBodyPosition(cc.GetPlayerBody(), { 0.0f, 0.9f + dropFrom, 0.0f });
         *cc.GetPlayerBody()->GetPosPtr() = { 0.0f, 0.9f + dropFrom, 0.0f };
