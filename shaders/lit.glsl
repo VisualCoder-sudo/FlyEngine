@@ -202,6 +202,26 @@ void main() {
 }
 @end
 
+// Night light pools: warm light from the nearest street lamps and car headlights (positions are fed per frame
+// by the city: xyz = world position, w = radius), added on top of the lit surface. Included after a fragment
+// shader declares nightAmount, lightCount and nightLights.
+@block night_glow
+vec3 NightGlow(vec3 baseColor, vec3 pos, vec3 n) {
+    vec3 sum = vec3(0.0);
+    int count = int(lightCount);
+    for (int i = 0; i < 32; ++i) {
+        if (i >= count) break;
+        vec3 d = nightLights[i].xyz - pos;
+        float dist = length(d);
+        float att = clamp(1.0 - dist / nightLights[i].w, 0.0, 1.0);
+        att *= att;
+        float facing = max(dot(n, d / max(dist, 0.001)), 0.2);
+        sum += vec3(1.0, 0.80, 0.50) * att * facing;
+    }
+    return baseColor * sum * nightAmount * 2.4;
+}
+@end
+
 // Road fragment shader: the shared lit shading plus an exact per-fragment
 // world-space depth bias (metres toward the camera), so parallel road layers
 // never z-fight and roads win against the near-coplanar ground plane at
@@ -214,14 +234,20 @@ layout(binding=1) uniform fs_road_params {
     float shadowsEnabled;
     vec3 ambient;
     float waterSurfaceY;
+    float nightAmount;
+    float lightCount;
+    vec4 nightLights[32];
     mat4 lightVP;
     mat4 matProjection;
 };
 @include_block lit_fs_common
+@include_block night_glow
 in float fragLayer;
 void main() {
     float alpha;
     vec3 lit = ShadeLit(alpha);
+    if (nightAmount > 0.02 && lightCount > 0.5)
+        lit += NightGlow(texture(sampler2D(texture0, texture0_smp), fragTexCoord).rgb * fragColor.rgb, fragWorldPos, normalize(fragNormal));
     finalColor = vec4(lit, alpha);
     float roadDepth;
     if (matProjection[3][3] > 0.5) {                                   // orthographic
@@ -251,9 +277,12 @@ layout(binding=1) uniform fs_building_params {
     vec3 ambient;
     float waterSurfaceY;
     float nightAmount;      // 0 = day, 1 = night: scales the emissive window / lamp / car light glow
+    float lightCount;
+    vec4 nightLights[32];
     mat4 lightVP;
 };
 @include_block lit_fs_common
+@include_block night_glow
 in vec4 fragInst;
 in float fragBaseY;
 
@@ -267,6 +296,7 @@ void main() {
     float alpha;
     vec3 lit;
     vec3 emit = vec3(0.0);
+    vec3 glowBase = fragColor.rgb;
     if (fragInst.w < 0.5) {
         lit = ShadeLit(alpha);
     } else if (fragInst.w > 1.5) {
@@ -310,7 +340,10 @@ void main() {
             }
         }
         lit = ShadeLitWith(base, 1.0, alpha);
+        glowBase = base;
     }
+    if (nightAmount > 0.02 && lightCount > 0.5 && fragInst.w > 0.5)
+        emit += NightGlow(glowBase, fragWorldPos, normalize(fragNormal));
     finalColor = vec4(lit + emit, alpha);
 }
 @end

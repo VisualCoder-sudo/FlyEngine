@@ -80,7 +80,9 @@ void SetAmbientIntensity(float intensity);
 // light, darkens the sky and drives the emissive window/street light/car light glow of the city shaders.
 void SetTimeOfDay(float hours);
 float GetTimeOfDay();
-float GetNightAmount();          // 0 = full day, 1 = full night
+float GetNightAmount();
+// Up to 32 point lights for the night glow on roads, buildings and props: (x, y, z, radius) each.
+void SetNightLights(const Vector4* lights, int count);          // 0 = full day, 1 = full night
 Color SkyColor(Color dayColor);  // the clear colour at the current time of day
 float GetAmbientIntensity();
 

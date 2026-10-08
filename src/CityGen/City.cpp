@@ -3589,6 +3589,34 @@ void City::Draw() {
         const Matrix inv = MatrixInvert(rlGetMatrixModelview());
         trafficFocus = { inv.m12, inv.m13, inv.m14 };
         hasTrafficFocus = true;
+
+        // Night light pools: the nearest street lamps (up to 24) and car headlights (the rest) light the
+        // road, sidewalks and facades around them.
+        std::vector<Vector4> lights;
+        if (gfx::GetNightAmount() > 0.03f) {
+            struct Cand { float d; Vector4 l; };
+            std::vector<Cand> lamps;
+            for (const Tile* t : visBldg)
+                for (const Matrix& m : t->inst[kPropLamp]) {
+                    const Vector3 head = Vector3Transform(Vector3{ 0.0f, 5.35f, 0.95f }, m);
+                    const float d = Vector3Distance(head, trafficFocus);
+                    if (d < 120.0f) lamps.push_back({ d, Vector4{ head.x, head.y, head.z, 15.0f } });
+                }
+            const size_t nl = std::min<size_t>(lamps.size(), 24);
+            std::partial_sort(lamps.begin(), lamps.begin() + (long)nl, lamps.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
+            for (size_t i = 0; i < nl; i++) lights.push_back(lamps[i].l);
+            std::vector<Cand> cars;
+            for (const Agent& a : agents) {
+                if (!a.car || a.far || !a.placed) continue;
+                const float d = Vector3Distance(a.pos, trafficFocus);
+                if (d > 90.0f) continue;
+                cars.push_back({ d, Vector4{ a.pos.x + cosf(a.yaw) * 3.6f, a.pos.y + 0.8f, a.pos.z - sinf(a.yaw) * 3.6f, 9.0f } });
+            }
+            const size_t nc = std::min<size_t>(cars.size(), 32 - lights.size());
+            std::partial_sort(cars.begin(), cars.begin() + (long)nc, cars.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
+            for (size_t i = 0; i < nc; i++) lights.push_back(cars[i].l);
+        }
+        gfx::SetNightLights(lights.data(), (int)lights.size());
     }
     // Traffic-signal heads (animated by the signal clock, also in the editor).
     {

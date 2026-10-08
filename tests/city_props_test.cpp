@@ -48,6 +48,22 @@ int main() {
         TakeScreenshot(path);
     }
 
+    // Night: street lamps light the road and sidewalk around them (light pools); screenshot for a visual check.
+    {
+        c.GetParams().timeOfDay = 21.0f;
+        Vector3 pos; float yaw;
+        if (c.FindInstance(kPropLamp, c.CountInstances(kPropLamp) / 3, pos, yaw)) {
+            const Vector3 toRoad = { sinf(yaw), 0.0f, cosf(yaw) };
+            Camera3D& cam = engine.GetCamera();
+            cam.position = { pos.x + toRoad.x * 9.0f, pos.y + 2.2f, pos.z + toRoad.z * 9.0f };
+            cam.target = { pos.x - toRoad.x * 2.0f, pos.y + 0.5f, pos.z - toRoad.z * 2.0f };
+            cam.up = { 0.0f, 1.0f, 0.0f };
+            cam.fovy = 70.0f;
+            for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
+            TakeScreenshot("city_night_lamp.png");
+        }
+    }
+
     std::printf(g_fail ? "city_props_test: %d FAILED\n" : "city_props_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -141,6 +141,10 @@ int cityLightDirLoc = -1;
 int cityAmbientLoc = -1;
 int cityLightVPLoc = -1;
 int cityNightLoc = -1;
+int cityLightCountLoc = -1, cityLightsLoc = -1;
+int roadNightLoc = -1, roadLightCountLoc = -1, roadLightsLoc = -1;
+float nightLightData[32 * 4] = {};
+int nightLightCount = 0;
 int cityShadowMapLoc = -1;
 int cityShadowsEnabledLoc = -1;
 int cityWaterSurfaceYLoc = -1;
@@ -752,6 +756,9 @@ void Init() {
     roadShadowMapLoc = GetShaderLocation(roadShader, "shadowMap");
     roadShadowsEnabledLoc = GetShaderLocation(roadShader, "shadowsEnabled");
     roadWaterSurfaceYLoc = GetShaderLocation(roadShader, "waterSurfaceY");
+    roadNightLoc = GetShaderLocation(roadShader, "nightAmount");
+    roadLightCountLoc = GetShaderLocation(roadShader, "lightCount");
+    roadLightsLoc = GetShaderLocation(roadShader, "nightLights");
     if (roadShadowMapLoc != -1) SetShaderValue(roadShader, roadShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
 
     // Instanced lit shader (city buildings). Own uniforms mirror litShader's.
@@ -764,6 +771,8 @@ void Init() {
         cityShadowsEnabledLoc = GetShaderLocation(cityInstancedShader, "shadowsEnabled");
         cityWaterSurfaceYLoc = GetShaderLocation(cityInstancedShader, "waterSurfaceY");
         cityNightLoc = GetShaderLocation(cityInstancedShader, "nightAmount");
+        cityLightCountLoc = GetShaderLocation(cityInstancedShader, "lightCount");
+        cityLightsLoc = GetShaderLocation(cityInstancedShader, "nightLights");
         if (cityShadowMapLoc != -1) SetShaderValue(cityInstancedShader, cityShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
     }
 
@@ -1152,6 +1161,26 @@ void SetTimeOfDay(float hours) {
 }
 float GetTimeOfDay() { return timeOfDay; }
 float GetNightAmount() { return 1.0f - DayAmount(); }
+void SetNightLights(const Vector4* lights, int count) {
+    count = Clamp(count, 0, 32);
+    nightLightCount = count;
+    for (int i = 0; i < count; i++) {
+        nightLightData[i * 4] = lights[i].x; nightLightData[i * 4 + 1] = lights[i].y;
+        nightLightData[i * 4 + 2] = lights[i].z; nightLightData[i * 4 + 3] = lights[i].w;
+    }
+    const float night = 1.0f - DayAmount();
+    const float c = (float)count;
+    if (roadShader.id != 0 && roadLightsLoc != -1) {
+        SetShaderValue(roadShader, roadNightLoc, &night, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(roadShader, roadLightCountLoc, &c, SHADER_UNIFORM_FLOAT);
+        if (count > 0) SetShaderValueV(roadShader, roadLightsLoc, nightLightData, SHADER_UNIFORM_VEC4, count);
+    }
+    if (cityInstancedReady && cityLightsLoc != -1) {
+        SetShaderValue(cityInstancedShader, cityLightCountLoc, &c, SHADER_UNIFORM_FLOAT);
+        if (count > 0) SetShaderValueV(cityInstancedShader, cityLightsLoc, nightLightData, SHADER_UNIFORM_VEC4, count);
+    }
+}
+
 Color SkyColor(Color dayColor) {
     const float d = DayAmount();
     const Color night = { 10, 14, 28, 255 };
