@@ -64,6 +64,11 @@ int shadowFramesSinceRender = 0;
 int shadowInputHold = 0;
 constexpr int kShadowMaxAge = 90;   // force a refresh at least this often (frames)
 constexpr int kShadowInputHold = 3; // keep re-rendering this many frames after input
+// The depth map is only reused after the view and the scene have been still this long. Reuse refreshes
+// every kShadowMaxAge frames, which looks like shadows updating once a second (cars, pedestrians), so
+// it must not start the moment the camera stops.
+constexpr double kShadowStillSeconds = 30.0;
+double shadowStillSince = 0.0;
 
 // Any input that could edit the scene (or move the camera) this frame.
 bool SceneInputActivity() {
@@ -920,8 +925,11 @@ void BeginShadowPass() {
     if (SceneInputActivity()) shadowInputHold = kShadowInputHold;
     const bool frustumSame = shadowHaveRendered && shadowLastRes == shadowMapResolution &&
                              shadowLastHalf == half && Vector3Equals(shadowLastCenter, focus);
+    const double now = GetTime();
+    if (shadowInputHold > 0 || !frustumSame || shadowsDirty.load()) shadowStillSince = now;
     shadowPassReused = shadowReuseEnabled && frustumSame && !shadowsDirty.load() &&
                        shadowInputHold == 0 && shadowFramesSinceRender < kShadowMaxAge &&
+                       now - shadowStillSince >= kShadowStillSeconds &&
                        !ui::IsPlayActive();
     if (shadowInputHold > 0) shadowInputHold--;
 
