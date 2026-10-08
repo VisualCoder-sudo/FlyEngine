@@ -35,6 +35,11 @@ void flyapp_set_window_size(int width, int height);
 void flyapp_set_min_size(int width, int height);
 // X11 WM_CLASS (res_name/res_class); no-op elsewhere.
 void flyapp_set_window_class(const char* name);
+// While the mouse is locked (first-person look) the hidden pointer is only confined, so a hard push
+// leaves it pinned to the window edge, where a screen edge or corner can trigger desktop actions
+// that steal focus and free the pointer. Call once per frame to keep it near the window centre.
+// X11 only; no-op elsewhere. Raw motion (what drives the camera) is unaffected by the warp.
+void flyapp_recenter_locked_pointer(void);
 int flyapp_monitor_width(void);
 int flyapp_monitor_height(void);
 // Warps the mouse cursor to window-relative coordinates.

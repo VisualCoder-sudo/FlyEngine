@@ -65,6 +65,7 @@ void PollEvents() {
     CoreState& c = Core();
     BeginInputFrame();
     if (!flyapp_poll()) c.shouldClose = true;
+    if (c.cursorLocked) flyapp_recenter_locked_pointer();
     if (c.exitKey != KEY_NULL && c.exitKey > 0 && c.exitKey < kMaxKeys &&
         c.keyDown[c.exitKey] && !c.keyPrev[c.exitKey]) {
         c.shouldClose = true;

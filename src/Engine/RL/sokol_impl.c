@@ -222,6 +222,24 @@ void flyapp_set_mouse_position(int x, int y) {
     _sapp.mouse.y = (float)y;
 }
 
+void flyapp_recenter_locked_pointer(void) {
+    if (!_flyapp_open || !_sapp.mouse.locked) {
+        return;
+    }
+    Window root_ret, child_ret;
+    int root_x, root_y, win_x, win_y;
+    unsigned int mask;
+    if (!XQueryPointer(_sapp.x11.display, _sapp.x11.window, &root_ret, &child_ret,
+                       &root_x, &root_y, &win_x, &win_y, &mask)) {
+        return;
+    }
+    const int w = _sapp.window_width, h = _sapp.window_height;
+    if (win_x < w / 4 || win_x > w - w / 4 || win_y < h / 4 || win_y > h - h / 4) {
+        XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, w / 2, h / 2);
+        XFlush(_sapp.x11.display);
+    }
+}
+
 void* flyapp_native_window(void) {
     return _flyapp_open ? (void*)(uintptr_t)_sapp.x11.window : 0;
 }
@@ -393,6 +411,8 @@ void flyapp_set_mouse_position(int x, int y) {
     _sapp.mouse.x = (float)x;
     _sapp.mouse.y = (float)y;
 }
+
+void flyapp_recenter_locked_pointer(void) {}
 
 void* flyapp_native_window(void) {
     return _flyapp_open ? (void*)_sapp.win32.hwnd : 0;
