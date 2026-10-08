@@ -449,7 +449,8 @@ public:
     // Number of placed instances of an instanced shape (props, buildings) and the pose of the n-th one
     // (position and yaw about +Y); for tests and screenshots.
     int CountInstances(int shape) const;
-    bool FindBus(int index, Vector3& pos, float& yaw) const;   // pose of the n-th bus (tests / screenshots)
+    bool FindBus(int index, Vector3& pos, float& yaw) const;
+    bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
     std::string DebugBuses() const;   // one line per bus: road, position, speed, target stop, dwell
     bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 
@@ -572,6 +573,7 @@ public:
 private:
     TrafficStats trafficStats;
     void LanePose(int edge, bool fwd, float s, float lane, bool car, Vector3& pos, Vector2& heading) const;
+    float CarPitch(const Agent& a) const;   // tilt of a car or bus along the road (rad, nose up positive)
 public:
     // Traffic signals: sector (0..7) of the road `edge` as seen from `node`, and the light shown to
     // traffic arriving along it (0 red, 1 amber, 2 green).

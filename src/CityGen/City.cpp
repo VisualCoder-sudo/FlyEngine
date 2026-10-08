@@ -3998,16 +3998,17 @@ void City::Draw() {
             const Color shown = (a.car && a.bus < 0) ? PickCarColor(a) : a.color;
             const float cr = -std::max(shown.r / 255.0f, 0.05f), cg = -std::max(shown.g / 255.0f, 0.05f), cb = -std::max(shown.b / 255.0f, 0.05f);
             Matrix m;
+            // Cars and buses tilt with the road (pitch about the car's own z axis, then turn to the heading).
+            const Matrix carBase = MatrixMultiply(MatrixMultiply(MatrixRotateZ(CarPitch(a)), MatrixRotateY(a.yaw)), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z));
             if (a.car && a.far) m = MatrixMultiply(MatrixScale(4.2f, 1.4f, 1.8f), MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y + 0.7f, a.pos.z)));
-            else m = MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z));
+            else m = carBase;
             m.m3 = cr; m.m7 = cg; m.m11 = cb;
             if (a.bus >= 0) {
                 busM.push_back(m);
                 Matrix gm = m; gm.m3 = -1.0f; gm.m7 = -1.0f; gm.m11 = -1.0f;
                 busGlassM.push_back(gm);
                 for (float lx : { -3.5f, 3.4f }) for (float lz : { -1.12f, 1.12f }) {
-                    Matrix wm = MatrixMultiply(MatrixMultiply(MatrixMultiply(MatrixScale(1.4f, 1.4f, 1.4f), MatrixRotateZ(-a.wheelRot)), MatrixTranslate(lx, 0.45f, lz)),
-                                MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z)));
+                    Matrix wm = MatrixMultiply(MatrixMultiply(MatrixMultiply(MatrixScale(1.4f, 1.4f, 1.4f), MatrixRotateZ(-a.wheelRot)), MatrixTranslate(lx, 0.45f, lz)), carBase);
                     wm.m3 = -1.0f; wm.m7 = -1.0f; wm.m11 = -1.0f;
                     wheelM.push_back(wm);
                 }
@@ -4018,8 +4019,7 @@ void City::Draw() {
                 Matrix gm = m; gm.m3 = -1.0f; gm.m7 = -1.0f; gm.m11 = -1.0f;
                 glassM.push_back(gm);
                 for (float lx : { -1.3f, 1.3f }) for (float lz : { -0.92f, 0.92f }) {
-                    Matrix wm = MatrixMultiply(MatrixMultiply(MatrixRotateZ(-a.wheelRot), MatrixTranslate(lx, 0.32f, lz)),
-                                MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z)));
+                    Matrix wm = MatrixMultiply(MatrixMultiply(MatrixRotateZ(-a.wheelRot), MatrixTranslate(lx, 0.32f, lz)), carBase);
                     wm.m3 = -1.0f; wm.m7 = -1.0f; wm.m11 = -1.0f;
                     wheelM.push_back(wm);
                 }
@@ -4227,6 +4227,31 @@ void City::DrawOverlay3D() {
             DrawLine3D({ a.x, 0.4f, a.y }, { b.x, 0.4f, b.y }, Color{ 255, 220, 80, 255 });
         }
     }
+}
+
+// Tilt of a vehicle along the road: the slope between points a little ahead of and behind its centre, so the
+// body follows the surface and the wheels meet it (inside a junction: the slope of its planned path).
+float City::CarPitch(const Agent& a) const {
+    if (!a.car || a.far || !a.placed) return 0.0f;
+    if (a.inJ) return a.jlen > 0.5f ? atan2f(a.jy2 - a.jy0, a.jlen) : 0.0f;
+    if (a.edge < 0 || (size_t)a.edge >= edges.size()) return 0.0f;
+    const RoadEdge& e = edges[(size_t)a.edge];
+    const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+    const float half = 0.45f * a.length;
+    Vector3 p0, p1; Vector2 h0, h1;
+    LanePose(a.edge, a.fwd, Clamp(a.s - half, 0.0f, len), a.laneF, true, p0, h0);
+    LanePose(a.edge, a.fwd, Clamp(a.s + half, 0.0f, len), a.laneF, true, p1, h1);
+    const float d = sqrtf((p1.x - p0.x) * (p1.x - p0.x) + (p1.z - p0.z) * (p1.z - p0.z));
+    return d > 0.2f ? atan2f(p1.y - p0.y, d) : 0.0f;
+}
+
+bool City::FindSlopedCar(Vector3& pos, float& yaw, float& pitch) const {
+    for (const Agent& a : agents) {
+        if (!a.car || a.bus >= 0 || a.far || !a.placed) continue;
+        const float p = CarPitch(a);
+        if (fabsf(p) > 0.05f) { pos = a.pos; yaw = a.yaw; pitch = p; return true; }
+    }
+    return false;
 }
 
 bool City::FindBus(int index, Vector3& pos, float& yaw) const {

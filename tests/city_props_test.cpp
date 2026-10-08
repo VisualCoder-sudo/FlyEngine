@@ -65,6 +65,35 @@ int main() {
         }
     }
 
+    // Slope: cars tilt with the road. A steep road, traffic, and a close-up of a car on the hill.
+    {
+        c.ClearTransit();
+        c.GetParams().cars = 80;
+        c.GetParams().trafficDetailDistance = 0.0f;
+        const int edge = (int)c.GetEdges().size() / 2;
+        c.SetRoadGrade(edge, c.GetEdges()[(size_t)edge].a, 12.0f);
+        SetTrafficRunning(true);
+        Vector3 pos; float yaw = 0.0f, pitch = 0.0f;
+        bool found = false;
+        for (int i = 0; i < 4000 && !found; i++) {
+            c.TrafficStepForTest(0.05f);
+            if (i % 20 == 0) found = c.FindSlopedCar(pos, yaw, pitch);
+        }
+        std::printf("sloped car: %s (pitch %.1f deg)\n", found ? "found" : "none", pitch * 57.2958f);
+        CHECK(found);
+        if (found) {
+            const Vector3 fwd = { cosf(yaw), 0.0f, -sinf(yaw) };
+            Camera3D& cam = engine.GetCamera();
+            cam.position = { pos.x + fwd.z * 7.0f, pos.y + 1.3f, pos.z - fwd.x * 7.0f };   // from the side of the road
+            cam.target = { pos.x, pos.y + 0.6f, pos.z };
+            cam.up = { 0.0f, 1.0f, 0.0f };
+            cam.fovy = 40.0f;
+            for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
+            TakeScreenshot("city_car_slope.png");
+        }
+        c.GetParams().cars = 0;
+    }
+
     // Buses: auto-generated transit, run the sim for a while, then a close-up of a moving bus and of a stop.
     {
         gfx::SetTimeOfDay(12.0f);
