@@ -110,3 +110,8 @@ target_link_libraries(city_props_test PRIVATE FlyEngineCore FlyRL)
 # registered with ctest: build/tests/city_transit_test
 add_executable(city_transit_test city_transit_test.cpp)
 target_link_libraries(city_transit_test PRIVATE FlyEngineCore FlyRL)
+
+# Sloped roads on regular and irregular layouts (top-down / oblique screenshots). Opens a window, so built but
+# not registered with ctest: build/tests/city_slope_test
+add_executable(city_slope_test city_slope_test.cpp)
+target_link_libraries(city_slope_test PRIVATE FlyEngineCore FlyRL)
