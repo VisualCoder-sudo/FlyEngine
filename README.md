@@ -5,8 +5,9 @@ A 3D game engine and editor built on [sokol](https://github.com/floooh/sokol)
 [Box3D](https://github.com/erincatto/box3d).
 
 Terrain with splatmap painting and LOD geomorphing, water bodies, rigid-body
-physics, glTF/OBJ/FBX/PLY model import, a PBR terrain shader, an ImGui editor,
-and a C# scripting host (Windows).
+physics, glTF/OBJ/FBX/PLY model import, a PBR terrain shader, a procedural
+[city maker](#city-maker) with traffic, an ImGui editor, and a C# scripting host
+(Windows).
 
 Builds from **one `CMakeLists.txt` on Linux and Windows**.
 
@@ -235,6 +236,41 @@ The old `shaders/*.vert` / `*.frag` files are no longer used.
 
 ---
 
+## City maker
+
+`City` menu -> *New regular city* / *New organic city*, then open the *City Editor* panel.
+Cities are saved with the scene (`city.city`, a text format with optional trailing
+tags, so older files keep loading). Code lives in `src/CityGen/` and `include/CityGen/`.
+
+- **Layout:** grid or organic road graph; blocks become buildings, parks or concrete
+  (*Paint block*). Roads are drawn, bent, deleted and snapped with *Draw road*.
+- **Road tools:** per-node height, slopes, bridges, per-road width/lanes/presets,
+  one-way roads, speed limits and turn lanes. *Elevate road* drags nodes up and down.
+- **Junctions:** plain, crosswalks, traffic lights (editable phases, yellow/all-red,
+  offsets), stop signs and roundabouts. Roundabouts have a configurable island
+  radius, roadway width (0 = auto), splitter islands and a grass or concrete island.
+  Buildings keep clear of them.
+- **Buildings:** four styles (Modern, Brick, Industrial, Suburban), roof/shape
+  variety (flat, gable, shed, tower), short buildings, footprint variety, floor
+  counts with facade windows aligned to floors. *Insert building* places buildings
+  by hand, with an optional *NoCollision* mode.
+- **Street furniture:** street lights and trees.
+- **Traffic (Play mode):** cars follow each other (IDM) with randomised speed and
+  braking, turn gradually through junctions, obey signals, stop signs and
+  right-of-way, and show indicators. Pedestrians use sidewalks and crosswalks.
+  Drive on the left is an option. Cars beyond *Traffic detail distance* switch to
+  a cheap constant-speed model drawn as boxes (0 = always detailed).
+- **Cars:** round rolling wheels and a slanted windshield. *Car colours* sets spawn
+  chances (default Black 55%, Grey 25%, White 15%, Other 5%); add your own colours,
+  or tick *All* for equal chances.
+- **Physics:** in Play (and in the Player) the city gets ground and building
+  collisions (*Building collision* toggle).
+
+`build/tests/city_geometry_test` (with `-DFLYENGINE_BUILD_TESTS=ON`) checks the
+block/outline geometry headlessly.
+
+---
+
 ## Tests
 
 ```sh
@@ -277,6 +313,7 @@ CMakeLists.txt            the single build definition for both platforms
 include/Engine/Platform/  the cross-platform shim (see below)
 src/Engine/Platform/      its implementation
 shaders/                  sokol-shdc GLSL, compiled into the binary at build time
+src/CityGen/              the procedural city maker (include/CityGen/)
 src/Engine/RL/            raylib-compatible API implemented on sokol (see below)
 include/rl/               its public headers (raylib.h, raymath.h, rlgl.h subset)
 sokol/                    vendored sokol headers (sokol_app.h carries one marked patch)
