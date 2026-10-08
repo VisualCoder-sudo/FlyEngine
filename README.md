@@ -263,6 +263,19 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
 - **Cars:** round rolling wheels and a slanted windshield. *Car colours* sets spawn
   chances (default Black 55%, Grey 25%, White 15%, Other 5%); add your own colours,
   or tick *All* for equal chances.
+- **Districts:** the *Districts* tool places downtowns, suburbs and industrial districts
+  (several at once, draggable); building height fades smoothly from a district's centre
+  and each district can set the building style. *Auto* puts a downtown in the middle.
+  Blocks can be painted into a district.
+- **Day and night:** *Time of day* in the panel (optionally a running cycle) dims the sun and
+  sky; windows, lamps, car and bus lights glow at night and lamps and headlights light the
+  road, sidewalk and facades around them.
+- **Routed traffic:** cars drive to destinations along the fastest route (downtown attracts
+  more trips); *Rush hours* scales the car count with the hour.
+- **Public transit:** bus stops and lines, generated automatically (*Auto-generate transit*) or
+  by hand (*Transit* tool: click a road to place a stop on that kerb, click stops to build a
+  line). Buses follow their line, stop and wait at each stop, and share the road with cars.
+- **Street furniture:** lamps, trees, benches, hydrants, bollards and street signs.
 - **Physics:** in Play (and in the Player) the city gets ground and building
   collisions (*Building collision* toggle).
 

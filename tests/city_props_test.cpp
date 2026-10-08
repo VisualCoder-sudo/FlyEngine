@@ -27,7 +27,7 @@ int main() {
 
     struct P { int shape; const char* name; };
     const P props[] = { { kPropBench, "bench" }, { kPropHydrant, "hydrant" }, { kPropBollard, "bollard" },
-                        { kPropBusStop, "busstop" }, { kPropSign, "sign" }, { kPropLamp, "lamp" } };
+                        { kPropSign, "sign" }, { kPropLamp, "lamp" } };
     for (const P& p : props) {
         const int n = c.CountInstances(p.shape);
         std::printf("%-8s %d placed\n", p.name, n);
@@ -61,6 +61,29 @@ int main() {
             cam.fovy = 70.0f;
             for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
             TakeScreenshot("city_night_lamp.png");
+        }
+    }
+
+    // Buses: auto-generated transit, run the sim for a while, then a close-up of a moving bus and of a stop.
+    {
+        c.GetParams().timeOfDay = 12.0f;
+        c.GetParams().cars = 0;
+        c.AutoTransit(3, 6);
+        CHECK(c.CountInstances(kPropBusStop) > 0);     // stops are data now: generated transit places the shelters
+        SetTrafficRunning(true);                      // keep the agents alive through the engine updates
+        for (int i = 0; i < 1200; i++) c.TrafficStepForTest(0.05f);
+        Vector3 pos; float yaw;
+        CHECK(c.FindBus(1, pos, yaw));
+        if (c.FindBus(1, pos, yaw)) {
+            const Vector3 fwd = { cosf(yaw), 0.0f, -sinf(yaw) };            // the bus drives along local +x
+            Camera3D& cam = engine.GetCamera();
+            std::printf("bus 1 at %.1f %.1f %.1f yaw %.2f\n", pos.x, pos.y, pos.z, yaw);
+            cam.position = { pos.x + fwd.x * 12.0f + fwd.z * 4.0f, pos.y + 7.0f, pos.z + fwd.z * 12.0f - fwd.x * 4.0f };
+            cam.target = { pos.x, pos.y + 1.2f, pos.z };
+            cam.up = { 0.0f, 1.0f, 0.0f };
+            cam.fovy = 60.0f;
+            for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
+            TakeScreenshot("city_bus.png");
         }
     }
 

@@ -138,6 +138,39 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         return false;
     }
 
+    // --- Transit tool ---
+    if (s.tool == CityTool::Transit) {
+        const bool over = ui::IsMouseOverUI();
+        Ray tr = GetMouseRay(GetMousePosition(), camera);
+        const Vector2 hit = RayGroundPoint(tr);
+        if (s.transitStop >= (int)city->GetBusStops().size()) s.transitStop = -1;
+        if (s.transitLine >= (int)city->GetBusLines().size()) s.transitLine = -1;
+        if (lPressed && !over) {
+            const int pick = city->PickBusStop(tr);
+            const bool toLine = s.transitAddToLine && s.transitLine >= 0;
+            if (pick >= 0) {
+                s.transitStop = pick;
+                if (toLine) { NotifyCityEdit(); city->AddStopToLine(s.transitLine, pick); }
+            } else if (IsValidPoint(hit)) {
+                Vector2 pos, heading;
+                if (city->SnapBusStop(hit, pos, heading)) {
+                    NotifyCityEdit();
+                    const int idx = city->AddBusStop(pos, heading);
+                    s.transitStop = idx;
+                    if (idx >= 0 && toLine) city->AddStopToLine(s.transitLine, idx);
+                }
+            }
+            return true;
+        }
+        if (IsKeyPressed(KEY_DELETE) && s.transitStop >= 0 && !ui::IsEditingText()) {
+            NotifyCityEdit();
+            city->RemoveBusStop(s.transitStop);
+            s.transitStop = -1;
+            return true;
+        }
+        return lReleased;
+    }
+
     // --- District tool ---
     if (s.tool == CityTool::Districts) {
         const bool over = ui::IsMouseOverUI();
@@ -560,6 +593,7 @@ void DrawCityEditorPanel() {
         ImGui::RadioButton("Insert building", &tool, (int)CityTool::InsertBuilding); ImGui::SameLine();
         ImGui::RadioButton("Elevate road", &tool, (int)CityTool::ElevateRoad); ImGui::SameLine();
         ImGui::RadioButton("Districts", &tool, (int)CityTool::Districts);
+        ImGui::RadioButton("Transit", &tool, (int)CityTool::Transit);
         if (tool != (int)s.tool) {
             s.tool = (CityTool)tool;
             s.painting = false; s.draggingNode = false; s.elevDragging = false;
@@ -592,6 +626,72 @@ void DrawCityEditorPanel() {
         }
         if (s.tool == CityTool::ElevateRoad) {
             ImGui::TextDisabled("Drag a node up/down to set its height (Shift = fine, Ctrl = snap to 0.5 m).\nClick a road to set grade, smooth it or turn it into a bridge.");
+        }
+        if (s.tool == CityTool::Transit) {
+            const auto& stops = city->GetBusStops();
+            const auto& lines = city->GetBusLines();
+            ImGui::TextDisabled("Auto-generate lines between hubs, or build them by hand:\nclick a road to place a stop on that kerb, then click stops in the order a line visits them.");
+            ImGui::DragInt("Lines", &s.transitAutoLines, 0.2f, 1, 12);
+            ImGui::DragInt("Stops per line", &s.transitAutoStops, 0.2f, 2, 24);
+            if (ImGui::Button("Auto-generate transit")) { NotifyCityEdit(); city->AutoTransit(s.transitAutoLines, s.transitAutoStops); s.transitLine = lines.empty() ? -1 : 0; s.transitStop = -1; }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear all")) { NotifyCityEdit(); city->ClearTransit(); s.transitLine = s.transitStop = -1; }
+            ImGui::Text("%zu stops, %zu lines", stops.size(), lines.size());
+            {
+                const auto& ts = city->GetTrafficStats();
+                if (ts.buses > 0) ImGui::TextDisabled("%d buses running, %d stop visits (Play mode)", ts.buses, ts.busStopsServed);
+            }
+            ImGui::SeparatorText("Lines");
+            int delLine = -1;
+            for (int i = 0; i < (int)lines.size(); i++) {
+                ImGui::PushID(1000 + i);
+                const Color lc = lines[(size_t)i].color;
+                ImGui::ColorButton("##c", ImVec4(lc.r / 255.0f, lc.g / 255.0f, lc.b / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, ImVec2(14, 14));
+                ImGui::SameLine();
+                char lbl[96];
+                snprintf(lbl, sizeof lbl, "%s (%zu stops, %d buses)##l", lines[(size_t)i].name.c_str(), lines[(size_t)i].stops.size(), lines[(size_t)i].buses);
+                if (ImGui::Selectable(lbl, s.transitLine == i)) s.transitLine = i;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("x")) delLine = i;
+                ImGui::PopID();
+            }
+            if (delLine >= 0) { NotifyCityEdit(); city->RemoveBusLine(delLine); s.transitLine = -1; }
+            if (ImGui::Button("New line")) {
+                static const Color kPal[8] = { { 40, 110, 200, 255 }, { 210, 70, 60, 255 }, { 50, 160, 90, 255 }, { 230, 170, 40, 255 },
+                                               { 150, 80, 170, 255 }, { 40, 170, 180, 255 }, { 220, 110, 50, 255 }, { 120, 130, 140, 255 } };
+                BusLine nl;
+                nl.name = "Line " + std::to_string(lines.size() + 1);
+                nl.color = kPal[lines.size() % 8];
+                NotifyCityEdit();
+                s.transitLine = city->AddBusLine(nl);
+            }
+            if (s.transitLine >= 0 && (size_t)s.transitLine < lines.size()) {
+                BusLine l = lines[(size_t)s.transitLine];
+                bool ch = false;
+                char nm[64]; snprintf(nm, sizeof nm, "%s", l.name.c_str());
+                if (ImGui::InputText("Line name", nm, sizeof nm)) { l.name = nm; ch = true; }
+                float col[3] = { l.color.r / 255.0f, l.color.g / 255.0f, l.color.b / 255.0f };
+                if (ImGui::ColorEdit3("Colour", col, ImGuiColorEditFlags_NoInputs)) { l.color = Color{ (unsigned char)(col[0] * 255.0f), (unsigned char)(col[1] * 255.0f), (unsigned char)(col[2] * 255.0f), 255 }; ch = true; }
+                ch |= ImGui::DragInt("Buses", &l.buses, 0.1f, 0, 20);
+                ImGui::Checkbox("Clicking stops adds them to this line", &s.transitAddToLine);
+                int rem = -1;
+                for (int k = 0; k < (int)l.stops.size(); k++) {
+                    ImGui::PushID(2000 + k);
+                    const int si = l.stops[(size_t)k];
+                    ImGui::Text("%d. %s", k + 1, (size_t)si < stops.size() ? stops[(size_t)si].name.c_str() : "?");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) rem = k;
+                    ImGui::PopID();
+                }
+                if (rem >= 0) { NotifyCityEdit(); city->RemoveStopFromLine(s.transitLine, rem); }
+                else if (ch) { NotifyCityEdit(); city->UpdateBusLine(s.transitLine, l); }
+                if (l.stops.size() < 2) ImGui::TextDisabled("A line needs at least two stops before buses run.");
+            }
+            if (s.transitStop >= 0 && (size_t)s.transitStop < stops.size()) {
+                ImGui::SeparatorText("Selected stop");
+                ImGui::Text("%s%s", stops[(size_t)s.transitStop].name.c_str(), stops[(size_t)s.transitStop].edge < 0 ? "  (not on a road)" : "");
+                if (ImGui::Button("Remove stop (Del)")) { NotifyCityEdit(); city->RemoveBusStop(s.transitStop); s.transitStop = -1; }
+            }
         }
         if (s.tool == CityTool::Districts) {
             static const char* kKinds[] = { "Downtown", "Suburb", "Industrial" };

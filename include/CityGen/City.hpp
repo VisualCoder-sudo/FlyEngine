@@ -26,7 +26,7 @@ extern const Color kBuildingTints[kBuildingColorBuckets];
 
 // Instanced building silhouette shapes. Wedges fill angled corners where two
 // streets meet; slants are sheared slabs that sit along edges/interiors.
-constexpr int kBuildingShapes = 18;   // instanced shape ids (props and agents share the table; 11/12 are drawn outside the tiles)
+constexpr int kBuildingShapes = 20;   // instanced shape ids (props and agents share the table; 11/12 are drawn outside the tiles)
 constexpr float kFloorHeight = 3.4f;   // metres per storey: building heights are whole storeys, the facade shader uses the same value
 enum : int {
     kBuildingBox = 0,
@@ -49,6 +49,8 @@ enum : int {
     kPropBollard = 15,
     kPropBusStop = 16,    // shelter ~3 m wide along the road; the advert panel glows at night
     kPropSign = 17,       // street name sign on a pole
+    kPropBus = 18,        // 11 m bus body (tinted by the line colour), forward is local +x like the car
+    kPropBusGlass = 19,   // bus windows and lights (untinted)
 };
 inline bool IsPropShape(int s) { return s >= 5 && s <= 9; }
 
@@ -230,6 +232,25 @@ struct District {
     std::string name;
 };
 
+// Public transit. A stop sits beside a road and serves one direction of travel; a line is an ordered, cycling
+// list of stops that its buses visit (a two-stop line shuttles back and forth). Stops are stored by where they
+// were placed and re-attached to the road graph at every rebuild, so editing roads never leaves them dangling.
+struct BusStop {
+    Vector2 pos{};            // centre line of the road where it was placed (world x, z)
+    Vector2 heading{ 1.0f, 0.0f };   // direction of travel it serves
+    std::string name;
+    // Resolved against the road graph (RebuildAll): edge < 0 = not on a road any more (dormant).
+    int edge = -1;
+    float s = 0.0f;           // metres from the edge's node a
+    bool fwd = true;          // serves travel a -> b
+};
+struct BusLine {
+    std::string name;
+    Color color{ 40, 110, 200, 255 };
+    std::vector<int> stops;   // indices into City::GetBusStops(), visited in order, cycling
+    int buses = 2;
+};
+
 // Painted land use for a block. Auto = the procedural area-based rule.
 enum class BlockKind : int { Auto = 0, Park = 1, Buildings = 2, Concrete = 3 };
 
@@ -383,6 +404,27 @@ public:
     float DistrictMarkerHeight(const District& d) const;
     int PickDistrict(const Ray& ray) const;
 
+    // Public transit (see BusStop / BusLine). Everything can be generated automatically (AutoTransit) or built by
+    // hand: place stops on roads, then add them to lines in the order the buses should visit them.
+    const std::vector<BusStop>& GetBusStops() const { return busStops; }
+    const std::vector<BusLine>& GetBusLines() const { return busLines; }
+    // Snaps a cursor point to the road: the stop position and the direction it would serve (the kerb the
+    // cursor is on). False when no road is close enough.
+    bool SnapBusStop(const Vector2& cursor, Vector2& pos, Vector2& heading) const;
+    int  AddBusStop(const Vector2& pos, const Vector2& heading);   // returns its index, -1 if not on a road
+    void RemoveBusStop(int index);                                  // also removes it from every line
+    int  AddBusLine(const BusLine& line);
+    void UpdateBusLine(int index, const BusLine& line);
+    void RemoveBusLine(int index);
+    void AddStopToLine(int line, int stop);
+    void RemoveStopFromLine(int line, int position);
+    void ClearTransit();
+    // Replaces all stops and lines with generated ones: each line links two far-apart hubs (downtown first) and
+    // stops are spread along the route there and back.
+    void AutoTransit(int lineCount = 3, int stopsPerLine = 6);
+    int  PickBusStop(const Ray& ray) const;                         // marker pillar under the cursor, or -1
+    float BusStopMarkerHeight() const { return 9.0f; }
+
     // Building overrides. `slot` is the building's index within its block's
     // `buildings` vector, which LayoutBlock fills deterministically, so the
     // same (blockId, slot) names the same physical building across rebuilds
@@ -409,6 +451,8 @@ public:
     // Number of placed instances of an instanced shape (props, buildings) and the pose of the n-th one
     // (position and yaw about +Y); for tests and screenshots.
     int CountInstances(int shape) const;
+    bool FindBus(int index, Vector3& pos, float& yaw) const;   // pose of the n-th bus (tests / screenshots)
+    std::string DebugBuses() const;   // one line per bus: road, position, speed, target stop, dwell
     bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 
     // Geometry helpers used by the editor.
@@ -474,6 +518,11 @@ private:
         float yaw = 0.0f;
         bool placed = false;    // pos/yaw initialised
         int dest = -1;          // destination node of the current trip (routed traffic), -1 = none
+        int bus = -1;           // >= 0: a bus of that line (index into GetBusLines())
+        int busTarget = 0;      // index into the line's stops: the stop it is heading for
+        int busSkip = -1;       // edge*2+dir of a stop it just left (ignored until it is on another road)
+        float dwell = 0.0f;     // seconds waited at the current stop
+        float length = 4.2f;    // bumper-to-bumper length (m): leaders and followers keep their gap from it
         float wheelRot = 0.0f;  // wheel roll angle (rad)
         float colorRoll = 0.0f; // 0..1 draw deciding the colour from the table (stable while the table changes)
         float colorRoll2 = 0.0f;// picks the vivid colour of an "Other" entry
@@ -495,20 +544,23 @@ private:
     };
     std::vector<Agent> agents;
 public:
-    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; trafficStats = TrafficStats{}; }
+    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; busStopsServedCount = 0; busSig = 0; trafficStats = TrafficStats{}; }
     // Runs one traffic step without Play mode (tests).
     void TrafficStepForTest(float dt) { StepTraffic(dt); }
     const std::vector<int>& RouteDestinations() { PickDestinationPool(); return routes.pool; }
     // Travel time (s) from every node to `dest` along allowed one-way/car roads (infinity = unreachable).
-    const std::vector<float>& RouteField(int dest);
+    // avoidEdge >= 0: that road is not used to get there (buses must reach a stop road's start from elsewhere).
+    const std::vector<float>& RouteField(int dest, int avoidEdge = -1);
 private:
     float trafficClock = 0.0f;
     int tripsCompleted = 0;
+    int busStopsServedCount = 0;
+    uint64_t busSig = 0;   // signature of lines + stops + roads: buses are respawned when it changes
     uint64_t graphVersion = 0;   // bumped on every rebuild: invalidates the cached routes
     struct RouteCache {
         uint64_t version = ~0ull;
         std::vector<int> pool;                              // popular destination nodes (downtown weighs more)
-        std::unordered_map<int, std::vector<float>> dist;   // dest node -> travel time field
+        std::unordered_map<int64_t, std::vector<float>> dist;   // dest node -> travel time field
     } routes;
     void PickDestinationPool();
     int PickDestination(uint32_t& rng);
@@ -517,7 +569,7 @@ private:
     unsigned trafficFrame = 0;
     float simTime = 0.0f;       // seconds of Play-mode traffic simulated
 public:
-    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0; };
+    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0, buses = 0, busStopsServed = 0; };
     const TrafficStats& GetTrafficStats() const { return trafficStats; }
 private:
     TrafficStats trafficStats;
@@ -549,6 +601,10 @@ private:
     std::unordered_map<uint64_t, BuildingOverride> buildingOverrides; // key: (blockId<<20)|slot
     std::vector<PlacedBuilding> placed;
     std::vector<District> districts;
+    std::vector<BusStop> busStops;
+    std::vector<BusLine> busLines;
+    void ResolveBusStops();
+    std::vector<int> RouteNodes(int from, int to);   // node path along the fastest route (empty if unreachable)
     std::unordered_map<uint64_t, int> blockDistricts;   // painted block id -> district index
     bool collisionEnabled = true;
     std::unordered_map<uint64_t, BlockKind> blockKinds; // key: block id; absent = Auto
@@ -688,6 +744,9 @@ inline CityRegistry& GetCityRegistry() { return CityRegistry::Get(); }
 // committed edit (drag release, nudge, regen, delete...) should be undoable.
 // ---------------------------------------------------------------------------
 void SetCityEditCallback(const std::function<void()>& cb);
+
+// Runs the traffic simulation (cars, buses, pedestrians) as in Play mode, without a physics world. For tests.
+void SetTrafficRunning(bool on);
 void NotifyCityEdit();
 
 // Snapshot extension for the undo system: the scene bytes plus a "CITY n"

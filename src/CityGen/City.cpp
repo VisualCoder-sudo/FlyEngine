@@ -341,9 +341,10 @@ int City::PickDestination(uint32_t& rng) {
     return routes.pool[Lcg(rng) % (uint32_t)routes.pool.size()];
 }
 
-const std::vector<float>& City::RouteField(int dest) {
+const std::vector<float>& City::RouteField(int dest, int avoidEdge) {
     PickDestinationPool();
-    const auto it = routes.dist.find(dest);
+    const int64_t key = ((int64_t)dest << 32) | (int64_t)(uint32_t)(avoidEdge + 1);
+    const auto it = routes.dist.find(key);
     if (it != routes.dist.end()) return it->second;
     const float kInf = std::numeric_limits<float>::infinity();
     std::vector<float> d(nodes.size(), kInf);
@@ -357,7 +358,7 @@ const std::vector<float>& City::RouteField(int dest) {
             if (dv > d[(size_t)v]) continue;
             for (int ei : nodeEdges[(size_t)v]) {
                 const RoadEdge& e = edges[(size_t)ei];
-                if (e.type == (int)RoadType::Pedestrian) continue;
+                if (e.type == (int)RoadType::Pedestrian || ei == avoidEdge) continue;
                 const int u = e.a == v ? e.b : e.a;
                 if (!EdgeAllowsFrom(e, u)) continue;                  // u -> v must be drivable
                 const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
@@ -366,11 +367,245 @@ const std::vector<float>& City::RouteField(int dest) {
             }
         }
     }
-    return routes.dist.emplace(dest, std::move(d)).first->second;
+    return routes.dist.emplace(key, std::move(d)).first->second;
+}
+
+// ---------------------------------------------------------------------------
+// Public transit: stops, lines, auto generation.
+// ---------------------------------------------------------------------------
+namespace {
+// Closest point of segment ab to p, as a fraction 0..1 along it.
+float SegFraction(const Vector2& a, const Vector2& b, const Vector2& p) {
+    const Vector2 ab = Vector2Subtract(b, a);
+    const float l2 = Vector2DotProduct(ab, ab);
+    return l2 > 1e-6f ? Clamp(Vector2DotProduct(Vector2Subtract(p, a), ab) / l2, 0.0f, 1.0f) : 0.0f;
+}
+}
+
+void City::ResolveBusStops() {
+    for (BusStop& bs : busStops) {
+        bs.edge = -1;
+        float best = 15.0f;
+        for (int ei = 0; ei < (int)edges.size(); ei++) {
+            const RoadEdge& e = edges[(size_t)ei];
+            if (e.type == (int)RoadType::Pedestrian || e.type == (int)RoadType::Highway) continue;
+            const Vector2 a = nodes[(size_t)e.a].pos, b = nodes[(size_t)e.b].pos;
+            const float f = SegFraction(a, b, bs.pos);
+            const Vector2 q = Vector2Add(a, Vector2Scale(Vector2Subtract(b, a), f));
+            const float d = Vector2Distance(q, bs.pos);
+            if (d < best) {
+                best = d;
+                bs.edge = ei;
+                bs.s = f * Vector2Distance(a, b);
+                const Vector2 ab = Vector2Subtract(b, a);
+                bs.fwd = Vector2DotProduct(bs.heading, ab) >= 0.0f;
+            }
+        }
+        if (bs.edge >= 0) {   // one-way roads only carry traffic one way
+            const RoadEdge& e = edges[(size_t)bs.edge];
+            if (e.oneWay == 1) bs.fwd = true;
+            else if (e.oneWay == 2) bs.fwd = false;
+        }
+    }
+}
+
+bool City::SnapBusStop(const Vector2& cursor, Vector2& pos, Vector2& heading) const {
+    float best = 14.0f;
+    int bestEdge = -1;
+    float bestF = 0.0f;
+    for (int ei = 0; ei < (int)edges.size(); ei++) {
+        const RoadEdge& e = edges[(size_t)ei];
+        if (e.type == (int)RoadType::Pedestrian || e.type == (int)RoadType::Highway) continue;
+        const Vector2 a = nodes[(size_t)e.a].pos, b = nodes[(size_t)e.b].pos;
+        const float f = SegFraction(a, b, cursor);
+        const float d = Vector2Distance(Vector2Add(a, Vector2Scale(Vector2Subtract(b, a), f)), cursor);
+        if (d < best) { best = d; bestEdge = ei; bestF = f; }
+    }
+    if (bestEdge < 0) return false;
+    const RoadEdge& e = edges[(size_t)bestEdge];
+    const Vector2 a = nodes[(size_t)e.a].pos, b = nodes[(size_t)e.b].pos;
+    const Vector2 ab = Vector2Normalize(Vector2Subtract(b, a));
+    pos = Vector2Add(a, Vector2Scale(Vector2Subtract(b, a), bestF));
+    // The stop is on the kerb the cursor is on: with right-hand traffic that is the right of the direction served.
+    const float side = ab.x * (cursor.y - pos.y) - ab.y * (cursor.x - pos.x);   // > 0: left of a -> b
+    bool fwd = side <= 0.0f;
+    if (params.leftHandTraffic) fwd = !fwd;
+    if (e.oneWay == 1) fwd = true;
+    else if (e.oneWay == 2) fwd = false;
+    heading = fwd ? ab : Vector2Negate(ab);
+    return true;
+}
+
+int City::AddBusStop(const Vector2& pos, const Vector2& heading) {
+    BusStop bs;
+    bs.pos = pos;
+    bs.heading = heading;
+    bs.name = "Stop " + std::to_string(busStops.size() + 1);
+    busStops.push_back(bs);
+    ResolveBusStops();
+    if (busStops.back().edge < 0) { busStops.pop_back(); return -1; }
+    RebuildAll();
+    return (int)busStops.size() - 1;
+}
+
+void City::RemoveBusStop(int index) {
+    if (index < 0 || (size_t)index >= busStops.size()) return;
+    busStops.erase(busStops.begin() + index);
+    for (BusLine& l : busLines) {
+        std::vector<int> kept;
+        for (int s : l.stops) { if (s == index) continue; kept.push_back(s > index ? s - 1 : s); }
+        l.stops = kept;
+    }
+    RebuildAll();
+}
+
+int City::AddBusLine(const BusLine& line) {
+    busLines.push_back(line);
+    RebuildAll();
+    return (int)busLines.size() - 1;
+}
+
+void City::UpdateBusLine(int index, const BusLine& line) {
+    if (index < 0 || (size_t)index >= busLines.size()) return;
+    busLines[(size_t)index] = line;
+    busLines[(size_t)index].buses = std::clamp(line.buses, 0, 20);
+}
+
+void City::RemoveBusLine(int index) {
+    if (index < 0 || (size_t)index >= busLines.size()) return;
+    busLines.erase(busLines.begin() + index);
+}
+
+void City::AddStopToLine(int line, int stop) {
+    if (line < 0 || (size_t)line >= busLines.size() || stop < 0 || (size_t)stop >= busStops.size()) return;
+    busLines[(size_t)line].stops.push_back(stop);
+}
+
+void City::RemoveStopFromLine(int line, int position) {
+    if (line < 0 || (size_t)line >= busLines.size()) return;
+    auto& v = busLines[(size_t)line].stops;
+    if (position >= 0 && (size_t)position < v.size()) v.erase(v.begin() + position);
+}
+
+void City::ClearTransit() {
+    busStops.clear();
+    busLines.clear();
+    RebuildAll();
+}
+
+int City::PickBusStop(const Ray& ray) const {
+    int best = -1;
+    float bestT = 1e30f;
+    const float top = BusStopMarkerHeight();
+    for (int i = 0; i < (int)busStops.size(); i++) {
+        const BusStop& bs = busStops[(size_t)i];
+        const float y0 = bs.edge >= 0 ? EdgeProfileY(bs.edge, bs.edge >= 0 ? bs.s / std::max(Vector2Distance(nodes[(size_t)edges[(size_t)bs.edge].a].pos, nodes[(size_t)edges[(size_t)bs.edge].b].pos), 1e-3f) : 0.0f) : 0.0f;
+        const Vector3 p0 = { bs.pos.x, y0 + 0.5f, bs.pos.y }, p1 = { bs.pos.x, y0 + top, bs.pos.y };
+        const Vector3 u = Vector3Subtract(p1, p0), w0 = Vector3Subtract(ray.position, p0);
+        const float a = Vector3DotProduct(u, u), b = Vector3DotProduct(u, ray.direction), c = Vector3DotProduct(ray.direction, ray.direction);
+        const float dd = Vector3DotProduct(u, w0), e2 = Vector3DotProduct(ray.direction, w0);
+        const float den = a * c - b * b;
+        float sc = den > 1e-6f ? (c * dd - b * e2) / den : 0.0f;
+        sc = Clamp(sc, 0.0f, 1.0f);
+        const float tc = std::max(0.0f, (b * sc - e2) / c);
+        const Vector3 onP = Vector3Add(p0, Vector3Scale(u, sc)), onR = Vector3Add(ray.position, Vector3Scale(ray.direction, tc));
+        const float tol = (sc > 0.9f ? 2.2f : 1.0f) + tc * 0.012f;
+        if (Vector3Distance(onP, onR) < tol && tc < bestT) { bestT = tc; best = i; }
+    }
+    return best;
+}
+
+// Node path along the fastest drivable route (greedy descent of the travel-time field).
+std::vector<int> City::RouteNodes(int from, int to) {
+    std::vector<int> path;
+    if (from < 0 || to < 0 || (size_t)from >= nodes.size() || (size_t)to >= nodes.size() || nodeEdges.size() != nodes.size()) return path;
+    const std::vector<float>& field = RouteField(to);
+    if (!std::isfinite(field[(size_t)from])) return path;
+    int cur = from;
+    path.push_back(cur);
+    for (size_t guard = 0; cur != to && guard < nodes.size() + 4; guard++) {
+        int bestNode = -1;
+        float best = std::numeric_limits<float>::infinity();
+        for (int ei : nodeEdges[(size_t)cur]) {
+            const RoadEdge& e = edges[(size_t)ei];
+            if (e.type == (int)RoadType::Pedestrian || !EdgeAllowsFrom(e, cur)) continue;
+            const int other = e.a == cur ? e.b : e.a;
+            const float cost = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos) / std::max(EdgeSpeedLimit(ei), 1.0f) + field[(size_t)other];
+            if (cost < best) { best = cost; bestNode = other; }
+        }
+        if (bestNode < 0) return {};
+        cur = bestNode;
+        path.push_back(cur);
+    }
+    return cur == to ? path : std::vector<int>{};
+}
+
+void City::AutoTransit(int lineCount, int stopsPerLine) {
+    busStops.clear();
+    busLines.clear();
+    PickDestinationPool();
+    lineCount = std::clamp(lineCount, 1, 12);
+    stopsPerLine = std::clamp(stopsPerLine, 2, 24);
+    const std::vector<int> hubs = routes.pool;
+    static const Color kPalette[8] = { { 40, 110, 200, 255 }, { 210, 70, 60, 255 }, { 50, 160, 90, 255 }, { 230, 170, 40, 255 },
+                                       { 150, 80, 170, 255 }, { 40, 170, 180, 255 }, { 220, 110, 50, 255 }, { 120, 130, 140, 255 } };
+    if (hubs.size() >= 2) {
+        for (int L = 0; L < lineCount; L++) {
+            const int A = hubs[(size_t)L % hubs.size()];
+            // The terminal: the hub farthest from A that A can reach and that can reach back.
+            int B = -1;
+            float far = 0.0f;
+            for (int h : hubs) {
+                if (h == A) continue;
+                const float d = Vector2Distance(nodes[(size_t)A].pos, nodes[(size_t)h].pos);
+                if (d > far && !RouteNodes(A, h).empty() && !RouteNodes(h, A).empty()) { far = d; B = h; }
+            }
+            if (B < 0) continue;
+            std::vector<int> loop = RouteNodes(A, B);
+            const std::vector<int> back = RouteNodes(B, A);
+            loop.insert(loop.end(), back.begin() + 1, back.end());
+            // Total drivable length, to spread the stops evenly.
+            float total = 0.0f;
+            for (size_t i = 0; i + 1 < loop.size(); i++) total += Vector2Distance(nodes[(size_t)loop[i]].pos, nodes[(size_t)loop[i + 1]].pos);
+            const float spacing = std::max(total / (float)stopsPerLine, 30.0f);
+            BusLine line;
+            line.name = "Line " + std::to_string(L + 1);
+            line.color = kPalette[L % 8];
+            line.buses = 2;
+            float since = spacing * 0.5f;
+            for (size_t i = 0; i + 1 < loop.size(); i++) {
+                const int u = loop[i], v = loop[i + 1];
+                int ei = -1;
+                for (int cand : nodeEdges[(size_t)u]) if ((edges[(size_t)cand].a == u && edges[(size_t)cand].b == v) || (edges[(size_t)cand].a == v && edges[(size_t)cand].b == u)) { ei = cand; break; }
+                if (ei < 0) continue;
+                const RoadEdge& e = edges[(size_t)ei];
+                const Vector2 pu = nodes[(size_t)u].pos, pv = nodes[(size_t)v].pos;
+                const float len = Vector2Distance(pu, pv);
+                since += len;
+                if (since < spacing || len < 26.0f || e.type == (int)RoadType::Highway || e.type == (int)RoadType::Path) continue;
+                since = 0.0f;
+                const Vector2 pos = Vector2Scale(Vector2Add(pu, pv), 0.5f);
+                const Vector2 heading = Vector2Normalize(Vector2Subtract(pv, pu));
+                int idx = -1;                                          // share a stop already there (lines can meet at stops)
+                for (int k = 0; k < (int)busStops.size(); k++)
+                    if (Vector2Distance(busStops[(size_t)k].pos, pos) < 6.0f && Vector2DotProduct(busStops[(size_t)k].heading, heading) > 0.9f) { idx = k; break; }
+                if (idx < 0) {
+                    BusStop bs;
+                    bs.pos = pos; bs.heading = heading; bs.name = "Stop " + std::to_string(busStops.size() + 1);
+                    busStops.push_back(bs);
+                    idx = (int)busStops.size() - 1;
+                }
+                if (line.stops.empty() || line.stops.back() != idx) line.stops.push_back(idx);
+            }
+            if (line.stops.size() >= 2) busLines.push_back(line);
+        }
+    }
+    RebuildAll();
 }
 
 void City::SpawnAgent(Agent& a, bool car) {
     a.car = car;
+    a.bus = -1; a.length = 4.2f; a.dwell = 0.0f; a.busSkip = -1; a.busTarget = 0;
     for (int tries = 0; tries < 20; tries++) {
         a.edge = (int)(Lcg(a.rng) % (uint32_t)std::max<size_t>(edges.size(), 1));
         const RoadEdge& e = edges[(size_t)a.edge];
@@ -671,13 +906,13 @@ void City::StepTraffic(float dt) {
         carChangeBudget = 2;
     }
     size_t haveCars = 0, havePeds = 0;
-    for (const Agent& a : agents) (a.car ? haveCars : havePeds)++;
+    for (const Agent& a : agents) { if (a.bus >= 0) continue; (a.car ? haveCars : havePeds)++; }   // buses have their own fleets
     auto trim = [&](bool car, size_t want, size_t have) {
         int budget = car ? carChangeBudget : (1 << 20);
         while (have > want && budget-- > 0) {
             size_t victim = agents.size();
-            for (size_t i = agents.size(); i-- > 0;) if (agents[i].car == car && (!car || agents[i].far)) { victim = i; break; }   // out of sight first
-            if (victim == agents.size()) for (size_t i = agents.size(); i-- > 0;) if (agents[i].car == car) { victim = i; break; }
+            for (size_t i = agents.size(); i-- > 0;) if (agents[i].bus < 0 && agents[i].car == car && (!car || agents[i].far)) { victim = i; break; }   // out of sight first
+            if (victim == agents.size()) for (size_t i = agents.size(); i-- > 0;) if (agents[i].bus < 0 && agents[i].car == car) { victim = i; break; }
             if (victim == agents.size()) break;
             agents.erase(agents.begin() + (long)victim);
             have--;
@@ -697,6 +932,57 @@ void City::StepTraffic(float dt) {
         agents.push_back(a);
     }
     for (size_t i = havePeds; i < wantPeds; i++) { Agent a; a.rng = (uint32_t)(0x85EBCA6Bu * (uint32_t)(agents.size() + 1)) ^ (uint32_t)params.seed; SpawnAgent(a, false); agents.push_back(a); }
+
+    // Buses: one fleet per line, respawned whenever the lines, stops or roads change; topped up one bus per step.
+    {
+        uint64_t sig = graphVersion * 1315423911ull + busLines.size() * 2654435761ull;
+        for (const BusStop& bs : busStops) sig = sig * 1099511628211ull ^ (uint64_t)(int64_t)(bs.pos.x * 16.0f) ^ ((uint64_t)(int64_t)(bs.pos.y * 16.0f) << 20) ^ (bs.fwd ? 1u : 0u);
+        for (const BusLine& l : busLines) {
+            sig = sig * 1099511628211ull ^ (uint64_t)l.buses;
+            for (int s : l.stops) sig = sig * 1099511628211ull ^ (uint64_t)(s + 1);
+        }
+        if (sig != busSig) {
+            agents.erase(std::remove_if(agents.begin(), agents.end(), [](const Agent& a) { return a.bus >= 0; }), agents.end());
+            busSig = sig;
+        }
+        bool spawnedOne = false;
+        for (size_t li = 0; li < busLines.size(); li++) {
+            const BusLine& L = busLines[li];
+            bool ok = L.stops.size() >= 2;
+            for (int s : L.stops) if ((size_t)s >= busStops.size() || busStops[(size_t)s].edge < 0) ok = false;
+            int have = 0;
+            for (const Agent& a : agents) if (a.bus == (int)li) have++;
+            if (!ok) {
+                if (have) agents.erase(std::remove_if(agents.begin(), agents.end(), [li](const Agent& a) { return a.bus == (int)li; }), agents.end());
+                continue;
+            }
+            while (have > L.buses) {
+                for (size_t i = agents.size(); i-- > 0;) if (agents[i].bus == (int)li) { agents.erase(agents.begin() + (long)i); break; }
+                have--;
+            }
+            if (have < L.buses && !spawnedOne) {
+                spawnedOne = true;
+                Agent a; a.rng = (uint32_t)(0xC2B2AE35u * (uint32_t)(li * 31 + have + 1)) ^ (uint32_t)params.seed;
+                SpawnAgent(a, true);
+                a.bus = (int)li;
+                a.length = 11.0f;
+                a.dest = -1;
+                a.busTarget = (have * (int)L.stops.size() / std::max(L.buses, 1)) % (int)L.stops.size();
+                const BusStop& stp = busStops[(size_t)L.stops[(size_t)a.busTarget]];
+                const RoadEdge& se = edges[(size_t)stp.edge];
+                a.edge = stp.edge; a.fwd = stp.fwd;
+                const float elen = Vector2Distance(nodes[(size_t)se.a].pos, nodes[(size_t)se.b].pos);
+                a.s = std::max((stp.fwd ? stp.s : elen - stp.s) - 30.0f, 1.0f);
+                const int lanes = std::max(se.lanes > 0 ? se.lanes : params.lanes, 1);
+                a.lane = std::max(se.oneWay ? lanes : lanes / 2, 1) - 1;       // the kerb lane
+                a.laneF = (float)a.lane;
+                a.speedFactor = 0.85f; a.maxSpeed = std::min(EdgeSpeedLimit(a.edge), 10.0f) * a.speedFactor;
+                a.accel = 1.2f; a.decel = 2.0f; a.headway = 1.6f; a.minGap = 3.0f; a.speed = 0.0f;
+                a.color = L.color;
+                agents.push_back(a);
+            }
+        }
+    }
 
     // Per-edge/direction lists of cars, for following distance (near cars only matter, far ones are free-flowing).
     std::unordered_map<int, std::vector<int>> onEdge;
@@ -736,6 +1022,7 @@ void City::StepTraffic(float dt) {
                 else if (a.far && dist < D * 0.9f) a.far = false;
             } else a.far = false;
         }
+        if (a.bus >= 0) a.far = false;
         a.nearTime = a.far ? 0.0f : a.nearTime + dt;
         float step = dt;
         if (a.car && !a.far) a.wheelRot = fmodf(a.wheelRot + a.speed * dt / 0.32f, 2.0f * PI);
@@ -880,7 +1167,7 @@ void City::StepTraffic(float dt) {
             }
             const std::vector<int>& pool = usable.empty() ? options : usable;
             a.nextEdge = pool[Lcg(a.rng) % (uint32_t)pool.size()];
-            if (params.routedTraffic) {
+            if (params.routedTraffic && a.bus < 0) {
                 if (a.dest < 0 || a.dest == toNode) {                              // trip finished (or none yet): pick the next one
                     if (a.dest == toNode) tripsCompleted++;
                     a.dest = PickDestination(a.rng);
@@ -895,6 +1182,32 @@ void City::StepTraffic(float dt) {
                         const float len2 = Vector2Distance(nodes[(size_t)e2.a].pos, nodes[(size_t)e2.b].pos);
                         const float cost = len2 / std::max(EdgeSpeedLimit(ei2), 1.0f) + field[(size_t)other];
                         if (cost < best) { best = cost; a.nextEdge = ei2; }
+                    }
+                }
+            }
+            if (a.bus >= 0 && (size_t)a.bus < busLines.size() && !busLines[(size_t)a.bus].stops.empty()) {
+                // Buses follow their line: turn onto the stop's road when at its start, else take the fastest way there.
+                const BusLine& L = busLines[(size_t)a.bus];
+                const int sidx = L.stops[(size_t)a.busTarget % L.stops.size()];
+                if ((size_t)sidx < busStops.size() && busStops[(size_t)sidx].edge >= 0) {
+                    const BusStop& stp = busStops[(size_t)sidx];
+                    const RoadEdge& se = edges[(size_t)stp.edge];
+                    const int fromNode = stp.fwd ? se.a : se.b;
+                    bool forced = false;
+                    if (toNode == fromNode) for (int ei2 : options) if (ei2 == stp.edge) { a.nextEdge = ei2; forced = true; break; }
+                    for (int pass = 0; pass < 2 && !forced; pass++) {
+                        const std::vector<float>& field = RouteField(fromNode, pass == 0 ? stp.edge : -1);
+                        float best = std::numeric_limits<float>::infinity();
+                        int pick = -1;
+                        for (int ei2 : pool) {
+                            if (pass == 0 && ei2 == stp.edge) continue;   // arriving along the stop road does not help
+                            const RoadEdge& e2 = edges[(size_t)ei2];
+                            const int other = e2.a == toNode ? e2.b : e2.a;
+                            const float len2 = Vector2Distance(nodes[(size_t)e2.a].pos, nodes[(size_t)e2.b].pos);
+                            const float cost = len2 / std::max(EdgeSpeedLimit(ei2), 1.0f) + field[(size_t)other];
+                            if (cost < best) { best = cost; pick = ei2; }
+                        }
+                        if (pick >= 0 && std::isfinite(best)) { a.nextEdge = pick; break; }
                     }
                 }
             }
@@ -953,14 +1266,14 @@ void City::StepTraffic(float dt) {
                 const Agent& o = agents[(size_t)j];
                 if (o.lane != a.lane || o.inJ) continue;
                 if (o.s <= a.s) continue;
-                const float g = std::max(o.s - a.s - 4.2f, 0.05f);   // bumper to bumper (never negative: an overlapped car still brakes hard)
+                const float g = std::max(o.s - a.s - 0.5f * (a.length + o.length), 0.05f);   // bumper to bumper (never negative: an overlapped car still brakes hard)
                 if (g < gap) { gap = g; leaderV = o.speed; }
             }
             if (a.nextEdge >= 0 && len - a.s < 40.0f) {
                 for (int j : onEdge[a.nextEdge * 2 + (a.nextFwd ? 1 : 0)]) {
                     const Agent& o = agents[(size_t)j];
                     if (o.lane != a.lane) continue;
-                    const float g = std::max((len - a.s) + o.s - 4.2f, 0.05f);
+                    const float g = std::max((len - a.s) + o.s - 0.5f * (a.length + o.length), 0.05f);
                     if (g < gap) { gap = g; leaderV = o.speed; }
                 }
             }
@@ -973,7 +1286,7 @@ void City::StepTraffic(float dt) {
                 for (int j : nodeIt->second) {
                     const Agent& o = agents[(size_t)j];
                     if (!o.inJ || o.jFrom != a.edge || o.lane != a.lane) continue;
-                    const float g = std::max(entryGap + o.jt * o.jlen - 4.2f, 0.05f);
+                    const float g = std::max(entryGap + o.jt * o.jlen - 0.5f * (a.length + o.length), 0.05f);
                     if (g < gap) { gap = g; leaderV = o.speed; }
                 }
         } else {
@@ -981,14 +1294,14 @@ void City::StepTraffic(float dt) {
                 if (j == i) continue;
                 const Agent& o = agents[(size_t)j];
                 if (!o.inJ || o.jFrom != a.jFrom || o.nextEdge != a.nextEdge || o.jt <= a.jt) continue;
-                const float g = std::max((o.jt - a.jt) * a.jlen - 4.2f, 0.05f);
+                const float g = std::max((o.jt - a.jt) * a.jlen - 0.5f * (a.length + o.length), 0.05f);
                 if (g < gap) { gap = g; leaderV = o.speed; }
             }
             if (a.nextEdge >= 0)
                 for (int j : onEdge[a.nextEdge * 2 + (a.nextFwd ? 1 : 0)]) {
                     const Agent& o = agents[(size_t)j];
                     if (o.lane != a.jLaneB || o.s < a.jExit - 1.0f) continue;
-                    const float g = std::max((1.0f - a.jt) * a.jlen + (o.s - a.jExit) - 4.2f, 0.05f);
+                    const float g = std::max((1.0f - a.jt) * a.jlen + (o.s - a.jExit) - 0.5f * (a.length + o.length), 0.05f);
                     if (g < gap) { gap = g; leaderV = o.speed; }
                 }
         }
@@ -1049,6 +1362,30 @@ void City::StepTraffic(float dt) {
                 }
             }
             if (blocked) { const float g = std::max(entryGap - 1.0f, 0.05f); if (g < gap) { gap = g; leaderV = 0.0f; } }
+        }
+        // Bus stop: a stationary obstacle at the stop; wait there, then head for the next stop of the line.
+        if (a.bus >= 0 && !a.inJ && (size_t)a.bus < busLines.size() && !busLines[(size_t)a.bus].stops.empty()) {
+            const BusLine& L = busLines[(size_t)a.bus];
+            const int sidx = L.stops[(size_t)a.busTarget % L.stops.size()];
+            const int key = a.edge * 2 + (a.fwd ? 1 : 0);
+            if (a.busSkip >= 0 && key != a.busSkip) a.busSkip = -1;
+            if ((size_t)sidx < busStops.size() && busStops[(size_t)sidx].edge == a.edge && busStops[(size_t)sidx].fwd == a.fwd && key != a.busSkip) {
+                const BusStop& stp = busStops[(size_t)sidx];
+                const float dist = (a.fwd ? stp.s : len - stp.s) - a.s;
+                if (dist > -1.0f) {
+                    if (dist < gap) { gap = std::max(dist, 0.0f); leaderV = 0.0f; }
+                    if (dist < a.minGap + 2.5f && a.speed < 0.4f) {
+                        a.dwell += step;
+                        if (a.dwell >= 7.0f + Lcg01(a.rng) * 4.0f) {
+                            a.dwell = 0.0f;
+                            a.busTarget = (a.busTarget + 1) % (int)L.stops.size();
+                            a.busSkip = key;
+                            busStopsServedCount++;
+                            a.nextEdge = -1; a.jpath.clear(); a.turn = 0;      // the turn planned for the old target is stale: re-plan toward the next stop
+                        }
+                    }
+                }
+            }
         }
         if (gap < 1e8f) statMinGap = std::min(statMinGap, gap);   // car-to-car gaps only
         // Junction control acts as a stationary obstacle at the stop line.
@@ -1156,7 +1493,9 @@ void City::StepTraffic(float dt) {
                 a.lastPos = a.pos;
                 continue;
             }
-            st.cars++; (a.far ? st.farCars : st.nearCars)++;
+            if (a.bus >= 0) st.buses++;
+            else st.cars++;
+            (a.far ? st.farCars : st.nearCars)++;
             sum += a.speed;
             if (a.speed < 0.2f) st.stopped++;
         }
@@ -1176,6 +1515,7 @@ void City::StepTraffic(float dt) {
         }
         st.maxWalkerSpeed = std::max(st.maxWalkerSpeed, trafficStats.maxWalkerSpeed * (1.0f - 0.3f * dt));   // slowly decaying peak
         st.trips = tripsCompleted;
+        st.busStopsServed = busStopsServedCount;
         st.avgSpeed = st.cars ? sum / (float)st.cars : 0.0f;
         st.minGap = statMinGap < 1e8f ? statMinGap : -1.0f;
         st.stepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - stepT0).count();
@@ -1240,6 +1580,8 @@ void City::ClearGraph() {
     blockKinds.clear();
     districts.clear();
     blockDistricts.clear();
+    busStops.clear();
+    busLines.clear();
     placed.clear();
     nextBlockId = 1;
     ClearGeometry();
@@ -1322,6 +1664,7 @@ void City::GenerateGrid(const Vector2& origin) {
 
 void City::RebuildAll() {
     graphVersion++;
+    ResolveBusStops();
     if (nodes.size() >= kAsyncRebuildNodes) {
         RequestRebuild();          // big city: build on a worker, keep drawing the old one
         return;
@@ -1368,6 +1711,7 @@ void City::StartRebuildJob() {
     job->work->buildingOverrides = buildingOverrides;
     job->work->blockKinds = blockKinds;
     job->work->districts = districts;
+    job->work->busStops = busStops;
     job->work->blockDistricts = blockDistricts;
     job->work->placed = placed;
     job->work->collisionEnabled = collisionEnabled;
@@ -2814,15 +3158,11 @@ void City::ComputeTileCPU(Tile& t) {
                                 for (int k = 0; k < 3; k++) if (dist + 3.0f + 1.4f * (float)k <= hi) place(kPropBollard, dist + 3.0f + 1.4f * (float)k, sdTree, 0.0f, 1.0f);
                         }
                     }
-                    // A bus stop on some long streets, between two furniture slots so it never overlaps a tree or lamp.
-                    {
-                        const uint32_t hb = CoordHash(ei, 31337, params.seed ^ 0xB055);
-                        if ((e.type == (int)RoadType::Street || e.type == (int)RoadType::Avenue) && hi - lo > 8.0f &&
-                            sH2 - aH2 >= 1.8f && (hb % 100u) < 14u) {
-                            const int k = (int)floorf(((lo + hi) * 0.5f - lo) / 11.0f);
-                            const float d = lo + 11.0f * (float)k + 5.5f;
-                            if (d + 2.0f <= hi) place(kPropBusStop, d, ((hb >> 16) & 1u) ? 1 : -1, 0.0f, 1.0f);
-                        }
+                    // Bus stops (data: placed by hand or generated by AutoTransit), on the kerb of the direction they serve.
+                    for (const BusStop& bs : busStops) {
+                        if (bs.edge != ei) continue;
+                        const int sdStop = (bs.fwd ? -1 : 1) * (params.leftHandTraffic ? -1 : 1);
+                        place(kPropBusStop, std::clamp(bs.s, lo, hi), sdStop, 0.0f, 1.0f);
                     }
                 }
             }
@@ -3656,15 +3996,27 @@ void City::Draw() {
     }
 
     if (!agents.empty()) {
-        std::vector<Matrix> carM, boxM, pedM, blinkM, glassM, wheelM;
+        std::vector<Matrix> carM, boxM, pedM, blinkM, glassM, wheelM, busM, busGlassM;
         for (const Agent& a : agents) {
             if (!a.placed) continue;
-            const Color shown = a.car ? PickCarColor(a) : a.color;
+            const Color shown = (a.car && a.bus < 0) ? PickCarColor(a) : a.color;
             const float cr = -std::max(shown.r / 255.0f, 0.05f), cg = -std::max(shown.g / 255.0f, 0.05f), cb = -std::max(shown.b / 255.0f, 0.05f);
             Matrix m;
             if (a.car && a.far) m = MatrixMultiply(MatrixScale(4.2f, 1.4f, 1.8f), MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y + 0.7f, a.pos.z)));
             else m = MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z));
             m.m3 = cr; m.m7 = cg; m.m11 = cb;
+            if (a.bus >= 0) {
+                busM.push_back(m);
+                Matrix gm = m; gm.m3 = -1.0f; gm.m7 = -1.0f; gm.m11 = -1.0f;
+                busGlassM.push_back(gm);
+                for (float lx : { -3.5f, 3.4f }) for (float lz : { -1.12f, 1.12f }) {
+                    Matrix wm = MatrixMultiply(MatrixMultiply(MatrixMultiply(MatrixScale(1.4f, 1.4f, 1.4f), MatrixRotateZ(-a.wheelRot)), MatrixTranslate(lx, 0.45f, lz)),
+                                MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z)));
+                    wm.m3 = -1.0f; wm.m7 = -1.0f; wm.m11 = -1.0f;
+                    wheelM.push_back(wm);
+                }
+                continue;
+            }
             (a.car ? (a.far ? boxM : carM) : pedM).push_back(m);
             if (a.car && !a.far) {
                 Matrix gm = m; gm.m3 = -1.0f; gm.m7 = -1.0f; gm.m11 = -1.0f;
@@ -3687,6 +4039,8 @@ void City::Draw() {
                 }
             }
         }
+        if (!busM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropBus), busM, 0, (int)busM.size(), WHITE);
+        if (!busGlassM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropBusGlass), busGlassM, 0, (int)busGlassM.size(), WHITE);
         if (!carM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropCar), carM, 0, (int)carM.size(), WHITE);
         if (!glassM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropCarGlass), glassM, 0, (int)glassM.size(), WHITE);
         if (!wheelM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropWheel), wheelM, 0, (int)wheelM.size(), WHITE);
@@ -3823,6 +4177,32 @@ void City::DrawOverlay3D() {
         }
     }
 
+    // Transit tool: stop pillars (coloured by the selected line) and the selected line's route as a polyline.
+    if (state.activeCity == this && state.tool == CityTool::Transit) {
+        const float top = BusStopMarkerHeight();
+        std::vector<char> inLine(busStops.size(), 0);
+        Color lc{ 255, 255, 255, 255 };
+        if (state.transitLine >= 0 && (size_t)state.transitLine < busLines.size()) {
+            const BusLine& L = busLines[(size_t)state.transitLine];
+            lc = L.color;
+            for (int si : L.stops) if ((size_t)si < busStops.size()) inLine[(size_t)si] = 1;
+            for (size_t k = 0; k < L.stops.size(); k++) {
+                const int a0 = L.stops[k], b0 = L.stops[(k + 1) % L.stops.size()];
+                if ((size_t)a0 >= busStops.size() || (size_t)b0 >= busStops.size() || L.stops.size() < 2) continue;
+                const Vector2 pa = busStops[(size_t)a0].pos, pb = busStops[(size_t)b0].pos;
+                DrawLine3D({ pa.x, top * 0.55f, pa.y }, { pb.x, top * 0.55f, pb.y }, lc);
+            }
+        }
+        for (int i = 0; i < (int)busStops.size(); i++) {
+            const BusStop& bs = busStops[(size_t)i];
+            Color c = bs.edge < 0 ? Color{ 200, 60, 60, 255 } : (inLine[(size_t)i] ? lc : Color{ 60, 200, 220, 255 });
+            if (i == state.transitStop) c = Color{ 255, 230, 70, 255 };
+            DrawLine3D({ bs.pos.x, 0.5f, bs.pos.y }, { bs.pos.x, top, bs.pos.y }, c);
+            DrawCube({ bs.pos.x, top, bs.pos.y }, 1.8f, 1.8f, 1.8f, c);
+            DrawLine3D({ bs.pos.x, top, bs.pos.y }, { bs.pos.x + bs.heading.x * 4.0f, top, bs.pos.y + bs.heading.y * 4.0f }, c);   // direction served
+        }
+    }
+
     // District tool: a ring per district at its radius, a pillar at its centre.
     if (state.activeCity == this && state.tool == CityTool::Districts) {
         for (int i = 0; i < (int)districts.size(); i++) {
@@ -3851,6 +4231,27 @@ void City::DrawOverlay3D() {
             DrawLine3D({ a.x, 0.4f, a.y }, { b.x, 0.4f, b.y }, Color{ 255, 220, 80, 255 });
         }
     }
+}
+
+bool City::FindBus(int index, Vector3& pos, float& yaw) const {
+    for (const Agent& a : agents) {
+        if (a.bus < 0 || !a.placed) continue;
+        if (index-- == 0) { pos = a.pos; yaw = a.yaw; return true; }
+    }
+    return false;
+}
+
+std::string City::DebugBuses() const {
+    std::ostringstream o;
+    for (size_t i = 0; i < agents.size(); i++) {
+        const Agent& a = agents[i];
+        if (a.bus < 0) continue;
+        float len = 0.0f;
+        if (a.edge >= 0 && (size_t)a.edge < edges.size()) len = Vector2Distance(nodes[(size_t)edges[(size_t)a.edge].a].pos, nodes[(size_t)edges[(size_t)a.edge].b].pos);
+        o << "bus line " << a.bus << " edge " << a.edge << (a.fwd ? " fwd" : " bwd") << " s " << a.s << "/" << len << " v " << a.speed
+          << " target " << a.busTarget << " dwell " << a.dwell << " stuck " << a.stuck << " inJ " << a.inJ << " next " << a.nextEdge << " lane " << a.lane << "\n";
+    }
+    return o.str();
 }
 
 int City::CountInstances(int shape) const {
@@ -4767,6 +5168,17 @@ bool City::WriteToStream(std::ostream& out) const {
             for (size_t i = 0; i < edges.size(); i++) if (edges[i].oneWay != 0) out << i << ' ' << edges[i].oneWay << '\n';
         }
     }
+    if (!busStops.empty() || !busLines.empty()) {
+        auto tok = [](std::string n) { if (n.empty()) n = "-"; for (char& ch : n) if (ch == ' ' || ch == '\n' || ch == '\t') ch = '_'; return n; };
+        out << "TRANSIT " << busStops.size() << ' ' << busLines.size() << '\n';
+        for (const BusStop& bs : busStops)
+            out << bs.pos.x << ' ' << bs.pos.y << ' ' << bs.heading.x << ' ' << bs.heading.y << ' ' << tok(bs.name) << '\n';
+        for (const BusLine& l : busLines) {
+            out << tok(l.name) << ' ' << (int)l.color.r << ' ' << (int)l.color.g << ' ' << (int)l.color.b << ' ' << l.buses << ' ' << l.stops.size();
+            for (int s : l.stops) out << ' ' << s;
+            out << '\n';
+        }
+    }
     if (!params.routedTraffic || params.rushHours)
         out << "TRAFFIC " << (params.routedTraffic ? 1 : 0) << ' ' << (params.rushHours ? 1 : 0) << '\n';
     if (params.timeOfDay != 12.0f || params.dayLengthMinutes != 0.0f)
@@ -4871,6 +5283,8 @@ bool City::ReadFromStream(std::istream& in) {
         blockKinds.clear();
         districts.clear();
         blockDistricts.clear();
+        busStops.clear();
+        busLines.clear();
         placed.clear();
         collisionEnabled = true;
         params.carColorAll = false;
@@ -4965,6 +5379,32 @@ bool City::ReadFromStream(std::istream& in) {
                     size_t idx = 0; float isl = 0, rg = 0; int sp = 1, co = 0;
                     if (!(in >> idx >> isl >> rg >> sp >> co)) return false;
                     if (idx < nodes.size()) { nodes[idx].rbIsland = isl; nodes[idx].rbRing = rg; nodes[idx].rbSplitters = sp != 0; nodes[idx].rbConcrete = co != 0; }
+                }
+            } else if (tag == "TRANSIT") {
+                size_t ns = 0, nl = 0;
+                if (!(in >> ns >> nl)) return false;
+                busStops.assign(ns, BusStop{});
+                for (BusStop& bs : busStops) {
+                    std::string nm;
+                    if (!(in >> bs.pos.x >> bs.pos.y >> bs.heading.x >> bs.heading.y >> nm)) return false;
+                    if (nm == "-") nm.clear();
+                    for (char& ch : nm) if (ch == '_') ch = ' ';
+                    bs.name = nm;
+                }
+                busLines.assign(nl, BusLine{});
+                for (BusLine& l : busLines) {
+                    std::string nm; int r = 0, g = 0, b = 0, buses = 2; size_t k = 0;
+                    if (!(in >> nm >> r >> g >> b >> buses >> k)) return false;
+                    if (nm == "-") nm.clear();
+                    for (char& ch : nm) if (ch == '_') ch = ' ';
+                    l.name = nm;
+                    l.color = Color{ (unsigned char)std::clamp(r, 0, 255), (unsigned char)std::clamp(g, 0, 255), (unsigned char)std::clamp(b, 0, 255), 255 };
+                    l.buses = std::clamp(buses, 0, 20);
+                    l.stops.resize(k);
+                    for (size_t i = 0; i < k; i++) {
+                        if (!(in >> l.stops[i])) return false;
+                        if (l.stops[i] < 0 || (size_t)l.stops[i] >= ns) l.stops[i] = 0;
+                    }
                 }
             } else if (tag == "TRAFFIC") {
                 int routed = 1, rush = 0;
@@ -5151,6 +5591,7 @@ int CityRegistry::ReadFile(const std::string& path, const std::function<City*()>
 static std::function<void()> g_cityEditCb;
 
 void SetCityEditCallback(const std::function<void()>& cb) { g_cityEditCb = cb; }
+void SetTrafficRunning(bool on) { g_simActive = on; }
 void NotifyCityEdit() {
     if (g_cityEditCb) g_cityEditCb();
 }

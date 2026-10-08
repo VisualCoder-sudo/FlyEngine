@@ -7,7 +7,7 @@
 
 namespace city {
 
-    enum class CityTool : int { Select = 0, PaintBlock = 1, InsertBuilding = 2, DrawRoad = 3, ElevateRoad = 4, Districts = 5 };
+    enum class CityTool : int { Select = 0, PaintBlock = 1, InsertBuilding = 2, DrawRoad = 3, ElevateRoad = 4, Districts = 5, Transit = 6 };
 
     // Selection/drag state used by the viewport node editor and the ImGui panel.
     struct CityEditorState {
@@ -74,6 +74,14 @@ namespace city {
         float districtAutoPeak = 3.0f;
         Vector2 districtDragLast{};
         Vector2 districtDragOffset{};     // marker position minus the grabbed point on the drag plane
+
+        // Transit tool: click a road to place a stop on the kerb you click, click a stop to select it. With
+        // "add to line" on, clicking a stop (or placing a new one) appends it to the selected line.
+        int transitLine = -1;
+        int transitStop = -1;
+        bool transitAddToLine = true;
+        int transitAutoLines = 3;
+        int transitAutoStops = 6;
 
         // Keyboard nudge step (Shift scales it down for fine control).
         float nudgeStep = 1.0f;

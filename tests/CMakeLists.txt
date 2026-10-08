@@ -105,3 +105,8 @@ target_link_libraries(city_traffic_route_test PRIVATE FlyEngineCore FlyRL)
 # registered with ctest: build/tests/city_props_test
 add_executable(city_props_test city_props_test.cpp)
 target_link_libraries(city_props_test PRIVATE FlyEngineCore FlyRL)
+
+# Public transit (auto + manual lines, buses serving stops, save/load). Opens a window, so built but not
+# registered with ctest: build/tests/city_transit_test
+add_executable(city_transit_test city_transit_test.cpp)
+target_link_libraries(city_transit_test PRIVATE FlyEngineCore FlyRL)
