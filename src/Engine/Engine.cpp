@@ -58,7 +58,17 @@ void Engine::SetTimeScale(float s) {
 
 void Engine::Update(float deltaTime) {
     console::Update();
-    gfx::TickLighting(deltaTime);
+    {
+        // The day/night clock only runs while playing (editor Play or the player); the editor keeps the hour
+        // it was set to, and gets it back when Play stops.
+        static bool wasPlaying = false;
+        static float timeBeforePlay = 12.0f;
+        const bool playing = isPlayerBuild || ui::IsPlayActive();
+        if (playing && !wasPlaying) timeBeforePlay = gfx::Lighting().timeOfDay;
+        if (!playing && wasPlaying) gfx::Lighting().timeOfDay = timeBeforePlay;
+        wasPlaying = playing;
+        if (playing) gfx::TickLighting(deltaTime);
+    }
     if (!isPlayerBuild) ui::UpdateInput();
 
     // Decide whether entities tick this frame. A paused engine skips the entity

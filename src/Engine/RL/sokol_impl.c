@@ -226,14 +226,24 @@ void flyapp_recenter_locked_pointer(void) {
     if (!_flyapp_open || !_sapp.mouse.locked) {
         return;
     }
+    // A compositor can drop the pointer grab (focus-stealing shortcuts, screen-edge actions), which frees the
+    // hidden pointer and it leaves the window. The grab owner may simply grab again, which also confines the
+    // pointer to the window once more, so re-assert it ~10 times a second while the mouse is locked.
+    static unsigned regrabCounter = 0;
+    if ((++regrabCounter % 6u) == 0u) {
+        XGrabPointer(_sapp.x11.display, _sapp.x11.window, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                     GrabModeAsync, GrabModeAsync, _sapp.x11.window, _sapp.x11.hidden_cursor, CurrentTime);
+    }
     Window root_ret, child_ret;
     int root_x, root_y, win_x, win_y;
     unsigned int mask;
+    const int w = _sapp.window_width, h = _sapp.window_height;
     if (!XQueryPointer(_sapp.x11.display, _sapp.x11.window, &root_ret, &child_ret,
                        &root_x, &root_y, &win_x, &win_y, &mask)) {
+        XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, w / 2, h / 2);   // on another screen: bring it back
+        XFlush(_sapp.x11.display);
         return;
     }
-    const int w = _sapp.window_width, h = _sapp.window_height;
     if (win_x < w / 4 || win_x > w - w / 4 || win_y < h / 4 || win_y > h - h / 4) {
         XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, w / 2, h / 2);
         XFlush(_sapp.x11.display);
