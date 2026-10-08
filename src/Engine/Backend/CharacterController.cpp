@@ -231,11 +231,16 @@ void CharacterController::UpdateKinematic(float dt) {
     // With D=0.91: hits when center ≤ 0.91 (bottom at 0.01), grounded when center ≈ 0.9 (bottom ≈ 0.0).
     const float CAPSULE_HALF_HEIGHT = CAPSULE_HEIGHT * 0.5f;  // 0.9f
     const float GROUND_CHECK_EPSILON = 0.01f;
-    float groundCheckDist = CAPSULE_HALF_HEIGHT + GROUND_CHECK_EPSILON;  // 0.91 units from center
+    // The body is teleported, so a fast fall can end a frame inside the surface (or past it). Reach
+    // down by this frame's fall distance so the landing is caught, then snap to the surface below.
+    const float fallStep = verticalVelocity < 0.0f ? -verticalVelocity * dt : 0.0f;
+    float groundCheckDist = CAPSULE_HALF_HEIGHT + GROUND_CHECK_EPSILON + fallStep;  // 0.91 units from center (+ fall)
     auto rayHit = sim.RayCast(pos, {0, -1, 0}, groundCheckDist, body);
     ReportGroundCheck(rayHit, pos, groundCheckDist);
     bool wasGrounded = grounded;
-    grounded = rayHit.hit;
+    // Rising means we just jumped: the ray still reaches the surface for the first few frames of the
+    // jump, and counting that as ground would cancel the jump velocity (a tiny hop, then stuck).
+    grounded = rayHit.hit && verticalVelocity <= 0.0f;
 
     // Coyote time: allow jump for a short time after leaving ground
     const float COYOTE_TIME = 0.1f;
@@ -331,6 +336,9 @@ void CharacterController::UpdateKinematic(float dt) {
     // For Box3D kinematic body: manually integrate position from velocity
     // Use SetBodyPosition - it sets physics body position and wakes it
     Vector3 newPos = Vector3Add(pos, Vector3Scale(vel, dt));
+
+    // Standing: sit exactly on the surface (undoes any penetration left by a hard landing; also follows slopes).
+    if (grounded && rayHit.hit) newPos.y = rayHit.point.y + CAPSULE_HALF_HEIGHT;
     
     // Update physics body position directly
     sim.SetBodyPosition(body, newPos);

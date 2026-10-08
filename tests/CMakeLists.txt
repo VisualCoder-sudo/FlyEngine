@@ -85,3 +85,8 @@ add_test(NAME city_geometry COMMAND city_geometry_test)
 # for the mesh upload, so it is built but not registered with ctest: build/tests/city_district_test
 add_executable(city_district_test city_district_test.cpp)
 target_link_libraries(city_district_test PRIVATE FlyEngineCore FlyRL)
+
+# Player jump regression: one jump press after landing from any height must give a full jump.
+# Opens a window (engine ctor), so built but not registered with ctest: build/tests/character_jump_test
+add_executable(character_jump_test character_jump_test.cpp)
+target_link_libraries(character_jump_test PRIVATE FlyEngineCore FlyRL)
