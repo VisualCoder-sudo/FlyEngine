@@ -80,3 +80,8 @@ add_executable(city_geometry_test city_geometry_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Terrain/Water/WaterNoise.cpp)
 target_include_directories(city_geometry_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/include/rl)
 add_test(NAME city_geometry COMMAND city_geometry_test)
+
+# Districts (downtown/suburb height + style, painting, save/load). Runs the real City code; needs a GL context
+# for the mesh upload, so it is built but not registered with ctest: build/tests/city_district_test
+add_executable(city_district_test city_district_test.cpp)
+target_link_libraries(city_district_test PRIVATE FlyEngineCore FlyRL)
