@@ -4571,16 +4571,6 @@ bool City::WriteToStream(std::ostream& out) const {
             }
         }
     }
-    if (!districts.empty()) {
-        out << "DISTRICTS " << districts.size() << '\n';
-        for (const District& d : districts) {
-            std::string nm = d.name.empty() ? "-" : d.name;
-            for (char& ch : nm) if (ch == ' ' || ch == '\n' || ch == '\t') ch = '_';
-            out << d.pos.x << ' ' << d.pos.y << ' ' << d.radius << ' ' << d.peak << ' ' << d.kind << ' ' << d.style << ' ' << nm << '\n';
-        }
-        out << "DPAINT " << blockDistricts.size() << '\n';
-        for (const auto& kv : blockDistricts) out << kv.first << ' ' << kv.second << '\n';
-    }
     {
         size_t nk = 0;
         for (const auto& nd : nodes) if (nd.jkind != 0) nk++;
@@ -4594,6 +4584,18 @@ bool City::WriteToStream(std::ostream& out) const {
             out << "EDGEQ " << ne << '\n';
             for (size_t i = 0; i < edges.size(); i++) if (edges[i].oneWay != 0) out << i << ' ' << edges[i].oneWay << '\n';
         }
+    }
+    // Last on purpose: a reader that predates districts stops at the first tag it does not know,
+    // so everything it understands has to come before this.
+    if (!districts.empty()) {
+        out << "DISTRICTS " << districts.size() << '\n';
+        for (const District& d : districts) {
+            std::string nm = d.name.empty() ? "-" : d.name;
+            for (char& ch : nm) if (ch == ' ' || ch == '\n' || ch == '\t') ch = '_';
+            out << d.pos.x << ' ' << d.pos.y << ' ' << d.radius << ' ' << d.peak << ' ' << d.kind << ' ' << d.style << ' ' << nm << '\n';
+        }
+        out << "DPAINT " << blockDistricts.size() << '\n';
+        for (const auto& kv : blockDistricts) out << kv.first << ' ' << kv.second << '\n';
     }
     return out.good();
 }

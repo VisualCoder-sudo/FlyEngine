@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <string>
+#include <vector>
 
 using namespace city;
 
@@ -71,6 +73,29 @@ int main() {
     CHECK(c2.GetDistricts().size() == 2);
     CHECK(c2.GetBlockDistrict(id) == 1);
     CHECK(std::fabs(AvgHeight(c2) - AvgHeight(c)) < 0.01f);
+
+    // The sidecar route (what a scene load, and so the player, uses), and file order: an older reader
+    // stops at the first tag it does not know, so DISTRICTS has to be the last section written.
+    {
+        const std::string text = ss.str();
+        const size_t at = text.find("DISTRICTS");
+        CHECK(at != std::string::npos);
+        for (const char* tag : { "KINDS", "PLACED", "LIFE", "NODEP", "EDGEQ", "EDGEP", "NHEIGHT", "SIGNALS", "RBP", "STYLE" })
+            CHECK(text.find(tag, at) == std::string::npos);
+        auto& reg = GetCityRegistry();
+        reg.Register(&c);
+        CHECK(reg.WriteFile("city_district_test.city"));
+        reg.Unregister(&c);
+        std::vector<City*> made;
+        const int n = reg.ReadFile("city_district_test.city", [&]() { City* x = new City(); made.push_back(x); return x; });
+        CHECK(n == 1);
+        if (n == 1 && !made.empty()) {
+            CHECK(made[0]->GetDistricts().size() == 2);
+            CHECK(std::fabs(AvgHeight(*made[0]) - AvgHeight(c)) < 0.01f);
+            reg.Unregister(made[0]);
+        }
+        std::remove("city_district_test.city");
+    }
 
     c.RemoveDistrict(1);
     CHECK(c.GetDistricts().size() == 1 && c.GetBlockDistrict(id) == -1);
