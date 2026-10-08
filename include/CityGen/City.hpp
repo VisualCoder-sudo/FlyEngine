@@ -177,6 +177,7 @@ struct Building {
     int colorBucket = 0;
     int floors = 1;        // storeys; size.y is floors * kFloorHeight (plus any foundation under a slope)
     int placedIndex = -1; // >= 0: a user-placed building (index into City::GetPlacedBuildings())
+    int style = 0;         // BuildingStyle used for the facade tint (districts may differ from CityParams::style)
 };
 
 // A building plopped by the Building Insert tool. Survives regeneration: blocks
@@ -204,6 +205,19 @@ struct Block {
     // every rebuild as blocks are added/removed). This is what a building
     // override's key stays valid against.
     uint64_t id = 0;
+};
+
+// A district shapes the buildings around a point: a Downtown raises their height towards its centre
+// and falls off smoothly to the edge of its radius; a Suburb lowers them and switches the style.
+// Several districts may coexist and overlap (their height changes add up; the strongest sets the style).
+enum class DistrictKind : int { Downtown = 0, Suburb = 1, Industrial = 2 };
+struct District {
+    Vector2 pos{};
+    float radius = 120.0f;     // influence radius (m)
+    float peak = 3.0f;         // height multiplier at the centre (1 = no change; Downtown > 1, Suburb < 1)
+    int kind = 0;              // DistrictKind
+    int style = -1;            // BuildingStyle inside the district; -1 = the city's style
+    std::string name;
 };
 
 // Painted land use for a block. Auto = the procedural area-based rule.
@@ -339,6 +353,21 @@ public:
     // Road snapping: puts pb (sizes already set) beside the nearest road to
     // `cursor`, facing it. Returns false when no road is close enough.
     bool SnapBuildingToRoad(const Vector2& cursor, PlacedBuilding& pb) const;
+
+    // Districts (see District). A district acts through its position, so dragging one re-lays-out the
+    // buildings it covers. Painted blocks belong to a district at full strength.
+    const std::vector<District>& GetDistricts() const { return districts; }
+    int  AddDistrict(const District& d);                   // returns its index
+    void UpdateDistrict(int index, const District& d);
+    void MoveDistrict(int index, const Vector2& pos, bool rebuild = true);
+    void RemoveDistrict(int index);
+    // Replaces all districts with one downtown at the middle of the city whose height fades out to the edge.
+    void AutoDistricts(float peak = 3.0f);
+    void PaintBlockDistrict(uint64_t blockId, int district);   // -1 clears
+    int  GetBlockDistrict(uint64_t blockId) const;
+    // Height multiplier and style (-1 = city style) the districts give to a block centred at p.
+    void DistrictAt(const Vector2& p, uint64_t blockId, float& heightMul, int& style) const;
+    static District MakeDistrict(DistrictKind kind, const Vector2& pos);
 
     // Building overrides. `slot` is the building's index within its block's
     // `buildings` vector, which LayoutBlock fills deterministically, so the
@@ -486,6 +515,8 @@ private:
     uint64_t nextBlockId = 1; // 0 is reserved/invalid
     std::unordered_map<uint64_t, BuildingOverride> buildingOverrides; // key: (blockId<<20)|slot
     std::vector<PlacedBuilding> placed;
+    std::vector<District> districts;
+    std::unordered_map<uint64_t, int> blockDistricts;   // painted block id -> district index
     bool collisionEnabled = true;
     std::unordered_map<uint64_t, BlockKind> blockKinds; // key: block id; absent = Auto
     static uint64_t OverrideKey(uint64_t blockId, int slot) { return (blockId << 20) | (uint64_t)(uint32_t)slot; }

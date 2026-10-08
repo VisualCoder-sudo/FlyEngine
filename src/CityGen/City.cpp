@@ -1130,6 +1130,8 @@ void City::ClearGraph() {
     blocks.clear();
     buildingOverrides.clear();
     blockKinds.clear();
+    districts.clear();
+    blockDistricts.clear();
     placed.clear();
     nextBlockId = 1;
     ClearGeometry();
@@ -1256,6 +1258,8 @@ void City::StartRebuildJob() {
     job->work->nextBlockId = nextBlockId;
     job->work->buildingOverrides = buildingOverrides;
     job->work->blockKinds = blockKinds;
+    job->work->districts = districts;
+    job->work->blockDistricts = blockDistricts;
     job->work->placed = placed;
     job->work->collisionEnabled = collisionEnabled;
     job->requestId = rebuildRequestId;
@@ -1553,6 +1557,12 @@ void City::LayoutBlockProcedural(Block& block) {
         block.inset.clear();
         block.parkPoly.clear();
         block.buildings.clear();
+        float distMul = 1.0f; int bstyle = p.style;
+        {
+            int ds = -1;
+            DistrictAt(BlockCenter(block), block.id, distMul, ds);
+            if (ds >= 0) bstyle = ds;
+        }
 
         std::vector<Vector2> poly;
         poly.reserve(block.nodes.size());
@@ -1745,8 +1755,8 @@ void City::LayoutBlockProcedural(Block& block) {
                 float height = p.avgHeight * (1.0f - p.heightVariance + 2.0f * p.heightVariance * CoordHash01(i, j, p.seed ^ (int)blockMix));
                 // Style: suburbs are low, industrial blocks squat, brick mid-rise.
                 static const float kStyleHeight[4] = { 1.0f, 0.75f, 0.55f, 0.28f };
-                height *= kStyleHeight[std::clamp(p.style, 0, 3)];
-                height = Clamp(height, p.style == 3 ? 4.5f : 1.0f, 220.0f);
+                height *= kStyleHeight[std::clamp(bstyle, 0, 3)] * distMul;
+                height = Clamp(height, bstyle == 3 ? 4.5f : 1.0f, 220.0f);
                 // Whole storeys: some buildings are much shorter than the rest, then the height snaps to the floor count.
                 int floors = std::max(1, (int)lroundf(height / kFloorHeight));
                 {
@@ -1809,11 +1819,11 @@ void City::LayoutBlockProcedural(Block& block) {
                 // Shape variety: gabled houses and stepped towers on parcels that stayed plain boxes.
                 if (shape == kBuildingBox) {
                     const float roll = (float)((h >> 8) & 0xFFFFu) / 65535.0f;
-                    const float want = p.shapeVariety * (p.style == 3 ? 1.6f : 1.0f);
+                    const float want = p.shapeVariety * (bstyle == 3 ? 1.6f : 1.0f);
                     if (roll < want) {
                         const uint32_t pick = (h >> 4) % 3u;
-                        if (p.style == 3) shape = kBuildingGable;
-                        else if (p.style == 2) shape = kBuildingShed;
+                        if (bstyle == 3) shape = kBuildingGable;
+                        else if (bstyle == 2) shape = kBuildingShed;
                         else if (floors >= 5 && pick == 0u) shape = kBuildingTower;
                         else shape = pick == 1u ? kBuildingShed : kBuildingGable;
                     }
@@ -1826,6 +1836,7 @@ void City::LayoutBlockProcedural(Block& block) {
                 b.angleY = theta + rotDelta;
                 b.shape = shape;
                 b.colorBucket = (int)(h % (uint32_t)kBuildingColorBuckets);
+                b.style = bstyle;
                 block.buildings.push_back(b);
             }
         }
@@ -2056,6 +2067,7 @@ void City::LayoutBlock(Block& block) {
         b.shape = (pb.shape >= 0 && pb.shape < kBuildingShapes && pb.shape != kBuildingWedge && pb.shape != kBuildingSlant) ? pb.shape : kBuildingBox;
         b.colorBucket = ((pb.colorBucket % kBuildingColorBuckets) + kBuildingColorBuckets) % kBuildingColorBuckets;
         b.placedIndex = i;
+        b.style = params.style;
         block.buildings.push_back(b);
     }
     }
@@ -2944,7 +2956,7 @@ void City::ComputeTileCPU(Tile& t) {
                     MatrixScale(std::max(b.size.x - jx, 0.1f), b.size.y + jy, std::max(b.size.z - jz, 0.1f)),
                     MatrixMultiply(MatrixRotateY(b.angleY),
                                    MatrixTranslate(b.center.x, b.center.y + jy * 0.5f, b.center.z)));
-                const Color tint = kStyleTints[std::clamp(params.style, 0, 3)][color];
+                const Color tint = kStyleTints[std::clamp(b.style, 0, 3)][color];
                 m.m3 = tint.r / 255.0f;
                 m.m7 = tint.g / 255.0f;
                 m.m11 = tint.b / 255.0f;
@@ -3651,8 +3663,26 @@ void City::DrawOverlay3D() {
         }
     }
 
+    // District tool: a ring per district at its radius, a pillar at its centre.
+    if (state.activeCity == this && state.tool == CityTool::Districts) {
+        for (int i = 0; i < (int)districts.size(); i++) {
+            const District& d = districts[(size_t)i];
+            static const Color kc[3] = { { 255, 170, 60, 255 }, { 110, 220, 120, 255 }, { 150, 170, 200, 255 } };
+            Color c = kc[std::clamp(d.kind, 0, 2)];
+            if (i != state.districtSel) c.a = 150;
+            const float top = 5.0f + std::max(0.0f, d.peak) * 6.0f;
+            DrawLine3D({ d.pos.x, 0.5f, d.pos.y }, { d.pos.x, top, d.pos.y }, c);
+            DrawCube({ d.pos.x, top, d.pos.y }, 2.0f, 2.0f, 2.0f, c);
+            for (int k = 0; k < 64; k++) {
+                const float a0 = (float)k / 64.0f * 6.2831853f, a1 = (float)(k + 1) / 64.0f * 6.2831853f;
+                DrawLine3D({ d.pos.x + cosf(a0) * d.radius, 0.6f, d.pos.y + sinf(a0) * d.radius },
+                           { d.pos.x + cosf(a1) * d.radius, 0.6f, d.pos.y + sinf(a1) * d.radius }, c);
+            }
+        }
+    }
+
     // Paint tool: outline the block under the cursor.
-    if (state.activeCity == this && state.tool == CityTool::PaintBlock &&
+    if (state.activeCity == this && (state.tool == CityTool::PaintBlock || (state.tool == CityTool::Districts && state.districtPaintMode)) &&
         state.hoveredBlock >= 0 && (size_t)state.hoveredBlock < blocks.size()) {
         const auto& bn = blocks[(size_t)state.hoveredBlock].nodes;
         for (size_t i = 0; i < bn.size(); i++) {
@@ -4231,6 +4261,99 @@ void City::SetBlockKind(uint64_t blockId, BlockKind kind) {
     RebuildAll();
 }
 
+District City::MakeDistrict(DistrictKind kind, const Vector2& pos) {
+    District d;
+    d.pos = pos;
+    d.kind = (int)kind;
+    switch (kind) {
+        case DistrictKind::Downtown:   d.peak = 3.0f; d.style = 0; d.radius = 120.0f; d.name = "Downtown"; break;
+        case DistrictKind::Suburb:     d.peak = 1.0f; d.style = 3; d.radius = 140.0f; d.name = "Suburb"; break;
+        case DistrictKind::Industrial: d.peak = 1.0f; d.style = 2; d.radius = 100.0f; d.name = "Industrial"; break;
+    }
+    return d;
+}
+
+int City::AddDistrict(const District& d) {
+    districts.push_back(d);
+    districts.back().radius = std::max(districts.back().radius, 1.0f);
+    RebuildAll();
+    return (int)districts.size() - 1;
+}
+
+void City::UpdateDistrict(int index, const District& d) {
+    if (index < 0 || (size_t)index >= districts.size()) return;
+    districts[(size_t)index] = d;
+    districts[(size_t)index].radius = std::max(d.radius, 1.0f);
+    RebuildAll();
+}
+
+void City::MoveDistrict(int index, const Vector2& pos, bool rebuild) {
+    if (index < 0 || (size_t)index >= districts.size()) return;
+    districts[(size_t)index].pos = pos;
+    if (rebuild) RebuildAll();
+}
+
+void City::RemoveDistrict(int index) {
+    if (index < 0 || (size_t)index >= districts.size()) return;
+    districts.erase(districts.begin() + index);
+    for (auto it = blockDistricts.begin(); it != blockDistricts.end();) {
+        if (it->second == index) it = blockDistricts.erase(it);
+        else { if (it->second > index) it->second--; ++it; }
+    }
+    RebuildAll();
+}
+
+void City::AutoDistricts(float peak) {
+    districts.clear();
+    blockDistricts.clear();
+    if (nodes.empty()) { RebuildAll(); return; }
+    Vector2 lo = nodes[0].pos, hi = nodes[0].pos;
+    for (const RoadNode& n : nodes) {
+        lo.x = std::min(lo.x, n.pos.x); lo.y = std::min(lo.y, n.pos.y);
+        hi.x = std::max(hi.x, n.pos.x); hi.y = std::max(hi.y, n.pos.y);
+    }
+    District d = MakeDistrict(DistrictKind::Downtown, { (lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f });
+    d.peak = peak;
+    d.radius = std::max(40.0f, 0.5f * std::max(hi.x - lo.x, hi.y - lo.y) * 1.1f);   // fades out near the city edge
+    d.style = -1;                                                                   // keep the city's own style
+    districts.push_back(d);
+    RebuildAll();
+}
+
+void City::PaintBlockDistrict(uint64_t blockId, int district) {
+    if (district < 0 || (size_t)district >= districts.size()) blockDistricts.erase(blockId);
+    else blockDistricts[blockId] = district;
+    RebuildAll();
+}
+
+int City::GetBlockDistrict(uint64_t blockId) const {
+    const auto it = blockDistricts.find(blockId);
+    return it == blockDistricts.end() ? -1 : it->second;
+}
+
+void City::DistrictAt(const Vector2& p, uint64_t blockId, float& heightMul, int& style) const {
+    heightMul = 1.0f;
+    style = -1;
+    float best = 0.0f;
+    const auto apply = [&](const District& d, float w) {
+        const float t = w * w * (3.0f - 2.0f * w);   // smoothstep: flat at the centre and at the rim
+        heightMul += (d.peak - 1.0f) * t;
+        if (d.style >= 0 && w > best) { best = w; style = d.style; }
+    };
+    const auto paint = blockDistricts.find(blockId);
+    if (paint != blockDistricts.end() && (size_t)paint->second < districts.size()) {
+        // Painted: the block takes the district's peak and style outright.
+        apply(districts[(size_t)paint->second], 1.0f);
+        heightMul = std::max(heightMul, 0.15f);
+        return;
+    }
+    for (const District& d : districts) {
+        const float w = 1.0f - Vector2Distance(p, d.pos) / std::max(d.radius, 1.0f);
+        if (w > 0.0f) apply(d, std::min(w, 1.0f));
+    }
+    heightMul = std::max(heightMul, 0.15f);
+}
+
 BlockKind City::GetBlockKind(uint64_t blockId) const {
     const auto it = blockKinds.find(blockId);
     return it == blockKinds.end() ? BlockKind::Auto : it->second;
@@ -4416,6 +4539,16 @@ bool City::WriteToStream(std::ostream& out) const {
             }
         }
     }
+    if (!districts.empty()) {
+        out << "DISTRICTS " << districts.size() << '\n';
+        for (const District& d : districts) {
+            std::string nm = d.name.empty() ? "-" : d.name;
+            for (char& ch : nm) if (ch == ' ' || ch == '\n' || ch == '\t') ch = '_';
+            out << d.pos.x << ' ' << d.pos.y << ' ' << d.radius << ' ' << d.peak << ' ' << d.kind << ' ' << d.style << ' ' << nm << '\n';
+        }
+        out << "DPAINT " << blockDistricts.size() << '\n';
+        for (const auto& kv : blockDistricts) out << kv.first << ' ' << kv.second << '\n';
+    }
     {
         size_t nk = 0;
         for (const auto& nd : nodes) if (nd.jkind != 0) nk++;
@@ -4516,6 +4649,8 @@ bool City::ReadFromStream(std::istream& in) {
             buildingOverrides[OverrideKey(blockId, slot)] = ov;
         }
         blockKinds.clear();
+        districts.clear();
+        blockDistricts.clear();
         placed.clear();
         collisionEnabled = true;
         params.carColorAll = false;
@@ -4606,6 +4741,27 @@ bool City::ReadFromStream(std::istream& in) {
                     size_t idx = 0; float isl = 0, rg = 0; int sp = 1, co = 0;
                     if (!(in >> idx >> isl >> rg >> sp >> co)) return false;
                     if (idx < nodes.size()) { nodes[idx].rbIsland = isl; nodes[idx].rbRing = rg; nodes[idx].rbSplitters = sp != 0; nodes[idx].rbConcrete = co != 0; }
+                }
+            } else if (tag == "DISTRICTS") {
+                size_t dc = 0;
+                if (!(in >> dc)) return false;
+                districts.assign(dc, District{});
+                for (District& d : districts) {
+                    std::string nm;
+                    if (!(in >> d.pos.x >> d.pos.y >> d.radius >> d.peak >> d.kind >> d.style >> nm)) return false;
+                    if (nm == "-") nm.clear();
+                    for (char& ch : nm) if (ch == '_') ch = ' ';
+                    d.name = nm;
+                    d.radius = std::max(d.radius, 1.0f);
+                    d.style = std::clamp(d.style, -1, 3);
+                }
+            } else if (tag == "DPAINT") {
+                size_t pc = 0;
+                if (!(in >> pc)) return false;
+                for (size_t i = 0; i < pc; i++) {
+                    uint64_t id = 0; int di = 0;
+                    if (!(in >> id >> di)) return false;
+                    if (di >= 0 && (size_t)di < districts.size()) blockDistricts[id] = di;
                 }
             } else if (tag == "VARY") {
                 float sc = 0.15f, fp = 0.15f;

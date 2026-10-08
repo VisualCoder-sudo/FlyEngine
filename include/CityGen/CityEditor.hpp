@@ -7,7 +7,7 @@
 
 namespace city {
 
-    enum class CityTool : int { Select = 0, PaintBlock = 1, InsertBuilding = 2, DrawRoad = 3, ElevateRoad = 4 };
+    enum class CityTool : int { Select = 0, PaintBlock = 1, InsertBuilding = 2, DrawRoad = 3, ElevateRoad = 4, Districts = 5 };
 
     // Selection/drag state used by the viewport node editor and the ImGui panel.
     struct CityEditorState {
@@ -65,6 +65,14 @@ namespace city {
         PlacedBuilding insertPreview{};
         bool insertHasPreview = false;
         bool insertPreviewOk = false;
+
+        // District tool: click a marker to select/drag it, click ground to place a new one, or paint blocks into the selected district.
+        int districtSel = -1;
+        bool districtDragging = false;
+        bool districtPaintMode = false;   // false = move/place markers, true = paint blocks into the selected district
+        int districtNewKind = 0;          // DistrictKind for newly placed districts
+        float districtAutoPeak = 3.0f;
+        Vector2 districtDragLast{};
 
         // Keyboard nudge step (Shift scales it down for fine control).
         float nudgeStep = 1.0f;

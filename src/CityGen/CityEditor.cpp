@@ -138,6 +138,61 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
         return false;
     }
 
+    // --- District tool ---
+    if (s.tool == CityTool::Districts) {
+        const bool over = ui::IsMouseOverUI();
+        Ray dr = GetMouseRay(GetMousePosition(), camera);
+        const Vector2 hit = RayGroundPoint(dr);
+        const bool valid = IsValidPoint(hit);
+        if (s.districtSel >= (int)city->GetDistricts().size()) s.districtSel = -1;
+        if (s.districtPaintMode) {
+            if (!over && valid) s.hoveredBlock = city->PickBlockAt(hit);
+            if (s.painting && !lDown) s.painting = false;
+            if ((lPressed && !over) || (s.painting && lDown)) {
+                if (lPressed) { s.painting = true; s.paintUndoPushed = false; }
+                if (s.hoveredBlock >= 0 && s.districtSel >= 0) {
+                    const uint64_t id = city->GetBlocks()[(size_t)s.hoveredBlock].id;
+                    if (city->GetBlockDistrict(id) != s.districtSel) {
+                        if (!s.paintUndoPushed) { s.paintUndoPushed = true; NotifyCityEdit(); }
+                        city->PaintBlockDistrict(id, s.districtSel);
+                    }
+                }
+                return true;
+            }
+            return lReleased;
+        }
+        if (s.districtDragging) {
+            if (lDown && valid && s.districtSel >= 0) {
+                if (Vector2Distance(hit, s.districtDragLast) > 0.75f) {
+                    s.districtDragLast = hit;
+                    city->MoveDistrict(s.districtSel, hit);
+                }
+            }
+            if (!lDown) s.districtDragging = false;
+            return true;
+        }
+        if (lPressed && !over && valid) {
+            // Pick the nearest marker within a fixed pick radius, else place a new district.
+            int pick = -1; float bd = std::max(8.0f, roadW * 1.5f);
+            const auto& ds = city->GetDistricts();
+            for (int i = 0; i < (int)ds.size(); i++) {
+                const float d = Vector2Distance(hit, ds[(size_t)i].pos);
+                if (d < bd) { bd = d; pick = i; }
+            }
+            if (pick >= 0) {
+                s.districtSel = pick;
+                s.districtDragging = true;
+                s.districtDragLast = ds[(size_t)pick].pos;
+                NotifyCityEdit();
+            } else {
+                NotifyCityEdit();
+                s.districtSel = city->AddDistrict(City::MakeDistrict((DistrictKind)s.districtNewKind, hit));
+            }
+            return true;
+        }
+        return lReleased;
+    }
+
     // --- Road draw tool ---
     s.roadPreview.clear();
     s.roadSnapValid = false;
@@ -499,7 +554,8 @@ void DrawCityEditorPanel() {
         ImGui::RadioButton("Paint block", &tool, (int)CityTool::PaintBlock); ImGui::SameLine();
         ImGui::RadioButton("Draw road (R)", &tool, (int)CityTool::DrawRoad);
         ImGui::RadioButton("Insert building", &tool, (int)CityTool::InsertBuilding); ImGui::SameLine();
-        ImGui::RadioButton("Elevate road", &tool, (int)CityTool::ElevateRoad);
+        ImGui::RadioButton("Elevate road", &tool, (int)CityTool::ElevateRoad); ImGui::SameLine();
+        ImGui::RadioButton("Districts", &tool, (int)CityTool::Districts);
         if (tool != (int)s.tool) {
             s.tool = (CityTool)tool;
             s.painting = false; s.draggingNode = false; s.elevDragging = false;
@@ -532,6 +588,45 @@ void DrawCityEditorPanel() {
         }
         if (s.tool == CityTool::ElevateRoad) {
             ImGui::TextDisabled("Drag a node up/down to set its height (Shift = fine, Ctrl = snap to 0.5 m).\nClick a road to set grade, smooth it or turn it into a bridge.");
+        }
+        if (s.tool == CityTool::Districts) {
+            static const char* kKinds[] = { "Downtown", "Suburb", "Industrial" };
+            static const char* kDStyles[] = { "City style", "Modern", "Brick", "Industrial", "Suburban" };
+            ImGui::Checkbox("Paint blocks into selected district", &s.districtPaintMode);
+            ImGui::Combo("New district kind", &s.districtNewKind, kKinds, 3);
+            ImGui::DragFloat("Auto downtown height x", &s.districtAutoPeak, 0.05f, 0.3f, 10.0f);
+            if (ImGui::Button("Auto: downtown in the middle")) { NotifyCityEdit(); city->AutoDistricts(s.districtAutoPeak); s.districtSel = 0; }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear all")) {
+                NotifyCityEdit();
+                for (int i = (int)city->GetDistricts().size() - 1; i >= 0; i--) city->RemoveDistrict(i);
+                s.districtSel = -1;
+            }
+            int del = -1;
+            const auto& ds = city->GetDistricts();
+            for (int i = 0; i < (int)ds.size(); i++) {
+                ImGui::PushID(i);
+                char lbl[96];
+                snprintf(lbl, sizeof lbl, "%s (%s)##d", ds[(size_t)i].name.empty() ? "District" : ds[(size_t)i].name.c_str(), kKinds[std::clamp(ds[(size_t)i].kind, 0, 2)]);
+                if (ImGui::Selectable(lbl, s.districtSel == i)) s.districtSel = i;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("x")) del = i;
+                ImGui::PopID();
+            }
+            if (del >= 0) { NotifyCityEdit(); city->RemoveDistrict(del); s.districtSel = -1; }
+            if (s.districtSel >= 0 && (size_t)s.districtSel < city->GetDistricts().size()) {
+                District d = city->GetDistricts()[(size_t)s.districtSel];
+                bool ch = false;
+                char nm[64]; snprintf(nm, sizeof nm, "%s", d.name.c_str());
+                if (ImGui::InputText("Name", nm, sizeof nm)) { d.name = nm; ch = true; }
+                ch |= ImGui::Combo("Kind", &d.kind, kKinds, 3);
+                ch |= ImGui::DragFloat("Radius", &d.radius, 1.0f, 10.0f, 2000.0f, "%.0f m");
+                ch |= ImGui::DragFloat("Height at centre x", &d.peak, 0.02f, 0.15f, 10.0f);
+                int st = d.style + 1;
+                if (ImGui::Combo("Style", &st, kDStyles, 5)) { d.style = st - 1; ch = true; }
+                if (ch) { NotifyCityEdit(); city->UpdateDistrict(s.districtSel, d); }
+            }
+            ImGui::TextDisabled("Click ground: new district. Click a marker: select + drag.\nHeight fades smoothly from the centre to the radius; districts can overlap.");
         }
         if (s.tool == CityTool::PaintBlock) {
             int k = (int)s.paintKind;
