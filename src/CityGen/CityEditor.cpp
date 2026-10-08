@@ -689,6 +689,9 @@ void DrawCityEditorPanel() {
         ImGui::Checkbox("Street furniture (lights, trees)", &p.furniture);
         ImGui::DragInt("Cars (Play mode)", &p.cars, 0.5f, 0, 500);
         ImGui::DragInt("Pedestrians (Play mode)", &p.pedestrians, 0.5f, 0, 1000);
+        ImGui::Checkbox("Cars drive to destinations", &p.routedTraffic);
+        ImGui::SameLine(); ImGui::TextDisabled("(downtown attracts more)");
+        ImGui::Checkbox("Rush hours (car count follows the hour)", &p.rushHours);
         ImGui::DragFloat("Traffic detail distance", &p.trafficDetailDistance, 1.0f, 0.0f, 2000.0f, p.trafficDetailDistance > 0.0f ? "%.0f m" : "always detailed");
         ImGui::Checkbox("Drive on the left", &p.leftHandTraffic);
         if (ImGui::TreeNode("Car colours")) {

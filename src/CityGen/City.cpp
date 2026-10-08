@@ -12,6 +12,8 @@
 #include <array>
 #include <chrono>
 #include <climits>
+#include <limits>
+#include <queue>
 #include <cmath>
 #include <iomanip>
 #include <cstdint>
@@ -303,6 +305,70 @@ static bool EdgeAllowsFrom(const RoadEdge& e, int from) {
     return (e.oneWay == 1 && e.a == from) || (e.oneWay == 2 && e.b == from);
 }
 
+// ---------------------------------------------------------------------------
+// Routing: cars head for destination nodes along the fastest allowed route.
+// ---------------------------------------------------------------------------
+void City::PickDestinationPool() {
+    if (routes.version == graphVersion && !routes.pool.empty()) return;
+    routes.version = graphVersion;
+    routes.pool.clear();
+    routes.dist.clear();
+    if (nodeEdges.size() != nodes.size()) return;
+    std::vector<int> cand;
+    std::vector<float> w;
+    float total = 0.0f;
+    for (int i = 0; i < (int)nodes.size(); i++) {
+        bool drivable = false;
+        for (int ei : nodeEdges[(size_t)i]) if (edges[(size_t)ei].type != (int)RoadType::Pedestrian) { drivable = true; break; }
+        if (!drivable) continue;
+        float mul = 1.0f; int st = -1;
+        DistrictAt(nodes[(size_t)i].pos, 0, mul, st);       // downtown districts attract more trips
+        mul = std::max(mul, 0.25f);
+        cand.push_back(i); w.push_back(mul); total += mul;
+    }
+    uint32_t r = 0x9E3779B9u ^ (uint32_t)params.seed;
+    for (int k = 0; k < 64 && routes.pool.size() < 24 && !cand.empty(); k++) {
+        float x = Lcg01(r) * total;
+        size_t pick = cand.size() - 1;
+        for (size_t j = 0; j < cand.size(); j++) { x -= w[j]; if (x <= 0.0f) { pick = j; break; } }
+        if (std::find(routes.pool.begin(), routes.pool.end(), cand[pick]) == routes.pool.end()) routes.pool.push_back(cand[pick]);
+    }
+}
+
+int City::PickDestination(uint32_t& rng) {
+    PickDestinationPool();
+    if (routes.pool.empty()) return -1;
+    return routes.pool[Lcg(rng) % (uint32_t)routes.pool.size()];
+}
+
+const std::vector<float>& City::RouteField(int dest) {
+    PickDestinationPool();
+    const auto it = routes.dist.find(dest);
+    if (it != routes.dist.end()) return it->second;
+    const float kInf = std::numeric_limits<float>::infinity();
+    std::vector<float> d(nodes.size(), kInf);
+    if (dest >= 0 && (size_t)dest < nodes.size() && nodeEdges.size() == nodes.size()) {
+        using Item = std::pair<float, int>;
+        std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
+        d[(size_t)dest] = 0.0f;
+        pq.push({ 0.0f, dest });
+        while (!pq.empty()) {
+            const auto [dv, v] = pq.top(); pq.pop();
+            if (dv > d[(size_t)v]) continue;
+            for (int ei : nodeEdges[(size_t)v]) {
+                const RoadEdge& e = edges[(size_t)ei];
+                if (e.type == (int)RoadType::Pedestrian) continue;
+                const int u = e.a == v ? e.b : e.a;
+                if (!EdgeAllowsFrom(e, u)) continue;                  // u -> v must be drivable
+                const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+                const float nd = dv + len / std::max(EdgeSpeedLimit(ei), 1.0f);
+                if (nd < d[(size_t)u]) { d[(size_t)u] = nd; pq.push({ nd, u }); }
+            }
+        }
+    }
+    return routes.dist.emplace(dest, std::move(d)).first->second;
+}
+
 void City::SpawnAgent(Agent& a, bool car) {
     a.car = car;
     for (int tries = 0; tries < 20; tries++) {
@@ -327,6 +393,7 @@ void City::SpawnAgent(Agent& a, bool car) {
     a.minGap = 1.8f + Lcg01(a.rng) * 1.4f;
     a.speed = a.maxSpeed * (0.5f + Lcg01(a.rng) * 0.5f);
     a.wait = 0.0f; a.released = false; a.placed = false; a.inJ = false; a.nextEdge = -1;
+    a.dest = car && params.routedTraffic ? PickDestination(a.rng) : -1;
     const int lanes = std::max(edges[(size_t)a.edge].lanes > 0 ? edges[(size_t)a.edge].lanes : params.lanes, 1);
     a.lane = car ? (int)(Lcg(a.rng) % (uint32_t)std::max(edges[(size_t)a.edge].oneWay ? lanes : lanes / 2, 1)) : (int)(Lcg(a.rng) & 1u);
     static const Color kCar[8] = { {200,40,40,255}, {40,90,200,255}, {230,230,230,255}, {30,30,34,255},
@@ -589,11 +656,30 @@ void City::StepTraffic(float dt) {
     simTime += dt;
     // Keep the agent counts in sync with the params.
     size_t wantCars = (size_t)std::max(params.cars, 0), wantPeds = (size_t)std::max(params.pedestrians, 0);
+    int carChangeBudget = 1 << 20;   // cars added/removed this step (rush hours change the count gradually)
+    if (params.rushHours) {
+        static const float kPts[10][2] = { {0,0.2f},{5,0.2f},{7,1.0f},{9.5f,1.0f},{11,0.6f},{15.5f,0.6f},{17,1.0f},{19.5f,1.0f},{22,0.25f},{24,0.2f} };
+        const float h = fmodf(params.timeOfDay, 24.0f);
+        float density = 1.0f;
+        for (int k = 0; k < 9; k++)
+            if (h >= kPts[k][0] && h <= kPts[k + 1][0]) {
+                const float t = (h - kPts[k][0]) / std::max(kPts[k + 1][0] - kPts[k][0], 1e-3f);
+                density = kPts[k][1] + (kPts[k + 1][1] - kPts[k][1]) * t;
+                break;
+            }
+        wantCars = (size_t)lroundf((float)wantCars * density);
+        carChangeBudget = 2;
+    }
     size_t haveCars = 0, havePeds = 0;
     for (const Agent& a : agents) (a.car ? haveCars : havePeds)++;
     auto trim = [&](bool car, size_t want, size_t have) {
-        while (have > want) {
-            for (size_t i = agents.size(); i-- > 0;) if (agents[i].car == car) { agents.erase(agents.begin() + (long)i); break; }
+        int budget = car ? carChangeBudget : (1 << 20);
+        while (have > want && budget-- > 0) {
+            size_t victim = agents.size();
+            for (size_t i = agents.size(); i-- > 0;) if (agents[i].car == car && (!car || agents[i].far)) { victim = i; break; }   // out of sight first
+            if (victim == agents.size()) for (size_t i = agents.size(); i-- > 0;) if (agents[i].car == car) { victim = i; break; }
+            if (victim == agents.size()) break;
+            agents.erase(agents.begin() + (long)victim);
             have--;
         }
     };
@@ -604,7 +690,7 @@ void City::StepTraffic(float dt) {
             if (o.car && o.edge == a.edge && o.fwd == a.fwd && o.lane == a.lane && fabsf(o.s - a.s) < 7.0f) return true;
         return false;
     };
-    for (size_t i = haveCars; i < wantCars; i++) {
+    for (size_t i = haveCars; i < wantCars && carChangeBudget-- > 0; i++) {
         Agent a; a.rng = (uint32_t)(0x9E3779B9u * (uint32_t)(agents.size() + 1)) ^ (uint32_t)params.seed;
         SpawnAgent(a, true);
         for (int tries = 0; tries < 30 && overlapsExisting(a); tries++) SpawnAgent(a, true);
@@ -794,6 +880,24 @@ void City::StepTraffic(float dt) {
             }
             const std::vector<int>& pool = usable.empty() ? options : usable;
             a.nextEdge = pool[Lcg(a.rng) % (uint32_t)pool.size()];
+            if (params.routedTraffic) {
+                if (a.dest < 0 || a.dest == toNode) {                              // trip finished (or none yet): pick the next one
+                    if (a.dest == toNode) tripsCompleted++;
+                    a.dest = PickDestination(a.rng);
+                    for (int tries = 0; tries < 4 && a.dest == toNode; tries++) a.dest = PickDestination(a.rng);
+                }
+                if (a.dest >= 0) {
+                    const std::vector<float>& field = RouteField(a.dest);
+                    float best = std::numeric_limits<float>::infinity();
+                    for (int ei2 : pool) {
+                        const RoadEdge& e2 = edges[(size_t)ei2];
+                        const int other = e2.a == toNode ? e2.b : e2.a;
+                        const float len2 = Vector2Distance(nodes[(size_t)e2.a].pos, nodes[(size_t)e2.b].pos);
+                        const float cost = len2 / std::max(EdgeSpeedLimit(ei2), 1.0f) + field[(size_t)other];
+                        if (cost < best) { best = cost; a.nextEdge = ei2; }
+                    }
+                }
+            }
             a.nextFwd = edges[(size_t)a.nextEdge].a == toNode;
             const int m = manoeuvre(a.nextEdge);
             a.turn = m == 0 ? -1 : (m == 2 ? 1 : 0);
@@ -1071,6 +1175,7 @@ void City::StepTraffic(float dt) {
                 if (agents[j].car && agents[j].nearTime >= 2.0f && Vector3DistanceSqr(agents[i].pos, agents[j].pos) < 2.2f * 2.2f) st.overlaps++;
         }
         st.maxWalkerSpeed = std::max(st.maxWalkerSpeed, trafficStats.maxWalkerSpeed * (1.0f - 0.3f * dt));   // slowly decaying peak
+        st.trips = tripsCompleted;
         st.avgSpeed = st.cars ? sum / (float)st.cars : 0.0f;
         st.minGap = statMinGap < 1e8f ? statMinGap : -1.0f;
         st.stepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - stepT0).count();
@@ -1216,6 +1321,7 @@ void City::GenerateGrid(const Vector2& origin) {
 }
 
 void City::RebuildAll() {
+    graphVersion++;
     if (nodes.size() >= kAsyncRebuildNodes) {
         RequestRebuild();          // big city: build on a worker, keep drawing the old one
         return;
@@ -4589,6 +4695,8 @@ bool City::WriteToStream(std::ostream& out) const {
             for (size_t i = 0; i < edges.size(); i++) if (edges[i].oneWay != 0) out << i << ' ' << edges[i].oneWay << '\n';
         }
     }
+    if (!params.routedTraffic || params.rushHours)
+        out << "TRAFFIC " << (params.routedTraffic ? 1 : 0) << ' ' << (params.rushHours ? 1 : 0) << '\n';
     if (params.timeOfDay != 12.0f || params.dayLengthMinutes != 0.0f)
         out << "DAY " << params.timeOfDay << ' ' << params.dayLengthMinutes << '\n';
     // Last on purpose: a reader that predates districts stops at the first tag it does not know,
@@ -4695,6 +4803,10 @@ bool City::ReadFromStream(std::istream& in) {
         collisionEnabled = true;
         params.carColorAll = false;
         params.carColors = CityParams{}.carColors;
+        params.routedTraffic = true;
+        params.rushHours = false;
+        params.timeOfDay = 12.0f;
+        params.dayLengthMinutes = 0.0f;
         // Optional trailing sections in any order: KINDS, COLL, PLACED.
         for (;;) {
             const std::streampos before = in.tellg();
@@ -4782,6 +4894,11 @@ bool City::ReadFromStream(std::istream& in) {
                     if (!(in >> idx >> isl >> rg >> sp >> co)) return false;
                     if (idx < nodes.size()) { nodes[idx].rbIsland = isl; nodes[idx].rbRing = rg; nodes[idx].rbSplitters = sp != 0; nodes[idx].rbConcrete = co != 0; }
                 }
+            } else if (tag == "TRAFFIC") {
+                int routed = 1, rush = 0;
+                if (!(in >> routed >> rush)) return false;
+                params.routedTraffic = routed != 0;
+                params.rushHours = rush != 0;
             } else if (tag == "DAY") {
                 float tod = 12.0f, len = 0.0f;
                 if (!(in >> tod >> len)) return false;

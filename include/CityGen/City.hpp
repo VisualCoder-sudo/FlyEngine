@@ -105,6 +105,8 @@ struct CityParams {
         { "Grey", { 128, 131, 138, 255 }, 25.0f, false },
         { "White", { 232, 232, 236, 255 }, 15.0f, false },
         { "Other", { 200, 40, 40, 255 }, 5.0f, true } };
+    bool routedTraffic = true;            // cars drive to destinations (shortest route, busier downtown) instead of wandering
+    bool rushHours = false;               // the number of cars follows the time of day (peaks 7-9 and 16-19, quiet at night)
     float timeOfDay = 12.0f;              // hours, 0..24 (12 = noon). Not part of the layout: changing it never rebuilds
     float dayLengthMinutes = 0.0f;        // real minutes per 24 h; 0 = the time stays where it is set
     float trafficDetailDistance = 150.0f; // cars farther than this from the camera run the cheap model (0 = always detailed)
@@ -461,6 +463,7 @@ private:
         Vector3 lastPos{};      // pose at the previous traffic step (jump detection in the stats)
         float yaw = 0.0f;
         bool placed = false;    // pos/yaw initialised
+        int dest = -1;          // destination node of the current trip (routed traffic), -1 = none
         float wheelRot = 0.0f;  // wheel roll angle (rad)
         float colorRoll = 0.0f; // 0..1 draw deciding the colour from the table (stable while the table changes)
         float colorRoll2 = 0.0f;// picks the vivid colour of an "Other" entry
@@ -482,15 +485,29 @@ private:
     };
     std::vector<Agent> agents;
 public:
-    void ClearAgents() { agents.clear(); simTime = 0.0f; trafficStats = TrafficStats{}; }
+    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; trafficStats = TrafficStats{}; }
+    // Runs one traffic step without Play mode (tests).
+    void TrafficStepForTest(float dt) { StepTraffic(dt); }
+    const std::vector<int>& RouteDestinations() { PickDestinationPool(); return routes.pool; }
+    // Travel time (s) from every node to `dest` along allowed one-way/car roads (infinity = unreachable).
+    const std::vector<float>& RouteField(int dest);
 private:
     float trafficClock = 0.0f;
+    int tripsCompleted = 0;
+    uint64_t graphVersion = 0;   // bumped on every rebuild: invalidates the cached routes
+    struct RouteCache {
+        uint64_t version = ~0ull;
+        std::vector<int> pool;                              // popular destination nodes (downtown weighs more)
+        std::unordered_map<int, std::vector<float>> dist;   // dest node -> travel time field
+    } routes;
+    void PickDestinationPool();
+    int PickDestination(uint32_t& rng);
     Vector3 trafficFocus{};      // camera position (set while drawing), drives the traffic detail distance
     bool hasTrafficFocus = false;
     unsigned trafficFrame = 0;
     float simTime = 0.0f;       // seconds of Play-mode traffic simulated
 public:
-    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0; };
+    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0; };
     const TrafficStats& GetTrafficStats() const { return trafficStats; }
 private:
     TrafficStats trafficStats;

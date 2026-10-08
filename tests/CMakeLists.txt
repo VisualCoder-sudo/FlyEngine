@@ -95,3 +95,8 @@ target_link_libraries(character_jump_test PRIVATE FlyEngineCore FlyRL)
 # not registered with ctest: build/tests/city_tower_mesh_test
 add_executable(city_tower_mesh_test city_tower_mesh_test.cpp)
 target_link_libraries(city_tower_mesh_test PRIVATE FlyEngineCore FlyRL)
+
+# Routed traffic (destinations, trips, route fields, rush hours). Opens a window, so built but not registered
+# with ctest: build/tests/city_traffic_route_test
+add_executable(city_traffic_route_test city_traffic_route_test.cpp)
+target_link_libraries(city_traffic_route_test PRIVATE FlyEngineCore FlyRL)
