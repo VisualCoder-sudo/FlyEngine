@@ -450,7 +450,7 @@ public:
     // (position and yaw about +Y); for tests and screenshots.
     int CountInstances(int shape) const;
     bool FindBus(int index, Vector3& pos, float& yaw) const;
-    bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
+    bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker = false) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
     std::string DebugBuses() const;   // one line per bus: road, position, speed, target stop, dwell
     bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 

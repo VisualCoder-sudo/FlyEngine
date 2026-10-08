@@ -4028,8 +4028,8 @@ void City::Draw() {
             if (a.car && !a.far && a.turn != 0 && fmodf(trafficClock, 0.7f) < 0.35f) {
                 const float side = a.turn > 0 ? -0.86f : 0.86f;   // right of travel is -z in the car mesh
                 for (float lx : { 2.0f, -2.0f }) {
-                    Matrix bm = MatrixMultiply(MatrixScale(0.22f, 0.2f, 0.34f),
-                                MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x + cosf(a.yaw) * lx + sinf(a.yaw) * side, a.pos.y + 0.75f, a.pos.z - sinf(a.yaw) * lx + cosf(a.yaw) * side)));
+                    // In the car's own (tilted) frame, so the lamps stay on the body on slopes.
+                    Matrix bm = MatrixMultiply(MatrixMultiply(MatrixScale(0.22f, 0.2f, 0.34f), MatrixTranslate(lx, 0.75f, side)), carBase);
                     bm.m3 = -1.0f; bm.m7 = -0.6f; bm.m11 = -0.05f;
                     blinkM.push_back(bm);
                 }
@@ -4245,9 +4245,10 @@ float City::CarPitch(const Agent& a) const {
     return d > 0.2f ? atan2f(p1.y - p0.y, d) : 0.0f;
 }
 
-bool City::FindSlopedCar(Vector3& pos, float& yaw, float& pitch) const {
+bool City::FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker) const {
     for (const Agent& a : agents) {
         if (!a.car || a.bus >= 0 || a.far || !a.placed) continue;
+        if (needBlinker && !(a.turn != 0 && fmodf(trafficClock, 0.7f) < 0.35f)) continue;   // its turn signal is lit right now
         const float p = CarPitch(a);
         if (fabsf(p) > 0.05f) { pos = a.pos; yaw = a.yaw; pitch = p; return true; }
     }

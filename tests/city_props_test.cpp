@@ -91,6 +91,24 @@ int main() {
             for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
             TakeScreenshot("city_car_slope.png");
         }
+        // Its turn signal must sit on the tilted body too: wait for a sloped car with a lit indicator.
+        found = false;
+        for (int i = 0; i < 6000 && !found; i++) {
+            c.TrafficStepForTest(0.05f);
+            found = c.FindSlopedCar(pos, yaw, pitch, true);
+        }
+        std::printf("sloped car with lit indicator: %s\n", found ? "found" : "none");
+        CHECK(found);
+        if (found) {
+            const Vector3 fwd = { cosf(yaw), 0.0f, -sinf(yaw) };
+            Camera3D& cam = engine.GetCamera();
+            cam.position = { pos.x + fwd.z * 6.5f + fwd.x * 2.0f, pos.y + 1.3f, pos.z - fwd.x * 6.5f + fwd.z * 2.0f };
+            cam.target = { pos.x, pos.y + 0.7f, pos.z };
+            cam.up = { 0.0f, 1.0f, 0.0f };
+            cam.fovy = 40.0f;
+            for (int f = 0; f < 3; f++) engine.StepFrame(1.0f / 60.0f);
+            TakeScreenshot("city_car_blink.png");
+        }
         c.GetParams().cars = 0;
     }
 
