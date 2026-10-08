@@ -483,11 +483,18 @@ Mesh GenerateCityShedMesh() {
 
 // Stepped tower: base (full footprint, lower 45%), shaft (80% wide, to 85%), crown (55% wide, to the top).
 Mesh GenerateCityTowerMesh() {
-    std::vector<Vector3> t;
-    AddBoxTris(t, -0.5f, -0.5f, -0.5f, 0.5f, -0.05f, 0.5f, true);
-    AddBoxTris(t, -0.4f, -0.05f, -0.4f, 0.4f, 0.35f, 0.4f, false);
-    AddBoxTris(t, -0.27f, 0.35f, -0.27f, 0.27f, 0.5f, 0.27f, false);
-    return BuildFlatShapeMesh(t);
+    // Winding is decided per box against that box's own centre: against the whole shape's origin the
+    // base's top face (y = -0.05, below the origin) came out inverted and the ledge had no roof.
+    std::vector<Vector3> t, in;
+    const auto box = [&](float x0, float y0, float z0, float x1, float y1, float z1, bool bottom) {
+        const size_t before = t.size();
+        AddBoxTris(t, x0, y0, z0, x1, y1, z1, bottom);
+        in.insert(in.end(), (t.size() - before) / 3, Vector3{ (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, (z0 + z1) * 0.5f });
+    };
+    box(-0.5f, -0.5f, -0.5f, 0.5f, -0.05f, 0.5f, true);
+    box(-0.4f, -0.05f, -0.4f, 0.4f, 0.35f, 0.4f, false);
+    box(-0.27f, 0.35f, -0.27f, 0.27f, 0.5f, 0.27f, false);
+    return BuildFlatShapeMesh(t, nullptr, &in);
 }
 
 Mesh BuildColoredShapeMesh(const std::vector<Vector3>& tris, const std::vector<Color>& triColors, const std::vector<Vector3>& inside) {

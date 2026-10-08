@@ -90,3 +90,8 @@ target_link_libraries(city_district_test PRIVATE FlyEngineCore FlyRL)
 # Opens a window (engine ctor), so built but not registered with ctest: build/tests/character_jump_test
 add_executable(character_jump_test character_jump_test.cpp)
 target_link_libraries(character_jump_test PRIVATE FlyEngineCore FlyRL)
+
+# Stepped tower mesh: its base ledge must face up (it was culled from above). Opens a window, so built but
+# not registered with ctest: build/tests/city_tower_mesh_test
+add_executable(city_tower_mesh_test city_tower_mesh_test.cpp)
+target_link_libraries(city_tower_mesh_test PRIVATE FlyEngineCore FlyRL)
