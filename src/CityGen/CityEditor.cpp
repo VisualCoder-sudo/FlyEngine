@@ -162,29 +162,33 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
             return lReleased;
         }
         if (s.districtDragging) {
-            if (lDown && valid && s.districtSel >= 0) {
-                if (Vector2Distance(hit, s.districtDragLast) > 0.75f) {
-                    s.districtDragLast = hit;
-                    city->MoveDistrict(s.districtSel, hit);
+            if (lDown && s.districtSel >= 0 && (size_t)s.districtSel < city->GetDistricts().size()) {
+                // Drag on the horizontal plane through the marker's top so it follows the cursor 1:1.
+                const float top = city->DistrictMarkerHeight(city->GetDistricts()[(size_t)s.districtSel]);
+                const Vector2 onPlane = RayGroundPoint(dr, top);
+                if (IsValidPoint(onPlane)) {
+                    const Vector2 target = Vector2Add(onPlane, s.districtDragOffset);
+                    if (Vector2Distance(target, s.districtDragLast) > 0.75f) {
+                        s.districtDragLast = target;
+                        city->MoveDistrict(s.districtSel, target);
+                    }
                 }
             }
             if (!lDown) s.districtDragging = false;
             return true;
         }
-        if (lPressed && !over && valid) {
-            // Pick the nearest marker within a fixed pick radius, else place a new district.
-            int pick = -1; float bd = std::max(8.0f, roadW * 1.5f);
-            const auto& ds = city->GetDistricts();
-            for (int i = 0; i < (int)ds.size(); i++) {
-                const float d = Vector2Distance(hit, ds[(size_t)i].pos);
-                if (d < bd) { bd = d; pick = i; }
-            }
+        if (lPressed && !over) {
+            // Grab the marker pillar under the cursor, else place a new district on the ground.
+            const int pick = city->PickDistrict(dr);
             if (pick >= 0) {
+                const auto& ds = city->GetDistricts();
+                const Vector2 onPlane = RayGroundPoint(dr, city->DistrictMarkerHeight(ds[(size_t)pick]));
                 s.districtSel = pick;
                 s.districtDragging = true;
+                s.districtDragOffset = IsValidPoint(onPlane) ? Vector2Subtract(ds[(size_t)pick].pos, onPlane) : Vector2{ 0.0f, 0.0f };
                 s.districtDragLast = ds[(size_t)pick].pos;
                 NotifyCityEdit();
-            } else {
+            } else if (valid) {
                 NotifyCityEdit();
                 s.districtSel = city->AddDistrict(City::MakeDistrict((DistrictKind)s.districtNewKind, hit));
             }

@@ -368,6 +368,10 @@ public:
     // Height multiplier and style (-1 = city style) the districts give to a block centred at p.
     void DistrictAt(const Vector2& p, uint64_t blockId, float& heightMul, int& style) const;
     static District MakeDistrict(DistrictKind kind, const Vector2& pos);
+    // Height of the editor marker's top (it rises above the tallest buildings the district makes) and
+    // a ray pick of the marker pillar; returns the district index or -1.
+    float DistrictMarkerHeight(const District& d) const;
+    int PickDistrict(const Ray& ray) const;
 
     // Building overrides. `slot` is the building's index within its block's
     // `buildings` vector, which LayoutBlock fills deterministically, so the

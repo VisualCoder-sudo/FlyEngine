@@ -3670,9 +3670,10 @@ void City::DrawOverlay3D() {
             static const Color kc[3] = { { 255, 170, 60, 255 }, { 110, 220, 120, 255 }, { 150, 170, 200, 255 } };
             Color c = kc[std::clamp(d.kind, 0, 2)];
             if (i != state.districtSel) c.a = 150;
-            const float top = 5.0f + std::max(0.0f, d.peak) * 6.0f;
+            // Rises above the tallest buildings it creates (they would hide a short marker).
+            const float top = DistrictMarkerHeight(d);
             DrawLine3D({ d.pos.x, 0.5f, d.pos.y }, { d.pos.x, top, d.pos.y }, c);
-            DrawCube({ d.pos.x, top, d.pos.y }, 2.0f, 2.0f, 2.0f, c);
+            DrawCube({ d.pos.x, top, d.pos.y }, 6.0f, 6.0f, 6.0f, c);
             for (int k = 0; k < 64; k++) {
                 const float a0 = (float)k / 64.0f * 6.2831853f, a1 = (float)(k + 1) / 64.0f * 6.2831853f;
                 DrawLine3D({ d.pos.x + cosf(a0) * d.radius, 0.6f, d.pos.y + sinf(a0) * d.radius },
@@ -4271,6 +4272,37 @@ District City::MakeDistrict(DistrictKind kind, const Vector2& pos) {
         case DistrictKind::Industrial: d.peak = 1.0f; d.style = 2; d.radius = 100.0f; d.name = "Industrial"; break;
     }
     return d;
+}
+
+float City::DistrictMarkerHeight(const District& d) const {
+    return params.avgHeight * (1.0f + std::max(0.0f, d.peak)) * 1.3f + 25.0f;
+}
+
+int City::PickDistrict(const Ray& ray) const {
+    int best = -1;
+    float bestT = 1e30f;
+    for (int i = 0; i < (int)districts.size(); i++) {
+        const District& d = districts[(size_t)i];
+        const float top = DistrictMarkerHeight(d);
+        // Closest approach of the ray to the pillar (a vertical segment from the ground to the top cube).
+        const Vector3 p0 = { d.pos.x, 0.5f, d.pos.y }, p1 = { d.pos.x, top, d.pos.y };
+        const Vector3 u = Vector3Subtract(p1, p0), w0 = Vector3Subtract(ray.position, p0);
+        const float a = Vector3DotProduct(u, u), b = Vector3DotProduct(u, ray.direction), c = Vector3DotProduct(ray.direction, ray.direction);
+        const float dd = Vector3DotProduct(u, w0), e = Vector3DotProduct(ray.direction, w0);
+        const float den = a * c - b * b;
+        // w0 = ray origin - pillar base, so: s = (c*dd - b*e) / den, t = (b*s - e) / c.
+        float sc = den > 1e-6f ? (c * dd - b * e) / den : 0.0f;   // along the pillar
+        sc = Clamp(sc, 0.0f, 1.0f);
+        const float tc = std::max(0.0f, (b * sc - e) / c);       // along the ray
+        const Vector3 onPillar = Vector3Add(p0, Vector3Scale(u, sc));
+        const Vector3 onRay = Vector3Add(ray.position, Vector3Scale(ray.direction, tc));
+        const float dist = Vector3Distance(onPillar, onRay);
+        const float tol = 2.0f + tc * 0.012f;                    // a little forgiving farther away
+        const float topTol = 6.0f + tc * 0.015f;                 // the cube at the top is the easy target
+        const bool hit = dist < (sc > 0.95f ? topTol : tol);
+        if (hit && tc < bestT) { bestT = tc; best = i; }
+    }
+    return best;
 }
 
 int City::AddDistrict(const District& d) {

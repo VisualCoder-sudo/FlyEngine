@@ -73,6 +73,7 @@ namespace city {
         int districtNewKind = 0;          // DistrictKind for newly placed districts
         float districtAutoPeak = 3.0f;
         Vector2 districtDragLast{};
+        Vector2 districtDragOffset{};     // marker position minus the grabbed point on the drag plane
 
         // Keyboard nudge step (Shift scales it down for fine control).
         float nudgeStep = 1.0f;
