@@ -328,7 +328,8 @@ void main() {
             float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
             if (inGlass) {
                 vec3 glass = mix(vec3(0.16, 0.22, 0.30), vec3(0.34, 0.44, 0.56), fv);
-                if (r > mix(0.78, 0.42, nightAmount)) {                // lit window (more of them at night)
+                // Lit windows only appear as it gets dark (none in daylight: every window is blue glass), more of them the darker it is.
+                if (r > mix(1.001, 0.42, clamp(nightAmount * 1.6, 0.0, 1.0))) {
                     glass = vec3(0.95, 0.82, 0.48) * 0.9;
                     emit = glass * nightAmount * 1.1;
                 }
