@@ -100,3 +100,8 @@ target_link_libraries(city_tower_mesh_test PRIVATE FlyEngineCore FlyRL)
 # with ctest: build/tests/city_traffic_route_test
 add_executable(city_traffic_route_test city_traffic_route_test.cpp)
 target_link_libraries(city_traffic_route_test PRIVATE FlyEngineCore FlyRL)
+
+# Sidewalk furniture placement + close-up screenshots (city_prop_<name>.png). Opens a window, so built but not
+# registered with ctest: build/tests/city_props_test
+add_executable(city_props_test city_props_test.cpp)
+target_link_libraries(city_props_test PRIVATE FlyEngineCore FlyRL)

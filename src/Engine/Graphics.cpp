@@ -117,6 +117,7 @@ Mesh citySlantMesh{}; // unit sheared slab for silhouette variety
 Mesh cityGableMesh{}; // unit box with a pitched roof
 Mesh cityTowerMesh{}; // unit stepped tower
 Mesh cityShedMesh{};
+Mesh cityBenchMesh{}, cityHydrantMesh{}, cityBollardMesh{}, cityBusStopMesh{}, citySignMesh{};   // sidewalk furniture
 Mesh cityLampMesh{}, cityTreeMesh{}, cityCarMesh{}, cityCarGlassMesh{}, cityWheelMesh{}, cityPersonMesh{}, citySignalMesh{}; // props and agents
 
 Shader litShader{};
@@ -549,6 +550,53 @@ Mesh GenerateCityLampMesh() {
     return BuildColoredShapeMesh(b.t, b.c, b.in);
 }
 
+// Sidewalk furniture. Authored in metres, origin on the ground, +z toward the road.
+Mesh GenerateCityBenchMesh() {
+    ShapeBuilder b;
+    const Color wood{ 128, 92, 58, 255 }, iron{ 52, 54, 60, 255 };
+    b.Box(-0.8f, 0.42f, -0.22f, 0.8f, 0.48f, 0.22f, wood);          // seat
+    b.Box(-0.8f, 0.48f, -0.24f, 0.8f, 0.95f, -0.18f, wood);         // backrest (away from the road)
+    for (float x : { -0.7f, 0.7f }) b.Box(x - 0.04f, 0.0f, -0.2f, x + 0.04f, 0.42f, 0.2f, iron);   // legs
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityHydrantMesh() {
+    ShapeBuilder b;
+    const Color red{ 196, 38, 32, 255 }, cap{ 160, 28, 24, 255 };
+    b.Box(-0.11f, 0.0f, -0.11f, 0.11f, 0.62f, 0.11f, red);          // body
+    b.Box(-0.14f, 0.62f, -0.14f, 0.14f, 0.74f, 0.14f, cap);         // cap
+    b.Box(-0.2f, 0.34f, -0.06f, 0.2f, 0.46f, 0.06f, red);           // side nozzles
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityBollardMesh() {
+    ShapeBuilder b;
+    b.Box(-0.07f, 0.0f, -0.07f, 0.07f, 0.85f, 0.07f, Color{ 96, 98, 106, 255 });
+    b.Box(-0.075f, 0.62f, -0.075f, 0.075f, 0.74f, 0.075f, Color{ 236, 200, 40, 255 });   // reflective band
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityBusStopMesh() {
+    ShapeBuilder b;
+    const Color frame{ 58, 62, 72, 255 }, roof{ 40, 90, 150, 255 }, glass{ 120, 150, 170, 255 }, seat{ 120, 88, 56, 255 };
+    for (float x : { -1.45f, 1.45f }) b.Box(x - 0.04f, 0.0f, -0.46f, x + 0.04f, 2.4f, -0.38f, frame);   // posts
+    b.Box(-1.6f, 2.4f, -0.55f, 1.6f, 2.52f, 0.55f, roof);                                              // roof
+    b.Box(-1.45f, 0.35f, -0.46f, 0.7f, 2.3f, -0.43f, glass);                                           // back glass
+    b.Box(0.78f, 0.35f, -0.46f, 1.45f, 2.3f, -0.43f, Color{ 255, 238, 190, 250 });                     // advert panel (emissive at night)
+    b.Box(-1.2f, 0.42f, -0.4f, 0.6f, 0.48f, -0.05f, seat);                                             // bench
+    b.Box(1.9f, 0.0f, 0.2f, 1.96f, 2.5f, 0.26f, frame);                                                // stop sign pole
+    b.Box(1.74f, 2.1f, 0.17f, 2.12f, 2.5f, 0.3f, Color{ 30, 110, 190, 255 });                          // stop sign
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCitySignMesh() {
+    ShapeBuilder b;
+    b.Box(-0.03f, 0.0f, -0.03f, 0.03f, 2.7f, 0.03f, Color{ 90, 92, 100, 255 });                        // pole
+    b.Box(-0.5f, 2.4f, -0.05f, 0.5f, 2.66f, 0.05f, Color{ 24, 88, 52, 255 });                          // name plate
+    b.Box(-0.46f, 2.43f, 0.05f, 0.46f, 2.63f, 0.052f, Color{ 238, 238, 232, 255 });                    // plate text strip
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
 Mesh GenerateCityTreeMesh() {
     ShapeBuilder b;
     b.Box(-0.14f, 0.0f, -0.14f, 0.14f, 2.0f, 0.14f, Color{ 96, 70, 46, 255 });
@@ -746,6 +794,11 @@ void Init() {
     cityWheelMesh = GenerateCityWheelMesh();
     cityPersonMesh = GenerateCityPersonMesh();
     citySignalMesh = GenerateCitySignalMesh();
+    cityBenchMesh = GenerateCityBenchMesh();
+    cityHydrantMesh = GenerateCityHydrantMesh();
+    cityBollardMesh = GenerateCityBollardMesh();
+    cityBusStopMesh = GenerateCityBusStopMesh();
+    citySignMesh = GenerateCitySignMesh();
 
     Model* models[] = { &cubeModel, &sphereModel, &cylinderModel, &wedgeModel };
     for (Model* model : models) {
@@ -793,6 +846,11 @@ void Shutdown() {
     UnloadMesh(cityWheelMesh);
     UnloadMesh(cityPersonMesh);
     UnloadMesh(citySignalMesh);
+    UnloadMesh(cityBenchMesh);
+    UnloadMesh(cityHydrantMesh);
+    UnloadMesh(cityBollardMesh);
+    UnloadMesh(cityBusStopMesh);
+    UnloadMesh(citySignMesh);
     UnloadModel(groundModel);
     UnloadTexture(defaultTexture);
     UnloadTexture(groundTexture);
@@ -837,6 +895,11 @@ Mesh GetCityShapeMesh(int shape) {
         case 10: return cityShedMesh;
         case 11: return cityCarGlassMesh;
         case 12: return cityWheelMesh;
+        case 13: return cityBenchMesh;
+        case 14: return cityHydrantMesh;
+        case 15: return cityBollardMesh;
+        case 16: return cityBusStopMesh;
+        case 17: return citySignMesh;
         default: return cubeModel.meshes[0];
     }
 }

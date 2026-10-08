@@ -2801,6 +2801,28 @@ void City::ComputeTileCPU(Tile& t) {
                         const uint32_t hv = CoordHash(ei, n, params.seed ^ 0x51ED);
                         if ((n & 1) == 0) place(kPropLamp, dist, ((n >> 1) & 1) ? 1 : -1, 0.0f, 1.0f);
                         else place(kPropTree, dist, ((n >> 1) & 1) ? -1 : 1, (float)(hv % 628) * 0.01f, 0.85f + (float)(hv % 40) * 0.01f);
+                        // Occasional extras beside the lamps and trees: hydrants, signs, benches, bollards.
+                        const uint32_t hx = CoordHash(ei, n + 977, params.seed ^ 0x7B33) % 100u;
+                        if ((n & 1) == 0) {
+                            const int sdLamp = ((n >> 1) & 1) ? 1 : -1;
+                            if (hx < 12u && dist + 1.6f <= hi) place(kPropHydrant, dist + 1.6f, sdLamp, 0.0f, 1.0f);
+                            else if (hx < 22u && dist + 0.9f <= hi) place(kPropSign, dist + 0.9f, sdLamp, 0.0f, 1.0f);
+                        } else {
+                            const int sdTree = ((n >> 1) & 1) ? -1 : 1;
+                            if (hx < 30u && dist + 3.2f <= hi) place(kPropBench, dist + 3.2f, sdTree, 0.0f, 1.0f);
+                            else if (hx < 42u)
+                                for (int k = 0; k < 3; k++) if (dist + 3.0f + 1.4f * (float)k <= hi) place(kPropBollard, dist + 3.0f + 1.4f * (float)k, sdTree, 0.0f, 1.0f);
+                        }
+                    }
+                    // A bus stop on some long streets, between two furniture slots so it never overlaps a tree or lamp.
+                    {
+                        const uint32_t hb = CoordHash(ei, 31337, params.seed ^ 0xB055);
+                        if ((e.type == (int)RoadType::Street || e.type == (int)RoadType::Avenue) && hi - lo > 8.0f &&
+                            sH2 - aH2 >= 1.8f && (hb % 100u) < 14u) {
+                            const int k = (int)floorf(((lo + hi) * 0.5f - lo) / 11.0f);
+                            const float d = lo + 11.0f * (float)k + 5.5f;
+                            if (d + 2.0f <= hi) place(kPropBusStop, d, ((hb >> 16) & 1u) ? 1 : -1, 0.0f, 1.0f);
+                        }
                     }
                 }
             }
@@ -3081,7 +3103,7 @@ void City::ComputeTileCPU(Tile& t) {
                 t.hasBldg = true;
             }
         }
-        for (int sp = kPropLamp; sp <= kPropTree; sp++)
+        for (int sp : { (int)kPropLamp, (int)kPropTree, (int)kPropBench, (int)kPropHydrant, (int)kPropBollard, (int)kPropBusStop, (int)kPropSign })
             for (const Matrix& pm : t.inst[sp]) {
                 bmin.x = fminf(bmin.x, pm.m12 - 3.0f); bmax.x = fmaxf(bmax.x, pm.m12 + 3.0f);
                 bmin.y = fminf(bmin.y, pm.m13 - 0.5f); bmax.y = fmaxf(bmax.y, pm.m13 + 8.0f);
@@ -3801,6 +3823,28 @@ void City::DrawOverlay3D() {
             DrawLine3D({ a.x, 0.4f, a.y }, { b.x, 0.4f, b.y }, Color{ 255, 220, 80, 255 });
         }
     }
+}
+
+int City::CountInstances(int shape) const {
+    if (shape < 0 || shape >= kBuildingShapes) return 0;
+    int n = 0;
+    for (const auto& kv : tiles) n += (int)kv.second.inst[shape].size();
+    return n;
+}
+
+bool City::FindInstance(int shape, int index, Vector3& pos, float& yaw) const {
+    if (shape < 0 || shape >= kBuildingShapes || index < 0) return false;
+    for (const auto& kv : tiles) {
+        const auto& v = kv.second.inst[shape];
+        if (index < (int)v.size()) {
+            const Matrix& m = v[(size_t)index];
+            pos = { m.m12, m.m13, m.m14 };
+            yaw = atan2f(m.m8, m.m0);
+            return true;
+        }
+        index -= (int)v.size();
+    }
+    return false;
 }
 
 City::GeometryHashes City::DebugGeometryHashes() const {

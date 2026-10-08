@@ -26,7 +26,7 @@ extern const Color kBuildingTints[kBuildingColorBuckets];
 
 // Instanced building silhouette shapes. Wedges fill angled corners where two
 // streets meet; slants are sheared slabs that sit along edges/interiors.
-constexpr int kBuildingShapes = 11;
+constexpr int kBuildingShapes = 18;   // instanced shape ids (props and agents share the table; 11/12 are drawn outside the tiles)
 constexpr float kFloorHeight = 3.4f;   // metres per storey: building heights are whole storeys, the facade shader uses the same value
 enum : int {
     kBuildingBox = 0,
@@ -43,6 +43,12 @@ enum : int {
     kBuildingShed = 10,   // box with a single-slope roof
     kPropCarGlass = 11,   // car windows (untinted), same pose as kPropCar
     kPropWheel = 12,      // one car wheel (rolls about its local z axis)
+    // Sidewalk furniture (local +z points toward the road).
+    kPropBench = 13,
+    kPropHydrant = 14,
+    kPropBollard = 15,
+    kPropBusStop = 16,    // shelter ~3 m wide along the road; the advert panel glows at night
+    kPropSign = 17,       // street name sign on a pole
 };
 inline bool IsPropShape(int s) { return s >= 5 && s <= 9; }
 
@@ -400,6 +406,10 @@ public:
     // and building instances), for tests that compare rebuild paths.
     struct GeometryHashes { uint64_t road = 0, buildings = 0; size_t roadTris = 0, instances = 0; };
     GeometryHashes DebugGeometryHashes() const;
+    // Number of placed instances of an instanced shape (props, buildings) and the pose of the n-th one
+    // (position and yaw about +Y); for tests and screenshots.
+    int CountInstances(int shape) const;
+    bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 
     // Geometry helpers used by the editor.
     Vector2 NodePos(int i) const;
