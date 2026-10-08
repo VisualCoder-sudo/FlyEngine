@@ -75,6 +75,13 @@ bool IsShadowPassReused(); // true inside a shadow pass whose depth map is being
 
 // Ambient lighting intensity (0..2 scales the default ambient term).
 void SetAmbientIntensity(float intensity);
+
+// Time of day in hours (0..24, 12 = noon, the default and the unchanged look). Dims the sun and ambient
+// light, darkens the sky and drives the emissive window/street light/car light glow of the city shaders.
+void SetTimeOfDay(float hours);
+float GetTimeOfDay();
+float GetNightAmount();          // 0 = full day, 1 = full night
+Color SkyColor(Color dayColor);  // the clear colour at the current time of day
 float GetAmbientIntensity();
 
 // Toggles the shadow-receiving ground plane.

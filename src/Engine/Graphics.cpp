@@ -48,6 +48,13 @@ int ReflectionQualityToResolution(int quality) {
 const Vector3 kLightDir = Vector3Normalize({ -0.4f, -1.0f, -0.3f });
 const Vector3 kAmbient = { 0.35f, 0.35f, 0.35f };
 Vector3 ambient = kAmbient;
+float timeOfDay = 12.0f;   // hours
+// 1 in daylight, 0 at night, easing through dawn (5:00-7:30) and dusk (16:30-19:00).
+float DayAmount() {
+    auto ss = [](float a, float b, float x) { const float t = fminf(fmaxf((x - a) / (b - a), 0.0f), 1.0f); return t * t * (3.0f - 2.0f * t); };
+    const float h = fmodf(fmodf(timeOfDay, 24.0f) + 24.0f, 24.0f);
+    return ss(5.0f, 7.5f, h) * (1.0f - ss(16.5f, 19.0f, h));
+}
 bool gridVisible = true;
 bool wireframe = false;
 bool inShadowPass = false;
@@ -132,6 +139,7 @@ bool cityInstancedReady = false;
 int cityLightDirLoc = -1;
 int cityAmbientLoc = -1;
 int cityLightVPLoc = -1;
+int cityNightLoc = -1;
 int cityShadowMapLoc = -1;
 int cityShadowsEnabledLoc = -1;
 int cityWaterSurfaceYLoc = -1;
@@ -439,7 +447,7 @@ Mesh BuildFlatShapeMesh(const std::vector<Vector3>& tris, const std::vector<Colo
             mesh.texcoords[i * 2] = 0.0f; mesh.texcoords[i * 2 + 1] = 0.0f;
             Color col = WHITE;
             if (triColors && (size_t)(t / 3) < triColors->size()) col = (*triColors)[(size_t)(t / 3)];
-            mesh.colors[i * 4] = col.r; mesh.colors[i * 4 + 1] = col.g; mesh.colors[i * 4 + 2] = col.b; mesh.colors[i * 4 + 3] = 255;
+            mesh.colors[i * 4] = col.r; mesh.colors[i * 4 + 1] = col.g; mesh.colors[i * 4 + 2] = col.b; mesh.colors[i * 4 + 3] = col.a;
             mesh.indices[i] = (unsigned short)i;
         }
     }
@@ -536,7 +544,7 @@ Mesh GenerateCityLampMesh() {
     ShapeBuilder b;
     b.Box(-0.07f, 0.0f, -0.07f, 0.07f, 5.6f, 0.07f, Color{ 70, 72, 78, 255 });       // pole
     b.Box(-0.07f, 5.5f, -0.07f, 0.07f, 5.64f, 1.1f, Color{ 70, 72, 78, 255 });       // arm toward +z
-    b.Box(-0.22f, 5.38f, 0.8f, 0.22f, 5.52f, 1.4f, Color{ 250, 232, 170, 255 });      // lamp head
+    b.Box(-0.22f, 5.38f, 0.8f, 0.22f, 5.52f, 1.4f, Color{ 250, 232, 170, 250 });      // lamp head (alpha 250 = emissive at night)
     b.Box(-0.18f, 0.0f, -0.18f, 0.18f, 0.35f, 0.18f, Color{ 60, 62, 68, 255 });       // base
     return BuildColoredShapeMesh(b.t, b.c, b.in);
 }
@@ -579,6 +587,18 @@ Mesh GenerateCityCarGlassMesh() {
         quad({ lo.xr, lo.y, -lo.hw }, { lo.xr, lo.y, lo.hw }, { hi.xr, hi.y, hi.hw }, { hi.xr, hi.y, -hi.hw });   // rear window
         quad({ lo.xr, lo.y, lo.hw }, { lo.xf, lo.y, lo.hw }, { hi.xf, hi.y, hi.hw }, { hi.xr, hi.y, hi.hw });     // +z side
         quad({ lo.xr, lo.y, -lo.hw }, { lo.xf, lo.y, -lo.hw }, { hi.xf, hi.y, -hi.hw }, { hi.xr, hi.y, -hi.hw }); // -z side
+    }
+    // Head and tail lights (alpha 250 = emissive at night). Untinted, so every car colour has them.
+    const Color head{ 255, 244, 205, 250 }, tail{ 230, 30, 25, 250 };
+    for (float z : { -0.62f, 0.62f }) {
+        const size_t before = b.t.size();
+        AddBoxTris(b.t, 2.08f, 0.55f, z - 0.14f, 2.14f, 0.70f, z + 0.14f, true);
+        b.c.insert(b.c.end(), (b.t.size() - before) / 3, head);
+        b.in.insert(b.in.end(), (b.t.size() - before) / 3, Vector3{ 2.11f, 0.62f, z });
+        const size_t before2 = b.t.size();
+        AddBoxTris(b.t, -2.14f, 0.55f, z - 0.14f, -2.08f, 0.70f, z + 0.14f, true);
+        b.c.insert(b.c.end(), (b.t.size() - before2) / 3, tail);
+        b.in.insert(b.in.end(), (b.t.size() - before2) / 3, Vector3{ -2.11f, 0.62f, z });
     }
     return BuildColoredShapeMesh(b.t, b.c, b.in);
 }
@@ -695,6 +715,7 @@ void Init() {
         cityShadowMapLoc = GetShaderLocation(cityInstancedShader, "shadowMap");
         cityShadowsEnabledLoc = GetShaderLocation(cityInstancedShader, "shadowsEnabled");
         cityWaterSurfaceYLoc = GetShaderLocation(cityInstancedShader, "waterSurfaceY");
+        cityNightLoc = GetShaderLocation(cityInstancedShader, "nightAmount");
         if (cityShadowMapLoc != -1) SetShaderValue(cityInstancedShader, cityShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
     }
 
@@ -1052,6 +1073,29 @@ RenderTexture2D GetReflectionTarget() { return reflectionTarget; }
 
 int GetReflectionTextureSlot() { return REFLECTION_TEXTURE_SLOT; }
 
+namespace {
+// Sun direction scaled by its intensity (the shaders use its length as the diffuse strength) and the
+// ambient colour, both blended towards moonlight at night.
+Vector3 SunVector() { return Vector3Scale(kLightDir, 0.10f + 0.90f * DayAmount()); }
+Vector3 EffectiveAmbient() {
+    const Vector3 nightAmbient = { 0.16f, 0.19f, 0.31f };
+    return Vector3Lerp(nightAmbient, ambient, DayAmount());
+}
+}
+
+void SetTimeOfDay(float hours) {
+    const float h = fmodf(fmodf(hours, 24.0f) + 24.0f, 24.0f);
+    timeOfDay = h;
+}
+float GetTimeOfDay() { return timeOfDay; }
+float GetNightAmount() { return 1.0f - DayAmount(); }
+Color SkyColor(Color dayColor) {
+    const float d = DayAmount();
+    const Color night = { 10, 14, 28, 255 };
+    auto mix = [&](unsigned char n, unsigned char dd) { return (unsigned char)lroundf((float)n + ((float)dd - (float)n) * d); };
+    return Color{ mix(night.r, dayColor.r), mix(night.g, dayColor.g), mix(night.b, dayColor.b), dayColor.a };
+}
+
 void UpdateLighting(const Camera3D& camera) {
     shadowViewCamera = camera;
     haveShadowViewCamera = true;
@@ -1061,16 +1105,18 @@ void UpdateLighting(const Camera3D& camera) {
         ApplyNearPlane(fmin(fmax(h * 0.03, 0.05), 2.0));
     }
 
-    SetShaderValue(litShader, lightDirLoc, &kLightDir, SHADER_UNIFORM_VEC3);
-    SetShaderValue(litShader, ambientLoc, &ambient, SHADER_UNIFORM_VEC3);
+    const Vector3 sun = SunVector();
+    const Vector3 amb = EffectiveAmbient();
+    SetShaderValue(litShader, lightDirLoc, &sun, SHADER_UNIFORM_VEC3);
+    SetShaderValue(litShader, ambientLoc, &amb, SHADER_UNIFORM_VEC3);
     SetShaderValueMatrix(litShader, lightVPLoc, lightViewProj);
 
     float enabled = shadowsEnabled ? 1.0f : 0.0f;
     SetShaderValue(litShader, shadowsEnabledLoc, &enabled, SHADER_UNIFORM_FLOAT);
 
     if (roadShader.id != 0) {
-        SetShaderValue(roadShader, roadLightDirLoc, &kLightDir, SHADER_UNIFORM_VEC3);
-        SetShaderValue(roadShader, roadAmbientLoc, &ambient, SHADER_UNIFORM_VEC3);
+        SetShaderValue(roadShader, roadLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
+        SetShaderValue(roadShader, roadAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
         SetShaderValueMatrix(roadShader, roadLightVPLoc, lightViewProj);
         SetShaderValue(roadShader, roadShadowsEnabledLoc, &enabled, SHADER_UNIFORM_FLOAT);
     }
@@ -1083,8 +1129,14 @@ void UpdateLighting(const Camera3D& camera) {
 
 void SetupInstancedLighting() {
     if (!cityInstancedReady) return;
-    SetShaderValue(cityInstancedShader, cityLightDirLoc, &kLightDir, SHADER_UNIFORM_VEC3);
-    SetShaderValue(cityInstancedShader, cityAmbientLoc, &ambient, SHADER_UNIFORM_VEC3);
+    const Vector3 sun = SunVector();
+    const Vector3 amb = EffectiveAmbient();
+    SetShaderValue(cityInstancedShader, cityLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cityInstancedShader, cityAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
+    if (cityNightLoc != -1) {
+        const float night = GetNightAmount();
+        SetShaderValue(cityInstancedShader, cityNightLoc, &night, SHADER_UNIFORM_FLOAT);
+    }
     SetShaderValueMatrix(cityInstancedShader, cityLightVPLoc, lightViewProj);
 
     float enabled = shadowsEnabled ? 1.0f : 0.0f;

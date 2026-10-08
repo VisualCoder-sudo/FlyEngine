@@ -244,12 +244,13 @@ void main() {
 // base band) instead of the texture, shape-agnostic because it works in world space. Anything
 // that is not a tinted building (editor node markers) falls back to the plain lit look.
 @fs fs_building
-layout(binding=1) uniform fs_params {
+layout(binding=1) uniform fs_building_params {
     vec4 colDiffuse;
     vec3 lightDir;
     float shadowsEnabled;
     vec3 ambient;
     float waterSurfaceY;
+    float nightAmount;      // 0 = day, 1 = night: scales the emissive window / lamp / car light glow
     mat4 lightVP;
 };
 @include_block lit_fs_common
@@ -265,10 +266,12 @@ float hash21(vec2 p) {
 void main() {
     float alpha;
     vec3 lit;
+    vec3 emit = vec3(0.0);
     if (fragInst.w < 0.5) {
         lit = ShadeLit(alpha);
     } else if (fragInst.w > 1.5) {
         lit = ShadeLitWith(fragColor.rgb, 1.0, alpha);   // prop
+        if (fragColor.a < 0.99) emit = fragColor.rgb * nightAmount * 1.6;   // lamp heads, car lights: glow at night
     } else {
         vec3 n = normalize(fragNormal);
         vec3 wall = fragColor.rgb;
@@ -295,7 +298,10 @@ void main() {
             float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
             if (inGlass) {
                 vec3 glass = mix(vec3(0.16, 0.22, 0.30), vec3(0.34, 0.44, 0.56), fv);
-                if (r > 0.78) glass = vec3(0.95, 0.82, 0.48) * 0.9;   // lit window
+                if (r > mix(0.78, 0.42, nightAmount)) {                // lit window (more of them at night)
+                    glass = vec3(0.95, 0.82, 0.48) * 0.9;
+                    emit = glass * nightAmount * 1.1;
+                }
                 base = glass;
             } else {
                 float band = smoothstep(0.0, 0.06, fv) * (1.0 - smoothstep(0.94, 1.0, fv));
@@ -305,7 +311,7 @@ void main() {
         }
         lit = ShadeLitWith(base, 1.0, alpha);
     }
-    finalColor = vec4(lit, alpha);
+    finalColor = vec4(lit + emit, alpha);
 }
 @end
 

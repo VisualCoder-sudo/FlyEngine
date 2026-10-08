@@ -282,6 +282,9 @@ namespace { bool g_simActive = false; }   // Play mode (editor Play or the stand
 void City::Update(float dt) {
     PumpRebuild();
     trafficClock += dt;   // signal clock runs in the editor too (heads animate while editing)
+    if (params.dayLengthMinutes > 0.0f) {
+        params.timeOfDay = fmodf(params.timeOfDay + dt * 24.0f / (params.dayLengthMinutes * 60.0f), 24.0f);
+    }
     if (g_simActive && hasGeometry && !rebuild) StepTraffic(std::min(dt, 0.1f));
     else if (!g_simActive && !agents.empty()) agents.clear();
 }
@@ -3431,6 +3434,7 @@ void City::RebuildAfterNodeMove(int ni) {
 
 void City::Draw() {
     if (!hasGeometry || tiles.empty()) return;
+    gfx::SetTimeOfDay(params.timeOfDay);   // the scene's light follows the city (read by the next lighting update)
 
     const bool shadowPass = gfx::IsInShadowPass();
     // The shadow map is being kept (nothing changed): skip submitting the casters.
@@ -4585,6 +4589,8 @@ bool City::WriteToStream(std::ostream& out) const {
             for (size_t i = 0; i < edges.size(); i++) if (edges[i].oneWay != 0) out << i << ' ' << edges[i].oneWay << '\n';
         }
     }
+    if (params.timeOfDay != 12.0f || params.dayLengthMinutes != 0.0f)
+        out << "DAY " << params.timeOfDay << ' ' << params.dayLengthMinutes << '\n';
     // Last on purpose: a reader that predates districts stops at the first tag it does not know,
     // so everything it understands has to come before this.
     if (!districts.empty()) {
@@ -4776,6 +4782,11 @@ bool City::ReadFromStream(std::istream& in) {
                     if (!(in >> idx >> isl >> rg >> sp >> co)) return false;
                     if (idx < nodes.size()) { nodes[idx].rbIsland = isl; nodes[idx].rbRing = rg; nodes[idx].rbSplitters = sp != 0; nodes[idx].rbConcrete = co != 0; }
                 }
+            } else if (tag == "DAY") {
+                float tod = 12.0f, len = 0.0f;
+                if (!(in >> tod >> len)) return false;
+                params.timeOfDay = Clamp(tod, 0.0f, 24.0f);
+                params.dayLengthMinutes = std::max(len, 0.0f);
             } else if (tag == "DISTRICTS") {
                 size_t dc = 0;
                 if (!(in >> dc)) return false;

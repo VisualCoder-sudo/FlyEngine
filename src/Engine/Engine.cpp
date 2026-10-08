@@ -101,7 +101,8 @@ void Engine::Draw() {
     SetLODCameraPos(camera.position);
 
     BeginDrawing();
-    ClearBackground(clearColor);
+    const Color skyColor = gfx::SkyColor(clearColor);
+    ClearBackground(skyColor);
 
     double p0 = GetTime();
     // 0. Shadow map pass: render occluders from the light's point of view.
@@ -125,7 +126,7 @@ void Engine::Draw() {
             if (wb) { reflBody = wb; break; }
         }
         if (reflBody) {
-            Camera3D reflCam = gfx::BeginReflectionPass(reflBody->GetWaterHeight(), camera, clearColor);
+            Camera3D reflCam = gfx::BeginReflectionPass(reflBody->GetWaterHeight(), camera, skyColor);
             terrain::Terrain::SetDrawCamera(&reflCam);
             BasicTerrain::SetActiveCamera(&reflCam);
             BeginMode3D(reflCam);
