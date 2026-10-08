@@ -15,9 +15,9 @@ namespace {
 
 bool g_clickConsumed = false;
 
-Vector2 RayGroundPoint(const Ray& ray) {
+Vector2 RayGroundPoint(const Ray& ray, float planeY = 0.0f) {
     if (fabsf(ray.direction.y) < 1e-4f) return { 1e9f, 1e9f };
-    float t = -ray.position.y / ray.direction.y;
+    float t = (planeY - ray.position.y) / ray.direction.y;
     if (t < 0.0f) return { 1e9f, 1e9f };
     return { ray.position.x + ray.direction.x * t, ray.position.z + ray.direction.z * t };
 }
@@ -62,21 +62,37 @@ bool IsCityEditorActive() {
     return GetCityEditorState().activeCity != nullptr;
 }
 
-// ---- Road tool (runtime): press R to toggle "place road node" mode. ----
-// While the tool is on, left-clicking a parcel interior in the viewport adds a
-// new RoadNode there (City::AddNode) and auto-routes a RoadEdge to the nearest
-// existing node or edge so the fresh road connects to whatever is already there.
-static bool g_placeRoadNode = false;
-static Vector2 g_prevRoadNode{ 0.0f, 0.0f };
-static bool g_havePrevRoadNode = false; // unused; reserved for chaining
+// Press R to toggle the road draw tool (see CityEditorState::roadActive).
 
 bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
 
     (void)engine;
     auto& s = GetCityEditorState();
-    if (IsKeyPressed(KEY_R)) { g_placeRoadNode = !g_placeRoadNode; g_clickConsumed = true; return true; }
+    // Closing the panel (X) drops any active tool so clicks don't keep drawing roads etc.
+    if (!s.panelOpen && s.tool != CityTool::Select) {
+        s.tool = CityTool::Select;
+        s.roadActive = s.roadDragging = s.roadHasHandle = false;
+        s.painting = false;
+        s.hoveredBlock = -1;
+        s.insertHasPreview = false;
+        s.elevDragging = false;
+    }
+    if (IsKeyPressed(KEY_R) && s.panelOpen && !ui::IsEditingText()) {
+        s.tool = s.tool == CityTool::DrawRoad ? CityTool::Select : CityTool::DrawRoad;
+        s.roadActive = s.roadDragging = false;
+        s.painting = false;
+        g_clickConsumed = true;
+        return true;
+    }
     g_clickConsumed = false;
     if (ui::IsPlayActive()) return false;
+    // Panel closed: the city is read-only (no picking, dragging, nudging or tools).
+    if (!s.panelOpen) {
+        s.draggingNode = false;
+        s.elevDragging = false;
+        s.hoveredNode = -1;
+        return false;
+    }
 
     City* city = s.activeCity;
     if (!city || !city->alive) {
@@ -98,12 +114,196 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
     const bool lDown = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
     const bool lReleased = IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 
+    // --- Block paint tool: click or drag across blocks to set their land use ---
+    s.hoveredBlock = -1;
+    if (s.tool == CityTool::PaintBlock) {
+        if (!ui::IsMouseOverUI()) {
+            Ray pr = GetMouseRay(GetMousePosition(), camera);
+            const Vector2 hit = RayGroundPoint(pr);
+            if (IsValidPoint(hit)) s.hoveredBlock = city->PickBlockAt(hit);
+        }
+        if (s.painting && !lDown) s.painting = false;
+        if ((lPressed && !ui::IsMouseOverUI()) || (s.painting && lDown)) {
+            if (lPressed) { s.painting = true; s.paintUndoPushed = false; }
+            if (s.hoveredBlock >= 0) {
+                const uint64_t id = city->GetBlocks()[(size_t)s.hoveredBlock].id;
+                if (city->GetBlockKind(id) != s.paintKind) {
+                    if (!s.paintUndoPushed) { s.paintUndoPushed = true; NotifyCityEdit(); } // one undo step per stroke
+                    city->SetBlockKind(id, s.paintKind);
+                }
+            }
+            return true;
+        }
+        if (lReleased) return true;
+        return false;
+    }
+
+    // --- Road draw tool ---
+    s.roadPreview.clear();
+    s.roadSnapValid = false;
+    if (s.tool == CityTool::DrawRoad) {
+        const bool over = ui::IsMouseOverUI();
+        if (IsKeyPressed(KEY_ESCAPE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            s.roadActive = s.roadDragging = s.roadHasHandle = false;
+        }
+        if (!ui::IsEditingText()) {
+            const float step = (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) ? 0.1f : 0.5f;
+            if (IsKeyPressed(KEY_PAGE_UP)) s.roadHeight += step;
+            if (IsKeyPressed(KEY_PAGE_DOWN)) s.roadHeight -= step;
+            if (IsKeyPressed(KEY_HOME)) s.roadHeight = 0.0f;
+            s.roadHeight = Clamp(s.roadHeight, -200.0f, 500.0f);
+        }
+        Ray rr = GetMouseRay(GetMousePosition(), camera);
+        const Vector2 hit = over ? Vector2{ 1e9f, 1e9f } : RayGroundPoint(rr, s.roadHeight);
+        const bool valid = IsValidPoint(hit);
+        const bool erase = s.roadErase || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+
+        if (erase) {
+            s.roadActive = s.roadDragging = false;
+            if (lPressed && !over) {
+                const int e = city->PickRoad(rr, roadW);
+                if (e >= 0) {
+                    NotifyCityEdit();
+                    city->DeleteRoadChain(e);
+                    s.selectedNode = s.selectedEdge = -1;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        City::RoadSnap snap;
+        if (valid) {
+            snap = city->SnapRoadPoint(hit);
+            s.roadSnapPos = snap.pos;
+            s.roadSnapValid = true;
+            s.roadEndH = snap.node >= 0 ? city->GetNodes()[(size_t)snap.node].h
+                       : snap.edge >= 0 ? city->EdgeProfileY(snap.edge, 0.5f) : s.roadHeight;
+        }
+        const float spacing = roadW * 1.5f;
+
+        if (s.roadDragging) {
+            if (lDown) {
+                if (valid && Vector2Distance(hit, s.roadStart) > 2.0f) { s.roadHandle = hit; s.roadHasHandle = true; }
+                else s.roadHasHandle = false;
+            } else {
+                s.roadDragging = false;
+            }
+            return true;
+        }
+        if (!s.roadActive) {
+            if (lPressed && !over && valid) {
+                s.roadActive = true;
+                s.roadStart = snap.pos;
+                s.roadStartH = snap.node >= 0 ? city->GetNodes()[(size_t)snap.node].h
+                             : snap.edge >= 0 ? city->EdgeProfileY(snap.edge, 0.5f) : s.roadHeight;
+                s.roadHasHandle = false;
+                s.roadDragging = true;
+                return true;
+            }
+            return false;
+        }
+        if (valid) {
+            const Vector2 end = snap.pos;
+            const Vector2 c = s.roadHasHandle ? s.roadHandle : Vector2Scale(Vector2Add(s.roadStart, end), 0.5f);
+            s.roadPreview = citygeom::SampleQuadBezier(s.roadStart, c, end, spacing);
+            s.roadPreviewOk = Vector2Distance(s.roadStart, end) >= roadW;
+            if (lPressed && !over && s.roadPreviewOk) {
+                NotifyCityEdit();
+                const int endNode = city->AddRoadPath(s.roadPreview, s.roadStartH, s.roadHeight);
+                // Chain: the end is the next start, continuing the curve smoothly.
+                s.roadHandle = s.roadHasHandle ? Vector2Add(end, Vector2Subtract(end, c)) : end;
+                s.roadStart = end;
+                if (endNode >= 0 && (size_t)endNode < city->GetNodes().size()) s.roadStartH = city->GetNodes()[(size_t)endNode].h;
+                return true;
+            }
+        }
+        if (lPressed && !over) return true;
+        return false;
+    }
+
+    // --- Road elevate tool: drag a node up/down to set its height ---
+    if (s.tool == CityTool::ElevateRoad) {
+        const bool over = ui::IsMouseOverUI();
+        Ray er = GetMouseRay(GetMousePosition(), camera);
+        if (s.elevDragging) {
+            if (lDown && s.elevNode >= 0 && (size_t)s.elevNode < city->GetNodes().size()) {
+                const bool fine = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                const bool snap = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+                float h = s.elevStartH + (s.elevMouseY - GetMousePosition().y) * (fine ? 0.01f : 0.06f);
+                if (snap) h = roundf(h * 2.0f) * 0.5f;
+                h = Clamp(h, -200.0f, 500.0f);
+                if (fabsf(h - city->GetNodes()[(size_t)s.elevNode].h) > 1e-3f) {
+                    if (!s.elevMoved) { s.elevMoved = true; NotifyCityEdit(); }
+                    city->GetNodes()[(size_t)s.elevNode].h = h;
+                    city->RebuildAfterNodeMove(s.elevNode);
+                }
+            } else {
+                s.elevDragging = false;
+                s.elevNode = -1;
+            }
+            return true;
+        }
+        s.hoveredNode = over ? -1 : city->PickNode(er, nodeR);
+        if (lPressed && !over) {
+            if (s.hoveredNode >= 0) {
+                s.selectedNode = s.hoveredNode;
+                s.selectedEdge = -1;
+                s.elevDragging = true;
+                s.elevNode = s.hoveredNode;
+                s.elevStartH = city->GetNodes()[(size_t)s.hoveredNode].h;
+                s.elevMouseY = GetMousePosition().y;
+                s.elevMoved = false;
+                return true;
+            }
+            const int edge = city->PickRoad(er, roadW);
+            if (edge >= 0) {
+                s.selectedEdge = edge;
+                s.selectedNode = -1;
+                return true;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // --- Building insert tool ---
+    s.insertHasPreview = false;
+    if (s.tool == CityTool::InsertBuilding) {
+        const bool over = ui::IsMouseOverUI();
+        if (!ui::IsEditingText()) {
+            if (IsKeyPressed(KEY_Q)) s.insertAngle -= 15.0f * DEG2RAD;
+            if (IsKeyPressed(KEY_E)) s.insertAngle += 15.0f * DEG2RAD;
+        }
+        Ray ir = GetMouseRay(GetMousePosition(), camera);
+        const Vector2 hit = over ? Vector2{ 1e9f, 1e9f } : RayGroundPoint(ir);
+        if (IsValidPoint(hit)) {
+            PlacedBuilding pb;
+            pb.sizeX = s.insertW; pb.sizeZ = s.insertD; pb.height = s.insertH;
+            pb.colorBucket = (int)city->GetPlacedBuildings().size() * 5 + 3;
+            pb.free = s.insertNoCollision;
+            pb.shape = s.insertShape;
+            const bool snapOn = s.insertSnap != (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT));
+            if (!snapOn || !city->SnapBuildingToRoad(hit, pb)) { pb.center = hit; pb.angleY = s.insertAngle; }
+            s.insertPreview = pb;
+            s.insertHasPreview = true;
+            s.insertPreviewOk = pb.free || city->CanPlaceBuilding(pb);
+            if (lPressed && s.insertPreviewOk) {
+                NotifyCityEdit();
+                city->AddPlacedBuilding(pb);
+                return true;
+            }
+        }
+        if (lPressed && !over) return true;
+        return false;
+    }
+
     // --- Active node drag ---
     if (s.draggingNode) {
         g_clickConsumed = true;
         if (lDown) {
             Ray ray = GetMouseRay(GetMousePosition(), camera);
-            Vector2 pos = RayGroundPoint(ray);
+            Vector2 pos = RayGroundPoint(ray, city->GetNodes()[(size_t)s.dragNode].h);
             if (IsValidPoint(pos)) {
                 // Keep nodes at least one road width apart; closer than that the
                 // junction plates/strips of neighbouring nodes overlap and glitch.
@@ -175,7 +375,7 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
             return true;
         }
 
-        if (!g_placeRoadNode) {
+        {
             int blockIdx = -1, slot = -1;
             if (city->PickBuilding(ray, blockIdx, slot)) {
                 s.selectedBlockId = city->GetBlocks()[(size_t)blockIdx].id;
@@ -187,16 +387,6 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
             }
         }
 
-        if (g_placeRoadNode) {
-            const Vector2 hit = RayGroundPoint(ray);
-            if (IsValidPoint(hit)) {
-                NotifyCityEdit();
-                const int n = city->AddNodeConnected(hit);
-                s.selectedNode = n; s.selectedEdge = -1;
-                g_clickConsumed = true;
-                return true;
-            }
-        }
         Vector2 hit = RayGroundPoint(ray);
         if (IsValidPoint(hit) && city->ContainsPoint(hit)) {
             s.selectedNode = -1;
@@ -301,6 +491,67 @@ void DrawCityEditorPanel() {
         city->SetName(nameBuf);
     }
 
+    // --- Tools ---
+    ImGui::SeparatorText("Tools");
+    {
+        int tool = (int)s.tool;
+        ImGui::RadioButton("Select", &tool, (int)CityTool::Select); ImGui::SameLine();
+        ImGui::RadioButton("Paint block", &tool, (int)CityTool::PaintBlock); ImGui::SameLine();
+        ImGui::RadioButton("Draw road (R)", &tool, (int)CityTool::DrawRoad);
+        ImGui::RadioButton("Insert building", &tool, (int)CityTool::InsertBuilding); ImGui::SameLine();
+        ImGui::RadioButton("Elevate road", &tool, (int)CityTool::ElevateRoad);
+        if (tool != (int)s.tool) {
+            s.tool = (CityTool)tool;
+            s.painting = false; s.draggingNode = false; s.elevDragging = false;
+            s.roadActive = s.roadDragging = s.roadHasHandle = false;
+        }
+        if (s.tool == CityTool::InsertBuilding) {
+            ImGui::Checkbox("Snap to roads (hold Alt to invert)", &s.insertSnap);
+            ImGui::Checkbox("NoCollision (place anywhere)", &s.insertNoCollision);
+            {
+                static const char* kShapes[] = { "Flat roof", "Gable roof", "Shed roof", "Stepped tower" };
+                static const int kShapeId[] = { 0, 3, 10, 4 };
+                int si = 0;
+                for (int k = 0; k < 4; k++) if (kShapeId[k] == s.insertShape) si = k;
+                if (ImGui::Combo("Shape", &si, kShapes, 4)) s.insertShape = kShapeId[si];
+            }
+            ImGui::DragFloat("Width", &s.insertW, 0.25f, 2.0f, 60.0f);
+            ImGui::DragFloat("Depth", &s.insertD, 0.25f, 2.0f, 60.0f);
+            {
+                int fl = std::max(1, (int)lroundf(s.insertH / kFloorHeight));
+                if (ImGui::DragInt("Floors", &fl, 0.2f, 1, 120)) s.insertH = (float)fl * kFloorHeight;
+                ImGui::SameLine(); ImGui::TextDisabled("%.1f m", (float)fl * kFloorHeight);
+            }
+            ImGui::TextDisabled("Click a block to plop. Q/E rotate when not snapped.\nNeighbouring buildings shrink or vanish to make room.\nSelect a placed building to move/delete it.");
+        }
+        if (s.tool == CityTool::DrawRoad) {
+            ImGui::Checkbox("Delete roads (or hold Ctrl)", &s.roadErase);
+            ImGui::DragFloat("New road height", &s.roadHeight, 0.1f, -200.0f, 500.0f, "%.1f m");
+            ImGui::TextDisabled("PgUp/PgDn raise/lower (Shift = fine), Home resets.\nSnapping to a node keeps that node's height; the road ramps between its ends.");
+            ImGui::TextDisabled("Click to start (drag to bend), click to place the end.\nRoads chain; Esc / right-click stops. Ends snap to roads.");
+        }
+        if (s.tool == CityTool::ElevateRoad) {
+            ImGui::TextDisabled("Drag a node up/down to set its height (Shift = fine, Ctrl = snap to 0.5 m).\nClick a road to set grade, smooth it or turn it into a bridge.");
+        }
+        if (s.tool == CityTool::PaintBlock) {
+            int k = (int)s.paintKind;
+            ImGui::RadioButton("Park", &k, (int)BlockKind::Park); ImGui::SameLine();
+            ImGui::RadioButton("Buildings", &k, (int)BlockKind::Buildings); ImGui::SameLine();
+            ImGui::RadioButton("Concrete", &k, (int)BlockKind::Concrete);
+            ImGui::RadioButton("Auto (procedural)", &k, (int)BlockKind::Auto);
+            s.paintKind = (BlockKind)k;
+            ImGui::TextDisabled("Click or drag over blocks in the viewport.");
+        }
+    }
+
+    {
+        bool coll = city->GetCollisionEnabled();
+        if (ImGui::Checkbox("Building collision (Play mode)", &coll)) {
+            NotifyCityEdit();
+            city->SetCollisionEnabled(coll);
+        }
+    }
+
     CityParams& p = city->GetParams();
 
     // --- Layout params ---
@@ -330,6 +581,54 @@ void DrawCityEditorPanel() {
     ImGui::DragFloat("Building gap", &p.buildingGap, 0.1f, 0.0f, 8.0f);
     ImGui::DragFloat("Park threshold", &p.parkThreshold, 50.0f, 0.0f, 20000.0f);
     ImGui::DragFloat("Park inset", &p.parkInset, 0.25f, 0.0f, 12.0f);
+    {
+        static const char* kStyles[] = { "Modern", "Brick", "Industrial", "Suburban" };
+        ImGui::Combo("Building style", &p.style, kStyles, 4);
+        ImGui::SliderFloat("Roof / shape variety", &p.shapeVariety, 0.0f, 1.0f);
+        ImGui::SliderFloat("Short buildings", &p.shortChance, 0.0f, 1.0f);
+        ImGui::SliderFloat("Footprint variety", &p.footprintVariety, 0.0f, 0.6f);
+        ImGui::Checkbox("Street furniture (lights, trees)", &p.furniture);
+        ImGui::DragInt("Cars (Play mode)", &p.cars, 0.5f, 0, 500);
+        ImGui::DragInt("Pedestrians (Play mode)", &p.pedestrians, 0.5f, 0, 1000);
+        ImGui::DragFloat("Traffic detail distance", &p.trafficDetailDistance, 1.0f, 0.0f, 2000.0f, p.trafficDetailDistance > 0.0f ? "%.0f m" : "always detailed");
+        ImGui::Checkbox("Drive on the left", &p.leftHandTraffic);
+        if (ImGui::TreeNode("Car colours")) {
+            ImGui::Checkbox("All (equal chance, ignore percentages)", &p.carColorAll);
+            float total = 0.0f;
+            for (const CarColor& c : p.carColors) total += std::max(c.weight, 0.0f);
+            int del = -1;
+            for (size_t i = 0; i < p.carColors.size(); i++) {
+                CarColor& c = p.carColors[i];
+                ImGui::PushID((int)i);
+                float col[3] = { c.color.r / 255.0f, c.color.g / 255.0f, c.color.b / 255.0f };
+                ImGui::BeginDisabled(c.other);
+                if (ImGui::ColorEdit3("##c", col, ImGuiColorEditFlags_NoInputs))
+                    c.color = Color{ (unsigned char)(col[0] * 255.0f + 0.5f), (unsigned char)(col[1] * 255.0f + 0.5f), (unsigned char)(col[2] * 255.0f + 0.5f), 255 };
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                char nm[32]; std::snprintf(nm, sizeof nm, "%s", c.name.c_str());
+                ImGui::SetNextItemWidth(90.0f);
+                if (ImGui::InputText("##n", nm, sizeof nm)) c.name = nm;
+                ImGui::SameLine();
+                ImGui::BeginDisabled(p.carColorAll);
+                ImGui::SetNextItemWidth(70.0f);
+                ImGui::DragFloat("##w", &c.weight, 0.5f, 0.0f, 1000.0f, "%.0f");
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (p.carColorAll) ImGui::TextDisabled("equal");
+                else ImGui::Text("%.0f%%", total > 0.0f ? 100.0f * std::max(c.weight, 0.0f) / total : 0.0f);
+                ImGui::SameLine();
+                if (c.other) { ImGui::TextDisabled("(random vivid)"); ImGui::SameLine(); }
+                if (ImGui::SmallButton("x")) del = (int)i;
+                ImGui::PopID();
+            }
+            if (del >= 0) p.carColors.erase(p.carColors.begin() + del);
+            if (ImGui::Button("Add colour")) p.carColors.push_back(CarColor{ "Custom", Color{ 60, 90, 200, 255 }, 5.0f, false });
+            ImGui::SameLine();
+            if (ImGui::Button("Reset colours")) { p.carColors = CityParams{}.carColors; p.carColorAll = false; }
+            ImGui::TreePop();
+        }
+    }
     ImGui::DragInt("Seed", &p.seed, 1.0f, 1, 9999999);
     ImGui::PopID();
 
@@ -360,6 +659,78 @@ void DrawCityEditorPanel() {
             if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
             city->MoveNode(s.selectedNode, v, true); // incremental rebuild
         }
+        {
+            float hh = city->GetNodes()[(size_t)s.selectedNode].h;
+            if (ImGui::DragFloat("Height", &hh, 0.1f, -200.0f, 500.0f, "%.2f m")) {
+                if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
+                city->SetNodeHeight(s.selectedNode, hh);
+            }
+        }
+        if (city->GetNodes()[(size_t)s.selectedNode].junction) {
+            static const char* kJ[] = { "Plain", "Crosswalks", "Traffic light", "Stop signs", "Roundabout" };
+            int jk = city->GetNodes()[(size_t)s.selectedNode].jkind;
+            if (ImGui::Combo("Junction", &jk, kJ, 5)) {
+                NotifyCityEdit();
+                city->SetNodeJunctionKind(s.selectedNode, jk);
+            }
+        }
+        if (city->GetNodes()[(size_t)s.selectedNode].junction &&
+            city->GetNodes()[(size_t)s.selectedNode].jkind == (int)JunctionKind::Roundabout) {
+            const RoadNode& rn = city->GetNodes()[(size_t)s.selectedNode];
+            float isl = rn.rbIsland, rg = rn.rbRing;
+            bool sp = rn.rbSplitters, co = rn.rbConcrete, ch = false;
+            ImGui::SeparatorText("Roundabout");
+            ch |= ImGui::DragFloat("Island radius", &isl, 0.1f, 0.0f, 30.0f, isl > 0.0f ? "%.1f m" : "auto");
+            ch |= ImGui::DragFloat("Roadway width", &rg, 0.1f, 0.0f, 20.0f, rg > 0.0f ? "%.1f m" : "auto");
+            ch |= ImGui::Checkbox("Splitter islands", &sp);
+            ch |= ImGui::Checkbox("Concrete island (no grass)", &co);
+            ImGui::TextDisabled("0 = automatic size from the connected roads.\nBuildings keep clear of the ring.");
+            if (ch) { NotifyCityEdit(); city->SetRoundaboutProps(s.selectedNode, isl, rg, sp, co); }
+        }
+        if (city->GetNodes()[(size_t)s.selectedNode].junction &&
+            city->GetNodes()[(size_t)s.selectedNode].jkind == (int)JunctionKind::TrafficLight) {
+            RoadNode& nd = city->GetNodes()[(size_t)s.selectedNode];
+            ImGui::SeparatorText("Traffic signal");
+            auto act = [&]() { if (ImGui::IsItemActivated()) NotifyCityEdit(); };
+            ImGui::DragFloat("Amber (s)", &nd.yellow, 0.1f, 0.5f, 6.0f, "%.1f"); act();
+            ImGui::DragFloat("All-red (s)", &nd.allRed, 0.1f, 0.0f, 6.0f, "%.1f"); act();
+            ImGui::DragFloat("Offset (s)", &nd.sigOffset, 0.2f, 0.0f, 300.0f, "%.1f"); act();
+            if (nd.phases.empty()) {
+                ImGui::TextDisabled("Default cycle: east/west roads, then north/south.");
+                if (ImGui::Button("Customise phases")) {
+                    NotifyCityEdit();
+                    nd.phases = { SignalPhase{ 9.0f, (uint8_t)((1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 7)) },
+                                  SignalPhase{ 9.0f, (uint8_t)((1 << 2) | (1 << 6)) } };
+                }
+            } else {
+                static const char* kSec[8] = { "E", "NE", "N", "NW", "W", "SW", "S", "SE" };
+                ImGui::TextDisabled("Tick the roads (by compass direction from the\njunction) that get green in each phase.");
+                int removeAt = -1;
+                for (size_t pi = 0; pi < nd.phases.size(); pi++) {
+                    ImGui::PushID((int)pi);
+                    SignalPhase& ph = nd.phases[pi];
+                    ImGui::Text("Phase %zu", pi + 1);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove") && nd.phases.size() > 1) removeAt = (int)pi;
+                    ImGui::DragFloat("Green (s)", &ph.duration, 0.2f, 1.0f, 120.0f, "%.1f"); act();
+                    for (int b = 0; b < 8; b++) {
+                        bool on = (ph.mask >> b) & 1;
+                        if (b & 3) ImGui::SameLine();
+                        ImGui::PushID(b);
+                        if (ImGui::Checkbox(kSec[b], &on)) {
+                            NotifyCityEdit();
+                            if (on) ph.mask |= (uint8_t)(1u << b); else ph.mask &= (uint8_t)~(1u << b);
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::PopID();
+                }
+                if (removeAt >= 0) { NotifyCityEdit(); nd.phases.erase(nd.phases.begin() + removeAt); }
+                if (ImGui::Button("Add phase")) { NotifyCityEdit(); nd.phases.push_back(SignalPhase{ 9.0f, 0 }); }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset to default")) { NotifyCityEdit(); nd.phases.clear(); }
+            }
+        }
         if (ImGui::Button("Delete node")) {
             NotifyCityEdit();
             city->DeleteNode(s.selectedNode);
@@ -382,6 +753,84 @@ void DrawCityEditorPanel() {
             city->SetEdgeLaneOverride(s.selectedEdge, lanes);
         }
         ImGui::TextDisabled("0 = follow the global road lanes");
+
+        {
+            RoadEdge pr = city->GetEdges()[(size_t)s.selectedEdge];
+            bool ed = false;
+            static const char* kTypes[] = { "Street", "Avenue", "Highway", "Dirt path", "Pedestrian street" };
+            int ty = pr.type;
+            if (ImGui::Combo("Road type", &ty, kTypes, 5)) {
+                pr.type = ty;
+                // Presets: lanes / lane width / sidewalk / curb / markings.
+                switch (ty) {
+                    case 0: pr.lanes = 0; pr.width = 0.0f; pr.sidewalk = -1.0f; pr.curbH = 0.12f; pr.markings = true; break;
+                    case 1: pr.lanes = 4; pr.width = 0.0f; pr.sidewalk = 3.0f; pr.curbH = 0.15f; pr.markings = true; break;
+                    case 2: pr.lanes = 6; pr.width = 3.6f; pr.sidewalk = 1.0f; pr.curbH = 0.0f; pr.markings = true; break;
+                    case 3: pr.lanes = 1; pr.width = 2.6f; pr.sidewalk = 0.3f; pr.curbH = 0.0f; pr.markings = false; break;
+                    default: pr.lanes = 2; pr.width = 2.0f; pr.sidewalk = 1.0f; pr.curbH = 0.04f; pr.markings = false; break;
+                }
+                ed = true;
+            }
+            float lw = pr.width;
+            if (ImGui::DragFloat("Lane width", &lw, 0.05f, 0.0f, 12.0f, lw > 0.0f ? "%.2f m" : "global")) { pr.width = lw; ed = true; }
+            float sw = pr.sidewalk;
+            if (ImGui::DragFloat("Sidewalk", &sw, 0.05f, -1.0f, 12.0f, sw >= 0.0f ? "%.2f m" : "global")) { pr.sidewalk = sw; ed = true; }
+            ed |= ImGui::DragFloat("Curb height", &pr.curbH, 0.01f, 0.0f, 1.0f, "%.2f m");
+            ed |= ImGui::Checkbox("Lane markings", &pr.markings);
+            ed |= ImGui::DragFloat("Banking", &pr.bank, 0.1f, -20.0f, 20.0f, "%.1f deg");
+            ed |= ImGui::Checkbox("Bridge", &pr.bridge);
+            static const char* kOW[] = { "Two-way", "One-way (A to B)", "One-way (B to A)" };
+            ed |= ImGui::Combo("Direction", &pr.oneWay, kOW, 3);
+            ed |= ImGui::DragFloat("Speed limit (m/s)", &pr.speedLimit, 0.25f, 0.0f, 60.0f, pr.speedLimit > 0.0f ? "%.1f" : "default");
+            if (ed) { NotifyCityEdit(); city->SetEdgeProps(s.selectedEdge, pr); }
+        }
+        {
+            // Turn lanes: which manoeuvres each lane (counted from the centre line) may make at each road end.
+            const RoadEdge& te = city->GetEdges()[(size_t)s.selectedEdge];
+            uint16_t ta = te.turnA, tb = te.turnB;
+            bool changed = false;
+            const int lanesHere = te.lanes > 0 ? te.lanes : city->GetParams().lanes;
+            const int perDir = std::min(te.oneWay ? lanesHere : std::max(lanesHere / 2, 1), 4);
+            if (ImGui::TreeNode("Turn lanes")) {
+                ImGui::TextDisabled("Per lane, centre line outward: L = left, S = straight, R = right.\nNone ticked = any manoeuvre.");
+                for (int endSel = 0; endSel < 2; endSel++) {
+                    uint16_t& m = endSel == 0 ? ta : tb;
+                    ImGui::Text("Arriving at node %d", endSel == 0 ? te.a : te.b);
+                    for (int l = 0; l < perDir; l++) {
+                        ImGui::PushID(endSel * 8 + l);
+                        ImGui::Text("Lane %d", l + 1);
+                        for (int b = 0; b < 3; b++) {
+                            static const char* kL[3] = { "L", "S", "R" };
+                            bool on = (m >> (4 * l + b)) & 1;
+                            ImGui::SameLine();
+                            ImGui::PushID(b);
+                            if (ImGui::Checkbox(kL[b], &on)) {
+                                if (on) m |= (uint16_t)(1u << (4 * l + b)); else m &= (uint16_t)~(1u << (4 * l + b));
+                                changed = true;
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::TreePop();
+            }
+            if (changed) { NotifyCityEdit(); city->SetEdgeTurnLanes(s.selectedEdge, ta, tb, te.speedLimit); }
+        }
+        {
+            const RoadEdge& se = city->GetEdges()[(size_t)s.selectedEdge];
+            ImGui::Text("Ends: %.1f m -> %.1f m", city->GetNodes()[(size_t)se.a].h, city->GetNodes()[(size_t)se.b].h);
+            ImGui::DragFloat("Grade", &s.gradePercent, 0.1f, -30.0f, 30.0f, "%.1f %%");
+            if (ImGui::Button("Apply grade along road")) {
+                NotifyCityEdit();
+                city->SetRoadGrade(s.selectedEdge, se.a, s.gradePercent);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Smooth heights")) {
+                NotifyCityEdit();
+                city->SmoothRoadHeights(s.selectedEdge);
+            }
+        }
         if (ImGui::Button("Split road here")) {
             Vector2 mid = city->EdgeMidpoint(s.selectedEdge);
             NotifyCityEdit();
@@ -398,12 +847,47 @@ void DrawCityEditorPanel() {
         for (int i = 0; i < (int)blocks.size(); i++) if (blocks[(size_t)i].id == s.selectedBlockId) { bi = i; break; }
         const bool valid = bi >= 0 && (size_t)s.selectedBuildingSlot < blocks[(size_t)bi].buildings.size();
         ImGui::SeparatorText("Building##panel");
-        if (valid) {
+        const Building* sel = valid ? &blocks[(size_t)bi].buildings[(size_t)s.selectedBuildingSlot] : nullptr;
+        if (sel && sel->placedIndex >= 0 && (size_t)sel->placedIndex < city->GetPlacedBuildings().size()) {
+            const Building& b = *sel;
+            // User-placed building: edits go to the placed list (they survive regeneration).
+            PlacedBuilding pb = city->GetPlacedBuildings()[(size_t)b.placedIndex];
+            ImGui::Text("Placed building %d", b.placedIndex);
+            bool edited = false;
+            edited |= ImGui::DragFloat2("Position", &pb.center.x, 0.1f);
+            float deg = pb.angleY * RAD2DEG;
+            if (ImGui::DragFloat("Rotation", &deg, 0.5f, -360.0f, 360.0f)) { pb.angleY = deg * DEG2RAD; edited = true; }
+            edited |= ImGui::DragFloat("Width", &pb.sizeX, 0.1f, 2.0f, 60.0f);
+            edited |= ImGui::DragFloat("Depth", &pb.sizeZ, 0.1f, 2.0f, 60.0f);
+            {
+                int fl = std::max(1, (int)lroundf(pb.height / kFloorHeight));
+                if (ImGui::DragInt("Floors", &fl, 0.2f, 1, 120)) { pb.height = (float)fl * kFloorHeight; edited = true; }
+            }
+            if (ImGui::Checkbox("NoCollision", &pb.free)) edited = true;
+            {
+                static const char* kShapes[] = { "Flat roof", "Gable roof", "Shed roof", "Stepped tower" };
+                static const int kShapeId[] = { 0, 3, 10, 4 };
+                int si = 0;
+                for (int k = 0; k < 4; k++) if (kShapeId[k] == pb.shape) si = k;
+                if (ImGui::Combo("Shape", &si, kShapes, 4)) { pb.shape = kShapeId[si]; edited = true; }
+            }
+            if (edited && (pb.free || city->CanPlaceBuilding(pb, b.placedIndex))) {
+                if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
+                city->UpdatePlacedBuilding(b.placedIndex, pb);
+            }
+            if (ImGui::Button("Delete building")) {
+                NotifyCityEdit();
+                city->RemovePlacedBuilding(b.placedIndex);
+                s.selectedBlockId = 0; s.selectedBuildingSlot = -1;
+            }
+        } else if (valid) {
             const Building& b = blocks[(size_t)bi].buildings[(size_t)s.selectedBuildingSlot];
             ImGui::Text("Block %llu, building %d", (unsigned long long)s.selectedBlockId, s.selectedBuildingSlot);
             const bool hasOverride = city->HasBuildingOverride(s.selectedBlockId, s.selectedBuildingSlot);
-            float height = b.size.y;
-            if (ImGui::DragFloat("Height", &height, 0.25f, 0.5f, 400.0f)) {
+            int floorsUi = b.floors;
+            float height = (float)floorsUi * kFloorHeight;
+            if (ImGui::DragInt("Floors", &floorsUi, 0.2f, 1, 120)) {
+                height = (float)floorsUi * kFloorHeight;
                 NotifyCityEdit();
                 city->SetBuildingHeightOverride(s.selectedBlockId, s.selectedBuildingSlot, height);
             }
@@ -440,6 +924,12 @@ void DrawCityEditorPanel() {
                 city->GetEdges().size(), city->GetBlocks().size());
     ImGui::Text("Buildings: %d", buildingCount);
     if (city->IsRebuilding()) ImGui::TextDisabled("Rebuilding in background...");
+    {
+        const auto& ts = city->GetTrafficStats();
+        if (ts.cars + ts.peds > 0)
+            ImGui::Text("Traffic: %d cars (%d near, %d far), %d walkers\navg %.1f m/s, %d stopped, min gap %.1f m, step %.2f ms\nwalker max %.1f m/s | crashes: %d | jumps: %d",
+                        ts.cars, ts.nearCars, ts.farCars, ts.peds, ts.avgSpeed, ts.stopped, ts.minGap, ts.stepMs, ts.maxWalkerSpeed, ts.overlaps, ts.jumps);
+    }
 
     ImGui::SeparatorText("Performance");
     {

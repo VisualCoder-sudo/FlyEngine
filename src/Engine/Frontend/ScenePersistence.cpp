@@ -350,10 +350,15 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     if (runtime) {
         printf("[ScenePersistence] runtime->IsValid() = %d\n", runtime->IsValid());
     }
-    if (version >= 2 && runtime && runtime->IsValid()) {
+    // The section is always consumed, even with no usable runtime (e.g. the player's
+    // --noscripts): skipping it left the script count in the stream and shifted every
+    // later section, so the whole scene (terrain, city, ...) failed to load.
+    if (version >= 2) {
+        const bool keepScripts = runtime && runtime->IsValid();
         size_t scriptCount = 0;
         if (file >> scriptCount) {
-            auto& scripts = runtime->StandaloneScripts();
+            std::vector<ScriptRuntime::StandaloneScript> discarded;
+            auto& scripts = keepScripts ? runtime->StandaloneScripts() : discarded;
             scripts.clear();
             scripts.reserve(scriptCount);
             for (size_t i = 0; i < scriptCount; ++i) {

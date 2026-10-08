@@ -26,18 +26,42 @@ extern const Color kBuildingTints[kBuildingColorBuckets];
 
 // Instanced building silhouette shapes. Wedges fill angled corners where two
 // streets meet; slants are sheared slabs that sit along edges/interiors.
-constexpr int kBuildingShapes = 3;
+constexpr int kBuildingShapes = 11;
+constexpr float kFloorHeight = 3.4f;   // metres per storey: building heights are whole storeys, the facade shader uses the same value
 enum : int {
     kBuildingBox = 0,
     kBuildingWedge = 1,
     kBuildingSlant = 2,
+    kBuildingGable = 3,   // box with a pitched roof (suburban houses)
+    kBuildingTower = 4,   // stepped tower: full-width base, narrower shaft, narrowest crown
+    // Props and agents share the instancing pipeline (vertex-coloured, no facade, no collision).
+    kPropLamp = 5,
+    kPropTree = 6,
+    kPropCar = 7,
+    kPropPerson = 8,
+    kPropSignal = 9,
+    kBuildingShed = 10,   // box with a single-slope roof
+    kPropCarGlass = 11,   // car windows (untinted), same pose as kPropCar
+    kPropWheel = 12,      // one car wheel (rolls about its local z axis)
 };
+inline bool IsPropShape(int s) { return s >= 5 && s <= 9; }
+
+// Overall look of procedurally generated buildings.
+enum class BuildingStyle : int { Modern = 0, Brick = 1, Industrial = 2, Suburban = 3 };
 
 // ---------------------------------------------------------------------------
 // Parameters that define a procedurally generated city. Building geometry is a
 // pure function of (params, seed, block polygon) so node edits regenerate the
 // same style deterministically.
 // ---------------------------------------------------------------------------
+// One entry of the car colour table. `other` entries pick a random vivid colour instead of `color`.
+struct CarColor {
+    std::string name;
+    Color color{ 0, 0, 0, 255 };
+    float weight = 0.0f;    // relative spawn chance (percent-like; normalised over the table)
+    bool other = false;
+};
+
 struct CityParams {
     // Layout
     int gridX = 6;              // interior intersections along X (2..64)
@@ -66,6 +90,23 @@ struct CityParams {
     float parkThreshold = 2000.0f; // block area (m^2) above which it becomes a park
     float parkInset = 3.0f;       // grass margin kept between the roads and a park
 
+    // Look
+    int style = 0;                // BuildingStyle
+    float shapeVariety = 0.5f;    // 0..1 chance that a parcel gets a non-flat roof / stepped shape (gable, shed, tower)
+    float shortChance = 0.15f;    // 0..1 chance that a building is much shorter than its neighbours (1-2 storeys)
+    float footprintVariety = 0.15f; // 0..1 how much a building's footprint may shrink from its parcel
+    bool furniture = true;        // streetlights and trees along roads
+    int cars = 0;                 // Play-mode traffic: number of cars
+    int pedestrians = 0;          // Play-mode traffic: number of pedestrians
+    bool leftHandTraffic = false;         // cars drive on the left (UK, Japan, ...) instead of the right
+    bool carColorAll = false;             // every colour in the table is equally likely (weights ignored)
+    std::vector<CarColor> carColors = {   // spawn chances of car colours (not part of the layout; changing them never rebuilds)
+        { "Black", { 22, 22, 26, 255 }, 55.0f, false },
+        { "Grey", { 128, 131, 138, 255 }, 25.0f, false },
+        { "White", { 232, 232, 236, 255 }, 15.0f, false },
+        { "Other", { 200, 40, 40, 255 }, 5.0f, true } };
+    float trafficDetailDistance = 150.0f; // cars farther than this from the camera run the cheap model (0 = always detailed)
+
     float RoadWidth() const {
         return lanes * laneWidth + sidewalk * 2.0f;
     }
@@ -78,16 +119,54 @@ struct CityParams {
 bool operator==(const CityParams& a, const CityParams& b);
 bool operator!=(const CityParams& a, const CityParams& b);
 
+// One step of a traffic-signal cycle. `mask` has one bit per compass sector of the arriving road
+// (bit 0 = road to the east of the junction, 1 = north-east, 2 = north, ... counter-clockwise).
+struct SignalPhase {
+    float duration = 9.0f;   // green time, seconds
+    uint8_t mask = 0;
+};
+
 struct RoadNode {
     Vector2 pos{ 0.0f, 0.0f };
     bool boundary = false; // part of the outside loop (kept honest by the editor)
     bool junction = false; // 2+ distinct edge directions; strip ends get trimmed, cap emitted
+    float h = 0.0f;        // road surface height above the city's ground plane
+    int jkind = 0;         // JunctionKind: what the junction looks like (crosswalks, stop lines, ...)
+    // Traffic-light programme (used when jkind == TrafficLight). Empty = default two-phase cycle.
+    std::vector<SignalPhase> phases;
+    float yellow = 1.5f;   // amber time after each green
+    float allRed = 1.0f;   // all-red clearance after the amber
+    float sigOffset = 0.0f; // shifts this junction's cycle (for green waves)
+    // Roundabout (jkind == Roundabout) settings; 0 = automatic size from the connected roads.
+    float rbIsland = 0.0f;  // central island radius (m)
+    float rbRing = 0.0f;    // width of the circulating roadway (m)
+    bool rbSplitters = true;   // concrete splitter islands where roads meet the ring
+    bool rbConcrete = false;   // island is solid concrete instead of grass
 };
+
+// Junction treatment at a node with 2+ roads. Plain keeps the bare plate.
+enum class JunctionKind : int { Plain = 0, Crosswalks = 1, TrafficLight = 2, Stop = 3, Roundabout = 4 };
+
+// Road class presets (Street..Path): shorthand for lanes/width/sidewalk/curb/markings.
+enum class RoadType : int { Street = 0, Avenue = 1, Highway = 2, Path = 3, Pedestrian = 4 };
 
 struct RoadEdge {
     int a = 0;
     int b = 0;
     int lanes = 0; // per-edge lane override; 0 = use params.lanes
+    float width = 0.0f;     // per-road lane width override; 0 = params.laneWidth
+    float sidewalk = -1.0f; // per-road sidewalk width; < 0 = params.sidewalk
+    int type = 0;           // RoadType (informational; presets write the fields below)
+    bool bridge = false;    // elevated deck with side walls (and pillars)
+    float curbH = 0.0f;     // sidewalk raised above the asphalt by this much
+    bool markings = false;  // centre line / lane markings
+    float bank = 0.0f;      // cross-slope on curves, degrees (positive banks toward the inside)
+    int oneWay = 0;         // 0 both directions, 1 = a->b only, 2 = b->a only
+    float speedLimit = 0.0f; // m/s; 0 = default for the road type
+    // Lane use at the junction ends, 4 bits per lane (lane 0 = nearest the centre line):
+    // bit0 = turn left, bit1 = straight, bit2 = turn right; 0 = no restriction. turnA is for traffic
+    // arriving at node a (travelling b -> a), turnB for traffic arriving at node b.
+    uint16_t turnA = 0, turnB = 0;
 };
 
 struct Building {
@@ -96,6 +175,21 @@ struct Building {
     float angleY = 0.0f; // rotation about +Y; local x-axis aligns with the block street
     int shape = kBuildingBox; // kBuildingBox / kBuildingWedge / kBuildingSlant
     int colorBucket = 0;
+    int floors = 1;        // storeys; size.y is floors * kFloorHeight (plus any foundation under a slope)
+    int placedIndex = -1; // >= 0: a user-placed building (index into City::GetPlacedBuildings())
+};
+
+// A building plopped by the Building Insert tool. Survives regeneration: blocks
+// lay their procedural parcels out around these footprints.
+struct PlacedBuilding {
+    Vector2 center{};
+    float sizeX = 11.0f;  // along the street (local x)
+    float sizeZ = 11.0f;  // depth
+    float height = 14.0f;
+    float angleY = 0.0f;  // rotation about +Y (same convention as Building::angleY)
+    int colorBucket = 0;
+    int shape = 0;        // kBuildingBox / Gable / Tower ...
+    bool free = false;    // placed with NoCollision: may sit off any block / on roads / overlapping others
 };
 
 struct Block {
@@ -111,6 +205,9 @@ struct Block {
     // override's key stays valid against.
     uint64_t id = 0;
 };
+
+// Painted land use for a block. Auto = the procedural area-based rule.
+enum class BlockKind : int { Auto = 0, Park = 1, Buildings = 2, Concrete = 3 };
 
 // A per-building edit that survives regeneration: layout runs as normal, then
 // any override for that building's (blockId, slot) is reapplied on top. Keyed
@@ -181,7 +278,67 @@ public:
     // the graph stays planar). Returns the new node index.
     int  AddNodeConnected(const Vector2& pos);
     void DeleteNode(int index);
+
+    // Road drawing. SnapRoadPoint resolves a cursor point to an existing node, a
+    // point on an existing road, or itself (free ground).
+    struct RoadSnap { Vector2 pos{}; int node = -1; int edge = -1; };
+    RoadSnap SnapRoadPoint(const Vector2& p) const;
+    // Adds a road along `pts` (a sampled curve): the ends snap to nodes/roads, the
+    // path is split wherever it crosses existing roads, and the city rebuilds once.
+    // Returns the node index at the final point, or -1 if nothing was added.
+    // New nodes get heights ramping between the end nodes' heights (an end that snaps to an
+    // existing node keeps that node's height; free ends take hStart / hEnd).
+    int AddRoadPath(const std::vector<Vector2>& pts, float hStart = 0.0f, float hEnd = 0.0f);
+    // Removes the whole road through edgeIndex: the chain of edges up to the
+    // nearest junctions/dead ends, plus nodes left without roads.
+    void DeleteRoadChain(int edgeIndex);
     void SetEdgeLaneOverride(int edgeIndex, int lanes);
+    // Elevation. Height of the road centreline along edge `ei` at fraction s (0 = node a,
+    // 1 = node b): flat through each junction, easing between the two node heights.
+    float EdgeProfileY(int ei, float s) const;
+    // Half widths of a road: the asphalt ribbon, and the full slab including sidewalks. They use
+    // the road's own lane count / lane width / sidewalk when set, else the city's params.
+    float EdgeAsphaltHalf(int ei) const;
+    float EdgeSlabHalf(int ei) const;
+    void SetNodeHeight(int index, float h);
+    void SetNodeJunctionKind(int index, int kind);
+    // Replaces the per-road properties (lanes/width/sidewalk/type/bridge/curb/markings/bank).
+    void SetEdgeProps(int edgeIndex, const RoadEdge& props);
+    // Fixed-ends smoothing of the node heights along the road chain through edgeIndex.
+    void SmoothRoadHeights(int edgeIndex, int iterations = 8);
+    // Sets the heights of the road chain through edgeIndex to a constant grade (%) from the
+    // chain's `fromNode` end; the far end follows.
+    void SetRoadGrade(int edgeIndex, int fromNode, float gradePercent);
+    // Ids of the chain of edges (up to junctions/dead ends) that contains edgeIndex, plus the
+    // node sequence from one end to the other.
+    void GetRoadChain(int edgeIndex, std::vector<int>& outEdges, std::vector<int>& outNodes) const;
+
+    // Play-mode collision for buildings and the road/pad surface. Rebuilds.
+    bool GetCollisionEnabled() const { return collisionEnabled; }
+    void SetCollisionEnabled(bool on);
+    // Called by city::AttachPhysicsWorld / DetachPhysicsWorld.
+    void CreateAllTilePhysics();
+    void DestroyAllTilePhysics();
+
+    // Painted block land use, keyed by persistent block id (survives rebuilds).
+    // Auto removes the override. Triggers a rebuild.
+    void SetBlockKind(uint64_t blockId, BlockKind kind);
+    BlockKind GetBlockKind(uint64_t blockId) const;
+    // Index into GetBlocks() of the block whose pad contains p, or -1.
+    int PickBlockAt(const Vector2& p) const;
+
+    // User-placed buildings. A placed building renders with the block its centre
+    // lies in; that block's procedural parcels shrink or vanish to make room.
+    const std::vector<PlacedBuilding>& GetPlacedBuildings() const { return placed; }
+    int  AddPlacedBuilding(const PlacedBuilding& pb);          // returns its index
+    void UpdatePlacedBuilding(int index, const PlacedBuilding& pb);
+    void RemovePlacedBuilding(int index);
+    // True when the footprint sits on a block (clear of the roads) and does not
+    // overlap another placed building (`ignoreIndex` is skipped).
+    bool CanPlaceBuilding(const PlacedBuilding& pb, int ignoreIndex = -1) const;
+    // Road snapping: puts pb (sizes already set) beside the nearest road to
+    // `cursor`, facing it. Returns false when no road is close enough.
+    bool SnapBuildingToRoad(const Vector2& cursor, PlacedBuilding& pb) const;
 
     // Building overrides. `slot` is the building's index within its block's
     // `buildings` vector, which LayoutBlock fills deterministically, so the
@@ -220,6 +377,18 @@ private:
     void ClearGraph();
     void ComputeBlocks();   // fills blocks from the graph faces
     void LayoutBuildings(); // fills per-block building boxes (parks first)
+    float FreeGroundY(const Vector2& p) const;               // ground height under a NoCollision building
+    int EdgeBetween(int a, int b) const;                   // edge joining nodes a and b, or -1
+    float EdgeRampU(int ei, float s) const;                // 0..1 eased ramp position along an edge (flat at junctions)
+    // Cross-section stations (fractions 0..1 along edge a->b) shared by the road surface and the block
+    // pads beside it, and the piecewise-linear surface height through them.
+    std::vector<float> EdgeStations(int ei) const;
+    float EdgeSurfaceY(int ei, float s) const;
+    float BlockRoadHalf(const Block& block) const;         // widest road half width around a block
+    struct BlockSurface;                                   // pad height field (see City.cpp)
+    void BuildBlockSurface(const Block& block, BlockSurface& out) const;
+    void FitBuildingsToSurface(Block& block) const;        // sit buildings on sloped pads
+    void LayoutBlockProcedural(Block& block); // parcels/park only
     void LayoutBlock(Block& block); // one block: park polygon or parcelled buildings
     void ComputeJunctionFlags(); // sets node.junction (depends only on the graph)
     bool JunctionFlagFor(int ni) const;
@@ -235,8 +404,90 @@ private:
     std::vector<RoadNode> nodes;
     std::vector<RoadEdge> edges;
     std::vector<Block> blocks;
+    // Play-mode traffic: cars follow lanes along the road graph, pedestrians walk the sidewalks.
+    struct Agent {
+        bool car = true;
+        int edge = 0;
+        bool fwd = true;        // travelling a -> b
+        float s = 0.0f;         // metres from the start node of the travel direction
+        float speed = 0.0f;
+        float maxSpeed = 8.0f;  // desired speed (personal, randomised)
+        float accel = 2.0f;     // m/s^2
+        float decel = 3.0f;     // comfortable braking, m/s^2
+        float headway = 1.4f;   // desired time gap to the car ahead, s
+        float minGap = 2.2f;    // bumper gap when stopped, m
+        int lane = 0;           // target lane counted from the road centre (cars) / side (pedestrians: 0 or 1)
+        float laneF = 0.0f;     // lane the car is actually in (eases toward `lane` on a lane change)
+        float speedFactor = 1.0f; // personal fraction of the road's speed limit
+        int turn = 0;           // upcoming manoeuvre for the indicator: -1 left, 0 none, +1 right
+        float wait = 0.0f;      // stop-sign wait timer
+        bool released = false;  // already cleared this junction approach
+        Vector3 pos{};
+        Vector3 lastPos{};      // pose at the previous traffic step (jump detection in the stats)
+        float yaw = 0.0f;
+        bool placed = false;    // pos/yaw initialised
+        float wheelRot = 0.0f;  // wheel roll angle (rad)
+        float colorRoll = 0.0f; // 0..1 draw deciding the colour from the table (stable while the table changes)
+        float colorRoll2 = 0.0f;// picks the vivid colour of an "Other" entry
+        float stuck = 0.0f;     // seconds spent (almost) stopped; long waits release the car (deadlock breaker)
+        float nearTime = 0.0f;  // seconds spent in the detailed model (crash statistics ignore fresh arrivals)
+        bool far = false;       // beyond the detail distance: constant speed, snap turns, box
+        // Junction crossing along a quadratic Bezier (gradual turn).
+        int nextEdge = -1;
+        bool nextFwd = true;
+        bool inJ = false;
+        float jt = 0.0f, jlen = 1.0f, jExit = 0.0f, jVMax = 99.0f;
+        int jFrom = -1, jTo = -1, jNode = -1, jLaneB = 0;   // jFrom/jTo: the road pair the planned path belongs to
+        std::vector<Vector2> jpath;   // planned path through the next junction (cars)
+        std::vector<float> jcum;      // cumulative length along jpath
+        Vector2 jc0{}, jc1{}, jc2{};
+        float jy0 = 0.0f, jy2 = 0.0f;
+        Color color{ 200, 200, 200, 255 };
+        uint32_t rng = 1;
+    };
+    std::vector<Agent> agents;
+public:
+    void ClearAgents() { agents.clear(); simTime = 0.0f; trafficStats = TrafficStats{}; }
+private:
+    float trafficClock = 0.0f;
+    Vector3 trafficFocus{};      // camera position (set while drawing), drives the traffic detail distance
+    bool hasTrafficFocus = false;
+    unsigned trafficFrame = 0;
+    float simTime = 0.0f;       // seconds of Play-mode traffic simulated
+public:
+    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0; };
+    const TrafficStats& GetTrafficStats() const { return trafficStats; }
+private:
+    TrafficStats trafficStats;
+    void LanePose(int edge, bool fwd, float s, float lane, bool car, Vector3& pos, Vector2& heading) const;
+public:
+    // Traffic signals: sector (0..7) of the road `edge` as seen from `node`, and the light shown to
+    // traffic arriving along it (0 red, 1 amber, 2 green).
+    int ApproachSector(int node, int edge) const;
+    int SignalState(int node, int edge) const;
+    float EdgeSpeedLimit(int edge) const;
+    // Distance from a junction node along road `edge` to where its asphalt strip starts (the end of the junction plate).
+    float ArmClear(int edge) const;
+    float RoundaboutRadius(int node) const;   // radius of the roundabout's central island
+    float RoundaboutRingWidth(int node) const; // width of the circulating roadway
+    float RoundaboutOuterRadius(int node, bool asphalt) const;
+    // Sets the roundabout's size (0 = auto) and look, then rebuilds.
+    void SetRoundaboutProps(int node, float island, float ring, bool splitters, bool concrete);
+    // True when the circle of radius r around (x,z) touches a roundabout's ring (buildings keep clear of it).
+    bool TouchesRoundabout(const Vector2& p, float r) const; // outer edge of the roadway (asphalt) or of the sidewalk ring (slab)
+    void SetEdgeTurnLanes(int edge, uint16_t turnA, uint16_t turnB, float speedLimit);
+    float SignalClock() const { return trafficClock; }
+private:
+    void PlanJunction(Agent& a);
+    void StepTraffic(float dt);
+    void SpawnAgent(Agent& a, bool car);
+    Color PickCarColor(const Agent& a) const;
+    void AgentTarget(const Agent& a, Vector3& pos, float& yaw) const;
     uint64_t nextBlockId = 1; // 0 is reserved/invalid
     std::unordered_map<uint64_t, BuildingOverride> buildingOverrides; // key: (blockId<<20)|slot
+    std::vector<PlacedBuilding> placed;
+    bool collisionEnabled = true;
+    std::unordered_map<uint64_t, BlockKind> blockKinds; // key: block id; absent = Auto
     static uint64_t OverrideKey(uint64_t blockId, int slot) { return (blockId << 20) | (uint64_t)(uint32_t)slot; }
     void ApplyBuildingOverrides(Block& block); // post-pass after LayoutBlock fills block.buildings
     void RefreshBuildingTile(uint64_t blockId); // rebuilds the one tile a block lives in after an override edit
@@ -247,7 +498,17 @@ private:
     // building instances of the elements assigned to it (by their centre) plus a
     // tight bounding box, so Draw() culls per tile and an edit only regenerates
     // the tiles it touches. Building tint is packed into each instance transform.
+    // CPU-side collision geometry of a tile (only filled when collision is on).
+    struct CollBox { Vector3 center; Vector3 half; float angleY; int shape; };
+    struct TileCollision {
+        std::vector<CollBox> buildings;             // oriented boxes; non-box shapes become hulls
+        std::vector<Vector3> surfVerts;             // road/pad/park surface triangles
+        std::vector<int> surfIdx;
+    };
+    struct TilePhysics;                             // Box3D body/hulls/mesh (City.cpp)
     struct Tile {
+        TileCollision coll;
+        std::shared_ptr<TilePhysics> phys;          // live only while a physics world is attached
         std::vector<int> blocks, edges, nodes;      // member elements
         std::vector<Model> roadModels;              // 16-bit-safe indexed chunks (GPU)
         std::vector<Mesh> raw;                      // CPU-only chunks awaiting UploadTile()
@@ -268,6 +529,8 @@ private:
     void UploadAllTiles();
     void DestroyAllTiles();
     void ResetTileCPU(Tile& t);
+    void CreateTilePhysics(Tile& t);   // main thread; needs an attached world
+    void DestroyTilePhysics(Tile& t);
 
     // Background rebuild (see RebuildAll).
     struct RebuildJob;

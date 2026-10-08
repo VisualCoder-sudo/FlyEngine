@@ -296,6 +296,38 @@ void CharacterController::UpdateKinematic(float dt) {
     if (fabsf(vel.x) < VEL_THRESHOLD) vel.x = 0;
     if (fabsf(vel.z) < VEL_THRESHOLD) vel.z = 0;
 
+    // The kinematic body is teleported, so physics never stops it against static geometry
+    // (city buildings, walls). Sweep short horizontal rays at foot/body/head height and
+    // cancel the velocity component pushing into a near-vertical surface, so the player
+    // slides along walls. Slopes (normal.y >= 0.5) and the ground are left to the
+    // ground-check ray.
+    {
+        const float radius = CAPSULE_RADIUS;
+        const float heights[3] = { -CAPSULE_HALF_HEIGHT + 0.4f, 0.0f, CAPSULE_HALF_HEIGHT - 0.1f };
+        for (int pass = 0; pass < 2; ++pass) {
+            const float hspeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
+            if (hspeed < 1e-4f) break;
+            const Vector3 hdir = { vel.x / hspeed, 0.0f, vel.z / hspeed };
+            const float reach = radius + hspeed * dt;
+            bool blocked = false;
+            for (float h : heights) {
+                const Vector3 origin = { pos.x, pos.y + h, pos.z };
+                const auto hit = sim.RayCast(origin, hdir, reach, body);
+                if (!hit.hit || fabsf(hit.normal.y) >= 0.5f) continue;
+                Vector3 n = { hit.normal.x, 0.0f, hit.normal.z };
+                const float nl = sqrtf(n.x * n.x + n.z * n.z);
+                if (nl < 1e-4f) continue;
+                n.x /= nl; n.z /= nl;
+                const float into = vel.x * n.x + vel.z * n.z;
+                if (into >= 0.0f) continue;
+                vel.x -= n.x * into;
+                vel.z -= n.z * into;
+                blocked = true;
+            }
+            if (!blocked) break;
+        }
+    }
+
     // For Box3D kinematic body: manually integrate position from velocity
     // Use SetBodyPosition - it sets physics body position and wakes it
     Vector3 newPos = Vector3Add(pos, Vector3Scale(vel, dt));

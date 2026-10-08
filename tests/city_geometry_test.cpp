@@ -5,6 +5,7 @@
 #include "CityGen/CityGeometry.hpp"
 #include "raymath.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -61,8 +62,22 @@ static int SpurOutlineRegression() {
     return 0;
 }
 
+static int BezierSampling() {
+    int bad = 0;
+    auto straight = citygeom::SampleQuadBezier({0,0}, {50,0}, {100,0}, 8.0f);
+    if (straight.size() != 2) { std::printf("FAIL bezier: straight road sampled to %zu points\n", straight.size()); ++bad; }
+    auto curve = citygeom::SampleQuadBezier({0,0}, {50,60}, {100,0}, 8.0f);
+    if (curve.size() < 4 || curve.front().x != 0.0f || curve.back().x != 100.0f) {
+        std::printf("FAIL bezier: curve endpoints/points wrong (%zu)\n", curve.size()); ++bad;
+    }
+    float peak = 0.0f;
+    for (const Vector2& p : curve) peak = std::max(peak, p.y);
+    if (peak < 20.0f || peak > 31.0f) { std::printf("FAIL bezier: apex y=%.1f (want ~30)\n", peak); ++bad; }
+    return bad;
+}
+
 int main() {
-    int failures = SpurOutlineRegression(), polys = 0, insetFailed = 0;
+    int failures = SpurOutlineRegression() + BezierSampling(), polys = 0, insetFailed = 0;
     for (int iter = 0; iter < 20000; ++iter) {
         const int n = 4 + (int)(Rnd() * 9.0f);
         const float uneven = 0.1f + Rnd() * 1.2f;

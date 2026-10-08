@@ -60,7 +60,10 @@ void main() {
     fragShadowCoord = lightVP * matModel * vec4(vertexPosition, 1.0);
     fragWorldPos = vec3(matModel * vec4(vertexPosition, 1.0));
     gl_Position = fly_clip(mvp * vec4(vertexPosition, 1.0));
-    fragLayer = max(vertexPosition.y - 0.04, 0.0);
+    // Layer = height above the road surface at this spot (written by the city mesh builder in
+    // the otherwise-unused texcoord.x), NOT absolute y: raised roads/pads must not be pushed
+    // toward the camera by their altitude.
+    fragLayer = max(vertexTexCoord.x, 0.0);
 }
 @end
 
@@ -80,6 +83,8 @@ in vec4 instanceTransform1;
 in vec4 instanceTransform2;
 in vec4 instanceTransform3;
 @include_block lit_vs_outputs
+out vec4 fragInst;      // xyz = instance scale (metres), w = 1 for tinted city buildings (0 = plain marker)
+out float fragBaseY;    // world y of the building's bottom face
 void main() {
     // Built from column vectors rather than by assigning model[i][3]: writing
     // individual elements of a mat4 was miscompiled by at least one OpenGL driver
@@ -89,7 +94,13 @@ void main() {
                       vec4(instanceTransform1.xyz, 0.0),
                       vec4(instanceTransform2.xyz, 0.0),
                       instanceTransform3);
-    if (dot(instTint, instTint) < 1e-6) instTint = vec3(1.0);
+    // Tint sign encodes the mode: all-zero = plain marker, negative = prop (vertex colours x |tint|, no facade).
+    float isBuilding = dot(instTint, instTint) < 1e-6 ? 0.0 : 1.0;
+    if (instTint.x < 0.0) { isBuilding = 2.0; instTint = abs(instTint); }
+    if (isBuilding < 0.5) instTint = vec3(1.0);
+    vec3 instScale = vec3(length(instanceTransform0.xyz), length(instanceTransform1.xyz), length(instanceTransform2.xyz));
+    fragInst = vec4(instScale, isBuilding);
+    fragBaseY = instanceTransform3.y - instScale.y * 0.5;
 
     vec4 worldPos = model * vec4(vertexPosition, 1.0);
     fragTexCoord = vertexTexCoord;
@@ -123,7 +134,7 @@ float ShadowCalculation(vec3 normal) {
     // (A) NORMAL-BASED BIAS - shift the shadow comparison point along the
     //     surface normal in WORLD space before projecting to light space, a
     //     fixed world-units offset that stays correct at every camera altitude.
-    vec4 biasedLightPos = lightVP * vec4(fragWorldPos + normalize(normal) * 0.02, 1.0);
+    vec4 biasedLightPos = lightVP * vec4(fragWorldPos + normalize(normal) * 0.05, 1.0);
     vec3 ndc = biasedLightPos.xyz / biasedLightPos.w;
     vec2 uvGL = ndc.xy * 0.5 + 0.5;
     float currentDepth = ndc.z * 0.5 + 0.5;
@@ -149,13 +160,12 @@ float ShadowCalculation(vec3 normal) {
     return shadow;
 }
 
-vec3 ShadeLit(out float alpha) {
+vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     vec3 normal = normalize(fragNormal);
     float diffuse = max(dot(normal, -lightDir), 0.0);
     float shadow = ShadowCalculation(normal) * shadowsEnabled;
 
-    vec4 texelColor = texture(sampler2D(texture0, texture0_smp), fragTexCoord);
-    vec3 lit = (ambient + (1.0 - shadow) * diffuse) * texelColor.rgb * colDiffuse.rgb * fragColor.rgb;
+    vec3 lit = (ambient + (1.0 - shadow) * diffuse) * baseColor * colDiffuse.rgb;
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;
     if (depthBelow > 0.0) {
@@ -165,8 +175,13 @@ vec3 ShadeLit(out float alpha) {
         float luma = dot(lit, vec3(0.299, 0.587, 0.114));
         lit = mix(lit, vec3(luma), t * 0.1);
     }
-    alpha = texelColor.a * colDiffuse.a;
+    alpha = baseAlpha * colDiffuse.a;
     return lit;
+}
+
+vec3 ShadeLit(out float alpha) {
+    vec4 texelColor = texture(sampler2D(texture0, texture0_smp), fragTexCoord);
+    return ShadeLitWith(texelColor.rgb * fragColor.rgb, texelColor.a, alpha);
 }
 @end
 
@@ -225,6 +240,75 @@ void main() {
 }
 @end
 
+// City building fragment shader: procedural facade (floors, window bays, lit windows, roof and
+// base band) instead of the texture, shape-agnostic because it works in world space. Anything
+// that is not a tinted building (editor node markers) falls back to the plain lit look.
+@fs fs_building
+layout(binding=1) uniform fs_params {
+    vec4 colDiffuse;
+    vec3 lightDir;
+    float shadowsEnabled;
+    vec3 ambient;
+    float waterSurfaceY;
+    mat4 lightVP;
+};
+@include_block lit_fs_common
+in vec4 fragInst;
+in float fragBaseY;
+
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void main() {
+    float alpha;
+    vec3 lit;
+    if (fragInst.w < 0.5) {
+        lit = ShadeLit(alpha);
+    } else if (fragInst.w > 1.5) {
+        lit = ShadeLitWith(fragColor.rgb, 1.0, alpha);   // prop
+    } else {
+        vec3 n = normalize(fragNormal);
+        vec3 wall = fragColor.rgb;
+        vec3 base = wall;
+        if (n.y > 0.7) {
+            base = wall * 0.72;                                    // roof
+        } else if (n.y > -0.5) {
+            vec3 t = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+            float u = dot(fragWorldPos, t);
+            float y = fragWorldPos.y - fragBaseY;
+            const float floorH = 3.4;
+            const float bayW = 3.2;
+            float topEdge = fragInst.y;                            // building height (storeys * floorH + any foundation)
+            // Floors are counted down from the roof, so the top is never chopped; any foundation sits at the bottom.
+            float fy = (topEdge - y) / floorH;
+            float floorIdx = floor(fy);
+            float fv = fract(fy);
+            float bu = u / bayW;
+            float bayIdx = floor(bu);
+            float fu = fract(bu);
+            bool groundFloor = y < floorH;
+            bool inGlass = fu > 0.18 && fu < 0.82 && fv > 0.22 && fv < 0.78;
+            if (groundFloor) inGlass = fu > 0.1 && fu < 0.9 && fv > 0.12 && fv < 0.7;
+            float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
+            if (inGlass) {
+                vec3 glass = mix(vec3(0.16, 0.22, 0.30), vec3(0.34, 0.44, 0.56), fv);
+                if (r > 0.78) glass = vec3(0.95, 0.82, 0.48) * 0.9;   // lit window
+                base = glass;
+            } else {
+                float band = smoothstep(0.0, 0.06, fv) * (1.0 - smoothstep(0.94, 1.0, fv));
+                base = wall * (0.82 + 0.18 * band);                   // slab edges shade the wall
+                if (groundFloor) base *= 0.88;
+            }
+        }
+        lit = ShadeLitWith(base, 1.0, alpha);
+    }
+    finalColor = vec4(lit, alpha);
+}
+@end
+
 @program lit vs fs
 @program lit_road vs_road fs_road
-@program lit_instanced vs_instanced fs
+@program lit_instanced vs_instanced fs_building

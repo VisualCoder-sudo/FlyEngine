@@ -2020,11 +2020,8 @@ void TechnicalToolsManager::DrawUI() {
     console.Draw();
     shaderReloader.Draw();
     MemoryTracker::Instance().Draw();
-    
-    // Profiler overlay (if enabled)
-    if (profiler.IsEnabled()) {
-        this->DrawProfilerOverlay();
-    }
+    // The small "Profiler" frame-time window was removed from here; the player's
+    // Ctrl+F5 debug stats overlay already shows frame time.
 }
 
 void TechnicalToolsManager::HandleInput() {

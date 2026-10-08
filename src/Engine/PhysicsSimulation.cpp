@@ -5,6 +5,7 @@
 #include "../../include/Engine/Backend/Box3DWrapper.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/TechnicalTools.hpp"
+#include "../../include/CityGen/CityPhysics.hpp"
 #include "raymath.h"
 #include <algorithm>
 #include <cmath>
@@ -291,6 +292,7 @@ void Simulation::StartPlay() {
 
     b3BodyId groundBody = b3wrap::CreateBody(world->GetId(), Vector3{ 0.0f, -1.0f, 0.0f }, QuaternionIdentity(), b3_staticBody);
     b3wrap::AddBoxShape(groundBody, Vector3{ 1000.0f, 1.0f, 1000.0f }, 0.0f, friction, restitutionBase);
+    city::AttachPhysicsWorld(world->GetId(), friction, restitutionBase);
 
     for (ScatteredObject* obj : objects) {
         if (!obj) continue;
@@ -545,6 +547,7 @@ void Simulation::StopPlay() {
     meshes.clear();
     contactBeginEvents.clear();
     contactHitEvents.clear();
+    city::DetachPhysicsWorld();
     world.reset();
 
     ui::LogAlways("Playtest Session ended, %.2f s", GetTime() - playStartTime);

@@ -34,7 +34,7 @@ Texture2D GetDefaultTexture();        // procedural checker texture, used when a
 // transform buffer at `start` tinted `tint`, using the instanced variant of
 // the lit shader (instanceTransform supplies the model matrix).
 void DrawCityInstances(Mesh mesh, const std::vector<Matrix>& transforms, int start, int count, Color tint);
-Mesh GetCityShapeMesh(int shape); // unit building mesh: 0=box,1=wedge(corner),2=slant
+Mesh GetCityShapeMesh(int shape); // unit building mesh: 0=box,1=wedge(corner),2=slant,3=gable,4=stepped tower
 
 // Persistent GPU instance buffers for the city: a tile uploads its building
 // transforms ONCE (CreateInstanceBuffer) and every frame just draws from that

@@ -382,4 +382,21 @@ void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris)
 }
 
 
+std::vector<Vector2> SampleQuadBezier(Vector2 a, Vector2 c, Vector2 b, float spacing) {
+    const Vector2 ab = Vector2Subtract(b, a), ac = Vector2Subtract(c, a);
+    const float chord = Vector2Length(ab);
+    const float off = chord > 1e-4f ? std::fabs(ab.x * ac.y - ab.y * ac.x) / chord : Vector2Length(ac);
+    if (off < 0.5f) return { a, b };
+    const float len = Vector2Distance(a, c) + Vector2Distance(c, b);
+    const int n = std::max(4, (int)std::ceil(len / std::max(spacing, 0.5f)));
+    std::vector<Vector2> out;
+    out.reserve(n + 1);
+    for (int i = 0; i <= n; ++i) {
+        const float t = (float)i / (float)n, u = 1.0f - t;
+        out.push_back({ u * u * a.x + 2.0f * u * t * c.x + t * t * b.x,
+                        u * u * a.y + 2.0f * u * t * c.y + t * t * b.y });
+    }
+    return out;
+}
+
 } // namespace citygeom

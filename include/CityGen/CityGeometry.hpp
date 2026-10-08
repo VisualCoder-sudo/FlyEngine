@@ -40,4 +40,8 @@ void TriangulateSimple(const std::vector<Vector2>& poly, std::vector<int>& tris)
 // True when no two non-adjacent edges of `poly` properly cross (tests).
 bool IsSimplePolygonForTest(const std::vector<Vector2>& poly);
 
+// Samples the quadratic Bezier a -> b (control c) into a polyline whose segments are about `spacing`
+// long. A control point on the chord returns just {a, b}.
+std::vector<Vector2> SampleQuadBezier(Vector2 a, Vector2 c, Vector2 b, float spacing);
+
 } // namespace citygeom

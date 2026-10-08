@@ -102,6 +102,10 @@ constexpr float kShadowMaxHalf = 150.0f;
 
 Mesh cityWedgeMesh{}; // unit corner wedge for angled parcels
 Mesh citySlantMesh{}; // unit sheared slab for silhouette variety
+Mesh cityGableMesh{}; // unit box with a pitched roof
+Mesh cityTowerMesh{}; // unit stepped tower
+Mesh cityShedMesh{};
+Mesh cityLampMesh{}, cityTreeMesh{}, cityCarMesh{}, cityCarGlassMesh{}, cityWheelMesh{}, cityPersonMesh{}, citySignalMesh{}; // props and agents
 
 Shader litShader{};
 Texture2D defaultTexture{};
@@ -401,6 +405,212 @@ Mesh GenerateCitySlantMesh() {
     return mesh;
 }
 
+
+// Flat-shaded unit mesh from a triangle soup (each triangle gets its own vertices and face normal;
+// wound so the face normal points away from the shape's centre).
+Mesh BuildFlatShapeMesh(const std::vector<Vector3>& tris, const std::vector<Color>* triColors = nullptr,
+                        const std::vector<Vector3>* triInside = nullptr) {
+    Mesh mesh = { 0 };
+    const int vc = (int)tris.size();
+    mesh.vertexCount = vc;
+    mesh.triangleCount = vc / 3;
+    mesh.vertices = (float*)RL_MALLOC(vc * 3 * sizeof(float));
+    mesh.texcoords = (float*)RL_MALLOC(vc * 2 * sizeof(float));
+    mesh.normals = (float*)RL_MALLOC(vc * 3 * sizeof(float));
+    mesh.colors = (unsigned char*)RL_MALLOC(vc * 4);
+    mesh.indices = (unsigned short*)RL_MALLOC(vc * sizeof(unsigned short));
+    for (int t = 0; t + 2 < vc; t += 3) {
+        Vector3 a = tris[(size_t)t], b = tris[(size_t)t + 1], c = tris[(size_t)t + 2];
+        Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+        Vector3 cen = { (a.x + b.x + c.x) / 3.0f, (a.y + b.y + c.y) / 3.0f, (a.z + b.z + c.z) / 3.0f };
+        if (triInside && (size_t)(t / 3) < triInside->size()) cen = Vector3Subtract(cen, (*triInside)[(size_t)(t / 3)]);   // relative to the primitive's centre
+        if (Vector3DotProduct(n, cen) < 0.0f) { std::swap(b, c); n = Vector3Negate(n); }
+        n = Vector3Normalize(n);
+        const Vector3 v[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) {
+            const int i = t + k;
+            mesh.vertices[i * 3] = v[k].x; mesh.vertices[i * 3 + 1] = v[k].y; mesh.vertices[i * 3 + 2] = v[k].z;
+            mesh.normals[i * 3] = n.x; mesh.normals[i * 3 + 1] = n.y; mesh.normals[i * 3 + 2] = n.z;
+            mesh.texcoords[i * 2] = 0.0f; mesh.texcoords[i * 2 + 1] = 0.0f;
+            Color col = WHITE;
+            if (triColors && (size_t)(t / 3) < triColors->size()) col = (*triColors)[(size_t)(t / 3)];
+            mesh.colors[i * 4] = col.r; mesh.colors[i * 4 + 1] = col.g; mesh.colors[i * 4 + 2] = col.b; mesh.colors[i * 4 + 3] = 255;
+            mesh.indices[i] = (unsigned short)i;
+        }
+    }
+    UploadMesh(&mesh, false);
+    return mesh;
+}
+
+void AddBoxTris(std::vector<Vector3>& t, float x0, float y0, float z0, float x1, float y1, float z1, bool bottom) {
+    const Vector3 p[8] = { {x0,y0,z0},{x1,y0,z0},{x1,y0,z1},{x0,y0,z1},{x0,y1,z0},{x1,y1,z0},{x1,y1,z1},{x0,y1,z1} };
+    auto quad = [&](int a, int b, int c, int d) { t.push_back(p[a]); t.push_back(p[b]); t.push_back(p[c]); t.push_back(p[a]); t.push_back(p[c]); t.push_back(p[d]); };
+    quad(4,5,6,7);                       // top
+    quad(0,1,5,4); quad(1,2,6,5); quad(2,3,7,6); quad(3,0,4,7);   // sides
+    if (bottom) quad(0,3,2,1);
+}
+
+// Box with a gabled roof: walls up to y=+0.5-ridge, ridge along local x at +0.5.
+Mesh GenerateCityGableMesh() {
+    std::vector<Vector3> t;
+    const float eave = 0.12f;   // eave height as a fraction of the unit (the rest is roof)
+    const float ey = 0.5f - eave;
+    AddBoxTris(t, -0.5f, -0.5f, -0.5f, 0.5f, ey, 0.5f, true);
+    // Roof prism: two slopes + two gable ends.
+    const Vector3 a0 = { -0.5f, ey, -0.5f }, a1 = { 0.5f, ey, -0.5f }, b0 = { -0.5f, ey, 0.5f }, b1 = { 0.5f, ey, 0.5f };
+    const Vector3 r0 = { -0.5f, 0.5f, 0.0f }, r1 = { 0.5f, 0.5f, 0.0f };
+    t.insert(t.end(), { a0, a1, r1, a0, r1, r0 });   // -z slope
+    t.insert(t.end(), { b1, b0, r0, b1, r0, r1 });   // +z slope
+    t.insert(t.end(), { a0, r0, b0 });               // -x gable
+    t.insert(t.end(), { a1, b1, r1 });               // +x gable
+    return BuildFlatShapeMesh(t);
+}
+
+// Box with a single-slope roof: the roof drops from the full height at -z to 75% at +z.
+Mesh GenerateCityShedMesh() {
+    std::vector<Vector3> t;
+    const float lo = 0.5f - 0.25f;
+    const Vector3 p0 = { -0.5f, -0.5f, -0.5f }, p1 = { 0.5f, -0.5f, -0.5f }, p2 = { 0.5f, -0.5f, 0.5f }, p3 = { -0.5f, -0.5f, 0.5f };
+    const Vector3 q0 = { -0.5f, 0.5f, -0.5f }, q1 = { 0.5f, 0.5f, -0.5f }, q2 = { 0.5f, lo, 0.5f }, q3 = { -0.5f, lo, 0.5f };
+    t.insert(t.end(), { p0, p2, p1, p0, p3, p2 });          // bottom
+    t.insert(t.end(), { q0, q3, q2, q0, q2, q1 });          // sloped roof
+    t.insert(t.end(), { p0, p1, q1, p0, q1, q0 });          // -z wall
+    t.insert(t.end(), { p3, q2, p2, p3, q3, q2 });          // +z wall
+    t.insert(t.end(), { p0, q0, q3, p0, q3, p3 });          // -x wall
+    t.insert(t.end(), { p1, p2, q2, p1, q2, q1 });          // +x wall
+    return BuildFlatShapeMesh(t);
+}
+
+// Stepped tower: base (full footprint, lower 45%), shaft (80% wide, to 85%), crown (55% wide, to the top).
+Mesh GenerateCityTowerMesh() {
+    std::vector<Vector3> t;
+    AddBoxTris(t, -0.5f, -0.5f, -0.5f, 0.5f, -0.05f, 0.5f, true);
+    AddBoxTris(t, -0.4f, -0.05f, -0.4f, 0.4f, 0.35f, 0.4f, false);
+    AddBoxTris(t, -0.27f, 0.35f, -0.27f, 0.27f, 0.5f, 0.27f, false);
+    return BuildFlatShapeMesh(t);
+}
+
+Mesh BuildColoredShapeMesh(const std::vector<Vector3>& tris, const std::vector<Color>& triColors, const std::vector<Vector3>& inside) {
+    return BuildFlatShapeMesh(tris, &triColors, &inside);
+}
+
+struct ShapeBuilder {
+    std::vector<Vector3> t;
+    std::vector<Color> c;
+    std::vector<Vector3> in;   // per triangle: a point inside its primitive (for outward winding)
+    void Box(float x0, float y0, float z0, float x1, float y1, float z1, Color col) {
+        const size_t before = t.size();
+        AddBoxTris(t, x0, y0, z0, x1, y1, z1, true);
+        c.insert(c.end(), (t.size() - before) / 3, col);
+        in.insert(in.end(), (t.size() - before) / 3, Vector3{ (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, (z0 + z1) * 0.5f });
+    }
+    // Pyramid-ish crown (octahedron-like) for trees: 4-sided bipyramid.
+    void Crown(float cx, float cy, float cz, float r, float h, Color col) {
+        const Vector3 top = { cx, cy + h, cz }, bot = { cx, cy, cz };
+        const Vector3 q[4] = { { cx + r, cy + h * 0.45f, cz }, { cx, cy + h * 0.45f, cz + r }, { cx - r, cy + h * 0.45f, cz }, { cx, cy + h * 0.45f, cz - r } };
+        for (int i = 0; i < 4; i++) {
+            const Vector3 a = q[i], b = q[(i + 1) % 4];
+            t.push_back(top); t.push_back(a); t.push_back(b); c.push_back(col); in.push_back({ cx, cy + h * 0.45f, cz });
+            t.push_back(bot); t.push_back(b); t.push_back(a); c.push_back(col); in.push_back({ cx, cy + h * 0.45f, cz });
+        }
+    }
+};
+
+// Unit prop meshes. They are authored at real-world size (metres); the city instances them with a
+// uniform scale of 1 so a streetlight is ~7 m tall. Origin: centre of the bottom face at y = -0.5
+// would waste the unit cube convention, so props use y = 0 at the ground and the instance matrix
+// translates them to the surface directly.
+Mesh GenerateCityLampMesh() {
+    ShapeBuilder b;
+    b.Box(-0.07f, 0.0f, -0.07f, 0.07f, 5.6f, 0.07f, Color{ 70, 72, 78, 255 });       // pole
+    b.Box(-0.07f, 5.5f, -0.07f, 0.07f, 5.64f, 1.1f, Color{ 70, 72, 78, 255 });       // arm toward +z
+    b.Box(-0.22f, 5.38f, 0.8f, 0.22f, 5.52f, 1.4f, Color{ 250, 232, 170, 255 });      // lamp head
+    b.Box(-0.18f, 0.0f, -0.18f, 0.18f, 0.35f, 0.18f, Color{ 60, 62, 68, 255 });       // base
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityTreeMesh() {
+    ShapeBuilder b;
+    b.Box(-0.14f, 0.0f, -0.14f, 0.14f, 2.0f, 0.14f, Color{ 96, 70, 46, 255 });
+    b.Crown(0.0f, 1.6f, 0.0f, 1.5f, 3.4f, Color{ 62, 128, 66, 255 });
+    b.Crown(0.0f, 2.8f, 0.0f, 1.1f, 2.6f, Color{ 78, 150, 78, 255 });
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+// Car: 4.2 m long along local +x, 1.8 m wide. Body and roof are white so the instance tint colours them;
+// the windows and wheels are separate meshes (untinted) so black cars still have glass and tyres.
+// Cabin rings (x range, half width, height) give a slanted, rounded windscreen and rear window.
+struct CabinRing { float xr, xf, hw, y; };
+constexpr CabinRing kCabin[3] = { { -1.30f, 1.20f, 0.80f, 0.95f }, { -1.04f, 0.74f, 0.75f, 1.21f }, { -0.60f, 0.22f, 0.64f, 1.44f } };
+
+Mesh GenerateCityCarMesh() {
+    ShapeBuilder b;
+    b.Box(-2.1f, 0.35f, -0.9f, 2.1f, 0.95f, 0.9f, WHITE);                              // body
+    // Roof cap (white, tinted).
+    const CabinRing& r = kCabin[2];
+    const Vector3 in{ -0.05f, 1.2f, 0.0f };
+    const Vector3 q[4] = { { r.xr, r.y, -r.hw }, { r.xf, r.y, -r.hw }, { r.xf, r.y, r.hw }, { r.xr, r.y, r.hw } };
+    for (int k : { 0, 1, 2, 0, 2, 3 }) { b.t.push_back(q[k]); b.c.push_back(WHITE); b.in.push_back(in); }
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityCarGlassMesh() {
+    ShapeBuilder b;
+    const Color glass{ 38, 52, 66, 255 };
+    const Vector3 in{ -0.05f, 1.2f, 0.0f };
+    auto quad = [&](Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3) {
+        for (const Vector3& v : { p0, p1, p2, p0, p2, p3 }) { b.t.push_back(v); b.c.push_back(glass); b.in.push_back(in); }
+    };
+    for (int i = 0; i < 2; i++) {
+        const CabinRing &lo = kCabin[i], &hi = kCabin[i + 1];
+        quad({ lo.xf, lo.y, -lo.hw }, { lo.xf, lo.y, lo.hw }, { hi.xf, hi.y, hi.hw }, { hi.xf, hi.y, -hi.hw });   // windscreen
+        quad({ lo.xr, lo.y, -lo.hw }, { lo.xr, lo.y, lo.hw }, { hi.xr, hi.y, hi.hw }, { hi.xr, hi.y, -hi.hw });   // rear window
+        quad({ lo.xr, lo.y, lo.hw }, { lo.xf, lo.y, lo.hw }, { hi.xf, hi.y, hi.hw }, { hi.xr, hi.y, hi.hw });     // +z side
+        quad({ lo.xr, lo.y, -lo.hw }, { lo.xf, lo.y, -lo.hw }, { hi.xf, hi.y, -hi.hw }, { hi.xr, hi.y, -hi.hw }); // -z side
+    }
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+// Wheel: round tyre (axis along z, radius 0.32 m) with a hub and a spoke so the roll is visible.
+Mesh GenerateCityWheelMesh() {
+    ShapeBuilder b;
+    const int n = 20;
+    const float R = 0.32f, W = 0.12f, H = 0.19f;
+    const Color tyre{ 22, 22, 24, 255 }, hub{ 150, 154, 162, 255 };
+    const Vector3 o{ 0, 0, 0 };
+    auto tri = [&](Vector3 a, Vector3 bb, Vector3 c, Color col) { b.t.push_back(a); b.t.push_back(bb); b.t.push_back(c); b.c.push_back(col); b.in.push_back(o); };
+    for (int i = 0; i < n; i++) {
+        const float a0 = 2.0f * PI * (float)i / n, a1 = 2.0f * PI * (float)(i + 1) / n;
+        const Vector3 p0{ cosf(a0) * R, sinf(a0) * R, 0 }, p1{ cosf(a1) * R, sinf(a1) * R, 0 };
+        const Vector3 h0{ cosf(a0) * H, sinf(a0) * H, 0 }, h1{ cosf(a1) * H, sinf(a1) * H, 0 };
+        for (float z : { -W, W }) {
+            const Vector3 a{ p0.x, p0.y, z }, c{ p1.x, p1.y, z }, ha{ h0.x, h0.y, z }, hc{ h1.x, h1.y, z };
+            tri(ha, hc, Vector3{ 0, 0, z }, hub);                         // hub disc
+            tri(a, c, hc, tyre); tri(a, hc, ha, tyre);                      // tyre sidewall ring
+        }
+        const Vector3 t0{ p0.x, p0.y, -W }, t1{ p1.x, p1.y, -W }, t2{ p1.x, p1.y, W }, t3{ p0.x, p0.y, W };
+        tri(t0, t1, t2, tyre); tri(t0, t2, t3, tyre);                      // tread
+    }
+    b.Box(-H, -0.035f, -W - 0.01f, H, 0.035f, W + 0.01f, Color{ 215, 218, 224, 255 });   // spoke across the hub
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+// Traffic-light pole with a dark three-lamp housing; the lit lamps are drawn separately.
+// Local +z is the direction the lamps face (toward arriving traffic).
+Mesh GenerateCitySignalMesh() {
+    ShapeBuilder b;
+    b.Box(-0.06f, 0.0f, -0.06f, 0.06f, 4.2f, 0.06f, Color{ 70, 72, 78, 255 });
+    b.Box(-0.2f, 3.0f, -0.07f, 0.2f, 4.5f, 0.22f, Color{ 26, 26, 30, 255 });
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+Mesh GenerateCityPersonMesh() {
+    ShapeBuilder b;
+    b.Box(-0.16f, 0.0f, -0.1f, 0.16f, 0.85f, 0.1f, Color{ 50, 60, 90, 255 });         // legs
+    b.Box(-0.2f, 0.85f, -0.12f, 0.2f, 1.45f, 0.12f, WHITE);                            // torso (tinted)
+    b.Box(-0.12f, 1.45f, -0.1f, 0.12f, 1.72f, 0.1f, Color{ 224, 188, 160, 255 });      // head
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
 }
 
 namespace gfx {
@@ -493,6 +703,16 @@ void Init() {
     wedgeModel = LoadModelFromMesh(GenerateWedgeMesh());
     cityWedgeMesh = GenerateCityWedgeMesh();
     citySlantMesh = GenerateCitySlantMesh();
+    cityGableMesh = GenerateCityGableMesh();
+    cityTowerMesh = GenerateCityTowerMesh();
+    cityShedMesh = GenerateCityShedMesh();
+    cityLampMesh = GenerateCityLampMesh();
+    cityTreeMesh = GenerateCityTreeMesh();
+    cityCarMesh = GenerateCityCarMesh();
+    cityCarGlassMesh = GenerateCityCarGlassMesh();
+    cityWheelMesh = GenerateCityWheelMesh();
+    cityPersonMesh = GenerateCityPersonMesh();
+    citySignalMesh = GenerateCitySignalMesh();
 
     Model* models[] = { &cubeModel, &sphereModel, &cylinderModel, &wedgeModel };
     for (Model* model : models) {
@@ -530,6 +750,16 @@ void Shutdown() {
     UnloadModel(wedgeModel);
     UnloadMesh(cityWedgeMesh);
     UnloadMesh(citySlantMesh);
+    UnloadMesh(cityGableMesh);
+    UnloadMesh(cityTowerMesh);
+    UnloadMesh(cityShedMesh);
+    UnloadMesh(cityLampMesh);
+    UnloadMesh(cityTreeMesh);
+    UnloadMesh(cityCarMesh);
+    UnloadMesh(cityCarGlassMesh);
+    UnloadMesh(cityWheelMesh);
+    UnloadMesh(cityPersonMesh);
+    UnloadMesh(citySignalMesh);
     UnloadModel(groundModel);
     UnloadTexture(defaultTexture);
     UnloadTexture(groundTexture);
@@ -564,6 +794,16 @@ Mesh GetCityShapeMesh(int shape) {
     switch (shape) {
         case 1: return cityWedgeMesh;
         case 2: return citySlantMesh;
+        case 3: return cityGableMesh;
+        case 4: return cityTowerMesh;
+        case 5: return cityLampMesh;
+        case 6: return cityTreeMesh;
+        case 7: return cityCarMesh;
+        case 8: return cityPersonMesh;
+        case 9: return citySignalMesh;
+        case 10: return cityShedMesh;
+        case 11: return cityCarGlassMesh;
+        case 12: return cityWheelMesh;
         default: return cubeModel.meshes[0];
     }
 }
