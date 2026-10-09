@@ -2395,6 +2395,7 @@ struct City::BlockSurface {
     bool flat = true;           // all boundary nodes at one height: the pad is a flat plane
     float flatY = 0.0f;
     std::vector<float> sx, sz, sy;   // dense samples of the road surface along the block boundary
+    float sinkFull = 0.0f;           // within this distance of the boundary (the road zone) the pad is sunk below the road
 
     // Distance from (x, z) to the nearest boundary sample (samples are 1.5 m apart, so within ~0.75 m of the true distance).
     float BoundaryDist(float x, float z) const {
@@ -2403,8 +2404,16 @@ struct City::BlockSurface {
         return sqrtf(best);
     }
 
+    // The pad surface height at (x, z): the blended road heights, sunk 35 cm within the road zone and rising back to the
+    // true height beyond it (a low curb). Pads, park grass and building bases all use this one function.
     float HeightAt(float x, float z) const {
         if (flat || sx.empty()) return flatY;
+        const float d = BoundaryDist(x, z);
+        const float t = Clamp((d - (sinkFull - 2.0f)) / 2.0f, 0.0f, 1.0f);
+        return TrueHeightAt(x, z) - 0.35f * (1.0f - t * t * (3.0f - 2.0f * t));
+    }
+
+    float TrueHeightAt(float x, float z) const {
         double sw = 0.0, sh = 0.0;
         for (size_t i = 0; i < sx.size(); i++) {
             const double dx = (double)x - (double)sx[i], dz = (double)z - (double)sz[i];
@@ -2429,6 +2438,7 @@ void City::BuildBlockSurface(const Block& block, BlockSurface& out) const {
     for (int idx : block.nodes) if (fabsf(nodes[(size_t)idx].h - h0) > 1e-4f) flat = false;
     if (flat) return;
     out.flat = false;
+    out.sinkFull = BlockRoadHalf(block) + std::max(params.cornerRadius, 0.0f) * 0.5f + 0.5f;
     for (int i = 0; i < n; i++) {
         const int ni = block.nodes[(size_t)i], nj = block.nodes[(size_t)((i + 1) % n)];
         const int ei = EdgeBetween(ni, nj);
@@ -2458,12 +2468,21 @@ void City::FitBuildingsToSurface(Block& block) const {
         tmp.sizeX = b.size.x; tmp.sizeZ = b.size.z; tmp.angleY = b.angleY;
         const auto q = PlacedCorners(tmp, 0.0f);
         float lo = sf.HeightAt(b.center.x, b.center.z), hi = lo;
-        for (const Vector2& c : q) {
-            const float y = sf.HeightAt(c.x, c.y);
-            lo = std::min(lo, y); hi = std::max(hi, y);
+        auto take = [&](float x, float z) { const float y = sf.HeightAt(x, z); lo = std::min(lo, y); hi = std::max(hi, y); };
+        // A 5 x 5 grid over the footprint: the pad is a curved surface, so corners alone can miss its low point.
+        for (int iu = 0; iu <= 4; iu++) for (int iv = 0; iv <= 4; iv++) {
+            const float fu = (float)iu / 4.0f, fv = (float)iv / 4.0f;
+            const Vector2 e0 = Vector2Add(q[0], Vector2Scale(Vector2Subtract(q[1], q[0]), fu)), e1 = Vector2Add(q[3], Vector2Scale(Vector2Subtract(q[2], q[3]), fu));
+            const Vector2 pt = Vector2Add(e0, Vector2Scale(Vector2Subtract(e1, e0), fv));
+            take(pt.x, pt.y);
         }
-        b.size.y += hi - lo;
-        b.center.y = lo + kRoadElevation + 0.06f + b.size.y * 0.5f;
+        // The base goes a little below the lowest ground under the footprint, so the pad's piecewise-linear surface
+        // can never leave a gap under a wall.
+        // The mesh cuts corners compared with the smooth height used here, and the error grows with the slope across
+        // the footprint, so the skirt does too.
+        const float skirt = std::min(0.3f + 0.12f * (hi - lo), 1.5f);
+        b.size.y += hi - lo + skirt;
+        b.center.y = lo - skirt + kRoadElevation + 0.06f + b.size.y * 0.5f;
     }
 }
 
@@ -3335,15 +3354,6 @@ void City::ComputeTileCPU(Tile& t) {
         mb.curLayer = 0.06f;
         BlockSurface sf;
         BuildBlockSurface(block, sf);
-        // A sloped pad is sunk below the road within the road zone (road slab, junction plates and corner rounding),
-        // fading back up to its true height beyond it: whatever small height difference the draped pad has to the road
-        // is then hidden under the road, and beyond the slab edge it rises like a low curb.
-        const float sinkFull = BlockRoadHalf(block) + std::max(params.cornerRadius, 0.0f) * 0.5f + 0.5f;
-        auto padSink = [&](const BlockSurface& b, float x, float z) {
-            const float d = b.BoundaryDist(x, z);
-            const float t = Clamp((d - (sinkFull - 2.0f)) / 2.0f, 0.0f, 1.0f);
-            return 0.35f * (1.0f - t * t * (3.0f - 2.0f * t));
-        };
         const Color padColor = block.park ? Color{ 108, 158, 94, 255 } : Color{ 158, 158, 162, 255 };
         const float padY = 0.06f + kRoadElevation;
         if (sf.flat) {
@@ -3365,7 +3375,7 @@ void City::ComputeTileCPU(Tile& t) {
             citygeom::TriangulateSimple(poly, tris);
             ReportIncompleteFill("pad", poly, tris);
             const int lv = DrapeLevels(poly, tris, 4.5f, nodes.size() > 1200 ? 2 : 3);
-            DrapeEmit(mb, poly, tris, lv, padY, padColor, [&](float x, float z) { return sf.HeightAt(x, z) - padSink(sf, x, z); });
+            DrapeEmit(mb, poly, tris, lv, padY, padColor, [&](float x, float z) { return sf.HeightAt(x, z); });
         }
 
         // Park grass sits above the pad (and below the roads).
@@ -3394,7 +3404,7 @@ void City::ComputeTileCPU(Tile& t) {
             mb.curLayer = 0.08f;
             const Color grassColor{ 108, 158, 94, 255 };
             const int glv = sf.flat ? 0 : DrapeLevels(block.parkPoly, ptris, 4.5f, nodes.size() > 1200 ? 2 : 3);
-            DrapeEmit(mb, block.parkPoly, ptris, glv, 0.08f + kRoadElevation, grassColor, [&](float x, float z) { return sf.HeightAt(x, z) - (sf.flat ? 0.0f : padSink(sf, x, z)); });
+            DrapeEmit(mb, block.parkPoly, ptris, glv, 0.08f + kRoadElevation, grassColor, [&](float x, float z) { return sf.HeightAt(x, z); });
         }
     }
 

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace city;
@@ -51,12 +52,71 @@ static Audit Run(const City& c) {
 }
 
 static std::vector<std::pair<std::string, int>> hist;
+// Gap between each building's base and the drawn pad/grass surface under its footprint (9 sample points): > 0 floats.
+struct FloatAudit { int buildings = 0, floating = 0, buried = 0; float worst = 0.0f; };
+static FloatAudit AuditBuildings(const City& c) {
+    FloatAudit fa;
+    std::vector<Vector3> v; std::vector<float> lay;
+    c.DebugSurfaceTriangles(v); c.DebugSurfaceLayers(lay);
+    struct T { Vector3 a, b, c; };
+    std::vector<T> pads;
+    for (size_t i = 0; i + 2 < v.size(); i += 3)
+        if (fabsf(lay[i / 3] - 0.06f) < 0.011f || fabsf(lay[i / 3] - 0.08f) < 0.011f) pads.push_back({ v[i], v[i + 1], v[i + 2] });
+    const float cell = 4.0f;
+    std::unordered_map<long long, std::vector<int>> grid;
+    auto key = [](int x, int z) { return ((long long)x << 32) ^ (long long)(unsigned)z; };
+    for (size_t i = 0; i < pads.size(); i++) {
+        const T& t = pads[i];
+        for (int x = (int)floorf(std::min({ t.a.x, t.b.x, t.c.x }) / cell); x <= (int)floorf(std::max({ t.a.x, t.b.x, t.c.x }) / cell); x++)
+            for (int z = (int)floorf(std::min({ t.a.z, t.b.z, t.c.z }) / cell); z <= (int)floorf(std::max({ t.a.z, t.b.z, t.c.z }) / cell); z++) grid[key(x, z)].push_back((int)i);
+    }
+    auto groundAt = [&](float x, float z, float& y) {
+        const auto it = grid.find(key((int)floorf(x / cell), (int)floorf(z / cell)));
+        if (it == grid.end()) return false;
+        bool found = false; float best = -1e30f;
+        for (int ti : it->second) {
+            const T& t = pads[(size_t)ti];
+            const float d = (t.b.z - t.c.z) * (t.a.x - t.c.x) + (t.c.x - t.b.x) * (t.a.z - t.c.z);
+            if (fabsf(d) < 1e-9f) continue;
+            const float l1 = ((t.b.z - t.c.z) * (x - t.c.x) + (t.c.x - t.b.x) * (z - t.c.z)) / d, l2 = ((t.c.z - t.a.z) * (x - t.c.x) + (t.a.x - t.c.x) * (z - t.c.z)) / d, l3 = 1 - l1 - l2;
+            if (l1 < -1e-4f || l2 < -1e-4f || l3 < -1e-4f) continue;
+            best = std::max(best, l1 * t.a.y + l2 * t.b.y + l3 * t.c.y);   // grass sits above the pad: the higher one is what you see
+            found = true;
+        }
+        if (found) y = best;
+        return found;
+    };
+    for (const Block& blk : c.GetBlocks()) {
+        for (const Building& b : blk.buildings) {
+            const float bottom = b.center.y - b.size.y * 0.5f;
+            const float ca = cosf(b.angleY), sa = sinf(b.angleY);
+            float worstHere = -1e30f, lowest = 1e30f; bool any = false;
+            for (int ix = -1; ix <= 1; ix++) for (int iz = -1; iz <= 1; iz++) {
+                const float lx = 0.5f * b.size.x * (float)ix * 0.98f, lz = 0.5f * b.size.z * (float)iz * 0.98f;
+                const float x = b.center.x + lx * ca + lz * sa, z = b.center.z - lx * sa + lz * ca;   // y-rotation, same convention as the instance matrix
+                float g;
+                if (!groundAt(x, z, g)) continue;
+                any = true; worstHere = std::max(worstHere, bottom - g); lowest = std::min(lowest, bottom - g);
+            }
+            if (!any || b.placedIndex >= 0) continue;
+            fa.buildings++;
+            if (worstHere > 0.03f) {
+                fa.floating++; fa.worst = std::max(fa.worst, worstHere);
+                if (getenv("AUDIT_FLOAT") && fa.floating <= 12) std::printf("  floating building: block %llu at (%.1f,%.1f) size %.1fx%.1fx%.1f shape %d gap %.2f (lowest %.2f) style %d floors %d\n", (unsigned long long)blk.id, b.center.x, b.center.z, b.size.x, b.size.y, b.size.z, b.shape, worstHere, lowest, b.style, b.floors);
+            }
+            if (lowest < -0.6f) fa.buried++;
+        }
+    }
+    return fa;
+}
+
 static uint32_t Hash(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x; }
 
 int main() {
     InitWindow(256, 256, "city_surface_audit");
     int fail = 0;
-    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0, stepsFlat = 0, stepsHill = 0, overFlat = 0, overHill = 0, sampFlat = 0, sampHill = 0;
+    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0, stepsFlat = 0, stepsHill = 0, overFlat = 0, overHill = 0, sampFlat = 0, sampHill = 0, floatFlat = 0, floatHill = 0, bldFlat = 0, bldHill = 0;
+    float worstFloat = 0.0f;
     const int first = getenv("AUDIT_DUMP") ? atoi(getenv("AUDIT_DUMP")) : 1, last = getenv("AUDIT_DUMP") ? first : 12;
     for (int seed = first; seed <= last; seed++) {
         for (int mode = 0; mode < 2; mode++) {
@@ -90,6 +150,12 @@ int main() {
                         std::printf("  edge %d: node %d -> %d  len %.1f plateau %.1f m / %.1f m  slabHalf %.1f\n", e, ed.a, ed.b, el, fa * el, fb * el, c.EdgeSlabHalf(e));
                     }
                 }
+            }
+            {
+                const FloatAudit fa = AuditBuildings(c);
+                (mode ? floatHill : floatFlat) += fa.floating;
+                (mode ? bldHill : bldFlat) += fa.buildings;
+                if (fa.worst > worstFloat) worstFloat = fa.worst;
             }
             City::GeometryProblems gp;
             c.ComputeGeometryProblems(gp);
@@ -169,6 +235,8 @@ int main() {
     if (stepsFlat != 0 || stepsHill > 40) { std::printf("FAIL: steps flat %ld uneven %ld\n", stepsFlat, stepsHill); fail++; }
     if (overFlat != 0 || (sampHill > 0 && (double)overHill / (double)sampHill > 0.01)) { std::printf("FAIL: pad-over-road flat %ld uneven %ld of %ld samples\n", overFlat, overHill, sampHill); fail++; }
     for (auto& h : hist) std::printf("  step layers %s : %d\n", h.first.c_str(), h.second);
+    std::printf("buildings floating above the pad: flat %ld of %ld, uneven %ld of %ld (worst gap %.2f m)\n", floatFlat, bldFlat, floatHill, bldHill, worstFloat);
+    if (floatFlat != 0 || floatHill != 0) { std::printf("FAIL: floating buildings\n"); fail++; }
     std::printf("steps/cracks: flat %ld, uneven %ld; pad-over-road: flat %ld, uneven %ld of %ld pad samples over road (%.1f%%)\n", stepsFlat, stepsHill, overFlat, overHill, sampHill, sampHill ? 100.0 * (double)overHill / (double)sampHill : 0.0);
     std::printf("spikes: flat total %ld, uneven-ground total %ld; cliffs: flat %ld, uneven %ld\n", sumFlat, sumHill, cliffFlat, cliffHill);
     std::printf(fail ? "city_surface_audit: FAILED\n" : "city_surface_audit: ok\n");
