@@ -111,6 +111,8 @@ public:
     // this rotation matrix instead of the Euler angles. Cleared with ClearRenderRotation().
     void SetRenderRotation(const Matrix& rot);
     void ClearRenderRotation();
+    // World-space heading of the object's local X axis (physics orientation if set, else Euler).
+    float GetYaw() const;
 
     bool isSelected = false;
 
@@ -131,6 +133,22 @@ public:
 
     // When false the object ignores all collisions (including the ground).
     bool canCollide = true;
+
+    // Boat behaviour (applied by the physics simulation while the object is in
+    // water). Forward is the hull's longer horizontal axis (+X or +Z).
+    // throttle/rudder are -1..1 and can be set from scripts; when
+    // playerControlled, W/S set throttle and A/D set rudder during play.
+    struct BoatParams {
+        bool  enabled = false;
+        bool  playerControlled = true;
+        float thrust = 8.0f;       // propeller acceleration at full throttle (m/s^2)
+        float steering = 1.0f;     // rudder authority
+        float keel = 3.0f;         // sideways (lateral) drag; higher = grips water
+        float planeSpeed = 8.0f;   // speed at which the hull is fully planing (m/s)
+        float throttle = 0.0f;
+        float rudder = 0.0f;
+    };
+    BoatParams boat;
 
     // Collision fidelity. Cubes (plain primitive, no model) are always Box:
     // IsCollisionAccuracySupported() is false and Get/Set clamp to Box.

@@ -228,6 +228,7 @@ add_library(FlyEngineCore STATIC
         src/Terrain/BasicTerrainErode.cpp
         src/Terrain/Water/WaterBody.cpp
         src/Terrain/Water/WaterNoise.cpp
+        src/Terrain/Water/WaterRipple.cpp
         src/Engine/Frontend/UndoSystem.cpp
         src/Engine/Backend/FbxModel.cpp
         src/CityGen/City.cpp

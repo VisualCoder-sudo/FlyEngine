@@ -31,6 +31,8 @@ WaterBody::WaterBody(Vector3 pos, Vector3 sz, float height, Color color)
 WaterBody::~WaterBody() {
     s_instances.erase(std::remove(s_instances.begin(), s_instances.end(), this), s_instances.end());
     ReleaseGpuResources();
+    if (rippleTex.id != 0) { UnloadTexture(rippleTex); rippleTex = { 0 }; }
+    if (s_instances.empty() && s_spraySprite.id != 0) { UnloadTexture(s_spraySprite); s_spraySprite = { 0 }; }
     // Only unload if we actually loaded custom files (never unload raylib's shared default shader)
     if (customShader && shaderLoaded) UnloadShader(shader);
     shader = { 0 };
@@ -112,7 +114,11 @@ void WaterBody::InitializeShader() {
     sceneCLoc = GetShaderLocation(shader, "sceneC");
     objectCountLoc = GetShaderLocation(shader, "objectCount");
     objectPositionsLoc = GetShaderLocation(shader, "objectPositions");
+    objectShapesLoc = GetShaderLocation(shader, "objectShapes");
     farRimLoc = GetShaderLocation(shader, "farRimParams");
+    rippleParamsLoc = GetShaderLocation(shader, "rippleParams");
+    rippleTexLoc = GetShaderLocation(shader, "rippleTexFS");
+    rippleTexVSLoc = GetShaderLocation(shader, "rippleTexVS");
 
     if (reflTexLoc >= 0) {
         int slot = gfx::GetReflectionTextureSlot();
@@ -345,6 +351,8 @@ void WaterBody::BuildFarShell() {
     lastShellPos = position;
 }
 
+bool FlyMeshBuffersValid(Mesh mesh); // rl_models.cpp
+
 void WaterBody::UpdateChunks(const Camera3D& camera) {
     float dt = GetFrameTime();
     if (dt <= 0.0f || dt > 0.1f) dt = 1.0f / 60.0f;
@@ -455,6 +463,23 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
 
     lastChunkCamXZ = { camera.position.x, camera.position.z };
 
+    // Self-heal: a chunk whose GPU buffers failed to create is never drawn (it
+    // shows as an unrendered patch). Rebuild those, a few per frame.
+    {
+        int healed = 0;
+        for (auto& [key, chunk] : chunks) {
+            if (healed >= 8) break;
+            if (chunk.model.meshes == nullptr || chunk.currentLod < 0) continue;
+            if (FlyMeshBuffersValid(chunk.model.meshes[0])) continue;
+            TraceLog(LOG_WARNING, "[WaterBody] chunk (%d,%d) had invalid GPU buffers, rebuilding", chunk.gridX, chunk.gridZ);
+            const int lod = std::max(1, std::min(chunk.currentLod, LOD_COUNT - 1));
+            ReleaseChunkResources(chunk);
+            BuildChunkMesh(chunk, LOD_RESOLUTIONS[lod], CHUNK_SIZE, worldMinX, worldMaxX, worldMinZ, worldMaxZ);
+            chunk.currentLod = lod;
+            ++healed;
+        }
+    }
+
     // 2. Fade active chunks up, inactive chunks down
     for (auto& [key, chunk] : chunks) {
         if (activeKeys.count(key)) {
@@ -546,6 +571,7 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
         Vector4 reflParams = { reflection.strength, reflection.distortion, reflection.distanceFade * 0.02f, enabled };
         SetShaderValue(shader, reflParamsLoc, &reflParams, SHADER_UNIFORM_VEC4);
     }
+    BindRippleTexture();
     if (reflTexLoc >= 0 && gfx::IsReflectionsEnabled()) {
         Texture2D reflTex = gfx::GetReflectionTarget().texture;
         if (reflTex.id > 0) {
@@ -572,6 +598,11 @@ void WaterBody::Draw() {
     Camera3D camera = s_activeCamera ? *s_activeCamera : Camera3D{};
     float globalTime = (float)GetTime();
 
+    // Dynamic ripples (wakes/splashes): follow the camera, advance, upload.
+    RecentreRipples(camera.position.x, camera.position.z);
+    StepRipples(GetFrameTime());
+    UploadRippleTexture();
+
     UpdateChunks(camera);
 
     // Rebuild the far shell if the water body moved or resized since last frame
@@ -594,6 +625,7 @@ void WaterBody::Draw() {
     // Gather nearby objects for proximity foam
     const int MAX_FOAM_OBJECTS = 16;
     float objData[MAX_FOAM_OBJECTS * 4];
+    float objShape[MAX_FOAM_OBJECTS * 4]; // half X, half Z, yaw, speed factor
     int objCount = 0;
 
     if (s_activeEngine && objectCountLoc >= 0 && objectPositionsLoc >= 0) {
@@ -622,11 +654,22 @@ void WaterBody::Draw() {
                                                               // water surface.
             objData[objCount * 4 + 2] = op.z;
             objData[objCount * 4 + 3] = fmaxf(os.x, os.z) * 0.5f;
+            {
+                // Outline for the foam ring: the real footprint, not a circle round the centre.
+                const Vector3 ov = obj->GetVelocity();
+                const float sp = sqrtf(ov.x * ov.x + ov.z * ov.z);
+                const float t = fminf(fmaxf((sp - 0.5f) / 3.5f, 0.0f), 1.0f);
+                objShape[objCount * 4 + 0] = os.x * 0.5f;
+                objShape[objCount * 4 + 1] = os.z * 0.5f;
+                objShape[objCount * 4 + 2] = obj->GetYaw();
+                objShape[objCount * 4 + 3] = 0.12f + 0.88f * t * t * (3.0f - 2.0f * t); // calm bodies: faint contact foam only
+            }
             objCount++;
         }
 
         SetShaderValue(shader, objectCountLoc, &objCount, SHADER_UNIFORM_INT);
         SetShaderValueV(shader, objectPositionsLoc, objData, SHADER_UNIFORM_VEC4, objCount);
+        if (objectShapesLoc >= 0) SetShaderValueV(shader, objectShapesLoc, objShape, SHADER_UNIFORM_VEC4, objCount);
     }
 
     // Far shell: covers the water body from the edge of the detailed chunk disk
@@ -706,6 +749,10 @@ void WaterBody::Draw() {
     }
 
     EndShaderMode();
+
+    // Spray droplets from splashes and bows, drawn over the water.
+    StepSpray(GetFrameTime());
+    DrawSpray(camera);
 }
 
 void WaterBody::DrawOverlay3D() {
@@ -738,7 +785,7 @@ void WaterBody::DrawOverlay3D() {
     }
 }
 
-float WaterBody::GetHeightAt(float x, float z) const {
+float WaterBody::GetHeightAt(float x, float z, float rippleWeight) const {
     float lx = x - position.x;
     float lz = z - position.z;
 
@@ -763,7 +810,7 @@ float WaterBody::GetHeightAt(float x, float z) const {
     float n = WaterNoise::FBM3D(nx, ny, nz,
                                  noise.octaves, noise.persistence, noise.lacunarity,
                                  noise.seed);
-    return waterHeight + n * noise.amplitude;
+    return waterHeight + n * noise.amplitude + (rippleWeight > 0.0f ? rippleWeight * GetRippleHeightAt(x, z) : 0.0f);
 }
 
 BoundingBox WaterBody::GetBoundingBox() const {

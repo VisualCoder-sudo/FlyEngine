@@ -203,7 +203,8 @@ enum FieldID {
     FIELD_WATER_AMPLITUDE, FIELD_WATER_FREQUENCY, FIELD_WATER_SPEED, FIELD_WATER_OCTAVES,
     FIELD_WATER_FOAM_INTENSITY, FIELD_WATER_FOAM_SCALE, FIELD_WATER_FOAM_THRESHOLD,
     FIELD_WATER_DETAIL_INTENSITY, FIELD_WATER_DETAIL_SCALE,
-    FIELD_WATER_REFLECT_STRENGTH, FIELD_WATER_REFLECT_DISTORTION
+    FIELD_WATER_REFLECT_STRENGTH, FIELD_WATER_REFLECT_DISTORTION,
+    FIELD_WATER_WAKE_STRENGTH, FIELD_WATER_SPLASH_STRENGTH, FIELD_WATER_FOAM_LIFE, FIELD_WATER_SPRAY_AMOUNT
 };
 
 std::unordered_map<uint64_t, float> g_hoverAlpha;
@@ -310,6 +311,7 @@ static bool g_waterNoiseOpen = true;
 static bool g_waterFoamOpen = true;
 static bool g_waterDetailOpen = true;
 static bool g_waterReflectOpen = true;
+static bool g_waterWakeOpen = true;
 
 // Screen rect of the currently active number field
 static Rectangle g_activeFieldRect = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -3059,12 +3061,13 @@ static float PropertiesContentHeight() {
         h += group(g_waterFoamOpen, 3.0f);      // Foam: Intensity, Scale, Threshold
         h += group(g_waterDetailOpen, 2.0f);    // Surface detail: Intensity, Scale
         h += group(g_waterReflectOpen, 2.0f);   // Reflections: Strength, Distortion
+        h += group(g_waterWakeOpen, 4.0f);      // Wake & spray: Wake, Splash, Foam life, Spray
         h += 10.0f;
         return h;
     }
 
     float h = 50.0f; // below the title strip
-    h += group(true, 6.0f);               // General (color + anchored + can collide + collision + transparency + mass)
+    h += group(true, 7.0f);               // General (color + anchored + can collide + boat + collision + transparency + mass)
     if (g_selectedObject && g_selectedObject->HasModel()) h += rowHeight; // mesh info line
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
     h += group(g_positionOpen, 3.0f);     // Position
@@ -3245,6 +3248,30 @@ if (g_selection.size() > 1) {
         }
         y += groupGap;
 
+        // Wake & spray (dynamic water: boat wakes, splashes, foam trails, droplets)
+        y = DrawGroupHeader(panelRec, y, "Wake & spray", g_waterWakeOpen, 109);
+        if (g_waterWakeOpen) {
+            WaterBody::RippleParams rp = w->GetRippleParams();
+            float valWK = rp.wakeStrength;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_WAKE_STRENGTH, valWK, "Wake:", labelX)) { rp.wakeStrength = std::max(0.0f, valWK); w->SetRippleParams(rp); }
+            y += rowHeight;
+            float valSP = rp.splashStrength;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_SPLASH_STRENGTH, valSP, "Splash:", labelX)) { rp.splashStrength = std::max(0.0f, valSP); w->SetRippleParams(rp); }
+            y += rowHeight;
+            float valFL = rp.foamLifetime;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_FOAM_LIFE, valFL, "Foam life:", labelX)) { rp.foamLifetime = std::clamp(valFL, 0.2f, 60.0f); w->SetRippleParams(rp); }
+            y += rowHeight;
+            // Spray amount: 0 turns droplets off.
+            float valSA = rp.spray ? rp.sprayAmount : 0.0f;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_SPRAY_AMOUNT, valSA, "Spray:", labelX)) {
+                rp.sprayAmount = std::clamp(valSA, 0.0f, 5.0f);
+                rp.spray = rp.sprayAmount > 0.0f;
+                w->SetRippleParams(rp);
+            }
+            y += rowHeight;
+        }
+        y += groupGap;
+
         EndScissorMode();
         return;
     }
@@ -3342,6 +3369,34 @@ if (g_selection.size() > 1) {
             }
             Log("'%s' canCollide = %s", g_selectedObject->GetName().c_str(),
                 g_selectedObject->canCollide ? "true" : "false");
+        }
+
+        // --- Boat (floats, thrust + rudder + planing; W/S throttle, A/D rudder in play) ---
+        y += rowHeight;
+        DrawTextArial("Boat:", labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
+        {
+            Rectangle boatCheck = { generalControlX, y, 22.0f, 22.0f };
+            bool boatOn = g_selectedObject != nullptr && g_selectedObject->boat.enabled;
+            bool boatDisabled = g_selectedObject == nullptr;
+            bool boatHovered = CheckCollisionPointRec(mouse, boatCheck);
+            DrawRectangleRounded(boatCheck, 0.2f, 4, boatDisabled ? theme::BG_WIDGET : theme::BG_INPUT);
+            DrawRectangleLinesEx(boatCheck, boatHovered ? 2.0f : 1.0f, boatHovered ? theme::ACCENT : theme::BORDER);
+            if (boatOn) {
+                Vector2 c1 = { boatCheck.x + 3.0f, boatCheck.y + boatCheck.height * 0.5f };
+                Vector2 c2 = { boatCheck.x + boatCheck.width * 0.5f, boatCheck.y + boatCheck.height - 5.0f };
+                Vector2 c3 = { boatCheck.x + boatCheck.width - 3.0f, boatCheck.y + 4.0f };
+                DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
+                DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
+            }
+            if (boatHovered && !boatDisabled) MarkHand();
+            if (!boatDisabled && boatHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                bool nv = !g_selectedObject->boat.enabled;
+                g_selectedObject->boat.enabled = nv;
+                if (g_selection.size() > 1) {
+                    for (auto* obj : g_selection) if (obj && obj != g_selectedObject) obj->boat.enabled = nv;
+                }
+                Log("'%s' boat = %s", g_selectedObject->GetName().c_str(), nv ? "true" : "false");
+            }
         }
 
         // --- Collision accuracy (combo) ---
