@@ -49,7 +49,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 19\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 20\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         const Vector3& pos = *object->GetPosPtr();
@@ -168,6 +168,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
             const auto& noise = water->GetNoiseParams();
             const auto& foam = water->GetFoamParams();
             const auto& grid = water->GetGridParams();
+            const auto& ripple = water->GetRippleParams();
             file << std::quoted(water->GetName()) << ' '
                  << pos.x << ' ' << pos.y << ' ' << pos.z << ' '
                  << wsize.x << ' ' << wsize.y << ' ' << wsize.z << ' '
@@ -181,6 +182,9 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                  << (int)foam.color.r << ' ' << (int)foam.color.g << ' ' << (int)foam.color.b << '\n';
             file << grid.baseResolution << ' ' << grid.maxResolution << ' ' << grid.densityThreshold << ' '
                  << (grid.adaptive ? 1 : 0) << '\n';
+            // v20: dynamic water (wake / splash / foam life / spray)
+            file << ripple.wakeStrength << ' ' << ripple.splashStrength << ' ' << ripple.foamLifetime << ' '
+                 << (ripple.spray ? 1 : 0) << ' ' << ripple.sprayAmount << '\n';
         }
     }
 
@@ -235,7 +239,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 19) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 20) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -577,6 +581,12 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (!(file >> amp >> freq >> speed >> dirX >> dirY >> octaves >> pers >> lac >> seed)) return false;
             if (!(file >> foamI >> foamS >> foamT >> foamR >> foamG >> foamB)) return false;
             if (!(file >> baseRes >> maxRes >> densityThreshold >> adaptive)) return false;
+            WaterBody::RippleParams rpp; // defaults for scenes older than v20
+            if (version >= 20) {
+                int sprayOn = 1;
+                if (!(file >> rpp.wakeStrength >> rpp.splashStrength >> rpp.foamLifetime >> sprayOn >> rpp.sprayAmount)) return false;
+                rpp.spray = (sprayOn != 0);
+            }
 
             auto water = std::make_unique<WaterBody>(pos, wsize, height,
                 Color{ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
@@ -598,6 +608,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             gp.baseResolution = baseRes; gp.maxResolution = maxRes;
             gp.densityThreshold = densityThreshold; gp.adaptive = (adaptive != 0);
             water->SetGridParams(gp);
+            water->SetRippleParams(rpp);
 
             engine.AddEntity(std::move(water));
         }
