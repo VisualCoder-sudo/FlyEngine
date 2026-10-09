@@ -2483,6 +2483,7 @@ void City::FitBuildingsToSurface(Block& block) const {
         const float skirt = std::min(0.3f + 0.12f * (hi - lo), 1.5f);
         b.size.y += hi - lo + skirt;
         b.center.y = lo - skirt + kRoadElevation + 0.06f + b.size.y * 0.5f;
+        b.foundation = hi - lo + skirt + 0.15f;   // windows start above the highest ground under the footprint (+ the pad's curb)
     }
 }
 
@@ -3435,6 +3436,7 @@ void City::ComputeTileCPU(Tile& t) {
                 m.m3 = tint.r / 255.0f;
                 m.m7 = tint.g / 255.0f;
                 m.m11 = tint.b / 255.0f;
+                m.m15 = 1.0f + b.foundation;   // the facade shader reads the plinth height from here (see vs_instanced)
                 t.inst[shape].push_back(m);
                 if (collisionEnabled)
                     t.coll.buildings.push_back({ b.center, Vector3Scale(b.size, 0.5f), b.angleY, shape });

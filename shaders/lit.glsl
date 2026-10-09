@@ -85,15 +85,18 @@ in vec4 instanceTransform3;
 @include_block lit_vs_outputs
 out vec4 fragInst;      // xyz = instance scale (metres), w = 1 for tinted city buildings (0 = plain marker)
 out float fragBaseY;    // world y of the building's bottom face
+out float fragFound;    // height of the buried foundation / plinth above that face (m): no windows below it
 void main() {
     // Built from column vectors rather than by assigning model[i][3]: writing
     // individual elements of a mat4 was miscompiled by at least one OpenGL driver
     // (NVIDIA), which lost the instance's scale whenever a tint was present.
     vec3 instTint = vec3(instanceTransform0.w, instanceTransform1.w, instanceTransform2.w);
+    // The matrix's w (m15) is 1 for everything; city buildings put 1 + foundation height there.
+    fragFound = max(instanceTransform3.w - 1.0, 0.0);
     mat4 model = mat4(vec4(instanceTransform0.xyz, 0.0),
                       vec4(instanceTransform1.xyz, 0.0),
                       vec4(instanceTransform2.xyz, 0.0),
-                      instanceTransform3);
+                      vec4(instanceTransform3.xyz, 1.0));
     // Tint sign encodes the mode: all-zero = plain marker, negative = prop (vertex colours x |tint|, no facade).
     float isBuilding = dot(instTint, instTint) < 1e-6 ? 0.0 : 1.0;
     if (instTint.x < 0.0) { isBuilding = 2.0; instTint = abs(instTint); }
@@ -285,6 +288,7 @@ layout(binding=1) uniform fs_building_params {
 @include_block night_glow
 in vec4 fragInst;
 in float fragBaseY;
+in float fragFound;
 
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -322,9 +326,12 @@ void main() {
             float bu = u / bayW;
             float bayIdx = floor(bu);
             float fu = fract(bu);
-            bool groundFloor = y < floorH;
-            bool inGlass = fu > 0.18 && fu < 0.82 && fv > 0.22 && fv < 0.78;
-            if (groundFloor) inGlass = fu > 0.1 && fu < 0.9 && fv > 0.12 && fv < 0.7;
+            // Below fragFound the building is a plain plinth (it is mostly buried by a sloped pad: windows there would be
+            // cut diagonally by the ground); the first floor and its windows start above it.
+            bool plinth = y < fragFound;
+            bool groundFloor = y < fragFound + floorH;
+            bool inGlass = !plinth && fu > 0.18 && fu < 0.82 && fv > 0.22 && fv < 0.78;
+            if (groundFloor) inGlass = !plinth && fu > 0.1 && fu < 0.9 && fv > 0.12 && fv < 0.7;
             float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
             if (inGlass) {
                 vec3 glass = mix(vec3(0.16, 0.22, 0.30), vec3(0.34, 0.44, 0.56), fv);
@@ -338,6 +345,7 @@ void main() {
                 float band = smoothstep(0.0, 0.06, fv) * (1.0 - smoothstep(0.94, 1.0, fv));
                 base = wall * (0.82 + 0.18 * band);                   // slab edges shade the wall
                 if (groundFloor) base *= 0.88;
+                if (plinth) base = wall * 0.74;                       // concrete-ish plinth
             }
         }
         lit = ShadeLitWith(base, 1.0, alpha);

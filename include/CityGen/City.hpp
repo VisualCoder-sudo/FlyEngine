@@ -189,6 +189,7 @@ struct Building {
     int floors = 1;        // storeys; size.y is floors * kFloorHeight (plus any foundation under a slope)
     int placedIndex = -1; // >= 0: a user-placed building (index into City::GetPlacedBuildings())
     int style = 0;         // BuildingStyle used for the facade tint (districts may differ from CityParams::style)
+    float foundation = 0.0f; // height of the plinth under the first floor (m): the part sunk into a sloped pad
 };
 
 // A building plopped by the Building Insert tool. Survives regeneration: blocks

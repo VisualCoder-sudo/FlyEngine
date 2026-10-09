@@ -55,6 +55,22 @@ int main() {
         { { 60.0f, 50.0f, 60.0f }, { 10.0f, 6.0f, 10.0f } } };
     for (int v = 0; v < 4; v++) Shot(engine, views[v][0], views[v][1], TextFormat("city_slope_angled_%d.png", v));
 
+    // Close-ups of the foot of the building with the most buried foundation: windows must start above the plinth, not be
+    // cut diagonally by the sloping ground.
+    {
+        const Building* best = nullptr;
+        for (const Block& blk : c.GetBlocks()) for (const Building& b : blk.buildings) if (!best || fabsf(b.foundation - 1.8f) < fabsf(best->foundation - 1.8f)) best = &b;   // a typical sloped foot, not the steepest outlier
+        CHECK(best != nullptr);
+        if (best) {
+            std::printf("sample foundation: %.2f m (building %.1f x %.1f x %.1f)\n", best->foundation, best->size.x, best->size.y, best->size.z);
+            const float baseY = best->center.y - best->size.y * 0.5f + best->foundation;
+            for (int k = 0; k < 3; k++) {
+                const float ang = best->angleY + (float)k * 2.1f;
+                Shot(engine, { best->center.x + sinf(ang) * 16.0f, baseY + 3.0f, best->center.z + cosf(ang) * 16.0f }, { best->center.x, baseY + 1.0f, best->center.z }, TextFormat("city_slope_foot_%d.png", k));
+            }
+        }
+    }
+
     std::printf(g_fail ? "city_slope_test: %d FAILED\n" : "city_slope_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }
