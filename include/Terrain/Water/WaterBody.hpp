@@ -117,8 +117,33 @@ public:
     const GridParams& GetGridParams() const { return grid; }
     void SetGridParams(const GridParams& p) { grid = p; MarkMeshDirty(); }
 
-    // CPU-side height query (for physics/buoyancy)
+    // CPU-side height query (for physics/buoyancy). Includes the dynamic
+    // ripple layer (boat wakes, splashes) on top of the procedural waves.
     float GetHeightAt(float x, float z) const;
+
+    // --- Dynamic disturbance layer (wakes, splashes, foam trails) ----------
+    // A camera-centred 2D wave-equation grid layered on the noise waves. It is
+    // only simulated while something is disturbing it and costs nothing idle.
+    struct RippleParams {
+        bool enabled = true;
+        float waveSpeed = 3.2f;      // m/s ripples travel
+        float damping = 0.992f;      // per 60 Hz step; lower = ripples die sooner
+        float wakeStrength = 1.0f;   // wake size multiplier (1 = default)
+        float splashStrength = 0.07f;// crater depth per m/s of impact speed
+        float foamLifetime = 5.0f;   // seconds for a foam trail to fade
+        float maxDisplacement = 1.2f;// clamp on ripple height (m)
+    };
+    const RippleParams& GetRippleParams() const { return ripple; }
+    void SetRippleParams(const RippleParams& p) { ripple = p; }
+
+    // Call every physics step for a body touching the water. `id` identifies
+    // the body so its path can be interpolated (no gaps at high speed).
+    void AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
+                     float radius, float submergedFraction, float dt);
+    // A body hitting the surface: crater + rebound ring + foam burst.
+    void AddSplash(Vector3 worldPos, float impactSpeed, float radius);
+    // Ripple layer height only (no noise waves).
+    float GetRippleHeightAt(float x, float z) const;
 
     // Bounds
     BoundingBox GetBoundingBox() const;
@@ -196,6 +221,16 @@ private:
     void UpdateShaderUniforms(const Camera3D& camera, float globalTime);
     void ReleaseGpuResources();
     void BuildFarShell();
+
+    // Ripple simulation internals
+    static constexpr int RIPPLE_N = 256;            // grid cells per axis
+    static constexpr float RIPPLE_WINDOW = 128.0f;  // metres covered
+    void EnsureRippleGrid();
+    void RecentreRipples(float camX, float camZ);
+    void StepRipples(float dt);
+    void StampGaussian(float wx, float wz, float radius, float dHeight, float dVel, float dFoam);
+    void UploadRippleTexture();
+    void BindRippleTexture();
     static int64_t ChunkKey(int gx, int gz);
 
     // Core data
@@ -255,6 +290,24 @@ private:
     int objectCountLoc = -1;
     int objectPositionsLoc = -1;
     int farRimLoc = -1;
+    int rippleParamsLoc = -1;
+    int rippleTexLoc = -1;    // fragment-stage sampler (rippleTexFS)
+    int rippleTexVSLoc = -1;  // vertex-stage sampler (rippleTexVS)
+
+    // Ripple state (lazily allocated on first disturbance)
+    RippleParams ripple;
+    std::vector<float> rippleH, rippleV, rippleFoam;
+    std::vector<unsigned short> rippleHalf;  // RGBA16F upload staging
+    float rippleOriginX = 0.0f, rippleOriginZ = 0.0f; // world pos of cell (0,0)
+    float rippleAccum = 0.0f;
+    float rippleIdleTime = 0.0f;
+    bool rippleActive = false;
+    bool ripplePendingUpload = false;
+    double rippleLastSimTime = -1.0;
+    Texture2D rippleTex = { 0 };
+    struct WakeTrack { Vector2 last; double time; };
+    std::unordered_map<const void*, WakeTrack> wakeTracks;
+    static constexpr int RIPPLE_SLOT = 12;
 
     // Camera for shader
     static Camera3D* s_activeCamera;

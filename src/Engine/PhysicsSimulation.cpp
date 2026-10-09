@@ -590,6 +590,16 @@ void Simulation::ApplyBuoyancy() {
 
             float mass = fmaxf(b3Body_GetMass(rec.bodyId), 0.001f);
 
+            // Dynamic water response: entry splash on the frame the body first
+            // touches the surface, and a continuous wake while it moves through.
+            {
+                const float wakeRadius = fmaxf(halfExt.x, halfExt.z);
+                if (!rec.wasSubmerged && vel.y < -0.8f) {
+                    water->AddSplash({ pos.x, waterSurface, pos.z }, -vel.y, wakeRadius);
+                }
+                water->AddBodyWake(obj, pos, vel, wakeRadius, submergedFraction, fixedDt);
+            }
+
             // Archimedes buoyancy
             float densityRatio = WATER_DENSITY / OBJECT_DENSITY;
             float buoyancyAccel = GRAVITY * densityRatio * submergedFraction;
