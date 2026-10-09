@@ -70,7 +70,7 @@ static ScatteredObject* g_lastExplorerClick = nullptr;
 static ModelGroup* g_lastExplorerModelClick = nullptr;
 static double g_lastExplorerClickTime = 0.0;
 static WaterBody* g_selectedWater = nullptr;
-static int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog
+static int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather
 static BasicTerrain* g_selectedTerrain = nullptr;
 static char g_nameBuffer[64] = "";
 static float g_colorPickerAnchorY = -1.0f;
@@ -2333,6 +2333,7 @@ static void DrawImGuiExplorer() {
             if (!L.hasAmbient && ImGui::MenuItem("Ambient")) { L.hasAmbient = true; g_lightingSel = 3; any = true; }
             if (!L.hasSky && ImGui::MenuItem("Sky")) { L.hasSky = true; g_lightingSel = 4; any = true; }
             if (!L.hasFog && ImGui::MenuItem("Fog")) { L.hasFog = true; L.fogDensity = std::max(L.fogDensity, 0.004f); g_lightingSel = 5; any = true; }
+            if (!L.hasWeather && ImGui::MenuItem("Weather")) { L.hasWeather = true; L.overcast = 0.6f; L.rain = 0.5f; L.wetGround = 0.0f; g_lightingSel = 6; any = true; }
             if (any) {
                 SetSelection({}, nullptr);
                 if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
@@ -2340,12 +2341,12 @@ static void DrawImGuiExplorer() {
                 BasicTerrain::SetActive(nullptr);
                 terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
             }
-            if (L.hasSun && L.hasAmbient && L.hasSky && L.hasFog) ImGui::TextDisabled("Everything is inserted.");
+            if (L.hasSun && L.hasAmbient && L.hasSky && L.hasFog && L.hasWeather) ImGui::TextDisabled("Everything is inserted.");
             ImGui::EndPopup();
         }
         struct Row { int id; const char* name; bool present; bool removable; };
         const Row rows[] = { { 1, "Time", true, false }, { 2, "Sun", L.hasSun, true }, { 3, "Ambient", L.hasAmbient, true },
-                             { 4, "Sky", L.hasSky, true }, { 5, "Fog", L.hasFog, true } };
+                             { 4, "Sky", L.hasSky, true }, { 5, "Fog", L.hasFog, true }, { 6, "Weather", L.hasWeather, true } };
         static int s_removeId = 0;
         for (const Row& r : rows) {
             if (!r.present) continue;
@@ -2370,11 +2371,12 @@ static void DrawImGuiExplorer() {
             if (ImGui::MenuItem("Remove (back to default)")) {
                 const gfx::LightingSettings def;
                 switch (s_removeId) {
-                    case 2: L.hasSun = false; L.sunAzimuth = def.sunAzimuth; L.sunElevation = def.sunElevation; L.sunIntensity = def.sunIntensity;
+                    case 2: L.hasSun = false; L.sunFollowsTime = def.sunFollowsTime; L.sunAzimuth = def.sunAzimuth; L.sunElevation = def.sunElevation; L.sunIntensity = def.sunIntensity;
                             for (int i = 0; i < 3; i++) L.sunColor[i] = def.sunColor[i]; break;
                     case 3: L.hasAmbient = false; L.ambient = def.ambient; break;
                     case 4: L.hasSky = false; for (int i = 0; i < 3; i++) L.skyColor[i] = def.skyColor[i]; break;
                     case 5: L.hasFog = false; L.fogDensity = 0.0f; break;
+                    case 6: L.hasWeather = false; L.overcast = 0.0f; L.rain = 0.0f; L.wetGround = 0.0f; break;
                     default: break;
                 }
                 if (g_lightingSel == s_removeId) g_lightingSel = 1;
@@ -6163,10 +6165,11 @@ static void DrawImGuiLightingPanel() {
     case 2:
         ImGui::TextDisabled("Sun");
         ImGui::Separator();
-        ImGui::TextDisabled("Direction (compass, degrees)");
+        ImGui::Checkbox("Follow the time of day", &L.sunFollowsTime);
+        ImGui::TextDisabled(L.sunFollowsTime ? "Direction at noon (compass, degrees)" : "Direction (compass, degrees)");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##az", &L.sunAzimuth, 0.0f, 360.0f, "%.0f");
-        ImGui::TextDisabled("Height above the horizon");
+        ImGui::TextDisabled(L.sunFollowsTime ? "Height at noon" : "Height above the horizon");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##el", &L.sunElevation, 8.0f, 90.0f, "%.0f");
         ImGui::TextDisabled("Intensity");
@@ -6174,7 +6177,8 @@ static void DrawImGuiLightingPanel() {
         ImGui::SliderFloat("##sint", &L.sunIntensity, 0.0f, 3.0f, "%.2f");
         ImGui::ColorEdit3("Colour", L.sunColor, ImGuiColorEditFlags_NoInputs);
         ImGui::Spacing();
-        ImGui::TextWrapped("Moves the light and its shadows. A low sun gives long shadows. The time of day still dims it at night.");
+        if (L.sunFollowsTime) ImGui::TextWrapped("The sun rises at 6:00, crosses the sky (15 degrees of compass an hour), peaks at the height above at noon and sets at 18:00, turning orange near the horizon. Shadows move with it. Untick to pin the sun in place.");
+        else ImGui::TextWrapped("Pinned: the sun stays where you put it. A low sun gives long shadows. The time of day still dims it at night.");
         break;
     case 3:
         ImGui::TextDisabled("Ambient");
@@ -6200,6 +6204,29 @@ static void DrawImGuiLightingPanel() {
         ImGui::SliderFloat("##fog", &L.fogDensity, 0.0f, 0.03f, "%.4f");
         ImGui::Spacing();
         ImGui::TextWrapped("Distant things fade into the sky colour. About 0.004 is a light haze, 0.02 is thick.");
+        break;
+    case 6:
+        ImGui::TextDisabled("Weather");
+        ImGui::Separator();
+        if (ImGui::Button("Clear")) { L.overcast = 0.0f; L.rain = 0.0f; L.wetGround = 0.0f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Overcast")) { L.overcast = 0.8f; L.rain = 0.0f; L.wetGround = 0.0f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Rain")) { L.overcast = 0.6f; L.rain = 0.5f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Storm")) { L.overcast = 1.0f; L.rain = 1.0f; }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Cloud cover");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##cloud", &L.overcast, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Rain");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##rain", &L.rain, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Wet ground (rain wets it too)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##wet", &L.wetGround, 0.0f, 1.0f, "%.2f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Clouds dim and soften the sun and grey the sky. Rain falls around the camera, makes roads dark with puddles that mirror the sky, adds haze, and the city's pedestrians put up umbrellas.");
         break;
     default: break;
     }

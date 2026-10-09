@@ -196,6 +196,7 @@ void Engine::Draw() {
                 entity->Draw(); // Entity handles its own frustum culling and draw call counting
             }
         }
+        gfx::DrawWeather(camera);   // falling rain (nothing unless the Weather item sets rain)
         // Editor overlays (transform gizmos) render after every entity so they
         // stay readable even when buried inside another object.
         for (auto& entity : entities) {

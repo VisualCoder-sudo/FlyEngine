@@ -86,6 +86,7 @@ in vec4 instanceTransform3;
 out vec4 fragInst;      // xyz = instance scale (metres), w = 1 for tinted city buildings (0 = plain marker)
 out float fragBaseY;    // world y of the building's bottom face
 out float fragFound;    // height of the buried foundation / plinth above that face (m): no windows below it
+out vec3 fragOrigin;    // the instance's world position (street lamps switch on one by one from a hash of it)
 void main() {
     // Built from column vectors rather than by assigning model[i][3]: writing
     // individual elements of a mat4 was miscompiled by at least one OpenGL driver
@@ -103,6 +104,7 @@ void main() {
     if (isBuilding < 0.5) instTint = vec3(1.0);
     vec3 instScale = vec3(length(instanceTransform0.xyz), length(instanceTransform1.xyz), length(instanceTransform2.xyz));
     fragInst = vec4(instScale, isBuilding);
+    fragOrigin = instanceTransform3.xyz;
     fragBaseY = instanceTransform3.y - instScale.y * 0.5;
 
     vec4 worldPos = model * vec4(vertexPosition, 1.0);
@@ -251,15 +253,42 @@ layout(binding=1) uniform fs_road_params {
     float nightAmount;
     float lightCount;
     vec4 nightLights[32];
+    vec4 weather;       // x = wetness 0..1
+    vec4 camPos;        // xyz = camera position
     mat4 lightVP;
     mat4 matProjection;
 };
 @include_block lit_fs_common
 @include_block night_glow
 in float fragLayer;
+
+float rnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
+    float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+    float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+    float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 void main() {
     float alpha;
     vec3 lit = ShadeLit(alpha);
+    if (weather.x > 0.01) {
+        // Wet ground: darker, with puddles that mirror the sky and the sun.
+        vec3 n = normalize(fragNormal);
+        float puddle = smoothstep(0.32, 0.62, rnoise(fragWorldPos.xz * 0.30) * 0.65 + rnoise(fragWorldPos.xz * 1.3) * 0.35);
+        float wet = weather.x * mix(0.6, 1.0, puddle);
+        lit *= 1.0 - 0.34 * wet;
+        vec3 V = normalize(camPos.xyz - fragWorldPos);
+        float fres = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 3.0);
+        float sheen = wet * (0.04 + puddle * (0.10 + 0.55 * fres));
+        lit += fogParams.rgb * sheen;
+        vec3 R = reflect(normalize(lightDir), n);
+        lit += sunColor.rgb * length(lightDir) * pow(max(dot(R, V), 0.0), 36.0) * 0.55 * wet * puddle;
+    }
     if (nightAmount > 0.02 && lightCount > 0.5)
         lit += NightGlow(texture(sampler2D(texture0, texture0_smp), fragTexCoord).rgb * fragColor.rgb, fragWorldPos, normalize(fragNormal));
     finalColor = vec4(ApplyFog(lit), alpha);
@@ -295,6 +324,7 @@ layout(binding=1) uniform fs_building_params {
     float nightAmount;      // 0 = day, 1 = night: scales the emissive window / lamp / car light glow
     float lightCount;
     vec4 nightLights[32];
+    vec4 weather;           // x = wetness 0..1, y = time (s)
     mat4 lightVP;
 };
 @include_block lit_fs_common
@@ -302,6 +332,27 @@ layout(binding=1) uniform fs_building_params {
 in vec4 fragInst;
 in float fragBaseY;
 in float fragFound;
+in vec3 fragOrigin;
+
+// Per-lamp random number from the lamp's position (the city computes the same value for the light pool on the road).
+float LampHash(vec2 xz) {
+    vec2 q = floor(xz * 2.0 + 0.5);
+    vec3 p3 = fract(vec3(q.x, q.y, q.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+// 0..1: street lamps come on one by one as it gets dark; a few faulty ones flicker.
+float LampOn(vec2 xz) {
+    float h = LampHash(xz);
+    float thr = mix(0.20, 0.62, h);
+    float on = smoothstep(thr, thr + 0.12, nightAmount);
+    float h2 = fract(h * 17.31 + 0.37);
+    if (h2 < 0.10) {
+        float k = fract(floor(weather.y * 8.0 + h * 50.0) * 0.61803 + h * 3.7);
+        on *= k < 0.3 ? 0.2 : 1.0;
+    }
+    return on;
+}
 
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -318,7 +369,8 @@ void main() {
         lit = ShadeLit(alpha);
     } else if (fragInst.w > 1.5) {
         lit = ShadeLitWith(fragColor.rgb, 1.0, alpha);   // prop
-        if (fragColor.a < 0.99) emit = fragColor.rgb * nightAmount * 1.6;   // lamp heads, car lights: glow at night
+        if (abs(fragColor.a - 0.9725) < 0.004) emit = fragColor.rgb * LampOn(fragOrigin.xz) * 1.7;   // street lamp heads
+        else if (fragColor.a < 0.99) emit = fragColor.rgb * nightAmount * 1.6;   // car lights, signs: glow at night
     } else {
         vec3 n = normalize(fragNormal);
         vec3 wall = fragColor.rgb;
@@ -346,7 +398,22 @@ void main() {
             bool inGlass = !plinth && fu > 0.18 && fu < 0.82 && fv > 0.22 && fv < 0.78;
             if (groundFloor) inGlass = !plinth && fu > 0.1 && fu < 0.9 && fv > 0.12 && fv < 0.7;
             float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
-            if (inGlass) {
+            // Shop signs along the ground floor of the tall (downtown) buildings: painted by day, lit at night.
+            float yy = y - fragFound;
+            bool isSign = false;
+            if (!plinth && topEdge > 22.0 && yy > 2.4 && yy < 3.3 && fu > 0.08 && fu < 0.92) {
+                float sr = hash21(vec2(bayIdx * 1.7 + 3.0, 9.0) + floor(fragBaseY * 0.5));
+                if (sr > 0.45) {
+                    float pick = fract(sr * 7.31);
+                    vec3 sc = pick < 0.2 ? vec3(1.0, 0.22, 0.25) : pick < 0.4 ? vec3(0.2, 0.85, 1.0) : pick < 0.6 ? vec3(1.0, 0.28, 0.8)
+                            : pick < 0.8 ? vec3(1.0, 0.72, 0.22) : vec3(0.3, 1.0, 0.5);
+                    base = sc * 0.62;
+                    emit = sc * nightAmount * 1.5;
+                    isSign = true;
+                }
+            }
+            if (isSign) {
+            } else if (inGlass) {
                 vec3 glass = mix(vec3(0.16, 0.22, 0.30), vec3(0.34, 0.44, 0.56), fv);
                 // Lit windows only appear as it gets dark (none in daylight: every window is blue glass), more of them the darker it is.
                 if (r > mix(1.001, 0.42, clamp(nightAmount * 1.6, 0.0, 1.0))) {
@@ -366,6 +433,7 @@ void main() {
     }
     if (nightAmount > 0.02 && lightCount > 0.5 && fragInst.w > 0.5)
         emit += NightGlow(glowBase, fragWorldPos, normalize(fragNormal));
+    lit *= 1.0 - 0.16 * weather.x;        // rain-soaked walls and props are a little darker
     finalColor = vec4(ApplyFog(lit + emit), alpha);
 }
 @end

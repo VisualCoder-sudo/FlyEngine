@@ -90,6 +90,11 @@ struct LightingSettings {
     float ambient = 1.0f;             // 0..2: scales the ambient light
     float skyColor[3] = { 0.14f, 0.15f, 0.17f };   // the daytime sky (the editor's own clear colour is used until a Sky item is inserted)
     float fogDensity = 0.0f;          // per metre; the fog takes the sky colour
+    bool sunFollowsTime = true;       // the sun rises in the east, peaks at sunElevation at noon and sets in the west
+    bool hasWeather = false;          // the Weather item
+    float overcast = 0.0f;            // 0..1 cloud cover: dimmer, softer sun, grey sky, a little haze
+    float rain = 0.0f;                // 0..1 rain: falling rain, wet ground, more cloud and haze
+    float wetGround = 0.0f;           // 0..1 wet roads without rain (rain wets them too)
 };
 LightingSettings& Lighting();
 void ResetLighting();                 // back to noon, no running cycle (a new scene starts like this)
@@ -100,6 +105,7 @@ void TickLighting(float dt);          // advances the time of day when a day len
 void SetTimeOfDay(float hours);
 float GetTimeOfDay();
 float GetNightAmount();
+float LampSwitchOn(float x, float z, float night);   // 0..1: is the street lamp at this spot on? Same rule as the shader (lamps come on one by one at dusk; a few flicker)
 // Up to 32 point lights for the night glow on roads, buildings and props: (x, y, z, radius) each.
 void SetNightLights(const Vector4* lights, int count);          // 0 = full day, 1 = full night
 Color SkyColor(Color dayColor);  // the clear colour at the current time of day
@@ -113,6 +119,12 @@ Vector3 AmbientScale();          // multiply a shader's own ambient colour by th
 float FogDensity();
 Color FogColorNow();
 float GetAmbientIntensity();
+Vector3 WaterSky();              // the sky colour the water shader reflects when the reflection is off or far (day, dusk, night, cloud)
+float SunElevationNow();         // degrees above the horizon of the sun along its path (negative = below, at night)
+float WetnessNow();              // 0..1: how wet the ground is (rain or the Weather item's wet ground)
+float RainNow();                 // 0..1 rain amount
+float OvercastNow();             // 0..1 cloud cover (rain adds to it)
+void DrawWeather(const Camera3D& camera);   // falling rain around the camera (call inside the 3D pass)
 
 // Toggles the shadow-receiving ground plane.
 void SetGridVisible(bool visible);

@@ -210,6 +210,8 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         file << "LIGHTING2 " << (L.hasSun ? 1 : 0) << ' ' << (L.hasAmbient ? 1 : 0) << ' ' << (L.hasSky ? 1 : 0) << ' ' << (L.hasFog ? 1 : 0) << ' '
              << L.sunAzimuth << ' ' << L.sunElevation << ' ' << L.sunIntensity << ' ' << L.sunColor[0] << ' ' << L.sunColor[1] << ' ' << L.sunColor[2] << ' '
              << L.ambient << ' ' << L.skyColor[0] << ' ' << L.skyColor[1] << ' ' << L.skyColor[2] << ' ' << L.fogDensity << "\n";
+        // Sun path and weather, again on a line of their own.
+        file << "LIGHTING3 " << (L.sunFollowsTime ? 1 : 0) << ' ' << (L.hasWeather ? 1 : 0) << ' ' << L.overcast << ' ' << L.rain << ' ' << L.wetGround << "\n";
     }
 
     return file.good();
@@ -642,6 +644,19 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 L2.ambient = std::clamp(L2.ambient, 0.0f, 2.0f);
                 L2.fogDensity = std::clamp(L2.fogDensity, 0.0f, 0.2f);
                 gfx::Lighting() = L2;
+                const auto here3 = file.tellg();
+                std::string tag3; int follow = 1, hw = 0;
+                gfx::LightingSettings L3 = gfx::Lighting();
+                if (file >> tag3 && tag3 == "LIGHTING3" && file >> follow >> hw >> L3.overcast >> L3.rain >> L3.wetGround) {
+                    L3.sunFollowsTime = follow != 0; L3.hasWeather = hw != 0;
+                    L3.overcast = std::clamp(L3.overcast, 0.0f, 1.0f);
+                    L3.rain = std::clamp(L3.rain, 0.0f, 1.0f);
+                    L3.wetGround = std::clamp(L3.wetGround, 0.0f, 1.0f);
+                    gfx::Lighting() = L3;
+                } else {
+                    file.clear();
+                    file.seekg(here3);
+                }
             } else {
                 file.clear();
                 file.seekg(here);

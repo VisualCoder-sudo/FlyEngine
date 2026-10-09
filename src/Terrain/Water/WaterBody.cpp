@@ -107,6 +107,9 @@ void WaterBody::InitializeShader() {
     reflTexLoc = GetShaderLocation(shader, "reflectionTex");
     reflParamsLoc = GetShaderLocation(shader, "reflParams");
     chunkFadeLoc = GetShaderLocation(shader, "chunkFade");
+    sceneALoc = GetShaderLocation(shader, "sceneA");
+    sceneBLoc = GetShaderLocation(shader, "sceneB");
+    sceneCLoc = GetShaderLocation(shader, "sceneC");
     objectCountLoc = GetShaderLocation(shader, "objectCount");
     objectPositionsLoc = GetShaderLocation(shader, "objectPositions");
     farRimLoc = GetShaderLocation(shader, "farRimParams");
@@ -513,6 +516,20 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
 
     Vector4 detailParams = { detail.intensity, detail.scale, detail.speed, 0.0f };
     SetShaderValue(shader, detailParamsLoc, &detailParams, SHADER_UNIFORM_VEC4);
+
+    // The scene's lighting (Explorer > Lighting, time of day, weather): the sun, the ambient light, the sky and the fog.
+    {
+        const Vector3 toSun = Vector3Negate(gfx::SunDirection());
+        const Vector3 sun = gfx::SunLightScale();
+        const Vector3 a3 = gfx::AmbientScale();
+        const Vector3 sky = gfx::WaterSky();
+        const Vector4 sceneA = { toSun.x, toSun.y, toSun.z, (a3.x + a3.y + a3.z) / 3.0f };
+        const Vector4 sceneB = { sun.x, sun.y, sun.z, gfx::FogDensity() };
+        const Vector4 sceneC = { sky.x, sky.y, sky.z, 0.0f };
+        if (sceneALoc >= 0) SetShaderValue(shader, sceneALoc, &sceneA, SHADER_UNIFORM_VEC4);
+        if (sceneBLoc >= 0) SetShaderValue(shader, sceneBLoc, &sceneB, SHADER_UNIFORM_VEC4);
+        if (sceneCLoc >= 0) SetShaderValue(shader, sceneCLoc, &sceneC, SHADER_UNIFORM_VEC4);
+    }
 
     // Planar reflection: mirrored camera view-proj, strength/distortion params, and
     // the reflection texture (bound to a fixed slot so DrawModel can't overwrite it).

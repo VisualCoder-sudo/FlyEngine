@@ -89,6 +89,7 @@ int main() {
         gfx::LightingSettings& L = gfx::Lighting();
         L.hasSun = true; L.sunAzimuth = 123.0f; L.sunElevation = 33.0f; L.sunIntensity = 1.7f; L.sunColor[1] = 0.6f;
         L.hasFog = true; L.fogDensity = 0.013f; L.hasSky = true; L.skyColor[2] = 0.9f; L.hasAmbient = true; L.ambient = 0.55f; L.timeOfDay = 17.5f;
+        L.sunFollowsTime = false; L.hasWeather = true; L.overcast = 0.65f; L.rain = 0.4f; L.wetGround = 0.3f;
         std::vector<ScatteredObject*> objs; std::vector<std::unique_ptr<ModelGroup>> models;
         std::stringstream ss;
         CHECK(SaveSceneToStream(ss, objs, models, "", nullptr));
@@ -101,6 +102,7 @@ int main() {
         CHECK(std::fabs(R.sunAzimuth - 123.0f) < 0.01f && std::fabs(R.sunElevation - 33.0f) < 0.01f && std::fabs(R.sunIntensity - 1.7f) < 0.01f);
         CHECK(std::fabs(R.fogDensity - 0.013f) < 1e-5f && std::fabs(R.ambient - 0.55f) < 1e-4f && std::fabs(R.timeOfDay - 17.5f) < 1e-3f);
         CHECK(std::fabs(R.skyColor[2] - 0.9f) < 1e-4f && std::fabs(R.sunColor[1] - 0.6f) < 1e-4f);
+        CHECK(!R.sunFollowsTime && R.hasWeather && std::fabs(R.overcast - 0.65f) < 1e-4f && std::fabs(R.rain - 0.4f) < 1e-4f && std::fabs(R.wetGround - 0.3f) < 1e-4f);
     }
 
     std::printf(g_fail ? "lighting_test: %d FAILED\n" : "lighting_test: ok\n", g_fail);

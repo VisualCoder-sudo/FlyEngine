@@ -252,6 +252,7 @@ private:
     int reflTexLoc = -1;
     int reflParamsLoc = -1;
     int chunkFadeLoc = -1;
+    int sceneALoc = -1, sceneBLoc = -1, sceneCLoc = -1;   // the scene's lighting (sun direction + ambient, sun colour + fog density, sky colour)
     int objectCountLoc = -1;
     int objectPositionsLoc = -1;
     int farRimLoc = -1;

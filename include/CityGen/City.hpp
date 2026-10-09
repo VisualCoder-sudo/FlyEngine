@@ -489,6 +489,7 @@ public:
     bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker = false) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
     std::string DebugBuses() const;
     std::string DebugPeds(int count) const;
+    bool FindWalkingPed(int index, Vector3& pos, float& yaw) const;   // the n-th pedestrian that is on the street (tests / screenshots)
     bool FindQueuedPed(int index, Vector3& pos, float& yaw) const;   // the n-th pedestrian queued at a bus stop (tests / screenshots)   // the first few pedestrians: road, position, destination, state   // one line per bus: road, position, speed, target stop, dwell
     bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 

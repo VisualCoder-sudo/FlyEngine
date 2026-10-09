@@ -260,7 +260,12 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   the roads, pads and parks and blends it back into the natural ground (not under bridges).
   *Restore terrain* undoes the last shaping.
 - **Lighting:** besides *Time*, the Explorer's Lighting **+** menu inserts *Sun* (direction,
-  height, intensity, colour), *Ambient*, *Sky* and *Fog*; the terrain follows them too.
+  height, intensity, colour), *Ambient*, *Sky*, *Fog* and *Weather*. The terrain and the water
+  follow them too. The sun follows the time of day (rises at 6:00, peaks at the Sun item's
+  height at noon, sets at 18:00, orange near the horizon, shadows move with it; untick *Follow
+  the time of day* to pin it). *Weather* has cloud cover (dimmer, softer sun, grey sky, haze),
+  rain (falling streaks, wet dark roads with puddles that mirror the sky, pedestrians with
+  umbrellas) and wet ground; *Clear / Overcast / Rain / Storm* are one-click presets.
 - **People:** pedestrians walk to destinations, wait for the walk signal, queue at bus stops,
   ride buses and get off at another stop.
 - **Street furniture:** street lights and trees.
@@ -279,7 +284,9 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
 - **Day and night:** the game time is a scene-wide setting, not a city setting: select
   *Lighting > Time* in the Explorer (optionally with a running day length). The sun and sky
   dim, and windows, lamps, car and bus lights glow at night; lamps and headlights light the
-  road, sidewalk and facades around them. The time is saved with the scene.
+  road, sidewalk and facades around them. Street lamps come on one by one as it gets dark
+  (a few flicker), and the tall downtown buildings get neon shop signs. The time is saved
+  with the scene.
 - **Routed traffic:** cars drive to destinations along the fastest route (downtown attracts
   more trips); *Rush hours* scales the car count with the hour.
 - **Public transit:** bus stops and lines, generated automatically (*Auto-generate transit*) or

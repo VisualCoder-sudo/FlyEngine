@@ -130,3 +130,7 @@ target_link_libraries(lighting_test PRIVATE FlyEngineCore FlyRL)
 # so built but not registered with ctest: build/tests/city_terrain_test
 add_executable(city_terrain_test city_terrain_test.cpp)
 target_link_libraries(city_terrain_test PRIVATE FlyEngineCore FlyRL)
+
+# Sun path, weather, lamps at dusk, water lighting. Opens a window, so it is not registered with ctest: build/tests/weather_test
+add_executable(weather_test weather_test.cpp)
+target_link_libraries(weather_test PRIVATE FlyEngineCore FlyRL)

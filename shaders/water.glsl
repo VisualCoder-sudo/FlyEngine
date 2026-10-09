@@ -208,6 +208,9 @@ layout(binding=1) uniform fs_params {
     vec2 farRimParams;              // x=clip radius (0 disables), y=feather width
     float chunkFade;
     int objectCount;
+    vec4 sceneA;                    // xyz = unit vector towards the sun, w = ambient light (1 = the noon default)
+    vec4 sceneB;                    // xyz = sun colour x intensity x day/night (about 1,1,1 at noon), w = fog density per metre
+    vec4 sceneC;                    // xyz = the sky colour the water reflects (distant water fogs towards it)
 };
 layout(binding=0) uniform texture2D reflectionTex;   // planar mirror of the world
 layout(binding=0) uniform sampler reflectionTex_smp;
@@ -257,10 +260,9 @@ void main() {
 
     vec3 N = normalize(worldNormal);
     vec3 V = normalize(viewDir);
-    vec3 lightDir = normalize(vec3(0.3, 1.0, 0.4));
-    vec3 L = normalize(lightDir);
+    vec3 L = normalize(sceneA.xyz);
     vec3 H = normalize(V + L);
-    vec3 skyColor = vec3(0.65, 0.78, 0.88);
+    vec3 skyColor = sceneC.xyz;
 
     // Capillary micro-detail: perturb the smooth wave normal with high-frequency
     // ripples so the specular highlight breaks into scattered glints instead of
@@ -394,7 +396,7 @@ void main() {
     totalFoam = clamp(totalFoam, 0.0, 1.0);
 
     // Lighting
-    float diffuse = smoothstep(0.0, 0.01, NdotL) * 0.6 + 0.4;
+    vec3 diffuse = vec3(0.4 * sceneA.w) + smoothstep(0.0, 0.01, NdotL) * 0.6 * sceneB.xyz;
     float spec = pow(NdotH, 48.0) * 0.8;
 
     // Fresnel-Schlick: water gets more reflective (and visually more opaque)
@@ -412,7 +414,8 @@ void main() {
 
     vec3 color = mix(baseColor * diffuse, reflTerm, reflMix);
     color += waterBodyFoamColor * totalFoam;
-    color += vec3(1.0) * spec;
+    color += sceneB.xyz * spec;
+    color = mix(color, sceneC.xyz, clamp(1.0 - exp(-sceneB.w * fragDist), 0.0, 1.0));
 
     float edgeAlpha = mix(alpha, 1.0, fresnel * 0.5);
 

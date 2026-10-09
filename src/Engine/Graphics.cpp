@@ -48,18 +48,46 @@ int ReflectionQualityToResolution(int quality) {
 const Vector3 kAmbient = { 0.35f, 0.35f, 0.35f };
 gfx::LightingSettings lightingSettings;
 Color engineClear = { 245, 245, 245, 255 };
-// Unit vector the sunlight travels along, from the lighting settings (the default is the old fixed sun).
-Vector3 SunDir() {
-    const float az = lightingSettings.sunAzimuth * DEG2RAD;
-    const float el = fminf(fmaxf(lightingSettings.sunElevation, 8.0f), 90.0f) * DEG2RAD;
-    return Vector3Normalize({ -cosf(el) * sinf(az), -sinf(el), -cosf(el) * cosf(az) });
-}
+float Smooth01(float a, float b, float x) { const float t = fminf(fmaxf((x - a) / (b - a), 0.0f), 1.0f); return t * t * (3.0f - 2.0f * t); }
 // 1 in daylight, 0 at night, easing through dawn (5:00-7:30) and dusk (16:30-19:00).
 float DayAmount() {
-    auto ss = [](float a, float b, float x) { const float t = fminf(fmaxf((x - a) / (b - a), 0.0f), 1.0f); return t * t * (3.0f - 2.0f * t); };
     const float h = fmodf(fmodf(lightingSettings.timeOfDay, 24.0f) + 24.0f, 24.0f);
-    return ss(5.0f, 7.5f, h) * (1.0f - ss(16.5f, 19.0f, h));
+    return Smooth01(5.0f, 7.5f, h) * (1.0f - Smooth01(16.5f, 19.0f, h));
 }
+// The sun's height above the horizon along its path (degrees): up at 6:00, the Sun item's height at noon, down at 18:00.
+float RawSunElevation() {
+    if (!lightingSettings.sunFollowsTime) return fminf(fmaxf(lightingSettings.sunElevation, 8.0f), 90.0f);
+    const float h = fmodf(fmodf(lightingSettings.timeOfDay, 24.0f) + 24.0f, 24.0f);
+    const float peak = fminf(fmaxf(lightingSettings.sunElevation, 8.0f), 90.0f);
+    return peak * sinf((h - 6.0f) / 12.0f * PI);    // negative at night
+}
+// The compass direction the sun shines from (it moves 15 degrees an hour when it follows the time).
+float SunAzimuthNow() {
+    if (!lightingSettings.sunFollowsTime) return lightingSettings.sunAzimuth;
+    const float h = fmodf(fmodf(lightingSettings.timeOfDay, 24.0f) + 24.0f, 24.0f);
+    return lightingSettings.sunAzimuth + (h - 12.0f) * 15.0f;
+}
+// Unit vector the sunlight travels along. At night the light is moonlight, kept well above the horizon so the
+// dim shadows stay short.
+Vector3 SunDir() {
+    float azd = SunAzimuthNow(), eld = RawSunElevation();
+    if (lightingSettings.sunFollowsTime) {
+        const float night = Smooth01(0.5f, 1.0f, 1.0f - DayAmount());
+        eld = fmaxf(eld, 8.0f) * (1.0f - night) + 38.0f * night;
+        azd = roundf(azd * 2.0f) * 0.5f;                              // half-degree steps: shadows are not redrawn for tiny moves
+        eld = roundf(eld * 2.0f) * 0.5f;
+    }
+    const float az = azd * DEG2RAD;
+    const float el = fminf(fmaxf(eld, 8.0f), 90.0f) * DEG2RAD;
+    return Vector3Normalize({ -cosf(el) * sinf(az), -sinf(el), -cosf(el) * cosf(az) });
+}
+// Cloud cover and rain, 0..1 (rain brings its own cloud).
+float OvercastAmount() {
+    if (!lightingSettings.hasWeather) return 0.0f;
+    return fminf(fmaxf(fmaxf(lightingSettings.overcast, lightingSettings.rain * 0.9f), 0.0f), 1.0f);
+}
+float RainAmount() { return lightingSettings.hasWeather ? fminf(fmaxf(lightingSettings.rain, 0.0f), 1.0f) : 0.0f; }
+float WetAmount() { return lightingSettings.hasWeather ? fminf(fmaxf(fmaxf(lightingSettings.wetGround, lightingSettings.rain), 0.0f), 1.0f) : 0.0f; }
 bool gridVisible = true;
 bool wireframe = false;
 bool inShadowPass = false;
@@ -134,6 +162,7 @@ Model cylinderModel{};
 Model wedgeModel{};
 Model groundModel{};
 Texture2D groundTexture{};
+int roadWeatherLoc = -1, roadCamLoc = -1, cityWeatherLoc = -1;
 int lightDirLoc = -1;
 int ambientLoc = -1;
 int lightVPLoc = -1;
@@ -556,7 +585,7 @@ Mesh GenerateCityLampMesh() {
     ShapeBuilder b;
     b.Box(-0.07f, 0.0f, -0.07f, 0.07f, 5.6f, 0.07f, Color{ 70, 72, 78, 255 });       // pole
     b.Box(-0.07f, 5.5f, -0.07f, 0.07f, 5.64f, 1.1f, Color{ 70, 72, 78, 255 });       // arm toward +z
-    b.Box(-0.22f, 5.38f, 0.8f, 0.22f, 5.52f, 1.4f, Color{ 250, 232, 170, 250 });      // lamp head (alpha 250 = emissive at night)
+    b.Box(-0.22f, 5.38f, 0.8f, 0.22f, 5.52f, 1.4f, Color{ 250, 232, 170, 248 });      // lamp head (alpha 248 = a street lamp: switches on at dusk, see LampOn in lit.glsl)
     b.Box(-0.18f, 0.0f, -0.18f, 0.18f, 0.35f, 0.18f, Color{ 60, 62, 68, 255 });       // base
     return BuildColoredShapeMesh(b.t, b.c, b.in);
 }
@@ -792,6 +821,8 @@ void Init() {
     roadShadowsEnabledLoc = GetShaderLocation(roadShader, "shadowsEnabled");
     roadWaterSurfaceYLoc = GetShaderLocation(roadShader, "waterSurfaceY");
     roadNightLoc = GetShaderLocation(roadShader, "nightAmount");
+    roadWeatherLoc = GetShaderLocation(roadShader, "weather");
+    roadCamLoc = GetShaderLocation(roadShader, "camPos");
     roadLightCountLoc = GetShaderLocation(roadShader, "lightCount");
     roadLightsLoc = GetShaderLocation(roadShader, "nightLights");
     if (roadShadowMapLoc != -1) SetShaderValue(roadShader, roadShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
@@ -810,6 +841,7 @@ void Init() {
         cityNightLoc = GetShaderLocation(cityInstancedShader, "nightAmount");
         cityLightCountLoc = GetShaderLocation(cityInstancedShader, "lightCount");
         cityLightsLoc = GetShaderLocation(cityInstancedShader, "nightLights");
+        cityWeatherLoc = GetShaderLocation(cityInstancedShader, "weather");
         if (cityShadowMapLoc != -1) SetShaderValue(cityInstancedShader, cityShadowMapLoc, &shadowSlot, SHADER_UNIFORM_INT);
     }
 
@@ -1195,21 +1227,39 @@ int GetReflectionTextureSlot() { return REFLECTION_TEXTURE_SLOT; }
 namespace {
 // Sun direction scaled by its intensity (the shaders use its length as the diffuse strength) and the
 // ambient colour, both blended towards moonlight at night.
-Vector3 SunVector() { return Vector3Scale(SunDir(), lightingSettings.sunIntensity * (0.10f + 0.90f * DayAmount())); }
+// Clouds dim and soften the sun (the shadows fade with it) and flatten the light.
+float SunPower() { return lightingSettings.sunIntensity * (0.10f + 0.90f * DayAmount()) * (1.0f - 0.78f * OvercastAmount()); }
+Vector3 SunVector() { return Vector3Scale(SunDir(), SunPower()); }
 Vector3 EffectiveAmbient() {
     const Vector3 nightAmbient = { 0.16f, 0.19f, 0.31f };
-    return Vector3Lerp(nightAmbient, Vector3Scale(kAmbient, lightingSettings.ambient), DayAmount());
+    const Vector3 day = Vector3Scale(kAmbient, lightingSettings.ambient * (1.0f + 0.30f * OvercastAmount()));
+    return Vector3Lerp(nightAmbient, day, DayAmount());
 }
-Vector3 SunTint() { return { lightingSettings.sunColor[0], lightingSettings.sunColor[1], lightingSettings.sunColor[2] }; }
+// The sun is white-yellow high up, orange near the horizon (sunrise and sunset), and whiter under cloud.
+Vector3 SunTint() {
+    Vector3 c = { lightingSettings.sunColor[0], lightingSettings.sunColor[1], lightingSettings.sunColor[2] };
+    if (lightingSettings.sunFollowsTime) {
+        const float warm = (1.0f - Smooth01(4.0f, 36.0f, RawSunElevation())) * (1.0f - OvercastAmount());
+        c = Vector3Lerp(c, Vector3{ c.x * 1.0f, c.y * 0.56f, c.z * 0.26f }, warm);
+    }
+    return c;
+}
 }
 
+float SunElevationNow() { return RawSunElevation(); }
+float WetnessNow() { return WetAmount(); }
+float RainNow() { return RainAmount(); }
+float OvercastNow() { return OvercastAmount(); }
 Vector3 SunDirection() { return SunDir(); }
-Vector3 SunLightScale() { return Vector3Scale(SunTint(), lightingSettings.sunIntensity * (0.10f + 0.90f * DayAmount())); }
+Vector3 SunLightScale() { return Vector3Scale(SunTint(), SunPower()); }
 Vector3 AmbientScale() {
     const Vector3 e = EffectiveAmbient();
     return { e.x / kAmbient.x, e.y / kAmbient.y, e.z / kAmbient.z };
 }
-float FogDensity() { return lightingSettings.hasFog ? lightingSettings.fogDensity : 0.0f; }
+float FogDensity() {
+    // Cloud and rain add a little haze to whatever fog the Fog item sets.
+    return (lightingSettings.hasFog ? lightingSettings.fogDensity : 0.0f) + 0.0014f * OvercastAmount() + 0.0045f * RainAmount();
+}
 void SetEngineClearColor(Color c) { engineClear = c; }
 Color CurrentSky() {
     const Color day = lightingSettings.hasSky
@@ -1231,7 +1281,57 @@ void TickLighting(float dt) {
     if (lightingSettings.dayLengthMinutes > 0.0f)
         lightingSettings.timeOfDay = fmodf(lightingSettings.timeOfDay + dt * 24.0f / (lightingSettings.dayLengthMinutes * 60.0f), 24.0f);
 }
-float GetNightAmount() { return 1.0f - DayAmount(); }
+// 0 = day, 1 = night. A dark storm in the daytime already switches some lights on.
+float GetNightAmount() { return fmaxf(1.0f - DayAmount(), 0.40f * OvercastAmount()); }
+float LampSwitchOn(float x, float z, float night) {
+    auto fract1 = [](float v) { return v - floorf(v); };
+    const float qx = floorf(x * 2.0f + 0.5f), qz = floorf(z * 2.0f + 0.5f);
+    float p0 = fract1(qx * 0.1031f), p1 = fract1(qz * 0.1031f), p2 = p0;
+    const float d = p0 * (p1 + 33.33f) + p1 * (p2 + 33.33f) + p2 * (p0 + 33.33f);
+    p0 += d; p1 += d; p2 += d;
+    const float h = fract1((p0 + p1) * p2);
+    const float thr = 0.20f + (0.62f - 0.20f) * h;
+    float on = Smooth01(thr, thr + 0.12f, night);
+    if (fract1(h * 17.31f + 0.37f) < 0.10f) {
+        const float k = fract1(floorf((float)GetTime() * 8.0f + h * 50.0f) * 0.61803f + h * 3.7f);
+        if (k < 0.3f) on *= 0.2f;
+    }
+    return on;
+}
+
+namespace {
+uint32_t RainHash(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
+    return x;
+}
+}
+
+// Rain: streaks that fall through a box around the camera. Each drop's place is a function of its index and the
+// time only, wrapped around the camera, so the rain stays put in the world while you move through it.
+void DrawWeather(const Camera3D& camera) {
+    const float rain = RainAmount();
+    if (rain < 0.02f || inShadowPass || inReflectionPass) return;
+    const int count = (int)(300.0f + 2300.0f * rain);
+    const float box = 44.0f, top = 14.0f, depth = 30.0f;
+    const float t = (float)GetTime();
+    const float speed = 15.0f + 6.0f * rain;
+    const Color sky = CurrentSky();
+    const Color col = { (unsigned char)(sky.r + (255 - sky.r) * 0.55f), (unsigned char)(sky.g + (255 - sky.g) * 0.55f),
+                        (unsigned char)(sky.b + (255 - sky.b) * 0.55f), (unsigned char)(70.0f + 60.0f * rain) };
+    const Vector3 slant = { 0.10f, -0.9f, 0.04f };
+    for (int i = 0; i < count; i++) {
+        const uint32_t h = RainHash((uint32_t)i * 2654435761U + 17U);
+        const float hx = (float)(h & 0xffff) / 65535.0f * box;
+        const float hz = (float)((h >> 16) & 0xffff) / 65535.0f * box;
+        const float phase = (float)(RainHash(h) & 0xffff) / 65535.0f * depth;
+        float dx = fmodf(hx - camera.position.x, box); if (dx < 0.0f) dx += box;
+        float dz = fmodf(hz - camera.position.z, box); if (dz < 0.0f) dz += box;
+        const float fall = fmodf(t * speed + phase, depth);
+        const Vector3 a = { camera.position.x + dx - box * 0.5f, camera.position.y + top - fall, camera.position.z + dz - box * 0.5f };
+        const Vector3 b = Vector3Add(a, Vector3Scale(slant, 0.9f + 0.5f * rain));
+        DrawLine3D(a, b, col);
+    }
+}
 void SetNightLights(const Vector4* lights, int count) {
     count = Clamp(count, 0, 32);
     nightLightCount = count;
@@ -1239,7 +1339,7 @@ void SetNightLights(const Vector4* lights, int count) {
         nightLightData[i * 4] = lights[i].x; nightLightData[i * 4 + 1] = lights[i].y;
         nightLightData[i * 4 + 2] = lights[i].z; nightLightData[i * 4 + 3] = lights[i].w;
     }
-    const float night = 1.0f - DayAmount();
+    const float night = GetNightAmount();
     const float c = (float)count;
     if (roadShader.id != 0 && roadLightsLoc != -1) {
         SetShaderValue(roadShader, roadNightLoc, &night, SHADER_UNIFORM_FLOAT);
@@ -1253,6 +1353,11 @@ void SetNightLights(const Vector4* lights, int count) {
 }
 
 namespace {
+void UploadWeather(Shader& sh, int weatherLoc) {
+    if (weatherLoc == -1) return;
+    const Vector4 w = { WetAmount(), (float)GetTime(), 0.0f, 0.0f };
+    SetShaderValue(sh, weatherLoc, &w, SHADER_UNIFORM_VEC4);
+}
 void UploadSunAndFog(Shader& sh, int sunLoc, int fogLoc) {
     if (sunLoc != -1) {
         const Vector4 sc = { lightingSettings.sunColor[0], lightingSettings.sunColor[1], lightingSettings.sunColor[2], 1.0f };
@@ -1268,9 +1373,28 @@ void UploadSunAndFog(Shader& sh, int sunLoc, int fogLoc) {
 
 Color SkyColor(Color dayColor) {
     const float d = DayAmount();
+    const float over = OvercastAmount();
+    // Cloud: the daytime colour goes grey and a little darker.
+    const float grey = 0.58f * over;
+    const float lum = (dayColor.r * 0.3f + dayColor.g * 0.59f + dayColor.b * 0.11f) * 0.86f;
+    float r = dayColor.r + (lum - dayColor.r) * grey, g = dayColor.g + (lum - dayColor.g) * grey, b = dayColor.b + (lum - dayColor.b) * grey;
+    const float dim = 1.0f - 0.28f * over;
+    r *= dim; g *= dim; b *= dim;
+    // Sunrise and sunset: the sky glows orange while the sun is near the horizon.
+    if (lightingSettings.sunFollowsTime) {
+        const float e = RawSunElevation();
+        const float tw = Smooth01(-10.0f, 0.0f, e) * (1.0f - Smooth01(2.0f, 34.0f, e)) * (1.0f - 0.7f * over);
+        r += (238.0f - r) * 0.6f * tw; g += (132.0f - g) * 0.6f * tw; b += (86.0f - b) * 0.6f * tw;
+    }
     const Color night = { 10, 14, 28, 255 };
-    auto mix = [&](unsigned char n, unsigned char dd) { return (unsigned char)lroundf((float)n + ((float)dd - (float)n) * d); };
-    return Color{ mix(night.r, dayColor.r), mix(night.g, dayColor.g), mix(night.b, dayColor.b), dayColor.a };
+    auto mix = [&](unsigned char n, float dd) { return (unsigned char)lroundf(fminf(fmaxf((float)n + (dd - (float)n) * d, 0.0f), 255.0f)); };
+    return Color{ mix(night.r, r), mix(night.g, g), mix(night.b, b), dayColor.a };
+}
+Vector3 WaterSky() {
+    Vector3 base = { 0.65f, 0.78f, 0.88f };
+    if (lightingSettings.hasSky) base = Vector3Lerp(base, Vector3{ lightingSettings.skyColor[0], lightingSettings.skyColor[1], lightingSettings.skyColor[2] }, 0.6f);
+    const Color c = SkyColor(Color{ (unsigned char)lroundf(base.x * 255.0f), (unsigned char)lroundf(base.y * 255.0f), (unsigned char)lroundf(base.z * 255.0f), 255 });
+    return { c.r / 255.0f, c.g / 255.0f, c.b / 255.0f };
 }
 
 void UpdateLighting(const Camera3D& camera) {
@@ -1296,6 +1420,8 @@ void UpdateLighting(const Camera3D& camera) {
         SetShaderValue(roadShader, roadLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
         SetShaderValue(roadShader, roadAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
         UploadSunAndFog(roadShader, roadSunLoc, roadFogLoc);
+        UploadWeather(roadShader, roadWeatherLoc);
+        if (roadCamLoc != -1) { const Vector4 cp = { camera.position.x, camera.position.y, camera.position.z, 1.0f }; SetShaderValue(roadShader, roadCamLoc, &cp, SHADER_UNIFORM_VEC4); }
         SetShaderValueMatrix(roadShader, roadLightVPLoc, lightViewProj);
         SetShaderValue(roadShader, roadShadowsEnabledLoc, &enabled, SHADER_UNIFORM_FLOAT);
     }
@@ -1313,6 +1439,7 @@ void SetupInstancedLighting() {
     SetShaderValue(cityInstancedShader, cityLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
     SetShaderValue(cityInstancedShader, cityAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
     UploadSunAndFog(cityInstancedShader, citySunLoc, cityFogLoc);
+    UploadWeather(cityInstancedShader, cityWeatherLoc);
     if (cityNightLoc != -1) {
         const float night = GetNightAmount();
         SetShaderValue(cityInstancedShader, cityNightLoc, &night, SHADER_UNIFORM_FLOAT);

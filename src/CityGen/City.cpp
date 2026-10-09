@@ -4170,7 +4170,9 @@ void City::Draw() {
                 for (const Matrix& m : t->inst[kPropLamp]) {
                     const Vector3 head = Vector3Transform(Vector3{ 0.0f, 5.35f, 0.95f }, m);
                     const float d = Vector3Distance(head, trafficFocus);
-                    if (d < 120.0f) lamps.push_back({ d, Vector4{ head.x, head.y, head.z, 15.0f } });
+                    // Lamps come on one by one as it gets dark (and a few flicker): an unlit lamp throws no light pool.
+                    const float on = d < 120.0f ? gfx::LampSwitchOn(m.m12, m.m14, gfx::GetNightAmount()) : 0.0f;
+                    if (on > 0.02f) lamps.push_back({ d, Vector4{ head.x, head.y, head.z, 15.0f * on } });
                 }
             const size_t nl = std::min<size_t>(lamps.size(), 24);
             std::partial_sort(lamps.begin(), lamps.begin() + (long)nl, lamps.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
@@ -4226,7 +4228,8 @@ void City::Draw() {
     }
 
     if (!agents.empty()) {
-        std::vector<Matrix> carM, boxM, pedM, blinkM, glassM, wheelM, busM, busGlassM;
+        std::vector<Matrix> carM, boxM, pedM, blinkM, glassM, wheelM, busM, busGlassM, brollyM;
+        const bool rainy = gfx::RainNow() > 0.12f || gfx::WetnessNow() > 0.5f;
         for (const Agent& a : agents) {
             if (!a.placed) continue;
             const Color shown = (a.car && a.bus < 0) ? PickCarColor(a) : a.color;
@@ -4250,6 +4253,22 @@ void City::Draw() {
                 continue;
             }
             (a.car ? (a.far ? boxM : carM) : pedM).push_back(m);
+            // Umbrellas in the rain: most pedestrians hold one (a square canopy and a turned copy make an octagon).
+            if (!a.car && rainy && (a.color.r * 31u + a.color.g * 17u + a.color.b * 7u) % 10u < 7u) {
+                static const Color kBrolly[6] = { { 200, 40, 50, 255 }, { 40, 70, 160, 255 }, { 30, 30, 36, 255 }, { 230, 190, 40, 255 }, { 40, 140, 90, 255 }, { 150, 60, 150, 255 } };
+                const Color uc = kBrolly[(a.color.r * 13u + a.color.b * 5u + a.color.g) % 6u];
+                const float s = a.scale;
+                const float ucr = -(uc.r / 255.0f), ucg = -(uc.g / 255.0f), ucb = -(uc.b / 255.0f);
+                const float cy = a.pos.y + 2.02f * s;
+                for (float turn : { 0.0f, 0.785398f }) {
+                    Matrix cm = MatrixMultiply(MatrixScale(1.1f * s, 0.07f, 1.1f * s), MatrixMultiply(MatrixRotateY(a.yaw + turn), MatrixTranslate(a.pos.x, cy, a.pos.z)));
+                    cm.m3 = ucr; cm.m7 = ucg; cm.m11 = ucb;
+                    brollyM.push_back(cm);
+                }
+                Matrix pm = MatrixMultiply(MatrixScale(0.03f, 0.5f * s, 0.03f), MatrixTranslate(a.pos.x, a.pos.y + 1.78f * s, a.pos.z));
+                pm.m3 = -0.15f; pm.m7 = -0.15f; pm.m11 = -0.15f;
+                brollyM.push_back(pm);
+            }
             if (a.car && !a.far) {
                 Matrix gm = m; gm.m3 = -1.0f; gm.m7 = -1.0f; gm.m11 = -1.0f;
                 glassM.push_back(gm);
@@ -4278,6 +4297,7 @@ void City::Draw() {
         if (!boxM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kBuildingBox), boxM, 0, (int)boxM.size(), WHITE);
         if (!blinkM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kBuildingBox), blinkM, 0, (int)blinkM.size(), WHITE);
         if (!pedM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kPropPerson), pedM, 0, (int)pedM.size(), WHITE);
+        if (!brollyM.empty()) gfx::DrawCityInstances(gfx::GetCityShapeMesh(kBuildingBox), brollyM, 0, (int)brollyM.size(), WHITE);
     }
 
     if (gfx::InstanceBuffersActive()) {
@@ -4511,6 +4531,14 @@ bool City::FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinke
 bool City::FindBus(int index, Vector3& pos, float& yaw) const {
     for (const Agent& a : agents) {
         if (a.bus < 0 || !a.placed) continue;
+        if (index-- == 0) { pos = a.pos; yaw = a.yaw; return true; }
+    }
+    return false;
+}
+
+bool City::FindWalkingPed(int index, Vector3& pos, float& yaw) const {
+    for (const Agent& a : agents) {
+        if (a.car || !a.placed) continue;
         if (index-- == 0) { pos = a.pos; yaw = a.yaw; return true; }
     }
     return false;
