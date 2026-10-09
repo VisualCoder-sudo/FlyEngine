@@ -214,6 +214,13 @@ void Engine::Draw() {
     // 2. 2D Pass
     if (!isPlayerBuild) ui::Draw();
 
+    // Slow background loads (a big city building) show "<name> attempting to load [n%]".
+    {
+        Rectangle area = { 0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight() };
+        if (!isPlayerBuild) { const Rectangle mid = ui::GetConsoleBarArea(); area = { mid.x, 126.0f, mid.width, (float)GetScreenHeight() - 126.0f }; }
+        gfx::DrawLoadingStatus(area);
+    }
+
     // ImGui pass (draws after every raylib overlay so it stays on top)
     if (!isPlayerBuild) ui::DrawImGuiFrame(camera);
 

@@ -154,3 +154,7 @@ target_link_libraries(city_park_test PRIVATE FlyEngineCore FlyRL)
 # Big-city cost: generation, frame time, draw calls. Opens a window: build/tests/city_lod_test [grid]
 add_executable(city_lod_test city_lod_test.cpp)
 target_link_libraries(city_lod_test PRIVATE FlyEngineCore FlyRL)
+
+# "City attempting to load [n%]" progress message. Opens a window: build/tests/city_loading_test
+add_executable(city_loading_test city_loading_test.cpp)
+target_link_libraries(city_loading_test PRIVATE FlyEngineCore FlyRL)

@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <fstream>
 #include <functional>
 #include <cstdint>
@@ -300,6 +302,12 @@ public:
     // running are coalesced (latest graph wins).
     void RebuildAll();
     bool IsRebuilding() const { return rebuild != nullptr; }
+    // 0..1 while a big rebuild runs (worker compute ~97 %, then the GPU upload); 1 when idle.
+    float RebuildProgress() const;
+    // Seconds the current rebuild has been running (0 when idle).
+    float RebuildSeconds() const;
+    // Seconds a rebuild runs before the "attempting to load" message shows (default 5; tests lower it).
+    void SetLoadingMessageDelay(float seconds) { loadingMessageDelay = seconds; }
 
     const std::vector<RoadNode>& GetNodes() const { return nodes; }
     std::vector<RoadNode>& GetNodes() { return nodes; }
@@ -737,7 +745,10 @@ private:
     // Background rebuild (see RebuildAll).
     struct RebuildJob;
     std::unique_ptr<RebuildJob> rebuild;
+    float loadingMessageDelay = 5.0f;
     uint64_t rebuildRequestId = 0;
+    std::chrono::steady_clock::time_point rebuildStarted{};   // when the running rebuild was first requested (kept while requests coalesce)
+    std::atomic<float>* buildProgress = nullptr;               // set on the worker City: where ComputeAllCPU reports 0..1
     void RequestRebuild();
     void StartRebuildJob();
     void PumpRebuild();      // called from Update(): poll/upload/adopt the job

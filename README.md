@@ -273,6 +273,8 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   buildings) goes from 25.8 ms to 6.3 ms per frame from the air and from 7.8 ms to 2.4 ms at street
   level; a 140 x 140 city (80,000 buildings) runs at about 5 ms. Big cities still build on a
   worker thread (about 1.4 s for 70 x 70, 12 s for 140 x 140) while the old geometry keeps drawing.
+  A build that runs longer than 5 seconds shows "City attempting to load [n%]" with a progress bar
+  in the viewport (also in the player).
 - **Hills:** *Max road grade* (style settings, default 15 %) is the steepest slope a road ramp
   may have at its steepest point. When you raise a node with the *Elevate road* tool (or edit
   its *Height*), the node stays exactly where you put it and its neighbours follow, so the hill

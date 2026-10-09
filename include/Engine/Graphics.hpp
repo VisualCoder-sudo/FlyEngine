@@ -2,6 +2,7 @@
 #include "raylib.h"
 #include "Backend/ScatteredObject.hpp"
 
+#include <string>
 #include <vector>
 
 // Shared rendering resources: one lit/textured shader plus one unit-sized
@@ -139,6 +140,15 @@ void DrawGround(); // shadow-receiving ground plane (replaces DrawGrid)
 // plane moves down out of their way instead of covering them. Each owner reports every frame it draws.
 void SetGroundLimit(const void* owner, float lowestY);
 void ClearGroundLimit(const void* owner);
+
+// A progress message shown on screen while something slow loads in the background (a big city building), e.g.
+// "City attempting to load [14%]" with a thin progress bar. Each owner sets its message every frame it is loading and
+// clears it when done. Engine::Draw draws them in the 2D pass, centred in `area` (the whole window in the player).
+void SetLoadingStatus(const void* owner, const std::string& text, float fraction);
+void ClearLoadingStatus(const void* owner);
+void DrawLoadingStatus(Rectangle area);
+int LoadingStatusCount();                       // how many messages are showing (tests)
+std::string LoadingStatusText(int index);
 
 // Planar water reflections. BeginReflectionPass() mirrors the view camera about a
 // horizontal plane (water height) and returns the mirrored camera. Wrap the opaque

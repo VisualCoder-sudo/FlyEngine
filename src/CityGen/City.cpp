@@ -357,18 +357,26 @@ struct City::RebuildJob {
     std::unique_ptr<City> work;   // private City the worker computes into
     std::future<void> fut;        // declared after `work` so it is joined first on destruction
     uint64_t requestId = 0;
+    std::atomic<float> progress{ 0.0f };   // the worker's ComputeAllCPU fraction, 0..1
     bool computing = true;
     std::vector<int64_t> keys;    // tiles to upload
     size_t next = 0;
 };
 
 City::City() = default;
-City::~City() { gfx::ClearGroundLimit(this); ClearGeometry(); }
+City::~City() { gfx::ClearGroundLimit(this); gfx::ClearLoadingStatus(this); ClearGeometry(); }
 
 namespace { bool g_simActive = false; }   // Play mode (editor Play or the standalone player): traffic runs
 
 void City::Update(float dt) {
     PumpRebuild();
+    // A build that takes more than 5 seconds shows "City attempting to load [14%]" on screen.
+    if (rebuild && RebuildSeconds() > loadingMessageDelay) {
+        const int pct = std::clamp((int)(RebuildProgress() * 100.0f), 0, 99);
+        gfx::SetLoadingStatus(this, name + " attempting to load [" + std::to_string(pct) + "%]", RebuildProgress());
+    } else {
+        gfx::ClearLoadingStatus(this);
+    }
     trafficClock += dt;   // signal clock runs in the editor too (heads animate while editing)
     if (g_simActive && hasGeometry && !rebuild) StepTraffic(std::min(dt, 0.1f));
     else if (!g_simActive && !agents.empty()) agents.clear();
@@ -2002,12 +2010,24 @@ void City::RebuildAll() {
 // Touches nothing but this City's own members, so it can run on a worker
 // thread against a private City holding a copy of the graph.
 void City::ComputeAllCPU() {
+    // Progress (measured on a 100 x 100 city): blocks lay out in ~58 % of the time, tiles in ~41 %, the rest is tiny.
+    const auto report = [&](float f) { if (buildProgress) buildProgress->store(f, std::memory_order_relaxed); };
+    report(0.0f);
     BuildAdjacency();
     ComputeJunctionFlags();
+    report(0.01f);
     ComputeBlocks();
-    LayoutBuildings();
+    report(0.02f);
+    LayoutBuildings();        // reports 0.02 .. 0.60 itself
+    report(0.60f);
     AssignTiles();
-    for (auto& kv : tiles) ComputeTileCPU(kv.second);
+    report(0.61f);
+    size_t done = 0;
+    for (auto& kv : tiles) {
+        ComputeTileCPU(kv.second);
+        if ((++done & 15u) == 0u) report(0.61f + 0.39f * (float)done / (float)std::max<size_t>(tiles.size(), 1));
+    }
+    report(1.0f);
 }
 
 void City::UploadAllTiles() {
@@ -2016,7 +2036,19 @@ void City::UploadAllTiles() {
 
 void City::RequestRebuild() {
     rebuildRequestId++;
-    if (!rebuild) StartRebuildJob();
+    if (!rebuild) { rebuildStarted = std::chrono::steady_clock::now(); StartRebuildJob(); }
+}
+
+float City::RebuildProgress() const {
+    if (!rebuild) return 1.0f;
+    const RebuildJob& j = *rebuild;
+    if (j.computing) return 0.97f * j.progress.load(std::memory_order_relaxed);
+    return 0.97f + 0.03f * (j.keys.empty() ? 1.0f : (float)j.next / (float)j.keys.size());
+}
+
+float City::RebuildSeconds() const {
+    if (!rebuild) return 0.0f;
+    return std::chrono::duration<float>(std::chrono::steady_clock::now() - rebuildStarted).count();
 }
 
 void City::StartRebuildJob() {
@@ -2039,6 +2071,7 @@ void City::StartRebuildJob() {
     job->work->collisionEnabled = collisionEnabled;
     job->requestId = rebuildRequestId;
     City* w = job->work.get();
+    w->buildProgress = &job->progress;
     job->fut = std::async(std::launch::async, [w]() { w->ComputeAllCPU(); });
     rebuild = std::move(job);
 }
@@ -2310,7 +2343,12 @@ bool QuadsOverlap(const Vector2* a, const Vector2* b) {
 } // namespace
 
 void City::LayoutBuildings() {
-    for (auto& block : blocks) LayoutBlock(block);
+    size_t done = 0;
+    for (auto& block : blocks) {
+        LayoutBlock(block);
+        if (buildProgress && (++done & 31u) == 0u)
+            buildProgress->store(0.02f + 0.58f * (float)done / (float)std::max<size_t>(blocks.size(), 1), std::memory_order_relaxed);
+    }
 }
 
 // Lays out one block (park or parcelled buildings). A pure function of the

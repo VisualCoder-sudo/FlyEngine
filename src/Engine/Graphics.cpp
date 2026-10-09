@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <unordered_map>
 #include <string>
 
@@ -1562,6 +1563,36 @@ std::unordered_map<const void*, float> groundLimits;
 }
 void SetGroundLimit(const void* owner, float lowestY) { groundLimits[owner] = lowestY; }
 void ClearGroundLimit(const void* owner) { groundLimits.erase(owner); }
+
+namespace {
+struct LoadingStatus { std::string text; float fraction = 0.0f; };
+std::map<const void*, LoadingStatus> loadingStatuses;
+}
+void SetLoadingStatus(const void* owner, const std::string& text, float fraction) { loadingStatuses[owner] = { text, fraction }; }
+void ClearLoadingStatus(const void* owner) { loadingStatuses.erase(owner); }
+int LoadingStatusCount() { return (int)loadingStatuses.size(); }
+std::string LoadingStatusText(int index) {
+    int i = 0;
+    for (const auto& kv : loadingStatuses) if (i++ == index) return kv.second.text;
+    return "";
+}
+void DrawLoadingStatus(Rectangle area) {
+    if (loadingStatuses.empty()) return;
+    const int fontSize = 26, pad = 14, barH = 6;
+    float y = area.y + 16.0f;
+    for (const auto& kv : loadingStatuses) {
+        const int tw = MeasureText(kv.second.text.c_str(), fontSize);
+        const float bw = (float)tw + pad * 2.0f, bh = (float)(fontSize + pad * 2 + barH + 4);
+        const float x = area.x + (area.width - bw) * 0.5f;
+        DrawRectangleRounded({ x, y, bw, bh }, 0.18f, 8, Color{ 18, 20, 26, 225 });
+        DrawRectangleRoundedLines({ x, y, bw, bh }, 0.18f, 8, Color{ 0, 190, 200, 255 });
+        DrawText(kv.second.text.c_str(), (int)x + pad, (int)y + pad, fontSize, Color{ 235, 240, 245, 255 });
+        const float bx = x + pad, by = y + pad + fontSize + 6.0f, full = (float)tw;
+        DrawRectangle((int)bx, (int)by, (int)full, barH, Color{ 50, 56, 66, 255 });
+        DrawRectangle((int)bx, (int)by, (int)(full * Clamp(kv.second.fraction, 0.0f, 1.0f)), barH, Color{ 0, 190, 200, 255 });
+        y += bh + 8.0f;
+    }
+}
 
 void DrawGround() {
     if (!gridVisible) return;
