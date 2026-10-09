@@ -635,7 +635,7 @@ void DrawCityEditorPanel() {
             ImGui::DragInt("Stops per line", &s.transitAutoStops, 0.2f, 2, 24);
             if (ImGui::Button("Auto-generate transit")) { NotifyCityEdit(); city->AutoTransit(s.transitAutoLines, s.transitAutoStops); s.transitLine = lines.empty() ? -1 : 0; s.transitStop = -1; }
             ImGui::SameLine();
-            if (ImGui::Button("Clear all")) { NotifyCityEdit(); city->ClearTransit(); s.transitLine = s.transitStop = -1; }
+            if (ImGui::Button("Clear all##transit")) { NotifyCityEdit(); city->ClearTransit(); s.transitLine = s.transitStop = -1; }
             ImGui::Text("%zu stops, %zu lines", stops.size(), lines.size());
             {
                 const auto& ts = city->GetTrafficStats();
@@ -701,7 +701,7 @@ void DrawCityEditorPanel() {
             ImGui::DragFloat("Auto downtown height x", &s.districtAutoPeak, 0.05f, 0.3f, 10.0f);
             if (ImGui::Button("Auto: downtown in the middle")) { NotifyCityEdit(); city->AutoDistricts(s.districtAutoPeak); s.districtSel = 0; }
             ImGui::SameLine();
-            if (ImGui::Button("Clear all")) {
+            if (ImGui::Button("Clear all##districts")) {
                 NotifyCityEdit();
                 for (int i = (int)city->GetDistricts().size() - 1; i >= 0; i--) city->RemoveDistrict(i);
                 s.districtSel = -1;
@@ -722,7 +722,7 @@ void DrawCityEditorPanel() {
                 District d = city->GetDistricts()[(size_t)s.districtSel];
                 bool ch = false;
                 char nm[64]; snprintf(nm, sizeof nm, "%s", d.name.c_str());
-                if (ImGui::InputText("Name", nm, sizeof nm)) { d.name = nm; ch = true; }
+                if (ImGui::InputText("Name##district", nm, sizeof nm)) { d.name = nm; ch = true; }
                 ch |= ImGui::Combo("Kind", &d.kind, kKinds, 3);
                 ch |= ImGui::DragFloat("Radius", &d.radius, 1.0f, 10.0f, 2000.0f, "%.0f m");
                 ch |= ImGui::DragFloat("Height at centre x", &d.peak, 0.02f, 0.15f, 10.0f);
@@ -974,9 +974,9 @@ void DrawCityEditorPanel() {
                 ed = true;
             }
             float lw = pr.width;
-            if (ImGui::DragFloat("Lane width", &lw, 0.05f, 0.0f, 12.0f, lw > 0.0f ? "%.2f m" : "global")) { pr.width = lw; ed = true; }
+            if (ImGui::DragFloat("Lane width##road", &lw, 0.05f, 0.0f, 12.0f, lw > 0.0f ? "%.2f m" : "global")) { pr.width = lw; ed = true; }
             float sw = pr.sidewalk;
-            if (ImGui::DragFloat("Sidewalk", &sw, 0.05f, -1.0f, 12.0f, sw >= 0.0f ? "%.2f m" : "global")) { pr.sidewalk = sw; ed = true; }
+            if (ImGui::DragFloat("Sidewalk##road", &sw, 0.05f, -1.0f, 12.0f, sw >= 0.0f ? "%.2f m" : "global")) { pr.sidewalk = sw; ed = true; }
             ed |= ImGui::DragFloat("Curb height", &pr.curbH, 0.01f, 0.0f, 1.0f, "%.2f m");
             ed |= ImGui::Checkbox("Lane markings", &pr.markings);
             ed |= ImGui::DragFloat("Banking", &pr.bank, 0.1f, -20.0f, 20.0f, "%.1f deg");
@@ -1059,11 +1059,11 @@ void DrawCityEditorPanel() {
             edited |= ImGui::DragFloat2("Position", &pb.center.x, 0.1f);
             float deg = pb.angleY * RAD2DEG;
             if (ImGui::DragFloat("Rotation", &deg, 0.5f, -360.0f, 360.0f)) { pb.angleY = deg * DEG2RAD; edited = true; }
-            edited |= ImGui::DragFloat("Width", &pb.sizeX, 0.1f, 2.0f, 60.0f);
-            edited |= ImGui::DragFloat("Depth", &pb.sizeZ, 0.1f, 2.0f, 60.0f);
+            edited |= ImGui::DragFloat("Width##sel", &pb.sizeX, 0.1f, 2.0f, 60.0f);
+            edited |= ImGui::DragFloat("Depth##sel", &pb.sizeZ, 0.1f, 2.0f, 60.0f);
             {
                 int fl = std::max(1, (int)lroundf(pb.height / kFloorHeight));
-                if (ImGui::DragInt("Floors", &fl, 0.2f, 1, 120)) { pb.height = (float)fl * kFloorHeight; edited = true; }
+                if (ImGui::DragInt("Floors##sel", &fl, 0.2f, 1, 120)) { pb.height = (float)fl * kFloorHeight; edited = true; }
             }
             if (ImGui::Checkbox("NoCollision", &pb.free)) edited = true;
             {
@@ -1071,7 +1071,7 @@ void DrawCityEditorPanel() {
                 static const int kShapeId[] = { 0, 3, 10, 4 };
                 int si = 0;
                 for (int k = 0; k < 4; k++) if (kShapeId[k] == pb.shape) si = k;
-                if (ImGui::Combo("Shape", &si, kShapes, 4)) { pb.shape = kShapeId[si]; edited = true; }
+                if (ImGui::Combo("Shape##sel", &si, kShapes, 4)) { pb.shape = kShapeId[si]; edited = true; }
             }
             if (edited && (pb.free || city->CanPlaceBuilding(pb, b.placedIndex))) {
                 if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
@@ -1088,7 +1088,7 @@ void DrawCityEditorPanel() {
             const bool hasOverride = city->HasBuildingOverride(s.selectedBlockId, s.selectedBuildingSlot);
             int floorsUi = b.floors;
             float height = (float)floorsUi * kFloorHeight;
-            if (ImGui::DragInt("Floors", &floorsUi, 0.2f, 1, 120)) {
+            if (ImGui::DragInt("Floors##ovr", &floorsUi, 0.2f, 1, 120)) {
                 height = (float)floorsUi * kFloorHeight;
                 NotifyCityEdit();
                 city->SetBuildingHeightOverride(s.selectedBlockId, s.selectedBuildingSlot, height);
@@ -1106,7 +1106,7 @@ void DrawCityEditorPanel() {
                                                 Vector2Add(existing, delta));
             }
             ImGui::TextDisabled(hasOverride ? "Custom height/position" : "Using the procedural default");
-            if (hasOverride && ImGui::Button("Reset to default")) {
+            if (hasOverride && ImGui::Button("Reset to default##bld")) {
                 NotifyCityEdit();
                 city->ClearBuildingOverride(s.selectedBlockId, s.selectedBuildingSlot);
             }
