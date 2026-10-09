@@ -153,8 +153,19 @@ struct MeshBuilder {
             const Vector3 b = { verts[i1 * 3], verts[i1 * 3 + 1], verts[i1 * 3 + 2] };
             const Vector3 c = { verts[i2 * 3], verts[i2 * 3 + 1], verts[i2 * 3 + 2] };
             Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+            const float nl = Vector3Length(n);
+            if (nl < 1e-12f) continue;
             if (n.y < 0.0f) n = Vector3Negate(n);
-            for (size_t i : { i0, i1, i2 }) acc[i] = Vector3Add(acc[i], n);
+            n = Vector3Scale(n, 1.0f / nl);
+            // Weight by the angle at each corner, not by triangle area: area weights let the long thin triangles of
+            // a fan-split sloped pad dominate, which showed as radial shading wedges that depended on the split.
+            const Vector3 P[3] = { a, b, c };
+            const size_t I[3] = { i0, i1, i2 };
+            for (int k = 0; k < 3; k++) {
+                const Vector3 e1 = Vector3Normalize(Vector3Subtract(P[(k + 1) % 3], P[k])), e2 = Vector3Normalize(Vector3Subtract(P[(k + 2) % 3], P[k]));
+                const float ang = acosf(Clamp(Vector3DotProduct(e1, e2), -1.0f, 1.0f));
+                acc[I[k]] = Vector3Add(acc[I[k]], Vector3Scale(n, ang));
+            }
         }
         for (size_t i = 0; i < vc; i++) {
             if (fixedNormal[i]) continue;
@@ -3318,9 +3329,13 @@ void City::ComputeTileCPU(Tile& t) {
         }
     }
 
+    // Vertex ranges of sloped pads/grass: their normals are smoothed toward the pad's average below.
+    std::vector<std::pair<size_t, size_t>> slopedRanges;
+
     // Block pads (concrete) under the buildings.
     for (int bi : t.blocks) {
         const Block& block = blocks[(size_t)bi];
+        const size_t padRangeStart = mb.verts.size() / 3;
         std::vector<Vector2> poly;
         poly.reserve(block.nodes.size());
         for (int idx : block.nodes) poly.push_back(nodes[idx].pos);
@@ -3365,6 +3380,8 @@ void City::ComputeTileCPU(Tile& t) {
             }
         }
 
+        if (!sf.flat) slopedRanges.push_back({ padRangeStart, mb.verts.size() / 3 });
+        const size_t grassStart = mb.verts.size() / 3;
         // Park grass sits above the pad (and below the roads).
         if (block.park && !block.parkPoly.empty()) {
             std::vector<int> ptris;
@@ -3398,6 +3415,7 @@ void City::ComputeTileCPU(Tile& t) {
                 }
                 mb.Triangle(base, base + 2, base + 1);
             }
+            if (!sf.flat) slopedRanges.push_back({ grassStart, mb.verts.size() / 3 });
         }
     }
 
@@ -3452,6 +3470,21 @@ void City::ComputeTileCPU(Tile& t) {
 
     if (mb.verts.empty()) return;
     mb.RecomputeNormals();
+    // A sloped pad is warped (its edge heights follow the roads' eased profiles) and split into fans, so per-vertex
+    // normals differ a lot between neighbouring vertices and show as radial shading wedges. Pull them toward the
+    // average normal of the whole pad (the grass, flat-shaded per triangle, gets the same treatment).
+    for (const auto& r : slopedRanges) {
+        if (r.second <= r.first) continue;
+        Vector3 avg = { 0.0f, 0.0f, 0.0f };
+        for (size_t i = r.first; i < r.second; i++) avg = Vector3Add(avg, { mb.normals[i * 3], mb.normals[i * 3 + 1], mb.normals[i * 3 + 2] });
+        if (Vector3Length(avg) < 1e-6f) continue;
+        avg = Vector3Normalize(avg);
+        for (size_t i = r.first; i < r.second; i++) {
+            if (mb.fixedNormal[i]) continue;
+            const Vector3 n = Vector3Normalize(Vector3Add(Vector3Scale({ mb.normals[i * 3], mb.normals[i * 3 + 1], mb.normals[i * 3 + 2] }, 0.3f), Vector3Scale(avg, 0.7f)));
+            mb.normals[i * 3] = n.x; mb.normals[i * 3 + 1] = n.y; mb.normals[i * 3 + 2] = n.z;
+        }
+    }
 
     // Collision surface: every road/pad/park triangle, wound so its normal faces up.
     if (collisionEnabled) {

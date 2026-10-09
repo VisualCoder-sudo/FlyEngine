@@ -44,15 +44,13 @@ int main() {
         c.GetParams().organicStrength = cs.strength;
         c.GetParams().cars = 0;
         c.GenerateGrid({ 0.0f, 0.0f });
-        // Sloped roads that cross the blocks at angles other than 90 degrees: a diagonal ramp and a shallower one.
-        auto line = [&](Vector2 p0, Vector2 p1, float h0, float h1) {
-            std::vector<Vector2> pts;
-            for (int k = 0; k <= 16; k++) pts.push_back({ p0.x + (p1.x - p0.x) * (float)k / 16.0f, p0.y + (p1.y - p0.y) * (float)k / 16.0f });
-            c.AddRoadPath(pts, h0, h1);
-        };
-        line({ -95.0f, -95.0f }, { 95.0f, 95.0f }, 0.0f, 9.0f);
-        line({ -100.0f, 40.0f }, { 100.0f, -10.0f }, 6.0f, 0.0f);
-        Shot(engine, { 0.0f, 260.0f, 0.1f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_top.png", cs.name));
+        // A hill (every node within 100 m of the centre rises up to 14 m): sloped roads and sloped blocks.
+        const int nn = (int)c.GetNodes().size();
+        for (int i = 0; i < nn; i++) {
+            const float d = Vector2Length(c.GetNodes()[(size_t)i].pos);
+            if (d < 100.0f) c.SetNodeHeight(i, 14.0f * (1.0f - d / 100.0f));
+        }
+        Shot(engine, { 0.0f, 150.0f, 0.1f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_top.png", cs.name));
         Shot(engine, { 0.0f, 150.0f, 170.0f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_oblique.png", cs.name));
         std::printf("%s: %zu nodes, %zu blocks\n", cs.name, c.GetNodes().size(), c.GetBlocks().size());
         engine.RemoveEntity(raw);
