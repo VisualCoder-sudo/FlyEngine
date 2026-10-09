@@ -32,6 +32,7 @@ WaterBody::~WaterBody() {
     s_instances.erase(std::remove(s_instances.begin(), s_instances.end(), this), s_instances.end());
     ReleaseGpuResources();
     if (rippleTex.id != 0) { UnloadTexture(rippleTex); rippleTex = { 0 }; }
+    if (s_instances.empty() && s_spraySprite.id != 0) { UnloadTexture(s_spraySprite); s_spraySprite = { 0 }; }
     // Only unload if we actually loaded custom files (never unload raylib's shared default shader)
     if (customShader && shaderLoaded) UnloadShader(shader);
     shader = { 0 };
@@ -699,6 +700,10 @@ void WaterBody::Draw() {
     }
 
     EndShaderMode();
+
+    // Spray droplets from splashes and bows, drawn over the water.
+    StepSpray(GetFrameTime());
+    DrawSpray(camera);
 }
 
 void WaterBody::DrawOverlay3D() {

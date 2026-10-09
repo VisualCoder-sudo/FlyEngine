@@ -134,6 +134,8 @@ public:
         float splashStrength = 0.07f;// crater depth per m/s of impact speed
         float foamLifetime = 5.0f;   // seconds for a foam trail to fade
         float maxDisplacement = 1.2f;// clamp on ripple height (m)
+        bool  spray = true;          // droplets from splashes and fast bows
+        float sprayAmount = 1.0f;    // droplet count multiplier
     };
     const RippleParams& GetRippleParams() const { return ripple; }
     void SetRippleParams(const RippleParams& p) { ripple = p; }
@@ -233,6 +235,20 @@ private:
     void StampGaussian(float wx, float wz, float radius, float dHeight, float dVel, float dFoam);
     void UploadRippleTexture();
     void BindRippleTexture();
+
+    // Spray droplets (billboards): thrown up by splashes and fast bows,
+    // fall under gravity, and leave a foam dot where they land.
+    struct SprayParticle { Vector3 p; Vector3 v; float age; float life; float size; };
+    static constexpr size_t SPRAY_MAX = 1024;
+    std::vector<SprayParticle> spray;
+    size_t sprayNext = 0;
+    unsigned sprayRng = 0x9E3779B9u;
+    static Texture2D s_spraySprite;
+    float SprayRnd();
+    void EmitSpray(Vector3 pos, Vector3 vel, float size, float life);
+    void EmitSplashSpray(Vector3 pos, float impactSpeed, float radius);
+    void StepSpray(float dt);
+    void DrawSpray(const Camera3D& camera);
     static int64_t ChunkKey(int gx, int gz);
 
     // Core data

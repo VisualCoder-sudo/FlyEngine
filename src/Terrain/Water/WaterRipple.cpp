@@ -17,6 +17,8 @@
 #include <cmath>
 #include <cstring>
 
+Texture2D WaterBody::s_spraySprite = { 0 };
+
 namespace {
 
 constexpr float kStepDt = 1.0f / 60.0f;
@@ -163,6 +165,115 @@ void WaterBody::AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
         StampGaussian(p.x - dir.x * r * 0.9f, p.y - dir.y * r * 0.9f, r * 0.9f,
                       0.0f, 0.0f, foamAmt * share * 0.8f);
     }
+
+    // Bow spray: fast hulls throw droplets forward and out to the sides.
+    if (ripple.spray && speedH > 3.5f) {
+        const float expected = (speedH - 3.5f) * 0.35f * submergedFraction * ripple.sprayAmount * stepScale * std::min(r, 2.0f);
+        int n = (int)expected;
+        if (SprayRnd() < expected - (float)n) ++n;
+        const Vector2 side = { -dir.y, dir.x };
+        for (int i = 0; i < n; ++i) {
+            const float sx = (SprayRnd() * 2.0f - 1.0f);
+            const float bx = cur.x + dir.x * r * 1.1f + side.x * sx * r * 0.5f;
+            const float bz = cur.y + dir.y * r * 1.1f + side.y * sx * r * 0.5f;
+            const float by = GetHeightAt(bx, bz, 0.0f);
+            const float fwd = speedH * (0.15f + 0.25f * SprayRnd());
+            const float out = sx * (1.0f + 2.0f * SprayRnd());
+            EmitSpray({ bx, by + 0.05f, bz },
+                      { dir.x * fwd + side.x * out, 1.5f + 2.5f * SprayRnd(), dir.y * fwd + side.y * out },
+                      (0.07f + 0.09f * SprayRnd()) * std::clamp(r, 0.5f, 1.5f), 0.7f + 0.6f * SprayRnd());
+        }
+    }
+}
+
+float WaterBody::SprayRnd() {
+    sprayRng ^= sprayRng << 13; sprayRng ^= sprayRng >> 17; sprayRng ^= sprayRng << 5;
+    return (float)(sprayRng & 0xFFFFFFu) / 16777216.0f;
+}
+
+void WaterBody::EmitSpray(Vector3 pos, Vector3 vel, float size, float life) {
+    SprayParticle sp = { pos, vel, 0.0f, life, size };
+    if (spray.size() < SPRAY_MAX) spray.push_back(sp);
+    else spray[sprayNext++ % SPRAY_MAX] = sp; // overwrite the oldest-ish
+}
+
+// A crown of droplets thrown up and out from the impact ring.
+void WaterBody::EmitSplashSpray(Vector3 pos, float impactSpeed, float radius) {
+    if (!ripple.spray) return;
+    const int n = std::clamp((int)(impactSpeed * (4.0f + radius * 10.0f) * ripple.sprayAmount), 6, 220);
+    const float sizeScale = 0.6f + 0.35f * std::min(radius, 3.0f);
+    for (int i = 0; i < n; ++i) {
+        const float a = SprayRnd() * 6.2831853f;
+        const float ring = radius * (0.6f + 0.6f * SprayRnd());
+        const float outV = impactSpeed * (0.12f + 0.30f * SprayRnd()) * (0.6f + 0.25f * std::min(radius, 3.0f));
+        const float upV  = impactSpeed * (0.18f + 0.35f * SprayRnd());
+        EmitSpray({ pos.x + std::cos(a) * ring, pos.y + 0.05f, pos.z + std::sin(a) * ring },
+                  { std::cos(a) * outV, std::min(upV, 9.0f), std::sin(a) * outV },
+                  (0.08f + 0.14f * SprayRnd()) * sizeScale, 0.8f + 0.9f * SprayRnd());
+    }
+}
+
+void WaterBody::StepSpray(float dtReal) {
+    if (spray.empty()) return;
+    const float dt = std::min(dtReal, 0.05f);
+    for (size_t i = 0; i < spray.size();) {
+        SprayParticle& sp = spray[i];
+        sp.age += dt;
+        sp.v.y -= 9.81f * dt;
+        const float drag = std::max(0.0f, 1.0f - 0.6f * dt); // light air drag
+        sp.v.x *= drag; sp.v.z *= drag;
+        sp.p = Vector3Add(sp.p, Vector3Scale(sp.v, dt));
+        const float surf = GetHeightAt(sp.p.x, sp.p.z, 0.0f);
+        bool dead = sp.age >= sp.life;
+        if (!dead && sp.v.y < 0.0f && sp.p.y <= surf) {
+            // Landed: a faint foam dot and the particle is done.
+            if (!rippleH.empty()) StampGaussian(sp.p.x, sp.p.z, 0.3f, 0.0f, 0.0f, 0.06f);
+            dead = true;
+        }
+        if (dead) {
+            spray[i] = spray.back();
+            spray.pop_back();
+            if (sprayNext > 0) --sprayNext;
+        } else {
+            ++i;
+        }
+    }
+}
+
+void WaterBody::DrawSpray(const Camera3D& camera) {
+    if (spray.empty()) return;
+    if (s_spraySprite.id == 0) {
+        // 32x32 soft white disc: alpha falls off smoothly from the centre.
+        const int N = 32;
+        std::vector<unsigned char> px((size_t)N * N * 4);
+        for (int y = 0; y < N; ++y) {
+            for (int x = 0; x < N; ++x) {
+                const float dx = (x + 0.5f) / N * 2.0f - 1.0f, dy = (y + 0.5f) / N * 2.0f - 1.0f;
+                float t = 1.0f - std::sqrt(dx * dx + dy * dy);
+                t = std::clamp(t, 0.0f, 1.0f);
+                t = t * t * (3.0f - 2.0f * t);
+                unsigned char* o = &px[((size_t)y * N + x) * 4];
+                o[0] = o[1] = o[2] = 255;
+                o[3] = (unsigned char)(t * 255.0f);
+            }
+        }
+        Image img = {};
+        img.data = px.data(); img.width = N; img.height = N; img.mipmaps = 1;
+        img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        s_spraySprite = LoadTextureFromImage(img);
+        if (s_spraySprite.id != 0) {
+            SetTextureFilter(s_spraySprite, TEXTURE_FILTER_BILINEAR);
+            SetTextureWrap(s_spraySprite, TEXTURE_WRAP_CLAMP);
+        }
+        if (s_spraySprite.id == 0) return;
+    }
+    for (const SprayParticle& sp : spray) {
+        const float t = sp.age / sp.life;
+        const float a = (t < 0.15f ? t / 0.15f : 1.0f - (t - 0.15f) / 0.85f) * 0.85f;
+        const float sz = sp.size * (1.0f - 0.35f * t);
+        DrawBillboard(camera, s_spraySprite, sp.p, sz * 2.0f,
+                      Color{ 245, 250, 255, (unsigned char)(std::clamp(a, 0.0f, 1.0f) * 255.0f) });
+    }
 }
 
 void WaterBody::AddSplash(Vector3 worldPos, float impactSpeed, float radius) {
@@ -174,6 +285,7 @@ void WaterBody::AddSplash(Vector3 worldPos, float impactSpeed, float radius) {
     StampGaussian(worldPos.x, worldPos.z, r * 1.2f, -depth, 0.0f, 0.0f);
     // Foam burst, wider than the crater.
     StampGaussian(worldPos.x, worldPos.z, r * 1.8f, 0.0f, 0.0f, std::clamp(impactSpeed / 5.0f, 0.3f, 0.7f));
+    EmitSplashSpray(worldPos, impactSpeed, r);
 }
 
 float WaterBody::GetRippleHeightAt(float x, float z) const {
