@@ -142,8 +142,11 @@ public:
 
     // Call every physics step for a body touching the water. `id` identifies
     // the body so its path can be interpolated (no gaps at high speed).
+    // halfExtents (x = along `yaw`, y = across) lets foam hug the hull outline
+    // instead of piling up at the centre; zero falls back to a centre blob.
     void AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
-                     float radius, float submergedFraction, float dt);
+                     float radius, float submergedFraction, float dt,
+                     Vector2 halfExtents = { 0.0f, 0.0f }, float yaw = 0.0f);
     // A body hitting the surface: crater + rebound ring + foam burst.
     void AddSplash(Vector3 worldPos, float impactSpeed, float radius);
     // Ripple layer height only (no noise waves).
@@ -307,6 +310,7 @@ private:
     int chunkFadeLoc = -1;
     int objectCountLoc = -1;
     int objectPositionsLoc = -1;
+    int objectShapesLoc = -1;
     int farRimLoc = -1;
     int rippleParamsLoc = -1;
     int rippleTexLoc = -1;    // fragment-stage sampler (rippleTexFS)

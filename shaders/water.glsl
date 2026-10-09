@@ -261,6 +261,7 @@ layout(binding=1) uniform fs_params {
     vec4 rippleParams;              // xy=window origin (world XZ), z=1/window size, w=enabled
     mat4 reflViewProj;              // view-projection of the reflected camera
     vec4 objectPositions[16];
+    vec4 objectShapes[16];          // x=half X, y=half Z, z=yaw, w=speed factor
     vec3 waterBodyFoamColor;
     float globalTime;
     vec2 farRimParams;              // x=clip radius (0 disables), y=feather width
@@ -424,12 +425,18 @@ void main() {
 
         // Circular distance from the object's footprint edge (not a box
         // metric), for a natural wake instead of a diamond-shaped blob.
-        float distFromCenter = length(worldPos.xz - objPos.xz);
-        float distFromEdge = distFromCenter - objRadius;
+        // Signed distance to the object's oriented footprint (rounded box), so
+        // foam hugs the hull outline instead of ringing a circle at the centre.
+        vec4 shp = objectShapes[i];
+        vec2 dxz = worldPos.xz - objPos.xz;
+        float cy = cos(shp.z), sy = sin(shp.z);
+        vec2 lp = vec2(dot(dxz, vec2(cy, sy)), dot(dxz, vec2(-sy, cy)));
+        vec2 q = abs(lp) - shp.xy;
+        float distFromEdge = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
 
-        // Falloff scales with the object's own size instead of a fixed
-        // magic number, so small props don't get an oversized halo.
-        float wakeWidth = clamp(objRadius * 0.6, 0.5, 2.5);
+        // Falloff scales with the object's own width, so a long thin hull
+        // doesn't get a halo as wide as it is long.
+        float wakeWidth = clamp(sqrt(shp.x * shp.y) * 0.5, 0.4, 1.8);
 
         // Perturb the wake's radius with low-frequency noise so the edge
         // bulges out in some places and pulls in in others, instead of
@@ -446,7 +453,7 @@ void main() {
         // Softer, less contrasty noise breakup for a more subtle wake.
         float n = vnoise(worldPos.xz * 2.5 + time * 0.4) * 0.5 + 0.5;
         n = smoothstep(0.2, 0.9, n);
-        ring *= n * waterBodyFoamParams.x * heightFactor * 0.5;
+        ring *= n * waterBodyFoamParams.x * heightFactor * 0.5 * shp.w;
 
         totalFoam = max(totalFoam, ring);
     }

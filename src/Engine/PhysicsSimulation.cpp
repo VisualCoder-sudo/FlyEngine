@@ -638,7 +638,9 @@ void Simulation::ApplyBuoyancy() {
                 if (!rec.wasSubmerged && vel.y < -0.8f) {
                     water->AddSplash({ pos.x, waterSurface, pos.z }, -vel.y, wakeRadius);
                 }
-                water->AddBodyWake(obj, pos, vel, wakeRadius, submergedFraction, fixedDt);
+                const b3Vec3 hullX = b3Body_GetWorldVector(rec.bodyId, { 1.0f, 0.0f, 0.0f });
+                water->AddBodyWake(obj, pos, vel, wakeRadius, submergedFraction, fixedDt,
+                                   { halfExt.x, halfExt.z }, atan2f(hullX.z, hullX.x));
             }
 
             // Per-point Archimedes buoyancy + linear drag at each point's own velocity
