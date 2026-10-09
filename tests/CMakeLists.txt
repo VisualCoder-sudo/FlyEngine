@@ -150,3 +150,7 @@ target_link_libraries(city_grade_test PRIVATE FlyEngineCore FlyRL)
 # Parks and plazas. Opens a window: build/tests/city_park_test
 add_executable(city_park_test city_park_test.cpp)
 target_link_libraries(city_park_test PRIVATE FlyEngineCore FlyRL)
+
+# Big-city cost: generation, frame time, draw calls. Opens a window: build/tests/city_lod_test [grid]
+add_executable(city_lod_test city_lod_test.cpp)
+target_link_libraries(city_lod_test PRIVATE FlyEngineCore FlyRL)

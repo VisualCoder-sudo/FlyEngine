@@ -91,6 +91,7 @@ struct CityParams {
     float laneWidth = 3.2f;     // width of a single lane (m)
     float sidewalk = 2.0f;      // sidewalk width that roads reserve (m)
     float cornerRadius = 6.0f;  // fillet radius of intersection/bend corners (m); 0 = sharp
+    float lodDistance = 450.0f; // tiles farther than this from the camera draw their buildings as plain boxes in one buffer, without props (a third of it: no props); 0 = off
     float maxGrade = 15.0f;     // steepest road slope (%, at the steepest point of a ramp) the editor allows when you raise a node: its neighbours follow so hills spread out; 0 = off
 
     // Buildings
@@ -636,6 +637,8 @@ private:
     int PedKerbLane(int stopIdx) const;              // which sidewalk (0/1) of the stop's road the shelter is on
     int PickDestination(uint32_t& rng);
     Vector3 trafficFocus{};      // camera position (set while drawing), drives the traffic detail distance
+    Vector3 lodFocus{};             // the main camera position of the last frame (distance LOD of far tiles)
+    bool hasLodFocus = false;
     bool hasTrafficFocus = false;
     unsigned trafficFrame = 0;
     float simTime = 0.0f;       // seconds of Play-mode traffic simulated
@@ -711,6 +714,9 @@ private:
         std::vector<Matrix> inst[kBuildingShapes];  // per-shape instance transforms
         unsigned int instVbo[kBuildingShapes] = {}; // persistent GPU instance buffers
         int instVboCount[kBuildingShapes] = {};
+        std::vector<Matrix> farInst;                // every building as a plain box (what a distant tile draws: one buffer, no props)
+        unsigned int farVbo = 0;
+        int farVboCount = 0;
         Vector3 roadMin{}, roadMax{}, bldgMin{}, bldgMax{};
         bool hasRoad = false, hasBldg = false;
     };

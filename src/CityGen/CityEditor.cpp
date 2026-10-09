@@ -778,6 +778,9 @@ void DrawCityEditorPanel() {
     ImGui::DragFloat("Lane width", &p.laneWidth, 0.1f, 2.0f, 6.0f);
     ImGui::DragFloat("Sidewalk", &p.sidewalk, 0.1f, 0.0f, 5.0f);
     ImGui::DragFloat("Corner radius", &p.cornerRadius, 0.1f, 0.0f, 10.0f);
+    ImGui::DragFloat("Detail distance (0 = off)", &p.lodDistance, 5.0f, 0.0f, 20000.0f, p.lodDistance > 0.0f ? "%.0f m" : "off");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Big cities: city blocks farther than this from the camera draw their buildings as plain boxes in one batch,\nand street furniture (lamps, trees, benches ...) is only drawn within a third of it. Far fewer draw calls.");
     ImGui::DragFloat("Max road grade (0 = off)##hill", &p.maxGrade, 0.2f, 0.0f, 40.0f, p.maxGrade > 0.0f ? "%.0f %%" : "off");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("When you raise or lower a road node (Elevate tool or the node's Height), its neighbours follow\nso no ramp is steeper than this at its steepest point: hills spread out instead of ramping up sharply.\nThe node you edit stays exactly where you put it.");

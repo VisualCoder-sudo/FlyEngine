@@ -266,6 +266,13 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   jittered grid. A plaza is a paved square with a fountain, a ring of benches, lamps and corner
   trees. Pedestrians stroll to parks, walk in to the fountain or a spot on the grass, sit a
   while and walk back (*People* stats count park visits).
+- **Big cities:** *Detail distance* (style settings, default 450 m, 0 = off) is a distance level of detail.
+  City blocks farther than that draw all their buildings as plain boxes in one batch per tile
+  (street furniture is only drawn within a third of it, roads beyond three times it are skipped),
+  and far pedestrians are simulated at a quarter rate and not drawn. A 70 x 70 city (20,000
+  buildings) goes from 25.8 ms to 6.3 ms per frame from the air and from 7.8 ms to 2.4 ms at street
+  level; a 140 x 140 city (80,000 buildings) runs at about 5 ms. Big cities still build on a
+  worker thread (about 1.4 s for 70 x 70, 12 s for 140 x 140) while the old geometry keeps drawing.
 - **Hills:** *Max road grade* (style settings, default 15 %) is the steepest slope a road ramp
   may have at its steepest point. When you raise a node with the *Elevate road* tool (or edit
   its *Height*), the node stays exactly where you put it and its neighbours follow, so the hill

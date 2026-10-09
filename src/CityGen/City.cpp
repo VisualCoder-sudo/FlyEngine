@@ -81,7 +81,7 @@ bool operator==(const CityParams& a, const CityParams& b) {
            a.heightVariance == b.heightVariance &&
            a.buildingSize == b.buildingSize && a.buildingGap == b.buildingGap &&
            a.parkThreshold == b.parkThreshold && a.parkInset == b.parkInset &&
-           a.cornerRadius == b.cornerRadius && a.maxGrade == b.maxGrade &&
+           a.cornerRadius == b.cornerRadius && a.maxGrade == b.maxGrade && a.lodDistance == b.lodDistance &&
            a.style == b.style && a.shapeVariety == b.shapeVariety &&
            a.shortChance == b.shortChance && a.footprintVariety == b.footprintVariety &&
            a.furniture == b.furniture && a.cars == b.cars && a.pedestrians == b.pedestrians &&
@@ -1213,7 +1213,8 @@ void City::StepTraffic(float dt) {
         if (a.car && a.inJ && (a.jpath.size() < 2 || a.jTo != a.nextEdge)) { a.inJ = false; a.jpath.clear(); }
 
         // Detail level by distance to the camera (with hysteresis).
-        if (a.car) {
+        {   // Distance LOD: cars beyond the detail distance are plain boxes; both they and far pedestrians tick every 4th frame
+            // with a 4x step, and far pedestrians are not drawn (people are invisible at that range).
             if (D > 0.0f && hasTrafficFocus && a.placed) {
                 const float dist = Vector2Distance({ a.pos.x, a.pos.z }, { trafficFocus.x, trafficFocus.z });
                 if (!a.far && dist > D * 1.1f) a.far = true;
@@ -1846,6 +1847,7 @@ void City::ResetTileCPU(Tile& t) {
     }
     t.raw.clear();
     for (auto& v : t.inst) v.clear();
+    t.farInst.clear();
     t.coll = TileCollision{};
     t.hasRoad = false;
     t.hasBldg = false;
@@ -1865,6 +1867,9 @@ void City::DestroyTile(Tile& t) {
         t.instVbo[s] = 0;
         t.instVboCount[s] = 0;
     }
+    if (t.farVbo != 0) { gfx::DestroyInstanceBuffer(t.farVbo); hadGpu = true; }
+    t.farVbo = 0;
+    t.farVboCount = 0;
     if (hadGpu) gfx::MarkShadowsDirty();
     ResetTileCPU(t);
 }
@@ -1921,6 +1926,7 @@ void City::GenerateGrid(const Vector2& origin) {
     p.lanes = Clamp(p.lanes, 1, 8);
     p.cornerRadius = std::max(p.cornerRadius, 0.0f);
     p.maxGrade = Clamp(p.maxGrade, 0.0f, 60.0f);
+    p.lodDistance = Clamp(p.lodDistance, 0.0f, 20000.0f);
     params = p;
 
     const int nx = p.gridX + 2;
@@ -3806,6 +3812,7 @@ void City::ComputeTileCPU(Tile& t) {
                 m.m11 = tint.b / 255.0f;
                 m.m15 = 1.0f + b.foundation;   // the facade shader reads the plinth height from here (see vs_instanced)
                 t.inst[shape].push_back(m);
+                t.farInst.push_back(m);       // the same transform drawn with the unit box (see the distance LOD in Draw)
                 if (collisionEnabled)
                     t.coll.buildings.push_back({ b.center, Vector3Scale(b.size, 0.5f), b.angleY, shape });
 
@@ -3983,6 +3990,10 @@ void City::UploadTile(Tile& t) {
         if (t.inst[s].empty()) continue;
         t.instVbo[s] = gfx::CreateInstanceBuffer(t.inst[s]);
         t.instVboCount[s] = (int)t.inst[s].size();
+    }
+    if (!t.farInst.empty()) {
+        t.farVbo = gfx::CreateInstanceBuffer(t.farInst);
+        t.farVboCount = (int)t.farInst.size();
     }
     CreateTilePhysics(t); // no-op unless a play-mode physics world is attached
     gfx::MarkShadowsDirty();
@@ -4343,12 +4354,38 @@ void City::Draw() {
     // mirrored reflection camera, or the light's box during the shadow pass).
     const Frustum fr = ExtractFrustum(rlGetMatrixModelview(), rlGetMatrixProjection());
 
+    // Distance LOD. The main camera's position decides (the shadow and reflection passes use the last one): tiles within a
+    // third of lodDistance draw everything, up to lodDistance their buildings only (no street furniture), beyond that one
+    // buffer of plain boxes per tile.
+    if (!shadowPass && !gfx::IsInReflectionPass()) {
+        const Matrix invM = MatrixInvert(rlGetMatrixModelview());
+        lodFocus = { invM.m12, invM.m13, invM.m14 };
+        hasLodFocus = true;
+    }
+    const float lodFar = params.lodDistance, lodProps = params.lodDistance * 0.33f;
+    auto tileLod = [&](const Tile* t) -> int {      // 0 = full detail, 1 = no props, 2 = plain boxes
+        if (lodFar <= 0.0f || !hasLodFocus) return 0;
+        const float dx = std::max({ t->bldgMin.x - lodFocus.x, 0.0f, lodFocus.x - t->bldgMax.x });
+        const float dz = std::max({ t->bldgMin.z - lodFocus.z, 0.0f, lodFocus.z - t->bldgMax.z });
+        const float d2 = dx * dx + dz * dz;
+        return d2 > lodFar * lodFar ? 2 : d2 > lodProps * lodProps ? 1 : 0;
+    };
+    auto isBuildingShape = [](int s) { return s <= 4 || s == 10; };
+
     visRoad.clear();
     visBldg.clear();
     for (const auto& kv : tiles) {
         const Tile& t = kv.second;
         // The road/pad/parks mesh is flat, so it casts no shadow.
-        if (!shadowPass && t.hasRoad && fr.Intersects(t.roadMin, t.roadMax)) visRoad.push_back(&t);
+        if (!shadowPass && t.hasRoad && fr.Intersects(t.roadMin, t.roadMax)) {
+            // Roads of tiles beyond three times the detail distance are sub-pixel: the boxes of the buildings carry the view.
+            if (lodFar > 0.0f && hasLodFocus) {
+                const float dx = std::max({ t.roadMin.x - lodFocus.x, 0.0f, lodFocus.x - t.roadMax.x });
+                const float dz = std::max({ t.roadMin.z - lodFocus.z, 0.0f, lodFocus.z - t.roadMax.z });
+                if (dx * dx + dz * dz > 9.0f * lodFar * lodFar) { if (t.hasBldg && fr.Intersects(t.bldgMin, t.bldgMax)) visBldg.push_back(&t); continue; }
+            }
+            visRoad.push_back(&t);
+        }
         if (t.hasBldg && fr.Intersects(t.bldgMin, t.bldgMax)) visBldg.push_back(&t);
     }
 
@@ -4367,7 +4404,8 @@ void City::Draw() {
         if (gfx::GetNightAmount() > 0.03f) {
             struct Cand { float d; Vector4 l; };
             std::vector<Cand> lamps;
-            for (const Tile* t : visBldg)
+            for (const Tile* t : visBldg) {
+                if (tileLod(t) != 0) continue;
                 for (const Matrix& m : t->inst[kPropLamp]) {
                     const Vector3 head = Vector3Transform(Vector3{ 0.0f, 5.35f, 0.95f }, m);
                     const float d = Vector3Distance(head, trafficFocus);
@@ -4375,6 +4413,7 @@ void City::Draw() {
                     const float on = d < 120.0f ? gfx::LampSwitchOn(m.m12, m.m14, gfx::GetNightAmount()) : 0.0f;
                     if (on > 0.02f) lamps.push_back({ d, Vector4{ head.x, head.y, head.z, 15.0f * on } });
                 }
+            }
             const size_t nl = std::min<size_t>(lamps.size(), 24);
             std::partial_sort(lamps.begin(), lamps.begin() + (long)nl, lamps.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
             for (size_t i = 0; i < nl; i++) lights.push_back(lamps[i].l);
@@ -4433,6 +4472,7 @@ void City::Draw() {
         const bool rainy = gfx::RainNow() > 0.12f || gfx::WetnessNow() > 0.5f;
         for (const Agent& a : agents) {
             if (!a.placed) continue;
+            if (!a.car && a.far) continue;        // far pedestrians are not drawn
             const Color shown = (a.car && a.bus < 0) ? PickCarColor(a) : a.color;
             const float cr = -std::max(shown.r / 255.0f, 0.05f), cg = -std::max(shown.g / 255.0f, 0.05f), cb = -std::max(shown.b / 255.0f, 0.05f);
             Matrix m;
@@ -4504,7 +4544,13 @@ void City::Draw() {
     if (gfx::InstanceBuffersActive()) {
         // Persistent per-tile GPU buffers: nothing is uploaded per frame.
         for (const Tile* t : visBldg) {
+            const int lod = tileLod(t);
+            if (lod == 2 && t->farVbo != 0) {       // far: all the buildings of the tile as boxes, one draw
+                gfx::DrawCityInstancesBuffered(gfx::GetCityShapeMesh(kBuildingBox), t->farVbo, t->farVboCount, WHITE);
+                continue;
+            }
             for (int s = 0; s < kBuildingShapes; s++) {
+                if (lod != 0 && !isBuildingShape(s)) continue;
                 if (t->instVbo[s] != 0)
                     gfx::DrawCityInstancesBuffered(gfx::GetCityShapeMesh(s), t->instVbo[s], t->instVboCount[s], WHITE);
                 else if (!t->inst[s].empty())   // buffer creation failed: let raylib upload this one
@@ -4516,9 +4562,17 @@ void City::Draw() {
 
     // Fallback: merge the visible tiles' instances and let raylib upload them.
     for (auto& v : visInst) v.clear();
-    for (const Tile* t : visBldg)
-        for (int s = 0; s < kBuildingShapes; s++)
+    for (const Tile* t : visBldg) {
+        const int lod = tileLod(t);
+        if (lod == 2 && !t->farInst.empty()) {
+            visInst[kBuildingBox].insert(visInst[kBuildingBox].end(), t->farInst.begin(), t->farInst.end());
+            continue;
+        }
+        for (int s = 0; s < kBuildingShapes; s++) {
+            if (lod != 0 && !isBuildingShape(s)) continue;
             visInst[s].insert(visInst[s].end(), t->inst[s].begin(), t->inst[s].end());
+        }
+    }
     for (int s = 0; s < kBuildingShapes; s++) {
         if (visInst[s].empty()) continue;
         gfx::DrawCityInstances(gfx::GetCityShapeMesh(s), visInst[s], 0, (int)visInst[s].size(), WHITE);
@@ -5864,6 +5918,7 @@ bool City::WriteToStream(std::ostream& out) const {
     out << params.parkThreshold << ' ' << params.parkInset << '\n';
     out << "R " << params.cornerRadius << '\n';
     out << "G " << params.maxGrade << '\n';
+    out << "L " << params.lodDistance << '\n';
 
     out << edges.size() << '\n';
     for (const auto& e : edges) out << e.a << ' ' << e.b << ' ' << e.lanes << '\n';
@@ -6067,6 +6122,10 @@ bool City::ReadFromStream(std::istream& in) {
     }
     if (tok == "G") {      // optional: the editor's steepest-road setting (absent in older files)
         if (!(in >> p.maxGrade)) return false;
+        if (!(in >> tok)) return false;
+    }
+    if (tok == "L") {      // optional: distance beyond which tiles draw as plain boxes (absent in older files)
+        if (!(in >> p.lodDistance)) return false;
         if (!(in >> tok)) return false;
     }
     try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
