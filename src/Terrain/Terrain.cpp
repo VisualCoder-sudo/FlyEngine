@@ -971,12 +971,22 @@ void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
     SetShaderValue(terrainShader, shaderLocs[LocCameraPos], &camPos, SHADER_UNIFORM_VEC3);
     
     // Light direction (simple directional)
-    Vector3 lightDir = Vector3Normalize({ -0.5f, -1.0f, -0.3f });
+    // The scene's sun, ambient light and fog (Explorer > Lighting), applied to this shader's own base colours.
+    Vector3 lightDir = gfx::SunDirection();
     SetShaderValue(terrainShader, shaderLocs[LocLightDir], &lightDir, SHADER_UNIFORM_VEC3);
-    Vector3 lightColor = { 1.0f, 0.95f, 0.8f };
+    const Vector3 sunScale = gfx::SunLightScale();
+    Vector3 lightColor = { 1.0f * sunScale.x, 0.95f * sunScale.y, 0.8f * sunScale.z };
     SetShaderValue(terrainShader, shaderLocs[LocLightColor], &lightColor, SHADER_UNIFORM_VEC3);
-    Vector3 ambient = { 0.2f, 0.2f, 0.25f };
+    const Vector3 ambScale = gfx::AmbientScale();
+    Vector3 ambient = { 0.2f * ambScale.x, 0.2f * ambScale.y, 0.25f * ambScale.z };
     SetShaderValue(terrainShader, shaderLocs[LocAmbientColor], &ambient, SHADER_UNIFORM_VEC3);
+    {
+        const float fogD = gfx::FogDensity();
+        const Color fc = gfx::FogColorNow();
+        const Vector3 fogC = { fc.r / 255.0f, fc.g / 255.0f, fc.b / 255.0f };
+        if (shaderLocs[LocFogDensity] >= 0) SetShaderValue(terrainShader, shaderLocs[LocFogDensity], &fogD, SHADER_UNIFORM_FLOAT);
+        if (shaderLocs[LocFogColor] >= 0) SetShaderValue(terrainShader, shaderLocs[LocFogColor], &fogC, SHADER_UNIFORM_VEC3);
+    }
     
     // Bind layer textures
     for (size_t i = 0; i < layers.size() && i < 4; i++) {

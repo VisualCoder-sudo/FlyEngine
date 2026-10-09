@@ -70,7 +70,7 @@ static ScatteredObject* g_lastExplorerClick = nullptr;
 static ModelGroup* g_lastExplorerModelClick = nullptr;
 static double g_lastExplorerClickTime = 0.0;
 static WaterBody* g_selectedWater = nullptr;
-static bool g_lightingTimeSelected = false;   // the Lighting > Time row of the explorer is selected
+static int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog
 static BasicTerrain* g_selectedTerrain = nullptr;
 static char g_nameBuffer[64] = "";
 static float g_colorPickerAnchorY = -1.0f;
@@ -2316,9 +2316,11 @@ static void DrawImGuiExplorer() {
         }
     }
 
-    // --- Lighting: scene-wide settings (for now just Time); its settings open in the properties area ---
+    // --- Lighting: scene-wide settings. Time is built in; the "+" menu inserts Sun, Ambient, Sky and Fog. Selecting a row
+    // opens its settings in the properties area; right-click an inserted item to remove it (it goes back to its default). ---
     {
-        if (!g_selection.empty() || g_selectedWater || g_selectedTerrain) g_lightingTimeSelected = false;   // selecting anything else leaves it
+        gfx::LightingSettings& L = gfx::Lighting();
+        if (!g_selection.empty() || g_selectedWater || g_selectedTerrain) g_lightingSel = 0;   // selecting anything else leaves it
         ImGui::Spacing();
         ImGui::TextDisabled("LIGHTING");
         ImGui::SameLine();
@@ -2326,23 +2328,59 @@ static void DrawImGuiExplorer() {
         if (ImGui::BeginPopup("##InsertLighting")) {
             ImGui::TextDisabled("Insert");
             ImGui::Separator();
-            ImGui::MenuItem("Time (built in)", nullptr, false, false);
-            ImGui::TextDisabled("More lighting items will go here.");
+            bool any = false;
+            if (!L.hasSun && ImGui::MenuItem("Sun")) { L.hasSun = true; g_lightingSel = 2; any = true; }
+            if (!L.hasAmbient && ImGui::MenuItem("Ambient")) { L.hasAmbient = true; g_lightingSel = 3; any = true; }
+            if (!L.hasSky && ImGui::MenuItem("Sky")) { L.hasSky = true; g_lightingSel = 4; any = true; }
+            if (!L.hasFog && ImGui::MenuItem("Fog")) { L.hasFog = true; L.fogDensity = std::max(L.fogDensity, 0.004f); g_lightingSel = 5; any = true; }
+            if (any) {
+                SetSelection({}, nullptr);
+                if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
+                if (g_selectedTerrain) { g_selectedTerrain->isSelected = false; g_selectedTerrain = nullptr; }
+                BasicTerrain::SetActive(nullptr);
+                terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
+            }
+            if (L.hasSun && L.hasAmbient && L.hasSky && L.hasFog) ImGui::TextDisabled("Everything is inserted.");
             ImGui::EndPopup();
         }
-        ImGui::PushID("lighting_time");
-        bool timeRightClicked = false;
-        const bool timeClicked = ExplorerRowIcon(ROWICON_OBJECT, "Time", g_lightingTimeSelected, &timeRightClicked);
-        if (timeClicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
-            SetSelection({}, nullptr);
-            if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
-            if (g_selectedTerrain) { g_selectedTerrain->isSelected = false; g_selectedTerrain = nullptr; }
-            BasicTerrain::SetActive(nullptr);
-            terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
-            g_lightingTimeSelected = true;
+        struct Row { int id; const char* name; bool present; bool removable; };
+        const Row rows[] = { { 1, "Time", true, false }, { 2, "Sun", L.hasSun, true }, { 3, "Ambient", L.hasAmbient, true },
+                             { 4, "Sky", L.hasSky, true }, { 5, "Fog", L.hasFog, true } };
+        static int s_removeId = 0;
+        for (const Row& r : rows) {
+            if (!r.present) continue;
+            ImGui::PushID(100 + r.id);
+            bool rightClicked = false;
+            const bool clicked = ExplorerRowIcon(ROWICON_OBJECT, r.name, g_lightingSel == r.id, &rightClicked);
+            if (clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+                SetSelection({}, nullptr);
+                if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
+                if (g_selectedTerrain) { g_selectedTerrain->isSelected = false; g_selectedTerrain = nullptr; }
+                BasicTerrain::SetActive(nullptr);
+                terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
+                g_lightingSel = r.id;
+            }
+            if (rightClicked) {
+                rightClickHandled = true;
+                if (r.removable) { s_removeId = r.id; ImGui::OpenPopup("##LightingRowMenu"); }
+            }
+            ImGui::PopID();
         }
-        if (timeRightClicked) rightClickHandled = true;
-        ImGui::PopID();
+        if (ImGui::BeginPopup("##LightingRowMenu")) {
+            if (ImGui::MenuItem("Remove (back to default)")) {
+                const gfx::LightingSettings def;
+                switch (s_removeId) {
+                    case 2: L.hasSun = false; L.sunAzimuth = def.sunAzimuth; L.sunElevation = def.sunElevation; L.sunIntensity = def.sunIntensity;
+                            for (int i = 0; i < 3; i++) L.sunColor[i] = def.sunColor[i]; break;
+                    case 3: L.hasAmbient = false; L.ambient = def.ambient; break;
+                    case 4: L.hasSky = false; for (int i = 0; i < 3; i++) L.skyColor[i] = def.skyColor[i]; break;
+                    case 5: L.hasFog = false; L.fogDensity = 0.0f; break;
+                    default: break;
+                }
+                if (g_lightingSel == s_removeId) g_lightingSel = 1;
+            }
+            ImGui::EndPopup();
+        }
     }
 
     if (ScriptRuntime* rt = GetActiveRuntime()) {
@@ -6090,7 +6128,7 @@ void DrawImGuiPreferencesWindow() {
 
 // Settings of the selected Lighting item, shown over the properties area.
 static void DrawImGuiLightingPanel() {
-    if (!g_lightingTimeSelected) return;
+    if (g_lightingSel == 0) return;
     Rectangle rec = GetPropertiesPanelBounds();
     ImGui::SetNextWindowPos(ImVec2(rec.x, rec.y));
     ImGui::SetNextWindowSize(ImVec2(rec.width, rec.height));
@@ -6098,26 +6136,73 @@ static void DrawImGuiLightingPanel() {
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
     ImGui::Begin("##LightingProps", nullptr, flags);
     ImGui::TextColored(ImVec4(0 / 255.0f, 190 / 255.0f, 200 / 255.0f, 1.0f), "LIGHTING");
-    ImGui::TextDisabled("Time");
-    ImGui::Separator();
     gfx::LightingSettings& L = gfx::Lighting();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::SliderFloat("##hour", &L.timeOfDay, 0.0f, 24.0f, "");
-    const int totalMin = static_cast<int>(L.timeOfDay * 60.0f + 0.5f) % (24 * 60);
-    ImGui::Text("Game time  %02d:%02d", totalMin / 60, totalMin % 60);
-    if (ImGui::Button("Dawn")) L.timeOfDay = 6.5f;
-    ImGui::SameLine();
-    if (ImGui::Button("Noon")) L.timeOfDay = 12.0f;
-    ImGui::SameLine();
-    if (ImGui::Button("Dusk")) L.timeOfDay = 18.0f;
-    ImGui::SameLine();
-    if (ImGui::Button("Night")) L.timeOfDay = 23.0f;
-    ImGui::Spacing();
-    ImGui::TextDisabled("Day length (real minutes per day)");
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##daylen", &L.dayLengthMinutes, 0.1f, 0.0f, 240.0f, L.dayLengthMinutes > 0.0f ? "%.1f min" : "off (time stays put)");
-    ImGui::Spacing();
-    ImGui::TextWrapped("The whole scene follows this time: sun and sky, window and street lights, car and bus lights. It is saved with the scene.");
+    switch (g_lightingSel) {
+    case 1: {
+        ImGui::TextDisabled("Time");
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##hour", &L.timeOfDay, 0.0f, 24.0f, "");
+        const int totalMin = static_cast<int>(L.timeOfDay * 60.0f + 0.5f) % (24 * 60);
+        ImGui::Text("Game time  %02d:%02d", totalMin / 60, totalMin % 60);
+        if (ImGui::Button("Dawn")) L.timeOfDay = 6.5f;
+        ImGui::SameLine();
+        if (ImGui::Button("Noon")) L.timeOfDay = 12.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("Dusk")) L.timeOfDay = 18.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("Night")) L.timeOfDay = 23.0f;
+        ImGui::Spacing();
+        ImGui::TextDisabled("Day length (real minutes per day)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat("##daylen", &L.dayLengthMinutes, 0.1f, 0.0f, 240.0f, L.dayLengthMinutes > 0.0f ? "%.1f min" : "off (time stays put)");
+        ImGui::Spacing();
+        ImGui::TextWrapped("The whole scene follows this time: sun and sky, window and street lights, car and bus lights. It is saved with the scene.");
+        break;
+    }
+    case 2:
+        ImGui::TextDisabled("Sun");
+        ImGui::Separator();
+        ImGui::TextDisabled("Direction (compass, degrees)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##az", &L.sunAzimuth, 0.0f, 360.0f, "%.0f");
+        ImGui::TextDisabled("Height above the horizon");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##el", &L.sunElevation, 8.0f, 90.0f, "%.0f");
+        ImGui::TextDisabled("Intensity");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##sint", &L.sunIntensity, 0.0f, 3.0f, "%.2f");
+        ImGui::ColorEdit3("Colour", L.sunColor, ImGuiColorEditFlags_NoInputs);
+        ImGui::Spacing();
+        ImGui::TextWrapped("Moves the light and its shadows. A low sun gives long shadows. The time of day still dims it at night.");
+        break;
+    case 3:
+        ImGui::TextDisabled("Ambient");
+        ImGui::Separator();
+        ImGui::TextDisabled("Strength (1 = default)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##amb", &L.ambient, 0.0f, 2.0f, "%.2f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("The light that reaches everything, shadows included. Lower it for a moodier scene.");
+        break;
+    case 4:
+        ImGui::TextDisabled("Sky");
+        ImGui::Separator();
+        ImGui::ColorEdit3("Daytime sky", L.skyColor, ImGuiColorEditFlags_NoInputs);
+        ImGui::Spacing();
+        ImGui::TextWrapped("The background colour. It darkens towards night, and the fog uses it.");
+        break;
+    case 5:
+        ImGui::TextDisabled("Fog");
+        ImGui::Separator();
+        ImGui::TextDisabled("Density");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##fog", &L.fogDensity, 0.0f, 0.03f, "%.4f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Distant things fade into the sky colour. About 0.004 is a light haze, 0.02 is thick.");
+        break;
+    default: break;
+    }
     ImGui::End();
 }
 

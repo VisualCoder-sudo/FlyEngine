@@ -264,6 +264,8 @@ private:
     static int s_shaderLightDirLoc;
     static int s_shaderLightColorLoc;
     static int s_shaderAmbientColorLoc;
+    static int s_shaderFogDensityLoc;
+    static int s_shaderFogColorLoc;
     static int s_shaderTextureTilingLoc;
 
     // Static layer registry (shared across all BasicTerrain instances)

@@ -120,3 +120,8 @@ target_link_libraries(city_slope_test PRIVATE FlyEngineCore FlyRL)
 # but not registered with ctest: build/tests/city_surface_audit
 add_executable(city_surface_audit city_surface_audit.cpp)
 target_link_libraries(city_surface_audit PRIVATE FlyEngineCore FlyRL)
+
+# Lighting items (sun, ambient, sky, fog): renders and save/load. Opens a window, so built but not registered with
+# ctest: build/tests/lighting_test
+add_executable(lighting_test lighting_test.cpp)
+target_link_libraries(lighting_test PRIVATE FlyEngineCore FlyRL)

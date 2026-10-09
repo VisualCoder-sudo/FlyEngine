@@ -45,10 +45,15 @@ int ReflectionQualityToResolution(int quality) {
     return 360 + (int)std::lroundf(t * 1080.0f); // 360..1440
 }
 
-const Vector3 kLightDir = Vector3Normalize({ -0.4f, -1.0f, -0.3f });
 const Vector3 kAmbient = { 0.35f, 0.35f, 0.35f };
-Vector3 ambient = kAmbient;
 gfx::LightingSettings lightingSettings;
+Color engineClear = { 245, 245, 245, 255 };
+// Unit vector the sunlight travels along, from the lighting settings (the default is the old fixed sun).
+Vector3 SunDir() {
+    const float az = lightingSettings.sunAzimuth * DEG2RAD;
+    const float el = fminf(fmaxf(lightingSettings.sunElevation, 8.0f), 90.0f) * DEG2RAD;
+    return Vector3Normalize({ -cosf(el) * sinf(az), -sinf(el), -cosf(el) * cosf(az) });
+}
 // 1 in daylight, 0 at night, easing through dawn (5:00-7:30) and dusk (16:30-19:00).
 float DayAmount() {
     auto ss = [](float a, float b, float x) { const float t = fminf(fmaxf((x - a) / (b - a), 0.0f), 1.0f); return t * t * (3.0f - 2.0f * t); };
@@ -142,6 +147,7 @@ int cityLightDirLoc = -1;
 int cityAmbientLoc = -1;
 int cityLightVPLoc = -1;
 int cityNightLoc = -1;
+int litSunLoc = -1, litFogLoc = -1, roadSunLoc = -1, roadFogLoc = -1, citySunLoc = -1, cityFogLoc = -1;
 int cityLightCountLoc = -1, cityLightsLoc = -1;
 int roadNightLoc = -1, roadLightCountLoc = -1, roadLightsLoc = -1;
 float nightLightData[32 * 4] = {};
@@ -736,6 +742,8 @@ void Init() {
     // Shaders are compiled into the binary (shaders/lit.glsl via sokol-shdc).
     litShader = LoadShaderProgram("lit");
     lightDirLoc = GetShaderLocation(litShader, "lightDir");
+    litSunLoc = GetShaderLocation(litShader, "sunColor");
+    litFogLoc = GetShaderLocation(litShader, "fogParams");
     ambientLoc = GetShaderLocation(litShader, "ambient");
     lightVPLoc = GetShaderLocation(litShader, "lightVP");
     shadowMapLoc = GetShaderLocation(litShader, "shadowMap");
@@ -776,6 +784,8 @@ void Init() {
     if (roadShader.id != 0 && roadShader.locs)
         roadShader.locs[SHADER_LOC_MATRIX_PROJECTION] = GetShaderLocation(roadShader, "matProjection");
     roadLightDirLoc = GetShaderLocation(roadShader, "lightDir");
+    roadSunLoc = GetShaderLocation(roadShader, "sunColor");
+    roadFogLoc = GetShaderLocation(roadShader, "fogParams");
     roadAmbientLoc = GetShaderLocation(roadShader, "ambient");
     roadLightVPLoc = GetShaderLocation(roadShader, "lightVP");
     roadShadowMapLoc = GetShaderLocation(roadShader, "shadowMap");
@@ -790,6 +800,8 @@ void Init() {
     cityInstancedShader = LoadShaderProgram("lit_instanced");
     if (cityInstancedShader.id != 0) {
         cityLightDirLoc = GetShaderLocation(cityInstancedShader, "lightDir");
+        citySunLoc = GetShaderLocation(cityInstancedShader, "sunColor");
+        cityFogLoc = GetShaderLocation(cityInstancedShader, "fogParams");
         cityAmbientLoc = GetShaderLocation(cityInstancedShader, "ambient");
         cityLightVPLoc = GetShaderLocation(cityInstancedShader, "lightVP");
         cityShadowMapLoc = GetShaderLocation(cityInstancedShader, "shadowMap");
@@ -854,7 +866,7 @@ void Init() {
     reflectionTarget = LoadRenderTexture(reflectionResolution, reflectionResolution);
     SetTextureFilter(reflectionTarget.texture, TEXTURE_FILTER_BILINEAR);
 
-    lightCamera.position = Vector3Scale(kLightDir, -40.0f);
+    lightCamera.position = Vector3Scale(SunDir(), -40.0f);
     lightCamera.target = { 0.0f, 0.0f, 0.0f };
     lightCamera.up = { 0.0f, 1.0f, 0.0f };
     lightCamera.fovy = 45.0f;
@@ -968,12 +980,11 @@ void SetShadowQuality(int quality) {
 int GetShadowQuality() { return shadowQuality; }
 
 void SetAmbientIntensity(float intensity) {
-    intensity = fmaxf(0.0f, fminf(intensity, 2.0f));
-    ambient = Vector3Scale(kAmbient, intensity);
+    lightingSettings.ambient = fmaxf(0.0f, fminf(intensity, 2.0f));
 }
 
 float GetAmbientIntensity() {
-    return (kAmbient.x > 0.0f) ? ambient.x / kAmbient.x : 1.0f;
+    return lightingSettings.ambient;
 }
 
 void SetGridVisible(bool visible) { gridVisible = visible; }
@@ -1031,8 +1042,13 @@ void BeginShadowPass() {
 
     // Snap the frustum centre to whole shadow texels in light space (no shimmering
     // while the camera moves). Basis matches raylib's lookAt for up = (0,1,0).
-    const Vector3 lightRight = Vector3Normalize(Vector3CrossProduct(kLightDir, { 0.0f, 1.0f, 0.0f }));
-    const Vector3 lightUp = Vector3CrossProduct(lightRight, kLightDir);
+    const Vector3 sunDir = SunDir();
+    {   // a moved sun changes every shadow
+        static Vector3 lastSun{};
+        if (!Vector3Equals(lastSun, sunDir)) { lastSun = sunDir; shadowsDirty = true; }
+    }
+    const Vector3 lightRight = Vector3Normalize(Vector3CrossProduct(sunDir, { 0.0f, 1.0f, 0.0f }));
+    const Vector3 lightUp = Vector3CrossProduct(lightRight, sunDir);
     const float texel = (2.0f * half) / (float)shadowMapResolution;
     const float cx = Vector3DotProduct(focus, lightRight);
     const float cy = Vector3DotProduct(focus, lightUp);
@@ -1041,7 +1057,7 @@ void BeginShadowPass() {
     focus = Vector3Add(focus, Vector3Add(Vector3Scale(lightRight, sx - cx), Vector3Scale(lightUp, sy - cy)));
 
     lightCamera.target = focus;
-    lightCamera.position = Vector3Subtract(focus, Vector3Scale(kLightDir, kShadowLightDist));
+    lightCamera.position = Vector3Subtract(focus, Vector3Scale(sunDir, kShadowLightDist));
     lightCamera.up = { 0.0f, 1.0f, 0.0f };
     lightCamera.projection = CAMERA_ORTHOGRAPHIC;
 
@@ -1179,12 +1195,30 @@ int GetReflectionTextureSlot() { return REFLECTION_TEXTURE_SLOT; }
 namespace {
 // Sun direction scaled by its intensity (the shaders use its length as the diffuse strength) and the
 // ambient colour, both blended towards moonlight at night.
-Vector3 SunVector() { return Vector3Scale(kLightDir, 0.10f + 0.90f * DayAmount()); }
+Vector3 SunVector() { return Vector3Scale(SunDir(), lightingSettings.sunIntensity * (0.10f + 0.90f * DayAmount())); }
 Vector3 EffectiveAmbient() {
     const Vector3 nightAmbient = { 0.16f, 0.19f, 0.31f };
-    return Vector3Lerp(nightAmbient, ambient, DayAmount());
+    return Vector3Lerp(nightAmbient, Vector3Scale(kAmbient, lightingSettings.ambient), DayAmount());
 }
+Vector3 SunTint() { return { lightingSettings.sunColor[0], lightingSettings.sunColor[1], lightingSettings.sunColor[2] }; }
 }
+
+Vector3 SunDirection() { return SunDir(); }
+Vector3 SunLightScale() { return Vector3Scale(SunTint(), lightingSettings.sunIntensity * (0.10f + 0.90f * DayAmount())); }
+Vector3 AmbientScale() {
+    const Vector3 e = EffectiveAmbient();
+    return { e.x / kAmbient.x, e.y / kAmbient.y, e.z / kAmbient.z };
+}
+float FogDensity() { return lightingSettings.hasFog ? lightingSettings.fogDensity : 0.0f; }
+void SetEngineClearColor(Color c) { engineClear = c; }
+Color CurrentSky() {
+    const Color day = lightingSettings.hasSky
+        ? Color{ (unsigned char)lroundf(lightingSettings.skyColor[0] * 255.0f), (unsigned char)lroundf(lightingSettings.skyColor[1] * 255.0f),
+                 (unsigned char)lroundf(lightingSettings.skyColor[2] * 255.0f), 255 }
+        : engineClear;
+    return SkyColor(day);
+}
+Color FogColorNow() { return CurrentSky(); }
 
 void SetTimeOfDay(float hours) {
     const float h = fmodf(fmodf(hours, 24.0f) + 24.0f, 24.0f);
@@ -1218,6 +1252,20 @@ void SetNightLights(const Vector4* lights, int count) {
     }
 }
 
+namespace {
+void UploadSunAndFog(Shader& sh, int sunLoc, int fogLoc) {
+    if (sunLoc != -1) {
+        const Vector4 sc = { lightingSettings.sunColor[0], lightingSettings.sunColor[1], lightingSettings.sunColor[2], 1.0f };
+        SetShaderValue(sh, sunLoc, &sc, SHADER_UNIFORM_VEC4);
+    }
+    if (fogLoc != -1) {
+        const Color f = FogColorNow();
+        const Vector4 fp = { f.r / 255.0f, f.g / 255.0f, f.b / 255.0f, FogDensity() };
+        SetShaderValue(sh, fogLoc, &fp, SHADER_UNIFORM_VEC4);
+    }
+}
+}
+
 Color SkyColor(Color dayColor) {
     const float d = DayAmount();
     const Color night = { 10, 14, 28, 255 };
@@ -1238,6 +1286,7 @@ void UpdateLighting(const Camera3D& camera) {
     const Vector3 amb = EffectiveAmbient();
     SetShaderValue(litShader, lightDirLoc, &sun, SHADER_UNIFORM_VEC3);
     SetShaderValue(litShader, ambientLoc, &amb, SHADER_UNIFORM_VEC3);
+    UploadSunAndFog(litShader, litSunLoc, litFogLoc);
     SetShaderValueMatrix(litShader, lightVPLoc, lightViewProj);
 
     float enabled = shadowsEnabled ? 1.0f : 0.0f;
@@ -1246,6 +1295,7 @@ void UpdateLighting(const Camera3D& camera) {
     if (roadShader.id != 0) {
         SetShaderValue(roadShader, roadLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
         SetShaderValue(roadShader, roadAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
+        UploadSunAndFog(roadShader, roadSunLoc, roadFogLoc);
         SetShaderValueMatrix(roadShader, roadLightVPLoc, lightViewProj);
         SetShaderValue(roadShader, roadShadowsEnabledLoc, &enabled, SHADER_UNIFORM_FLOAT);
     }
@@ -1262,6 +1312,7 @@ void SetupInstancedLighting() {
     const Vector3 amb = EffectiveAmbient();
     SetShaderValue(cityInstancedShader, cityLightDirLoc, &sun, SHADER_UNIFORM_VEC3);
     SetShaderValue(cityInstancedShader, cityAmbientLoc, &amb, SHADER_UNIFORM_VEC3);
+    UploadSunAndFog(cityInstancedShader, citySunLoc, cityFogLoc);
     if (cityNightLoc != -1) {
         const float night = GetNightAmount();
         SetShaderValue(cityInstancedShader, cityNightLoc, &night, SHADER_UNIFORM_FLOAT);

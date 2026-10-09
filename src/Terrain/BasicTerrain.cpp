@@ -59,6 +59,8 @@ int BasicTerrain::s_shaderLayerCountLoc = -1;
 int BasicTerrain::s_shaderLightDirLoc = -1;
 int BasicTerrain::s_shaderLightColorLoc = -1;
 int BasicTerrain::s_shaderAmbientColorLoc = -1;
+int BasicTerrain::s_shaderFogDensityLoc = -1;
+int BasicTerrain::s_shaderFogColorLoc = -1;
 int BasicTerrain::s_shaderTextureTilingLoc = -1;
 
 BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
@@ -97,6 +99,8 @@ BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
             s_shaderLightDirLoc = GetShaderLocation(s_terrainShader, "lightDir");
             s_shaderLightColorLoc = GetShaderLocation(s_terrainShader, "lightColor");
             s_shaderAmbientColorLoc = GetShaderLocation(s_terrainShader, "ambientColor");
+            s_shaderFogDensityLoc = GetShaderLocation(s_terrainShader, "fogDensity");
+            s_shaderFogColorLoc = GetShaderLocation(s_terrainShader, "fogColor");
             s_shaderTextureTilingLoc = GetShaderLocation(s_terrainShader, "textureTiling");
         }
         shaderLoaded = true;
@@ -1414,9 +1418,13 @@ void BasicTerrain::Draw() {
     // the rest of the scene's lighting yet. Add getters to gfx (e.g.
     // gfx::GetLightDir()/GetLightColor()/GetAmbientColor()) and swap these in
     // if you want the terrain to relight consistently with everything else.
-    Vector3 lightDir = Vector3Normalize(Vector3{ -0.35f, -0.85f, -0.35f });
-    Vector3 lightColor = { 1.0f, 0.97f, 0.90f };
-    Vector3 ambientColor = { 0.35f, 0.38f, 0.42f };
+    // Follows the scene's lighting (Explorer > Lighting): sun direction and colour, ambient, fog.
+    Vector3 lightDir = gfx::SunDirection();
+    const Vector3 sunScale = gfx::SunLightScale(), ambScale = gfx::AmbientScale();
+    Vector3 lightColor = { 1.0f * sunScale.x, 0.97f * sunScale.y, 0.90f * sunScale.z };
+    Vector3 ambientColor = { 0.35f * ambScale.x, 0.38f * ambScale.y, 0.42f * ambScale.z };
+    if (s_shaderFogDensityLoc >= 0) { const float fogD = gfx::FogDensity(); SetShaderValue(s_terrainShader, s_shaderFogDensityLoc, &fogD, SHADER_UNIFORM_FLOAT); }
+    if (s_shaderFogColorLoc >= 0) { const Color fc = gfx::FogColorNow(); const Vector3 fogC = { fc.r / 255.0f, fc.g / 255.0f, fc.b / 255.0f }; SetShaderValue(s_terrainShader, s_shaderFogColorLoc, &fogC, SHADER_UNIFORM_VEC3); }
     if (s_shaderLightDirLoc >= 0) SetShaderValue(s_terrainShader, s_shaderLightDirLoc, &lightDir, SHADER_UNIFORM_VEC3);
     if (s_shaderLightColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderLightColorLoc, &lightColor, SHADER_UNIFORM_VEC3);
     if (s_shaderAmbientColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientColorLoc, &ambientColor, SHADER_UNIFORM_VEC3);

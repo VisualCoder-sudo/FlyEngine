@@ -168,7 +168,7 @@ vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     float diffuse = max(dot(normal, -lightDir), 0.0);
     float shadow = ShadowCalculation(normal) * shadowsEnabled;
 
-    vec3 lit = (ambient + (1.0 - shadow) * diffuse) * baseColor * colDiffuse.rgb;
+    vec3 lit = (ambient + (1.0 - shadow) * diffuse * sunColor.rgb) * baseColor * colDiffuse.rgb;
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;
     if (depthBelow > 0.0) {
@@ -180,6 +180,13 @@ vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     }
     alpha = baseAlpha * colDiffuse.a;
     return lit;
+}
+
+// Depth fog: 1 / gl_FragCoord.w is the view depth of a perspective camera (and 1 for an orthographic one: no fog there).
+vec3 ApplyFog(vec3 c) {
+    float dist = 1.0 / max(gl_FragCoord.w, 1e-6);
+    float f = clamp(1.0 - exp(-fogParams.a * dist), 0.0, 1.0);
+    return mix(c, fogParams.rgb, f);
 }
 
 vec3 ShadeLit(out float alpha) {
@@ -195,13 +202,15 @@ layout(binding=1) uniform fs_params {
     float shadowsEnabled;
     vec3 ambient;
     float waterSurfaceY;
+    vec4 sunColor;      // rgb = sun colour (its intensity is the length of lightDir)
+    vec4 fogParams;     // rgb = fog colour, a = density per metre (0 = off)
     mat4 lightVP;
 };
 @include_block lit_fs_common
 void main() {
     float alpha;
     vec3 lit = ShadeLit(alpha);
-    finalColor = vec4(lit, alpha);
+    finalColor = vec4(ApplyFog(lit), alpha);
 }
 @end
 
@@ -237,6 +246,8 @@ layout(binding=1) uniform fs_road_params {
     float shadowsEnabled;
     vec3 ambient;
     float waterSurfaceY;
+    vec4 sunColor;      // rgb = sun colour (its intensity is the length of lightDir)
+    vec4 fogParams;     // rgb = fog colour, a = density per metre (0 = off)
     float nightAmount;
     float lightCount;
     vec4 nightLights[32];
@@ -251,7 +262,7 @@ void main() {
     vec3 lit = ShadeLit(alpha);
     if (nightAmount > 0.02 && lightCount > 0.5)
         lit += NightGlow(texture(sampler2D(texture0, texture0_smp), fragTexCoord).rgb * fragColor.rgb, fragWorldPos, normalize(fragNormal));
-    finalColor = vec4(lit, alpha);
+    finalColor = vec4(ApplyFog(lit), alpha);
     float roadDepth;
     if (matProjection[3][3] > 0.5) {                                   // orthographic
         float dz = 0.02 + fragLayer * 2.0;
@@ -279,6 +290,8 @@ layout(binding=1) uniform fs_building_params {
     float shadowsEnabled;
     vec3 ambient;
     float waterSurfaceY;
+    vec4 sunColor;      // rgb = sun colour (its intensity is the length of lightDir)
+    vec4 fogParams;     // rgb = fog colour, a = density per metre (0 = off)
     float nightAmount;      // 0 = day, 1 = night: scales the emissive window / lamp / car light glow
     float lightCount;
     vec4 nightLights[32];
@@ -353,7 +366,7 @@ void main() {
     }
     if (nightAmount > 0.02 && lightCount > 0.5 && fragInst.w > 0.5)
         emit += NightGlow(glowBase, fragWorldPos, normalize(fragNormal));
-    finalColor = vec4(lit + emit, alpha);
+    finalColor = vec4(ApplyFog(lit + emit), alpha);
 }
 @end
 

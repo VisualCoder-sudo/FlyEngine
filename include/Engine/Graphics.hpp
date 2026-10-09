@@ -80,6 +80,16 @@ void SetAmbientIntensity(float intensity);
 struct LightingSettings {
     float timeOfDay = 12.0f;          // hours, 0..24 (12 = noon)
     float dayLengthMinutes = 0.0f;    // real minutes per 24 h; 0 = the time stays where it is set
+
+    // Items inserted from the Explorer's Lighting "+" menu (Time is built in). A removed item goes back to its default.
+    bool hasSun = false, hasAmbient = false, hasSky = false, hasFog = false;
+    float sunAzimuth = 53.13f;        // degrees, the compass direction the sun shines FROM
+    float sunElevation = 63.43f;      // degrees above the horizon (the old fixed sun)
+    float sunIntensity = 1.0f;        // 0..3
+    float sunColor[3] = { 1.0f, 1.0f, 1.0f };
+    float ambient = 1.0f;             // 0..2: scales the ambient light
+    float skyColor[3] = { 0.14f, 0.15f, 0.17f };   // the daytime sky (the editor's own clear colour is used until a Sky item is inserted)
+    float fogDensity = 0.0f;          // per metre; the fog takes the sky colour
 };
 LightingSettings& Lighting();
 void ResetLighting();                 // back to noon, no running cycle (a new scene starts like this)
@@ -93,6 +103,15 @@ float GetNightAmount();
 // Up to 32 point lights for the night glow on roads, buildings and props: (x, y, z, radius) each.
 void SetNightLights(const Vector4* lights, int count);          // 0 = full day, 1 = full night
 Color SkyColor(Color dayColor);  // the clear colour at the current time of day
+void SetEngineClearColor(Color c);   // the engine's own background colour (used as the sky until a Sky item is inserted)
+Color CurrentSky();              // the sky colour now: the Sky item (or the engine colour) darkened for the time of day
+
+// What the scene's lighting currently is, for shaders that do not go through the lit shader (terrain).
+Vector3 SunDirection();          // unit vector the sunlight travels along
+Vector3 SunLightScale();         // multiply a shader's own sun colour by this (colour x intensity x day/night)
+Vector3 AmbientScale();          // multiply a shader's own ambient colour by this (1 = the default noon ambient)
+float FogDensity();
+Color FogColorNow();
 float GetAmbientIntensity();
 
 // Toggles the shadow-receiving ground plane.

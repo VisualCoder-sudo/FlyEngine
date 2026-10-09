@@ -112,7 +112,8 @@ void Engine::Draw() {
     SetLODCameraPos(camera.position);
 
     BeginDrawing();
-    const Color skyColor = gfx::SkyColor(clearColor);
+    gfx::SetEngineClearColor(clearColor);
+    const Color skyColor = gfx::CurrentSky();
     ClearBackground(skyColor);
 
     double p0 = GetTime();

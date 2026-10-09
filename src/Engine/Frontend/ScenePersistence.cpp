@@ -205,6 +205,12 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
 
     // v19: scene-wide lighting (the Lighting section of the Explorer).
     file << "LIGHTING " << gfx::Lighting().timeOfDay << ' ' << gfx::Lighting().dayLengthMinutes << "\n";
+    {   // The rest of the lighting items. A separate line, so a reader that only knows the line above ignores it.
+        const gfx::LightingSettings& L = gfx::Lighting();
+        file << "LIGHTING2 " << (L.hasSun ? 1 : 0) << ' ' << (L.hasAmbient ? 1 : 0) << ' ' << (L.hasSky ? 1 : 0) << ' ' << (L.hasFog ? 1 : 0) << ' '
+             << L.sunAzimuth << ' ' << L.sunElevation << ' ' << L.sunIntensity << ' ' << L.sunColor[0] << ' ' << L.sunColor[1] << ' ' << L.sunColor[2] << ' '
+             << L.ambient << ' ' << L.skyColor[0] << ' ' << L.skyColor[1] << ' ' << L.skyColor[2] << ' ' << L.fogDensity << "\n";
+    }
 
     return file.good();
 }
@@ -625,6 +631,21 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         if (file >> tag >> tod >> len && tag == "LIGHTING") {
             gfx::Lighting().timeOfDay = std::clamp(tod, 0.0f, 24.0f);
             gfx::Lighting().dayLengthMinutes = std::max(len, 0.0f);
+            const auto here = file.tellg();
+            std::string tag2; int hs = 0, ha = 0, hk = 0, hf = 0;
+            gfx::LightingSettings L2 = gfx::Lighting();
+            if (file >> tag2 && tag2 == "LIGHTING2" &&
+                file >> hs >> ha >> hk >> hf >> L2.sunAzimuth >> L2.sunElevation >> L2.sunIntensity >> L2.sunColor[0] >> L2.sunColor[1] >> L2.sunColor[2] >>
+                       L2.ambient >> L2.skyColor[0] >> L2.skyColor[1] >> L2.skyColor[2] >> L2.fogDensity) {
+                L2.hasSun = hs != 0; L2.hasAmbient = ha != 0; L2.hasSky = hk != 0; L2.hasFog = hf != 0;
+                L2.sunIntensity = std::clamp(L2.sunIntensity, 0.0f, 3.0f);
+                L2.ambient = std::clamp(L2.ambient, 0.0f, 2.0f);
+                L2.fogDensity = std::clamp(L2.fogDensity, 0.0f, 0.2f);
+                gfx::Lighting() = L2;
+            } else {
+                file.clear();
+                file.seekg(here);
+            }
         }
     }
 
