@@ -31,6 +31,8 @@ WaterBody::WaterBody(Vector3 pos, Vector3 sz, float height, Color color)
 WaterBody::~WaterBody() {
     s_instances.erase(std::remove(s_instances.begin(), s_instances.end(), this), s_instances.end());
     ReleaseGpuResources();
+    if (rippleTex.id != 0) { UnloadTexture(rippleTex); rippleTex = { 0 }; }
+    if (s_instances.empty() && s_spraySprite.id != 0) { UnloadTexture(s_spraySprite); s_spraySprite = { 0 }; }
     // Only unload if we actually loaded custom files (never unload raylib's shared default shader)
     if (customShader && shaderLoaded) UnloadShader(shader);
     shader = { 0 };
@@ -110,6 +112,9 @@ void WaterBody::InitializeShader() {
     objectCountLoc = GetShaderLocation(shader, "objectCount");
     objectPositionsLoc = GetShaderLocation(shader, "objectPositions");
     farRimLoc = GetShaderLocation(shader, "farRimParams");
+    rippleParamsLoc = GetShaderLocation(shader, "rippleParams");
+    rippleTexLoc = GetShaderLocation(shader, "rippleTexFS");
+    rippleTexVSLoc = GetShaderLocation(shader, "rippleTexVS");
 
     if (reflTexLoc >= 0) {
         int slot = gfx::GetReflectionTextureSlot();
@@ -529,6 +534,7 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
         Vector4 reflParams = { reflection.strength, reflection.distortion, reflection.distanceFade * 0.02f, enabled };
         SetShaderValue(shader, reflParamsLoc, &reflParams, SHADER_UNIFORM_VEC4);
     }
+    BindRippleTexture();
     if (reflTexLoc >= 0 && gfx::IsReflectionsEnabled()) {
         Texture2D reflTex = gfx::GetReflectionTarget().texture;
         if (reflTex.id > 0) {
@@ -554,6 +560,11 @@ void WaterBody::Draw() {
 
     Camera3D camera = s_activeCamera ? *s_activeCamera : Camera3D{};
     float globalTime = (float)GetTime();
+
+    // Dynamic ripples (wakes/splashes): follow the camera, advance, upload.
+    RecentreRipples(camera.position.x, camera.position.z);
+    StepRipples(GetFrameTime());
+    UploadRippleTexture();
 
     UpdateChunks(camera);
 
@@ -689,6 +700,10 @@ void WaterBody::Draw() {
     }
 
     EndShaderMode();
+
+    // Spray droplets from splashes and bows, drawn over the water.
+    StepSpray(GetFrameTime());
+    DrawSpray(camera);
 }
 
 void WaterBody::DrawOverlay3D() {
@@ -721,7 +736,7 @@ void WaterBody::DrawOverlay3D() {
     }
 }
 
-float WaterBody::GetHeightAt(float x, float z) const {
+float WaterBody::GetHeightAt(float x, float z, float rippleWeight) const {
     float lx = x - position.x;
     float lz = z - position.z;
 
@@ -746,7 +761,7 @@ float WaterBody::GetHeightAt(float x, float z) const {
     float n = WaterNoise::FBM3D(nx, ny, nz,
                                  noise.octaves, noise.persistence, noise.lacunarity,
                                  noise.seed);
-    return waterHeight + n * noise.amplitude;
+    return waterHeight + n * noise.amplitude + (rippleWeight > 0.0f ? rippleWeight * GetRippleHeightAt(x, z) : 0.0f);
 }
 
 BoundingBox WaterBody::GetBoundingBox() const {
