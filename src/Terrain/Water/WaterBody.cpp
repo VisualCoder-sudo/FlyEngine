@@ -731,7 +731,7 @@ void WaterBody::DrawOverlay3D() {
     }
 }
 
-float WaterBody::GetHeightAt(float x, float z) const {
+float WaterBody::GetHeightAt(float x, float z, float rippleWeight) const {
     float lx = x - position.x;
     float lz = z - position.z;
 
@@ -756,7 +756,7 @@ float WaterBody::GetHeightAt(float x, float z) const {
     float n = WaterNoise::FBM3D(nx, ny, nz,
                                  noise.octaves, noise.persistence, noise.lacunarity,
                                  noise.seed);
-    return waterHeight + n * noise.amplitude + GetRippleHeightAt(x, z);
+    return waterHeight + n * noise.amplitude + (rippleWeight > 0.0f ? rippleWeight * GetRippleHeightAt(x, z) : 0.0f);
 }
 
 BoundingBox WaterBody::GetBoundingBox() const {

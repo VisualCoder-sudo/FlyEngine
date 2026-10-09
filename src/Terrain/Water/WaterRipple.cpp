@@ -141,7 +141,9 @@ void WaterBody::AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
     const float r = std::clamp(radius, 0.4f, 6.0f);
     const float hullPush = std::min(0.00018f * ripple.wakeStrength * speed * submergedFraction, 0.0025f) * stepScale;
     const float bowLift  = std::min(0.0003f * ripple.wakeStrength * speed * submergedFraction, 0.004f) * stepScale;
-    const float foamAmt  = std::clamp(speed / 6.0f, 0.0f, 1.0f) * submergedFraction * 0.03f * stepScale;
+    // Bobbing/drifting objects shouldn't churn foam; it ramps in once actually moving.
+    const float foamRamp = std::clamp((speed - 0.5f) / 2.0f, 0.0f, 1.0f);
+    const float foamAmt  = std::clamp(speed / 6.0f, 0.0f, 1.0f) * foamRamp * submergedFraction * 0.03f * stepScale;
 
     // Heading for the bow wave; fall back to the path direction.
     Vector2 dir = { velocity.x, velocity.z };

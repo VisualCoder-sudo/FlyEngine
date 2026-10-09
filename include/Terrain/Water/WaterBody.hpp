@@ -119,7 +119,9 @@ public:
 
     // CPU-side height query (for physics/buoyancy). Includes the dynamic
     // ripple layer (boat wakes, splashes) on top of the procedural waves.
-    float GetHeightAt(float x, float z) const;
+    // rippleWeight scales the wake/splash layer (physics uses < 1 so a body's own
+    // wake can't feed back into its buoyancy).
+    float GetHeightAt(float x, float z, float rippleWeight = 1.0f) const;
 
     // --- Dynamic disturbance layer (wakes, splashes, foam trails) ----------
     // A camera-centred 2D wave-equation grid layered on the noise waves. It is
