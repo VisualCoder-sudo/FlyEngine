@@ -14,6 +14,9 @@ layout(binding=0) uniform vs_params {
     vec4 waterBodyNoiseParams1;
     vec4 waterBodyNoiseParams2;
     vec4 rippleParams;              // xy=window origin (world XZ), z=1/window size, w=enabled
+    vec4 sceneA;                    // scene lighting, handed to the fragment stage: xyz = unit vector towards the sun, w = ambient light (1 = noon default)
+    vec4 sceneB;                    // xyz = sun colour x intensity x day/night (about 1,1,1 at noon), w = fog density per metre
+    vec4 sceneC;                    // xyz = the sky colour the water reflects (distant water fogs towards it)
     vec3 cameraPos;
     float _pad0;
     vec2 waterBodyNoiseDirection;
@@ -34,6 +37,9 @@ out vec2 texCoord;
 out float heightOffset;
 out float noiseValue;
 flat out vec2 vsCamXZ;
+flat out vec4 vsSceneA;
+flat out vec4 vsSceneB;
+flat out vec4 vsSceneC;
 out float fragDist;
 
 int P(int i) {
@@ -237,6 +243,9 @@ void main() {
 
     worldPos = worldPos4.xyz;
     vsCamXZ = cameraPos.xz;
+    vsSceneA = sceneA;
+    vsSceneB = sceneB;
+    vsSceneC = sceneC;
 
     mat3 normalMatrix = mat3(transpose(inverse(wModel)));
     worldNormal = normalize(normalMatrix * localNormal);
@@ -267,9 +276,6 @@ layout(binding=1) uniform fs_params {
     vec2 farRimParams;              // x=clip radius (0 disables), y=feather width
     float chunkFade;
     int objectCount;
-    vec4 sceneA;                    // xyz = unit vector towards the sun, w = ambient light (1 = the noon default)
-    vec4 sceneB;                    // xyz = sun colour x intensity x day/night (about 1,1,1 at noon), w = fog density per metre
-    vec4 sceneC;                    // xyz = the sky colour the water reflects (distant water fogs towards it)
 };
 layout(binding=0) uniform texture2D reflectionTex;   // planar mirror of the world
 layout(binding=0) uniform sampler reflectionTex_smp;
@@ -283,6 +289,9 @@ in vec2 texCoord;
 in float heightOffset;
 in float noiseValue;
 flat in vec2 vsCamXZ;
+flat in vec4 vsSceneA;
+flat in vec4 vsSceneB;
+flat in vec4 vsSceneC;
 in float fragDist;
 out vec4 fragColor;
 
@@ -321,9 +330,9 @@ void main() {
 
     vec3 N = normalize(worldNormal);
     vec3 V = normalize(viewDir);
-    vec3 L = normalize(sceneA.xyz);
+    vec3 L = normalize(vsSceneA.xyz);
     vec3 H = normalize(V + L);
-    vec3 skyColor = sceneC.xyz;
+    vec3 skyColor = vsSceneC.xyz;
 
     // Capillary micro-detail: perturb the smooth wave normal with high-frequency
     // ripples so the specular highlight breaks into scattered glints instead of
@@ -471,7 +480,7 @@ void main() {
     totalFoam = clamp(totalFoam, 0.0, 1.0);
 
     // Lighting
-    vec3 diffuse = vec3(0.4 * sceneA.w) + smoothstep(0.0, 0.01, NdotL) * 0.6 * sceneB.xyz;
+    vec3 diffuse = vec3(0.4 * vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * 0.6 * vsSceneB.xyz;
     float spec = pow(NdotH, 48.0) * 0.8;
 
     // Fresnel-Schlick: water gets more reflective (and visually more opaque)
@@ -489,8 +498,8 @@ void main() {
 
     vec3 color = mix(baseColor * diffuse, reflTerm, reflMix);
     color += waterBodyFoamColor * totalFoam;
-    color += sceneB.xyz * spec;
-    color = mix(color, sceneC.xyz, clamp(1.0 - exp(-sceneB.w * fragDist), 0.0, 1.0));
+    color += vsSceneB.xyz * spec;
+    color = mix(color, vsSceneC.xyz, clamp(1.0 - exp(-vsSceneB.w * fragDist), 0.0, 1.0));
 
     float edgeAlpha = mix(alpha, 1.0, fresnel * 0.5);
 
