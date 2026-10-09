@@ -125,3 +125,8 @@ target_link_libraries(city_surface_audit PRIVATE FlyEngineCore FlyRL)
 # ctest: build/tests/lighting_test
 add_executable(lighting_test lighting_test.cpp)
 target_link_libraries(lighting_test PRIVATE FlyEngineCore FlyRL)
+
+# Terrain integration (snap the city to a BasicTerrain, grade limit, shape the terrain to the city). Opens a window,
+# so built but not registered with ctest: build/tests/city_terrain_test
+add_executable(city_terrain_test city_terrain_test.cpp)
+target_link_libraries(city_terrain_test PRIVATE FlyEngineCore FlyRL)

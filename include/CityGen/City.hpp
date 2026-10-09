@@ -2,6 +2,7 @@
 
 #include "../Engine/Backend/Entity.hpp"
 #include "raylib.h"
+#include "../Terrain/BasicTerrain.hpp"
 #include "raymath.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <vector>
 
 class Engine;
+class BasicTerrain;
 
 namespace city {
 
@@ -455,6 +457,18 @@ public:
     void DebugSurfaceTriangles(std::vector<Vector3>& out) const;
     void DebugSurfaceLayers(std::vector<float>& out) const;   // the stack layer of each triangle returned by DebugSurfaceTriangles
 
+    // ---- Terrain integration (City panel > Terrain) ----
+    // Road height of every node from the terrain under it (+ offset). maxGradePercent > 0 then relaxes the heights so
+    // no road is steeper than that (measured over the sloping part of the road, i.e. without the level junction zone).
+    // Returns how many nodes got a terrain height (nodes off the terrain keep theirs).
+    int SnapToTerrain(const BasicTerrain& terrain, float offset, float maxGradePercent);
+    // Only the grade relaxation, on the heights the nodes have now. Returns the steepest remaining grade (%).
+    float LimitRoadGrades(float maxGradePercent);
+    // Reshapes the terrain under and around the city: each heightmap vertex near the road, pad and park surfaces is
+    // set to the lowest city surface around it minus `clearance`, and the ground fades back to its natural height over
+    // `margin` metres. Bridge spans do not count. Returns the number of vertices changed.
+    int ShapeTerrainToCity(BasicTerrain& terrain, float clearance, float margin);
+
     // Geometry diagnostics ("Show geometry problems" in the editor): suspicious spots in the road/pad/park surface.
     //  steep - a surface triangle steeper than 60 degrees (a cliff)
     //  thin  - a long triangle that is paper-thin seen from above (a spike)
@@ -671,6 +685,7 @@ private:
         std::vector<CollBox> buildings;             // oriented boxes; non-box shapes become hulls
         std::vector<Vector3> surfVerts;             // road/pad/park surface triangles
         std::vector<int> surfIdx;
+        std::vector<unsigned char> surfSkip;        // per surface triangle (as in surfIdx): 1 = does not shape the terrain (bridge span)
         std::vector<float> surfLayer;               // per surface vertex: the road shader's stack layer (pad 0.06, asphalt 0.10 ...)
     };
     struct TilePhysics;                             // Box3D body/hulls/mesh (City.cpp)

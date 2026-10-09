@@ -124,6 +124,8 @@ struct MeshBuilder {
     std::vector<unsigned char> fixedNormal; // 1: normal set explicitly (walls); skipped by RecomputeNormals
     std::vector<unsigned char> wallTri;     // per triangle: 1 = collision-only-as-is (walls, bridge decks)
     bool wallMode = false;
+    bool terrainSkip = false;               // triangles built now do not shape the terrain (bridge spans)
+    std::vector<unsigned char> triSkip;     // per triangle: 1 = terrainSkip was set
     float curLayer = 0.0f;                  // stack layer (m above the road surface) for the road shader's depth bias
 
     void Vertex(const Vector3& p, Color c) {
@@ -203,6 +205,7 @@ struct MeshBuilder {
 
     void Triangle(int a, int b, int c) {
         wallTri.push_back(wallMode ? 1 : 0);
+        triSkip.push_back(terrainSkip ? 1 : 0);
         indices.push_back(a);
         indices.push_back(b);
         indices.push_back(c);
@@ -3093,6 +3096,7 @@ void City::ComputeTileCPU(Tile& t) {
 
         for (int ei : t.edges) {
             const RoadEdge& e = edges[(size_t)ei];
+            mb.terrainSkip = e.bridge;     // a bridge deck does not pull the terrain up under it
             const Vector2& A = nodes[e.a].pos;
             const Vector2& B = nodes[e.b].pos;
             const Vector2 d = Vector2Normalize(Vector2Subtract(B, A));
@@ -3506,7 +3510,13 @@ void City::ComputeTileCPU(Tile& t) {
             pts.push_back({ g.poly[0].x, yy, g.poly[0].y });
             mb.Fan(pts, col);
         };
+        mb.terrainSkip = false;
         for (int ni : t.nodes) {
+            {   // a junction plate in the middle of a bridge is part of it
+                bool allBridge = ni < (int)nodeEdges.size() && !nodeEdges[(size_t)ni].empty();
+                if (ni < (int)nodeEdges.size()) for (int ej : nodeEdges[(size_t)ni]) if (!edges[(size_t)ej].bridge) allBridge = false;
+                mb.terrainSkip = allBridge;
+            }
             mb.curLayer = 0.04f;
             emitPlate(J(slabC, ni, false), ni, capSlabY, Color{ 158, 158, 162, 255 });
             mb.curLayer = 0.12f;
@@ -3682,8 +3692,10 @@ void City::ComputeTileCPU(Tile& t) {
         t.coll.surfIdx.reserve(mb.indices.size());
         for (size_t i = 0; i + 2 < mb.indices.size(); i += 3) {
             int a = mb.indices[i], b = mb.indices[i + 1], c = mb.indices[i + 2];
+            const unsigned char skip = i / 3 < mb.triSkip.size() ? mb.triSkip[i / 3] : 0;
             if (i / 3 < mb.wallTri.size() && mb.wallTri[i / 3]) {   // walls/decks: keep as built
                 t.coll.surfIdx.push_back(a); t.coll.surfIdx.push_back(b); t.coll.surfIdx.push_back(c);
+                t.coll.surfSkip.push_back(skip);
                 continue;
             }
             const Vector3 &pa = t.coll.surfVerts[(size_t)a], &pb = t.coll.surfVerts[(size_t)b], &pc = t.coll.surfVerts[(size_t)c];
@@ -3691,6 +3703,7 @@ void City::ComputeTileCPU(Tile& t) {
             if (fabsf(ny) < 1e-6f) continue; // degenerate
             if (ny < 0.0f) std::swap(b, c);
             t.coll.surfIdx.push_back(a); t.coll.surfIdx.push_back(b); t.coll.surfIdx.push_back(c);
+            t.coll.surfSkip.push_back(skip);
         }
     }
 
@@ -4646,6 +4659,136 @@ void City::ComputeGeometryProblems(GeometryProblems& out) const {
             if (bad) { out.padOverRoad.push_back({ x, yPad, z }); out.padOverDelta.push_back(worst); }
         }
     }
+}
+
+int City::SnapToTerrain(const BasicTerrain& terrain, float offset, float maxGradePercent) {
+    int snapped = 0;
+    const float w = terrain.GetWidth() * terrain.GetScale() * 0.5f, d = terrain.GetDepth() * terrain.GetScale() * 0.5f;
+    for (RoadNode& n : nodes) {
+        const float lx = n.pos.x - terrain.position.x, lz = n.pos.y - terrain.position.z;
+        if (lx < -w || lx > w || lz < -d || lz > d) continue;
+        n.h = Clamp(terrain.position.y + terrain.GetHeightAt(n.pos.x, n.pos.y) + offset, -200.0f, 500.0f);
+        snapped++;
+    }
+    if (maxGradePercent > 0.0f) LimitRoadGrades(maxGradePercent);
+    RebuildAll();
+    return snapped;
+}
+
+float City::LimitRoadGrades(float maxGradePercent) {
+    const float g = std::max(maxGradePercent, 0.5f) * 0.01f;
+    float worst = 0.0f;
+    for (int it = 0; it < 80; it++) {
+        worst = 0.0f;
+        for (int ei = 0; ei < (int)edges.size(); ei++) {
+            const RoadEdge& e = edges[(size_t)ei];
+            const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+            if (len < 1e-3f) continue;
+            float pa, pb;
+            EdgePlateau(ei, len, pa, pb);
+            const float slopeLen = std::max(len * (1.0f - pa - pb), 3.0f);   // the road only slopes between the level junction zones
+            const float dh = nodes[(size_t)e.a].h - nodes[(size_t)e.b].h;
+            const float limit = g * slopeLen;
+            worst = std::max(worst, fabsf(dh) / slopeLen);
+            if (fabsf(dh) > limit) {
+                const float excess = (fabsf(dh) - limit) * 0.5f * (dh > 0 ? 1.0f : -1.0f);
+                nodes[(size_t)e.a].h -= excess;
+                nodes[(size_t)e.b].h += excess;
+            }
+        }
+        if (worst <= g * 1.01f) break;
+    }
+    RebuildAll();
+    float steepest = 0.0f;
+    for (int ei = 0; ei < (int)edges.size(); ei++) {
+        const RoadEdge& e = edges[(size_t)ei];
+        const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+        if (len < 1e-3f) continue;
+        float pa, pb;
+        EdgePlateau(ei, len, pa, pb);
+        steepest = std::max(steepest, fabsf(nodes[(size_t)e.a].h - nodes[(size_t)e.b].h) / std::max(len * (1.0f - pa - pb), 3.0f));
+    }
+    return steepest * 100.0f;
+}
+
+int City::ShapeTerrainToCity(BasicTerrain& terrain, float clearance, float margin) {
+    const int W = terrain.GetWidth(), D = terrain.GetDepth();
+    const float S = terrain.GetScale();
+    if (W < 2 || D < 2 || tiles.empty()) return 0;
+    float* hm = terrain.GetHeightData();
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> target((size_t)W * D, inf);        // lowest city surface within a cell of each vertex (world y)
+    auto cellOf = [&](float x, float z, float& gx, float& gz) { gx = (x - terrain.position.x) / S + W * 0.5f; gz = (z - terrain.position.z) / S + D * 0.5f; };
+    // Sample every city surface triangle that is not a bridge span, on a grid of half the terrain's vertex spacing,
+    // and let each sample lower the vertices around it.
+    const float step = S * 0.5f;
+    for (const auto& kv : tiles) {
+        const TileCollision& cl = kv.second.coll;
+        if (cl.surfLayer.size() != cl.surfVerts.size()) continue;
+        for (size_t i = 0, t = 0; i + 2 < cl.surfIdx.size(); i += 3, t++) {
+            if (t < cl.surfSkip.size() && cl.surfSkip[t]) continue;
+            const size_t ia = (size_t)cl.surfIdx[i], ib = (size_t)cl.surfIdx[i + 1], ic = (size_t)cl.surfIdx[i + 2];
+            const float lay = cl.surfLayer[ia];
+            if (lay > 0.13f) continue;                                       // markings and furniture bases
+            const Vector3 &a = cl.surfVerts[ia], &b = cl.surfVerts[ib], &c = cl.surfVerts[ic];
+            const Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+            const float nl = Vector3Length(n);
+            if (nl < 1e-6f || fabsf(n.y) / nl < 0.5f) continue;              // walls and curb faces
+            const float minX = std::min({ a.x, b.x, c.x }), maxX = std::max({ a.x, b.x, c.x });
+            const float minZ = std::min({ a.z, b.z, c.z }), maxZ = std::max({ a.z, b.z, c.z });
+            const float det = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+            if (fabsf(det) < 1e-9f) continue;
+            for (float z = minZ; z <= maxZ + step * 0.5f; z += step)
+                for (float x = minX; x <= maxX + step * 0.5f; x += step) {
+                    const float l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / det;
+                    const float l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / det;
+                    const float l3 = 1.0f - l1 - l2;
+                    if (l1 < -0.02f || l2 < -0.02f || l3 < -0.02f) continue;
+                    const float y = l1 * a.y + l2 * b.y + l3 * c.y;
+                    float gx, gz;
+                    cellOf(x, z, gx, gz);
+                    const int x0 = (int)floorf(gx), z0 = (int)floorf(gz);
+                    for (int dz = 0; dz <= 1; dz++) for (int dx = 0; dx <= 1; dx++) {
+                        const int vx = x0 + dx, vz = z0 + dz;
+                        if (vx < 0 || vz < 0 || vx >= W || vz >= D) continue;
+                        float& tv = target[(size_t)vz * W + vx];
+                        tv = std::min(tv, y);
+                    }
+                }
+        }
+    }
+    // Fade out around the covered vertices: nearest covered vertex (chamfer distance) supplies the height to blend to.
+    std::vector<float> dist((size_t)W * D, inf);
+    std::vector<float> src((size_t)W * D, 0.0f);
+    std::vector<int> queue;
+    for (size_t i = 0; i < target.size(); i++)
+        if (target[i] < inf) { dist[i] = 0.0f; src[i] = target[i]; queue.push_back((int)i); }
+    const float maxD = std::max(margin, 0.0f);
+    for (size_t qi = 0; qi < queue.size(); qi++) {
+        const int idx = queue[qi];
+        const int x = idx % W, z = idx / W;
+        for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+            if (!dx && !dz) continue;
+            const int nx = x + dx, nz = z + dz;
+            if (nx < 0 || nz < 0 || nx >= W || nz >= D) continue;
+            const float nd = dist[(size_t)idx] + ((dx && dz) ? 1.4142f : 1.0f) * S;
+            if (nd > maxD || nd >= dist[(size_t)nz * W + nx]) continue;
+            dist[(size_t)nz * W + nx] = nd;
+            src[(size_t)nz * W + nx] = src[(size_t)idx];
+            queue.push_back(nz * W + nx);
+        }
+    }
+    int changed = 0;
+    for (size_t i = 0; i < target.size(); i++) {
+        if (dist[i] == inf) continue;
+        const float t = dist[i] == 0.0f ? 1.0f : 1.0f - Clamp(dist[i] / std::max(maxD, 1e-3f), 0.0f, 1.0f);
+        const float w = t * t * (3.0f - 2.0f * t);
+        const float local = src[i] - clearance - terrain.position.y;      // wanted heightmap value
+        const float nh = Clamp(hm[i] + (local - hm[i]) * w, terrain.GetMinHeight(), terrain.GetMaxHeight());
+        if (fabsf(nh - hm[i]) > 1e-4f) { hm[i] = nh; changed++; }
+    }
+    if (changed) terrain.MarkAllDirty();
+    return changed;
 }
 
 const City::GeometryProblems& City::GetGeometryProblemsCached() {

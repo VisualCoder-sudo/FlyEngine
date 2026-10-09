@@ -254,6 +254,15 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   variety (flat, gable, shed, tower), short buildings, footprint variety, floor
   counts with facade windows aligned to floors. *Insert building* places buildings
   by hand, with an optional *NoCollision* mode.
+- **Terrain:** *City panel > Terrain* fits the city to a *Basic Terrain*: *Snap city to terrain*
+  puts every road node on the ground (with an optional maximum grade), *Limit grades* only
+  relaxes steep roads, and *Shape terrain to city* lowers or raises the ground to just under
+  the roads, pads and parks and blends it back into the natural ground (not under bridges).
+  *Restore terrain* undoes the last shaping.
+- **Lighting:** besides *Time*, the Explorer's Lighting **+** menu inserts *Sun* (direction,
+  height, intensity, colour), *Ambient*, *Sky* and *Fog*; the terrain follows them too.
+- **People:** pedestrians walk to destinations, wait for the walk signal, queue at bus stops,
+  ride buses and get off at another stop.
 - **Street furniture:** street lights and trees.
 - **Traffic (Play mode):** cars follow each other (IDM) with randomised speed and
   braking, turn gradually through junctions, obey signals, stop signs and

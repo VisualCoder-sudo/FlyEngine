@@ -1149,6 +1149,67 @@ void DrawCityEditorPanel() {
         }
     }
 
+    ImGui::SeparatorText("Terrain");
+    {
+        const auto& terrains = BasicTerrain::GetInstances();
+        if (terrains.empty()) {
+            ImGui::TextDisabled("No terrain in the scene. Add one from the Terrain panel,\nthen come back to fit the city to it.");
+        } else {
+            s.terrainIndex = std::clamp(s.terrainIndex, 0, (int)terrains.size() - 1);
+            if (terrains.size() > 1) {
+                char cur[32]; snprintf(cur, sizeof cur, "Terrain %d", s.terrainIndex + 1);
+                if (ImGui::BeginCombo("Terrain", cur)) {
+                    for (int i = 0; i < (int)terrains.size(); i++) {
+                        char nm[32]; snprintf(nm, sizeof nm, "Terrain %d", i + 1);
+                        if (ImGui::Selectable(nm, i == s.terrainIndex)) s.terrainIndex = i;
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            BasicTerrain* t = terrains[(size_t)s.terrainIndex];
+            ImGui::DragFloat("Road height above ground", &s.terrainOffset, 0.05f, -2.0f, 10.0f, "%.2f m");
+            ImGui::DragFloat("Max road grade (0 = none)", &s.terrainMaxGrade, 0.2f, 0.0f, 40.0f, "%.0f %%");
+            if (ImGui::Button("Snap city to terrain")) {
+                NotifyCityEdit();
+                const int n = city->SnapToTerrain(*t, s.terrainOffset, s.terrainMaxGrade);
+                char msg[160]; snprintf(msg, sizeof msg, "Snapped %d of %zu road nodes to the terrain.", n, city->GetNodes().size());
+                s.terrainStatus = msg;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Limit grades")) {
+                NotifyCityEdit();
+                const float steepest = city->LimitRoadGrades(s.terrainMaxGrade > 0.0f ? s.terrainMaxGrade : 10.0f);
+                char msg[160]; snprintf(msg, sizeof msg, "Steepest road grade is now %.1f %%.", steepest);
+                s.terrainStatus = msg;
+            }
+            ImGui::DragFloat("Clearance below roads", &s.terrainClearance, 0.02f, 0.0f, 2.0f, "%.2f m");
+            ImGui::DragFloat("Blend into ground over", &s.terrainMargin, 0.5f, 0.0f, 80.0f, "%.0f m");
+            const bool canShape = city->GetCollisionEnabled();
+            if (!canShape) ImGui::BeginDisabled();
+            if (ImGui::Button("Shape terrain to city")) {
+                s.terrainBackup.assign(t->GetHeightData(), t->GetHeightData() + (size_t)t->GetWidth() * t->GetDepth());
+                s.terrainBackupOwner = t;
+                const int n = city->ShapeTerrainToCity(*t, s.terrainClearance, s.terrainMargin);
+                char msg[160]; snprintf(msg, sizeof msg, "Reshaped %d terrain points under and around the city.", n);
+                s.terrainStatus = msg;
+            }
+            if (!canShape) ImGui::EndDisabled();
+            ImGui::SameLine();
+            bool backupOk = !s.terrainBackup.empty() && s.terrainBackupOwner == t && s.terrainBackup.size() == (size_t)t->GetWidth() * t->GetDepth();
+            if (!backupOk) ImGui::BeginDisabled();
+            if (ImGui::Button("Restore terrain")) {
+                std::copy(s.terrainBackup.begin(), s.terrainBackup.end(), t->GetHeightData());
+                t->MarkAllDirty();
+                s.terrainBackup.clear();
+                s.terrainStatus = "Terrain restored to before the last reshaping.";
+            }
+            if (!backupOk) ImGui::EndDisabled();
+            if (!canShape) ImGui::TextDisabled("Shaping needs \"Building collision\" on.");
+            if (!s.terrainStatus.empty()) ImGui::TextWrapped("%s", s.terrainStatus.c_str());
+            ImGui::TextDisabled("Snap moves the roads onto the ground. Shape lowers or raises\nthe ground to just under the roads, pads and parks (not\nunder bridges). Restore undoes the last Shape.");
+        }
+    }
+
     ImGui::SeparatorText("Performance");
     {
         bool persistent = gfx::GetInstanceBuffersEnabled();

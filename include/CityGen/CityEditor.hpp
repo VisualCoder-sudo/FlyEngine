@@ -83,6 +83,16 @@ namespace city {
         int transitAutoLines = 3;
         int transitAutoStops = 6;
 
+        // Terrain section: which BasicTerrain, the settings, and a one-level backup of the last reshaping.
+        int terrainIndex = 0;
+        float terrainOffset = 0.3f;        // road height above the ground (m)
+        float terrainMaxGrade = 10.0f;     // % (0 = no limit)
+        float terrainClearance = 0.3f;     // the shaped terrain sits this far below the road (m)
+        float terrainMargin = 16.0f;       // fade back to the natural ground over this distance (m)
+        std::vector<float> terrainBackup;
+        const BasicTerrain* terrainBackupOwner = nullptr;
+        std::string terrainStatus;
+
         // "Show geometry problems": paints suspicious road/pad/park surface spots red in the viewport.
         bool showProblems = false;
 
