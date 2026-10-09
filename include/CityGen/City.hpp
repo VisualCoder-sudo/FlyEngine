@@ -462,6 +462,7 @@ public:
     struct GeometryProblems {
         std::vector<std::array<Vector3, 3>> steep, thin;
         std::vector<std::pair<Vector3, Vector3>> steps;   // (low, high) point at the same x,z
+        size_t padSamplesOnRoad = 0;                      // sample points of pads that lie over road asphalt (the rate denominator)
         std::vector<float> padOverDelta;                  // how far (m, with the layer bias) the pad is above the road there
         std::vector<Vector3> padOverRoad;                 // a pad / park drawn on top of road asphalt (it hides the road)
     };

@@ -253,6 +253,52 @@ void Fan(const std::vector<Vector3>& pts, Color col) {
     }
 };
 
+
+// Emits the triangles of a polygon triangulation (counter-clockwise in x,z) split uniformly `levels` times, every
+// vertex lifted to baseY + H(x, z). The midpoints are computed the same way for both triangles sharing an edge, so
+// the split surface has no cracks; heights are cached per position so each point is evaluated once.
+template <class HFn>
+void DrapeEmit(MeshBuilder& mb, const std::vector<Vector2>& pts, const std::vector<int>& tris, int levels, float baseY, Color col, HFn H) {
+    struct PK { int64_t x, z; bool operator==(const PK& o) const { return x == o.x && z == o.z; } };
+    struct PH { size_t operator()(const PK& k) const { return (size_t)(k.x * 73856093LL) ^ (size_t)(k.z * 83492791LL); } };
+    std::unordered_map<PK, float, PH> cache;
+    auto height = [&](const Vector2& p) {
+        const PK k{ (int64_t)llroundf(p.x * 1000.0f), (int64_t)llroundf(p.y * 1000.0f) };
+        const auto it = cache.find(k);
+        if (it != cache.end()) return it->second;
+        const float y = H(p.x, p.y);
+        cache.emplace(k, y);
+        return y;
+    };
+    auto mid = [](const Vector2& a, const Vector2& b) { return Vector2{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f }; };
+    auto emit = [&](const Vector2& a, const Vector2& b, const Vector2& c, int lv, auto&& self) -> void {
+        if (lv <= 0) {
+            const int base = (int)(mb.verts.size() / 3);
+            mb.Vertex({ a.x, baseY + height(a), a.y }, col);
+            mb.Vertex({ b.x, baseY + height(b), b.y }, col);
+            mb.Vertex({ c.x, baseY + height(c), c.y }, col);
+            mb.Triangle(base, base + 2, base + 1);   // up-facing, like the flat pads
+            return;
+        }
+        const Vector2 ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
+        self(a, ab, ca, lv - 1, self);
+        self(ab, b, bc, lv - 1, self);
+        self(ca, bc, c, lv - 1, self);
+        self(ab, bc, ca, lv - 1, self);
+    };
+    for (size_t t = 0; t + 2 < tris.size(); t += 3) emit(pts[(size_t)tris[t]], pts[(size_t)tris[t + 1]], pts[(size_t)tris[t + 2]], levels, emit);
+}
+
+// How many times to split a triangulation so no edge is much longer than `maxEdge`.
+int DrapeLevels(const std::vector<Vector2>& pts, const std::vector<int>& tris, float maxEdge, int cap) {
+    float L = 0.0f;
+    for (size_t t = 0; t + 2 < tris.size(); t += 3)
+        for (int k = 0; k < 3; k++) L = std::max(L, Vector2Distance(pts[(size_t)tris[t + (size_t)k]], pts[(size_t)tris[t + (size_t)((k + 1) % 3)]]));
+    int lv = 0;
+    while (lv < cap && L > maxEdge) { L *= 0.5f; lv++; }
+    return lv;
+}
+
 } // namespace
 
 
@@ -2338,43 +2384,38 @@ void City::LayoutBlockProcedural(Block& block) {
 }
 
 // ---------------------------------------------------------------------------
-// Block surface: the pad height field. A block whose road nodes sit at different heights
-// gets a boundary ring that follows the roads' height profiles, a flat apron out to the
-// edge of the road slab (so the pad never rises over the asphalt), and an inner polygon
-// that slopes between those boundary heights.
+// Block surface: the height of a block's pad. When the block's road nodes sit at different
+// heights the pad is draped over one smooth height field: the road surface height is sampled
+// densely along the block boundary (exactly what the road strips there use), and the height
+// anywhere inside is the inverse-distance-weighted blend of those samples. Next to a road the
+// pad therefore has the road's height, and further in it eases between the roads, with no
+// corner fans or rings to disagree with the roads.
 // ---------------------------------------------------------------------------
 struct City::BlockSurface {
     bool flat = true;           // all boundary nodes at one height: the pad is a flat plane
     float flatY = 0.0f;
-    std::vector<Vector3> B;     // block boundary (subdivided along sloped roads), with heights
-    std::vector<char> corner;   // per B vertex: 1 = an original block node (0 = subdivision point)
-    std::vector<int> bEdge;     // per B vertex: index of the block edge (node i -> i+1) it lies on
-    std::vector<Vector3> R;     // inner ring, one per B vertex (valid when ringOk)
-    bool ringOk = false;
-    std::vector<int> tris;      // triangulation of R (ringOk) or B
+    std::vector<float> sx, sz, sy;   // dense samples of the road surface along the block boundary
+
+    // Distance from (x, z) to the nearest boundary sample (samples are 1.5 m apart, so within ~0.75 m of the true distance).
+    float BoundaryDist(float x, float z) const {
+        float best = 1e30f;
+        for (size_t i = 0; i < sx.size(); i++) { const float dx = x - sx[i], dz = z - sz[i]; best = std::min(best, dx * dx + dz * dz); }
+        return sqrtf(best);
+    }
 
     float HeightAt(float x, float z) const {
-        if (flat) return flatY;
-        const std::vector<Vector3>& V = ringOk ? R : B;
-        for (size_t t = 0; t + 2 < tris.size(); t += 3) {
-            const Vector3 &a = V[(size_t)tris[t]], &b = V[(size_t)tris[t + 1]], &c = V[(size_t)tris[t + 2]];
-            const float d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
-            if (fabsf(d) < 1e-9f) continue;
-            const float l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d;
-            const float l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d;
-            const float l3 = 1.0f - l1 - l2;
-            if (l1 >= -1e-4f && l2 >= -1e-4f && l3 >= -1e-4f) return l1 * a.y + l2 * b.y + l3 * c.y;
+        if (flat || sx.empty()) return flatY;
+        double sw = 0.0, sh = 0.0;
+        for (size_t i = 0; i < sx.size(); i++) {
+            const double dx = (double)x - (double)sx[i], dz = (double)z - (double)sz[i];
+            const double d2 = dx * dx + dz * dz + 0.25;           // +0.25: exact-ish on the boundary, no singularity
+            const double d4 = d2 * d2;
+            const double w = 1.0 / (d4 * d4);                     // falls off as 1/d^8: next to a road the height is that road's, only
+                                                                  // further in does it ease between the roads (1/d^2 let the far side
+                                                                  // of the block pull the pad off the road height)
+            sw += w; sh += w * (double)sy[i];
         }
-        // Outside the inner polygon (the road-side apron): height of the nearest boundary point.
-        float best = 1e30f, y = B.empty() ? 0.0f : B[0].y;
-        for (size_t i = 0; i < B.size(); i++) {
-            const Vector3 &p = B[i], &q = B[(i + 1) % B.size()];
-            const float dx = q.x - p.x, dz = q.z - p.z, l2 = dx * dx + dz * dz;
-            const float t = l2 > 1e-9f ? Clamp(((x - p.x) * dx + (z - p.z) * dz) / l2, 0.0f, 1.0f) : 0.0f;
-            const float ex = p.x + dx * t - x, ez = p.z + dz * t - z, d2 = ex * ex + ez * ez;
-            if (d2 < best) { best = d2; y = p.y + (q.y - p.y) * t; }
-        }
-        return y;
+        return (float)(sh / sw);
     }
 };
 
@@ -2388,110 +2429,20 @@ void City::BuildBlockSurface(const Block& block, BlockSurface& out) const {
     for (int idx : block.nodes) if (fabsf(nodes[(size_t)idx].h - h0) > 1e-4f) flat = false;
     if (flat) return;
     out.flat = false;
-
     for (int i = 0; i < n; i++) {
         const int ni = block.nodes[(size_t)i], nj = block.nodes[(size_t)((i + 1) % n)];
         const int ei = EdgeBetween(ni, nj);
         const Vector2 P = nodes[(size_t)ni].pos, Q = nodes[(size_t)nj].pos;
-        // Boundary points at the edge's shared stations (oriented ni -> nj), heights from its profile.
-        std::vector<float> fr;
-        if (ei >= 0) {
-            fr = EdgeStations(ei);
-            if (edges[(size_t)ei].a != ni) { std::reverse(fr.begin(), fr.end()); for (float& v : fr) v = 1.0f - v; }
-        } else {
-            fr = { 0.0f, 1.0f };
-        }
-        for (size_t k = 0; k + 1 < fr.size(); k++) {
-            const float f = fr[k];
+        const int count = std::max(2, (int)ceilf(Vector2Distance(P, Q) / 1.5f));
+        for (int k = 0; k < count; k++) {
+            const float f = (float)k / (float)count;
             float y;
-            if (ei >= 0) y = EdgeProfileY(ei, edges[(size_t)ei].a == ni ? f : 1.0f - f);
+            if (ei >= 0) y = EdgeSurfaceY(ei, edges[(size_t)ei].a == ni ? f : 1.0f - f);   // the same height the road strip has there
             else y = nodes[(size_t)ni].h + (nodes[(size_t)nj].h - nodes[(size_t)ni].h) * f;
-            out.B.push_back({ P.x + (Q.x - P.x) * f, y, P.y + (Q.y - P.y) * f });
-            out.corner.push_back(k == 0 ? 1 : 0);
-            out.bEdge.push_back(i);
+            out.sx.push_back(P.x + (Q.x - P.x) * f);
+            out.sz.push_back(P.y + (Q.y - P.y) * f);
+            out.sy.push_back(y);
         }
-    }
-    // Inner ring. It is built from the corner polygon (the block's own nodes), where InsetPolygon is
-    // reliable, and the subdivision points are placed on it by projecting their perpendicular
-    // offsets onto the ring edge (clamped, so points near a corner collapse onto the mitre corner).
-    // The apron reaches past the slab edge by the corner fillet's overshoot: the rounded junction
-    // plate is flat at the node height and extends a little beyond the slab corner, so the sloping
-    // inner surface must start beyond it or the plate would poke through.
-    const float apron = BlockRoadHalf(block) + std::max(params.cornerRadius, 0.0f) * 0.5f + 0.5f;
-    {
-        std::vector<Vector2> coarse, ringC;
-        for (int idx : block.nodes) coarse.push_back(nodes[(size_t)idx].pos);
-        if (citygeom::InsetPolygon(coarse, apron, ringC) && ringC.size() == coarse.size()) {
-            const size_t nc = coarse.size();
-            // ringC[i] is the mitre corner of source edges i and i+1, i.e. of vertex i+1.
-            auto rc = [&](size_t v) { return ringC[(v + nc - 1) % nc]; };
-            out.R.resize(out.B.size());
-            std::vector<size_t> cornerAt(nc, 0);
-            for (size_t j = 0; j < out.B.size(); j++) if (out.corner[j]) cornerAt[(size_t)out.bEdge[j]] = j;
-            for (size_t j = 0; j < out.B.size(); j++) {
-                const size_t v = (size_t)out.bEdge[j];
-                Vector2 r;
-                float ry = out.B[j].y;
-                if (out.corner[j]) {
-                    r = rc(v);
-                } else {
-                    const Vector2 P = coarse[v], Q = coarse[(v + 1) % nc];
-                    Vector2 dir = Vector2Subtract(Q, P);
-                    const float dl = Vector2Length(dir);
-                    dir = dl > 1e-6f ? Vector2Scale(dir, 1.0f / dl) : Vector2{ 1.0f, 0.0f };
-                    const Vector2 nrm = { -dir.y, dir.x };
-                    const Vector2 q = Vector2Add({ out.B[j].x, out.B[j].z }, Vector2Scale(nrm, apron));
-                    const Vector2 a0 = rc(v), a1 = rc((v + 1) % nc), ab = Vector2Subtract(a1, a0);
-                    const float l2 = ab.x * ab.x + ab.y * ab.y;
-                    const float t = l2 > 1e-9f ? Clamp(Vector2DotProduct(Vector2Subtract(q, a0), ab) / l2, 0.0f, 1.0f) : 0.0f;
-                    r = Vector2Add(a0, Vector2Scale(ab, t));
-                    (void)cornerAt;
-                }
-                // An acute or reflex corner of an irregular block gives a mitre point far outside the block, which
-                // showed as a long thin spike across the road: keep every ring point near its boundary point.
-                {
-                    Vector2 d = Vector2Subtract(r, { out.B[j].x, out.B[j].z });
-                    const float lim = apron * 1.8f, dl = Vector2Length(d);
-                    if (dl > lim) r = Vector2Add({ out.B[j].x, out.B[j].z }, Vector2Scale(d, lim / dl));
-                    // A ring point that fell outside the block (the inset of an acute or reflex corner can fold over)
-                    // would stretch the apron strip across the road: collapse it onto its boundary point instead.
-                    if (!citygeom::PointInPolygon(r, coarse)) r = { out.B[j].x, out.B[j].z };
-                }
-                out.R[j] = { r.x, ry, r.y };
-            }
-            out.ringOk = true;
-        }
-    }
-
-    // Triangulate the corner polygon only: runs of collinear subdivision points make ear clipping
-    // drop or sliver the ear at a corner. The subdivision points are then re-attached by fanning
-    // each boundary triangle edge that had some, so the surface has no T-junction cracks.
-    const std::vector<Vector3>& V = out.ringOk ? out.R : out.B;
-    const int m = (int)V.size();
-    std::vector<int> cIdx;
-    for (int i = 0; i < m; i++) if (out.corner[(size_t)i]) cIdx.push_back(i);
-    if (cIdx.size() < 3) return;
-    std::vector<Vector2> cxz;
-    for (int ci : cIdx) cxz.push_back({ V[(size_t)ci].x, V[(size_t)ci].z });
-    std::vector<int> ctris;
-    citygeom::TriangulateSimple(cxz, ctris);
-    std::vector<int> nextCorner((size_t)m, -1);
-    for (size_t k = 0; k < cIdx.size(); k++) nextCorner[(size_t)cIdx[k]] = cIdx[(k + 1) % cIdx.size()];
-    std::vector<std::array<int, 3>> work;
-    for (size_t t = 0; t + 2 < ctris.size(); t += 3)
-        work.push_back({ cIdx[(size_t)ctris[t]], cIdx[(size_t)ctris[t + 1]], cIdx[(size_t)ctris[t + 2]] });
-    while (!work.empty()) {
-        const std::array<int, 3> tr = work.back();
-        work.pop_back();
-        bool split = false;
-        for (int e = 0; e < 3 && !split; e++) {
-            const int x = tr[(size_t)e], y = tr[(size_t)((e + 1) % 3)], r = tr[(size_t)((e + 2) % 3)];
-            if (nextCorner[(size_t)x] == y && (x + 1) % m != y) {
-                for (int cur = x; cur != y; cur = (cur + 1) % m) work.push_back({ cur, (cur + 1) % m, r });
-                split = true;
-            }
-        }
-        if (!split) { out.tris.push_back(tr[0]); out.tris.push_back(tr[1]); out.tris.push_back(tr[2]); }
     }
 }
 
@@ -3023,7 +2974,7 @@ void City::ComputeTileCPU(Tile& t) {
             const Strip slabS = makeStrip(slabC, false);
             const Strip aspS = makeStrip(aspC, true);
             // Surface colours by road type: asphalt, dirt track (Path), pale paving (Pedestrian).
-            Color slabCol{ 62, 62, 66, 255 }, aspCol{ 82, 82, 88, 255 };
+            Color slabCol{ 158, 158, 162, 255 }, aspCol{ 82, 82, 88, 255 };   // the slab shows as the sidewalk beside the asphalt (same grey as the pads)
             if (e.type == (int)RoadType::Path) { slabCol = Color{ 104, 88, 66, 255 }; aspCol = Color{ 128, 108, 80, 255 }; }
             else if (e.type == (int)RoadType::Pedestrian) { slabCol = Color{ 170, 168, 160, 255 }; aspCol = Color{ 196, 192, 182, 255 }; }
             mb.curLayer = 0.02f;
@@ -3327,7 +3278,7 @@ void City::ComputeTileCPU(Tile& t) {
         };
         for (int ni : t.nodes) {
             mb.curLayer = 0.04f;
-            emitPlate(J(slabC, ni, false), ni, capSlabY, Color{ 62, 62, 66, 255 });
+            emitPlate(J(slabC, ni, false), ni, capSlabY, Color{ 158, 158, 162, 255 });
             mb.curLayer = 0.12f;
             emitPlate(J(aspC, ni, true), ni, capAspY, Color{ 82, 82, 88, 255 });
             if (nodes[(size_t)ni].junction && nodes[(size_t)ni].jkind == (int)JunctionKind::Roundabout) {
@@ -3374,13 +3325,9 @@ void City::ComputeTileCPU(Tile& t) {
         }
     }
 
-    // Vertex ranges of sloped pads/grass: their normals are smoothed toward the pad's average below.
-    std::vector<std::pair<size_t, size_t>> slopedRanges;
-
     // Block pads (concrete) under the buildings.
     for (int bi : t.blocks) {
         const Block& block = blocks[(size_t)bi];
-        const size_t padRangeStart = mb.verts.size() / 3;
         std::vector<Vector2> poly;
         poly.reserve(block.nodes.size());
         for (int idx : block.nodes) poly.push_back(nodes[idx].pos);
@@ -3388,6 +3335,15 @@ void City::ComputeTileCPU(Tile& t) {
         mb.curLayer = 0.06f;
         BlockSurface sf;
         BuildBlockSurface(block, sf);
+        // A sloped pad is sunk below the road within the road zone (road slab, junction plates and corner rounding),
+        // fading back up to its true height beyond it: whatever small height difference the draped pad has to the road
+        // is then hidden under the road, and beyond the slab edge it rises like a low curb.
+        const float sinkFull = BlockRoadHalf(block) + std::max(params.cornerRadius, 0.0f) * 0.5f + 0.5f;
+        auto padSink = [&](const BlockSurface& b, float x, float z) {
+            const float d = b.BoundaryDist(x, z);
+            const float t = Clamp((d - (sinkFull - 2.0f)) / 2.0f, 0.0f, 1.0f);
+            return 0.35f * (1.0f - t * t * (3.0f - 2.0f * t));
+        };
         const Color padColor = block.park ? Color{ 108, 158, 94, 255 } : Color{ 158, 158, 162, 255 };
         const float padY = 0.06f + kRoadElevation;
         if (sf.flat) {
@@ -3403,48 +3359,15 @@ void City::ComputeTileCPU(Tile& t) {
                 mb.Triangle(base, base + 2, base + 1);
             }
         } else {
-            // Shared vertices, so RecomputeNormals smooths the slope (no flat-shaded slivers).
-            const std::vector<Vector3>& V = sf.ringOk ? sf.R : sf.B;
-            const int baseV = (int)(mb.verts.size() / 3);
-            for (const Vector3& v : V) mb.Vertex({ v.x, v.y + padY, v.z }, padColor);
-            int baseB = baseV;
-            if (sf.ringOk) {
-                baseB = (int)(mb.verts.size() / 3);
-                // The outer edge of the apron lies on the road centre line, under the road. Sunk below the road surface so
-                // an apron triangle never pokes through it where the road and the sloped pad edge differ (a thin spike).
-                for (const Vector3& v : sf.B) mb.Vertex({ v.x, v.y + padY - 0.06f, v.z }, padColor);
-            }
-            // Every pad triangle is emitted facing up whatever order its corners came in (a concave or acute block
-            // corner can flip the ring/apron strip, and a flipped triangle is culled and leaves a hole).
-            auto upTri = [&](int a, int b, int c) {
-                const float ax = mb.verts[(size_t)a * 3], az = mb.verts[(size_t)a * 3 + 2];
-                const float ux = mb.verts[(size_t)b * 3] - ax, uz = mb.verts[(size_t)b * 3 + 2] - az;
-                const float vx = mb.verts[(size_t)c * 3] - ax, vz = mb.verts[(size_t)c * 3 + 2] - az;
-                // Collinear in (x,z) but at different heights = a vertical curtain: it is invisible from above, adds a
-                // sideways normal to the vertices it touches (dark smears) and an invisible wall to the collision surface.
-                if (fabsf(uz * vx - ux * vz) < 2e-3f) return;
-                {   // Nearly vertical too (a sliver whose points are collinear to a few centimetres): same problem.
-                    const float uy = mb.verts[(size_t)b * 3 + 1] - mb.verts[(size_t)a * 3 + 1], vy = mb.verts[(size_t)c * 3 + 1] - mb.verts[(size_t)a * 3 + 1];
-                    const float nx = uy * vz - uz * vy, nz = ux * vy - uy * vx, ny = fabsf(uz * vx - ux * vz);
-                    if (ny < 0.35f * sqrtf(nx * nx + ny * ny + nz * nz)) return;
-                }
-                if (uz * vx - ux * vz >= 0.0f) mb.Triangle(a, b, c);
-                else mb.Triangle(a, c, b);
-            };
-            for (size_t t = 0; t + 2 < sf.tris.size(); t += 3)
-                upTri(baseV + sf.tris[t], baseV + sf.tris[t + 2], baseV + sf.tris[t + 1]);
-            if (sf.ringOk) {
-                const int m = (int)sf.B.size();
-                for (int j = 0; j < m; j++) {   // flat apron out to the road slab edge
-                    const int k = (j + 1) % m;
-                    upTri(baseB + j, baseV + k, baseB + k);
-                    upTri(baseB + j, baseV + j, baseV + k);
-                }
-            }
+            // Sloped pad: the polygon is triangulated, split a few times, and every vertex is draped on the block's
+            // height field. (Normals come from RecomputeNormals, which welds equal positions.)
+            std::vector<int> tris;
+            citygeom::TriangulateSimple(poly, tris);
+            ReportIncompleteFill("pad", poly, tris);
+            const int lv = DrapeLevels(poly, tris, 4.5f, nodes.size() > 1200 ? 2 : 3);
+            DrapeEmit(mb, poly, tris, lv, padY, padColor, [&](float x, float z) { return sf.HeightAt(x, z) - padSink(sf, x, z); });
         }
 
-        if (!sf.flat) slopedRanges.push_back({ padRangeStart, mb.verts.size() / 3 });
-        const size_t grassStart = mb.verts.size() / 3;
         // Park grass sits above the pad (and below the roads).
         if (block.park && !block.parkPoly.empty()) {
             std::vector<int> ptris;
@@ -3470,15 +3393,8 @@ void City::ComputeTileCPU(Tile& t) {
             }
             mb.curLayer = 0.08f;
             const Color grassColor{ 108, 158, 94, 255 };
-            for (size_t t = 0; t + 2 < ptris.size(); t += 3) {
-                int base = (int)(mb.verts.size() / 3);
-                for (int k = 0; k < 3; k++) {
-                    const Vector2& gp = block.parkPoly[ptris[t + (size_t)k]];
-                    mb.Vertex({ gp.x, 0.08f + kRoadElevation + sf.HeightAt(gp.x, gp.y), gp.y }, grassColor);
-                }
-                mb.Triangle(base, base + 2, base + 1);
-            }
-            if (!sf.flat) slopedRanges.push_back({ grassStart, mb.verts.size() / 3 });
+            const int glv = sf.flat ? 0 : DrapeLevels(block.parkPoly, ptris, 4.5f, nodes.size() > 1200 ? 2 : 3);
+            DrapeEmit(mb, block.parkPoly, ptris, glv, 0.08f + kRoadElevation, grassColor, [&](float x, float z) { return sf.HeightAt(x, z) - (sf.flat ? 0.0f : padSink(sf, x, z)); });
         }
     }
 
@@ -3533,21 +3449,6 @@ void City::ComputeTileCPU(Tile& t) {
 
     if (mb.verts.empty()) return;
     mb.RecomputeNormals();
-    // A sloped pad is warped (its edge heights follow the roads' eased profiles) and split into fans, so per-vertex
-    // normals differ a lot between neighbouring vertices and show as radial shading wedges. Pull them toward the
-    // average normal of the whole pad (the grass, flat-shaded per triangle, gets the same treatment).
-    for (const auto& r : slopedRanges) {
-        if (r.second <= r.first) continue;
-        Vector3 avg = { 0.0f, 0.0f, 0.0f };
-        for (size_t i = r.first; i < r.second; i++) avg = Vector3Add(avg, { mb.normals[i * 3], mb.normals[i * 3 + 1], mb.normals[i * 3 + 2] });
-        if (Vector3Length(avg) < 1e-6f) continue;
-        avg = Vector3Normalize(avg);
-        for (size_t i = r.first; i < r.second; i++) {
-            if (mb.fixedNormal[i]) continue;
-            const Vector3 n = Vector3Normalize(Vector3Add(Vector3Scale({ mb.normals[i * 3], mb.normals[i * 3 + 1], mb.normals[i * 3 + 2] }, 0.3f), Vector3Scale(avg, 0.7f)));
-            mb.normals[i * 3] = n.x; mb.normals[i * 3 + 1] = n.y; mb.normals[i * 3 + 2] = n.z;
-        }
-    }
 
     // Collision surface: every road/pad/park triangle, wound so its normal faces up.
     if (collisionEnabled) {
@@ -4485,14 +4386,18 @@ void City::ComputeGeometryProblems(GeometryProblems& out) const {
             const float yPad = pt.a.y * w[k][0] + pt.b.y * w[k][1] + pt.c.y * w[k][2];
             const auto it = grid.find(cellKey((int)floorf(x / cell), (int)floorf(z / cell)));
             if (it == grid.end()) continue;
-            bool hit = false;
+            bool onRoad = false, bad = false;
+            float worst = 0.0f;
             for (int ri : it->second) {
                 float yRoad;
                 if (!heightIn(roads[(size_t)ri], x, z, yRoad)) continue;
+                onRoad = true;
                 // effective drawn height = surface + ~2 m per layer unit of bias
-                if (yPad + 2.0f * pt.layer > yRoad + 2.0f * roads[(size_t)ri].layer + 0.02f) { out.padOverRoad.push_back({ x, yPad, z }); out.padOverDelta.push_back((yPad + 2.0f * pt.layer) - (yRoad + 2.0f * roads[(size_t)ri].layer)); hit = true; break; }
+                const float excess = (yPad + 2.0f * pt.layer) - (yRoad + 2.0f * roads[(size_t)ri].layer);
+                if (excess > 0.02f) { bad = true; worst = std::max(worst, excess); }
             }
-            if (hit) break;
+            if (onRoad) out.padSamplesOnRoad++;
+            if (bad) { out.padOverRoad.push_back({ x, yPad, z }); out.padOverDelta.push_back(worst); }
         }
     }
 }

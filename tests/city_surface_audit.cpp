@@ -56,7 +56,7 @@ static uint32_t Hash(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15;
 int main() {
     InitWindow(256, 256, "city_surface_audit");
     int fail = 0;
-    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0, stepsFlat = 0, stepsHill = 0, overFlat = 0, overHill = 0;
+    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0, stepsFlat = 0, stepsHill = 0, overFlat = 0, overHill = 0, sampFlat = 0, sampHill = 0;
     const int first = getenv("AUDIT_DUMP") ? atoi(getenv("AUDIT_DUMP")) : 1, last = getenv("AUDIT_DUMP") ? first : 12;
     for (int seed = first; seed <= last; seed++) {
         for (int mode = 0; mode < 2; mode++) {
@@ -110,6 +110,7 @@ int main() {
             }
             (mode ? stepsHill : stepsFlat) += (long)gp.steps.size();
             (mode ? overHill : overFlat) += (long)gp.padOverRoad.size();
+            (mode ? sampHill : sampFlat) += (long)gp.padSamplesOnRoad;
             if (getenv("AUDIT_DUMP") && mode == 1)
                 for (size_t k = 0; k < gp.steps.size() && k < 12; k++)
                     std::printf("  step at (%.2f, %.2f): y %.2f -> %.2f\n", gp.steps[k].first.x, gp.steps[k].first.z, gp.steps[k].first.y, gp.steps[k].second.y);
@@ -163,12 +164,12 @@ int main() {
     }
     // Curtains (zero-area vertical triangles) and sideways normals used to make thousands of cliff triangles on
     // uneven ground; what is left is the steep middle of a short road ramp.
-    // Regression bounds (uneven ground, 12 cities). Before the road-twist fix pad-over-road was 1187 and steps 21.
+    // Regression bounds (uneven ground, 12 cities). Before the draped-pad rebuild pad-over-road was 1.9% of samples (1187 cases before the road-twist fix), steps 21, spikes 1068.
     if (cliffFlat != 0 || cliffHill > 80) { std::printf("FAIL: cliffs flat %ld uneven %ld\n", cliffFlat, cliffHill); fail++; }
     if (stepsFlat != 0 || stepsHill > 40) { std::printf("FAIL: steps flat %ld uneven %ld\n", stepsFlat, stepsHill); fail++; }
-    if (overFlat != 0 || overHill > 700) { std::printf("FAIL: pad-over-road flat %ld uneven %ld\n", overFlat, overHill); fail++; }
+    if (overFlat != 0 || (sampHill > 0 && (double)overHill / (double)sampHill > 0.01)) { std::printf("FAIL: pad-over-road flat %ld uneven %ld of %ld samples\n", overFlat, overHill, sampHill); fail++; }
     for (auto& h : hist) std::printf("  step layers %s : %d\n", h.first.c_str(), h.second);
-    std::printf("steps/cracks: flat %ld, uneven %ld; pad-over-road: flat %ld, uneven %ld\n", stepsFlat, stepsHill, overFlat, overHill);
+    std::printf("steps/cracks: flat %ld, uneven %ld; pad-over-road: flat %ld, uneven %ld of %ld pad samples over road (%.1f%%)\n", stepsFlat, stepsHill, overFlat, overHill, sampHill, sampHill ? 100.0 * (double)overHill / (double)sampHill : 0.0);
     std::printf("spikes: flat total %ld, uneven-ground total %ld; cliffs: flat %ld, uneven %ld\n", sumFlat, sumHill, cliffFlat, cliffHill);
     std::printf(fail ? "city_surface_audit: FAILED\n" : "city_surface_audit: ok\n");
     return fail ? 1 : 0;
