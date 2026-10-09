@@ -13,11 +13,16 @@ layout(binding=0) uniform vs_params {
     mat4 wProj;
     vec4 waterBodyNoiseParams1;
     vec4 waterBodyNoiseParams2;
+    vec4 rippleParams;              // xy=window origin (world XZ), z=1/window size, w=enabled
     vec3 cameraPos;
     float _pad0;
     vec2 waterBodyNoiseDirection;
     ivec4 perm[128];
 };
+// Dynamic ripple layer (boat wakes / splashes): r = height (m), g = foam 0..1.
+// The fragment stage binds the same texture under its own name (rippleTexFS).
+layout(binding=1) uniform texture2D rippleTexVS;
+layout(binding=1) uniform sampler rippleTexVS_smp;
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -125,6 +130,20 @@ float fbm(vec3 p, int octaves, float persistence, float lacunarity, int seed) {
     return value / maxValue;
 }
 
+// Displacement of the water surface at a world XZ position: procedural waves plus
+// the dynamic ripple layer. Used to stitch chunk borders (see main).
+float surfaceHeightAt(vec2 xz) {
+    float amplitude = waterBodyNoiseParams1.x;
+    float frequency = waterBodyNoiseParams1.y;
+    float time = waterBodyNoiseParams2.w * waterBodyNoiseParams1.z;
+    vec2 flowOffset = waterBodyNoiseDirection * time;
+    vec3 np = vec3((xz.x - flowOffset.x) * frequency, time * 0.5, (xz.y - flowOffset.y) * frequency);
+    float n = fbm(np, int(waterBodyNoiseParams1.w), waterBodyNoiseParams2.x, waterBodyNoiseParams2.y, int(waterBodyNoiseParams2.z));
+    vec2 uv = (xz - rippleParams.xy) * rippleParams.z;
+    float rh = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), uv, 0.0).r * rippleParams.w;
+    return n * amplitude + rh;
+}
+
 void main() {
     vec3 localPos = vertexPosition;
 
@@ -156,7 +175,44 @@ void main() {
 
     float noise = fbm(noisePos, octaves, persistence, lacunarity, seed);
 
-    float heightOffsetLocal = noise * amplitude;
+    // Dynamic ripples (wakes, splashes) added on top of the procedural waves.
+    // Sampled unconditionally (the texture is always bound); masked by w.
+    const float RIPPLE_N = 256.0;
+    float rippleTexel = 1.0 / RIPPLE_N;
+    float rippleCell = 1.0 / (max(rippleParams.z, 1e-6) * RIPPLE_N); // metres per texel
+    vec2 rippleUV = (worldXZ - rippleParams.xy) * rippleParams.z;
+    float rippleOn = rippleParams.w;
+    float rh = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), rippleUV, 0.0).r * rippleOn;
+    float rhL = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), rippleUV - vec2(rippleTexel, 0.0), 0.0).r * rippleOn;
+    float rhR = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), rippleUV + vec2(rippleTexel, 0.0), 0.0).r * rippleOn;
+    float rhD = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), rippleUV - vec2(0.0, rippleTexel), 0.0).r * rippleOn;
+    float rhU = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), rippleUV + vec2(0.0, rippleTexel), 0.0).r * rippleOn;
+    vec2 rippleSlope = vec2(rhR - rhL, rhU - rhD) / (2.0 * rippleCell);
+
+    float heightOffsetLocal = noise * amplitude + rh;
+
+    // Crack-free LOD borders: chunks of different resolution share an edge but
+    // tessellate it differently, so their displaced edges drift apart and leave
+    // slivers (wide ribbons where a wake displaces the water) that show the
+    // background. Vertices on a chunk border (local |x| or |z| = CHUNK_SIZE/2 = 10)
+    // are therefore displaced along the straight line between the two lattice
+    // points of the coarsest LOD (5 m), which every LOD includes - so both sides of
+    // any border compute the identical height.
+    {
+        const float HALF = 10.0;
+        const float LATTICE = 5.0;
+        bool onZ = abs(abs(localPos.z) - HALF) < 0.002; // edge running along x
+        bool onX = abs(abs(localPos.x) - HALF) < 0.002; // edge running along z
+        if (onZ || onX) {
+            float along = onZ ? localPos.x : localPos.z;
+            float a0 = floor((along + HALF) / LATTICE) * LATTICE - HALF;
+            float t = (along - a0) / LATTICE;
+            vec2 p0 = worldXZ, p1 = worldXZ;
+            if (onZ) { p0.x += a0 - along; p1.x = p0.x + LATTICE; }
+            else     { p0.y += a0 - along; p1.y = p0.y + LATTICE; }
+            heightOffsetLocal = mix(surfaceHeightAt(p0), surfaceHeightAt(p1), t);
+        }
+    }
     worldPos4.y += heightOffsetLocal;
 
     // Analytic normal via central-difference of the height field, so lighting
@@ -176,7 +232,8 @@ void main() {
     float hD = fbm(npD, normalOctaves, persistence, lacunarity, seed) * amplitude;
     float hU = fbm(npU, normalOctaves, persistence, lacunarity, seed) * amplitude;
 
-    vec3 localNormal = normalize(vec3(-(hR - hL) / (2.0 * eps), 1.0, -(hU - hD) / (2.0 * eps)));
+    vec3 localNormal = normalize(vec3(-(hR - hL) / (2.0 * eps) - rippleSlope.x, 1.0,
+                                      -(hU - hD) / (2.0 * eps) - rippleSlope.y));
 
     worldPos = worldPos4.xyz;
     vsCamXZ = cameraPos.xz;
@@ -201,6 +258,7 @@ layout(binding=1) uniform fs_params {
     vec4 waterBodyFoamParams;
     vec4 waterBodyDetailParams;     // intensity, scale, speed, _pad
     vec4 reflParams;                // x=strength, y=distortion, z=distance fade, w=enabled
+    vec4 rippleParams;              // xy=window origin (world XZ), z=1/window size, w=enabled
     mat4 reflViewProj;              // view-projection of the reflected camera
     vec4 objectPositions[16];
     vec3 waterBodyFoamColor;
@@ -211,6 +269,8 @@ layout(binding=1) uniform fs_params {
 };
 layout(binding=0) uniform texture2D reflectionTex;   // planar mirror of the world
 layout(binding=0) uniform sampler reflectionTex_smp;
+layout(binding=2) uniform texture2D rippleTexFS;     // r = ripple height, g = foam trail
+layout(binding=2) uniform sampler rippleTexFS_smp;
 
 in vec3 worldPos;
 in vec3 worldNormal;
@@ -390,6 +450,14 @@ void main() {
 
         totalFoam = max(totalFoam, ring);
     }
+
+    // Wake / splash foam trail from the dynamic ripple layer. It persists and
+    // fades on the CPU side, so a passing boat leaves a lingering white trail.
+    vec2 rippleUV = (worldPos.xz - rippleParams.xy) * rippleParams.z;
+    float trail = texture(sampler2D(rippleTexFS, rippleTexFS_smp), rippleUV).g * rippleParams.w;
+    float trailBreakup = vnoise(worldPos.xz * 3.2 + time * 0.35) * 0.55 + vnoise(worldPos.xz * 9.0 - time * 0.2) * 0.45;
+    float trailFoam = smoothstep(0.04, 0.55, trail * (0.55 + 0.9 * trailBreakup));
+    totalFoam = max(totalFoam, trailFoam);
 
     totalFoam = clamp(totalFoam, 0.0, 1.0);
 
