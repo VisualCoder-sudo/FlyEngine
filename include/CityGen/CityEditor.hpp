@@ -88,6 +88,7 @@ namespace city {
         float terrainOffset = 0.3f;        // road height above the ground (m)
         float terrainMaxGrade = 10.0f;     // % (0 = no limit)
         float terrainClearance = 0.3f;     // the shaped terrain sits this far below the road (m)
+        bool terrainAuto = true;           // reshape the terrain under the city right after Snap / Limit grades (keeps it from poking through)
         float terrainMargin = 16.0f;       // fade back to the natural ground over this distance (m)
         std::vector<float> terrainBackup;
         const BasicTerrain* terrainBackupOwner = nullptr;

@@ -1167,29 +1167,39 @@ void DrawCityEditorPanel() {
                 }
             }
             BasicTerrain* t = terrains[(size_t)s.terrainIndex];
+            const bool canShape = city->GetCollisionEnabled();
+            // Lowers or raises the ground to just under the city (with a one-level backup for Restore). Returns the number of points changed.
+            auto shapeTerrain = [&]() {
+                s.terrainBackup.assign(t->GetHeightData(), t->GetHeightData() + (size_t)t->GetWidth() * t->GetDepth());
+                s.terrainBackupOwner = t;
+                return city->ShapeTerrainToCity(*t, s.terrainClearance, s.terrainMargin);
+            };
             ImGui::DragFloat("Road height above ground", &s.terrainOffset, 0.05f, -2.0f, 10.0f, "%.2f m");
             ImGui::DragFloat("Max road grade (0 = none)", &s.terrainMaxGrade, 0.2f, 0.0f, 40.0f, "%.0f %%");
+            ImGui::Checkbox("Keep terrain under the city", &s.terrainAuto);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("After Snap or Limit grades, lower or raise the ground to just under the roads and pads.\nWithout it the terrain can poke through next to buildings on hills.");
+            const bool autoShape = s.terrainAuto && canShape;
             if (ImGui::Button("Snap city to terrain")) {
                 NotifyCityEdit();
                 const int n = city->SnapToTerrain(*t, s.terrainOffset, s.terrainMaxGrade);
-                char msg[160]; snprintf(msg, sizeof msg, "Snapped %d of %zu road nodes to the terrain.", n, city->GetNodes().size());
+                char msg[200]; snprintf(msg, sizeof msg, "Snapped %d of %zu road nodes to the terrain.", n, city->GetNodes().size());
                 s.terrainStatus = msg;
+                if (autoShape) { const int m = shapeTerrain(); char m2[200]; snprintf(m2, sizeof m2, "%s Reshaped %d terrain points under the city.", msg, m); s.terrainStatus = m2; }
             }
             ImGui::SameLine();
             if (ImGui::Button("Limit grades")) {
                 NotifyCityEdit();
                 const float steepest = city->LimitRoadGrades(s.terrainMaxGrade > 0.0f ? s.terrainMaxGrade : 10.0f);
-                char msg[160]; snprintf(msg, sizeof msg, "Steepest road grade is now %.1f %%.", steepest);
+                char msg[200]; snprintf(msg, sizeof msg, "Steepest road grade is now %.1f %%.", steepest);
                 s.terrainStatus = msg;
+                if (autoShape) { const int m = shapeTerrain(); char m2[200]; snprintf(m2, sizeof m2, "%s Reshaped %d terrain points under the city.", msg, m); s.terrainStatus = m2; }
             }
             ImGui::DragFloat("Clearance below roads", &s.terrainClearance, 0.02f, 0.0f, 2.0f, "%.2f m");
             ImGui::DragFloat("Blend into ground over", &s.terrainMargin, 0.5f, 0.0f, 80.0f, "%.0f m");
-            const bool canShape = city->GetCollisionEnabled();
             if (!canShape) ImGui::BeginDisabled();
             if (ImGui::Button("Shape terrain to city")) {
-                s.terrainBackup.assign(t->GetHeightData(), t->GetHeightData() + (size_t)t->GetWidth() * t->GetDepth());
-                s.terrainBackupOwner = t;
-                const int n = city->ShapeTerrainToCity(*t, s.terrainClearance, s.terrainMargin);
+                const int n = shapeTerrain();
                 char msg[160]; snprintf(msg, sizeof msg, "Reshaped %d terrain points under and around the city.", n);
                 s.terrainStatus = msg;
             }
@@ -1204,7 +1214,7 @@ void DrawCityEditorPanel() {
                 s.terrainStatus = "Terrain restored to before the last reshaping.";
             }
             if (!backupOk) ImGui::EndDisabled();
-            if (!canShape) ImGui::TextDisabled("Shaping needs \"Building collision\" on.");
+            if (!canShape) ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Shaping needs \"Building collision\" on: until then the\nterrain can poke through the city.");
             if (!s.terrainStatus.empty()) ImGui::TextWrapped("%s", s.terrainStatus.c_str());
             ImGui::TextDisabled("Snap moves the roads onto the ground. Shape lowers or raises\nthe ground to just under the roads, pads and parks (not\nunder bridges). Restore undoes the last Shape.");
         }

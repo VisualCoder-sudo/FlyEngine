@@ -134,3 +134,7 @@ target_link_libraries(city_terrain_test PRIVATE FlyEngineCore FlyRL)
 # Sun path, weather, lamps at dusk, water lighting. Opens a window, so it is not registered with ctest: build/tests/weather_test
 add_executable(weather_test weather_test.cpp)
 target_link_libraries(weather_test PRIVATE FlyEngineCore FlyRL)
+
+# Holes in the city surface (ground plane hidden, magenta sky). Opens a window: build/tests/city_hole_audit
+add_executable(city_hole_audit city_hole_audit.cpp)
+target_link_libraries(city_hole_audit PRIVATE FlyEngineCore FlyRL)

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <unordered_map>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -1522,9 +1523,17 @@ void SetUnderwaterParams(float waterY, Vector3, float, Vector3) {
         SetShaderValue(roadShader, roadWaterSurfaceYLoc, &waterY, SHADER_UNIFORM_FLOAT);
 }
 
+namespace {
+std::unordered_map<const void*, float> groundLimits;
+}
+void SetGroundLimit(const void* owner, float lowestY) { groundLimits[owner] = lowestY; }
+void ClearGroundLimit(const void* owner) { groundLimits.erase(owner); }
+
 void DrawGround() {
     if (!gridVisible) return;
-    groundModel.transform = MatrixIdentity();
+    float y = 0.0f;
+    for (const auto& kv : groundLimits) y = fminf(y, kv.second);
+    groundModel.transform = MatrixTranslate(0.0f, y, 0.0f);
     DrawModel(groundModel, Vector3Zero(), 1.0f, WHITE);
 }
 

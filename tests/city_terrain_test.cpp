@@ -41,6 +41,26 @@ static int Pokes(const City& c, const BasicTerrain& t, float* worst) {
     return pokes;
 }
 
+// Same, but every up-facing city triangle on any layer (slabs, pads, plates), 15 sample points per triangle.
+static int PokesAll(const City& c, const BasicTerrain& t, float* worst, float* wx, float* wz) {
+    std::vector<Vector3> v;
+    c.DebugSurfaceTriangles(v);
+    int pokes = 0;
+    *worst = 0.0f;
+    for (size_t i = 0; i + 2 < v.size(); i += 3) {
+        const Vector3 &a = v[i], &b = v[i + 1], &d = v[i + 2];
+        const Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(d, a));
+        if (Vector3Length(n) < 1e-6f || fabsf(n.y) / Vector3Length(n) < 0.5f) continue;
+        for (int p = 0; p <= 4; p++) for (int q = 0; q <= 4 - p; q++) {
+            const float w1 = (float)p / 4.0f, w2 = (float)q / 4.0f, w0 = 1.0f - w1 - w2;
+            const float x = a.x * w0 + b.x * w1 + d.x * w2, z = a.z * w0 + b.z * w1 + d.z * w2, y = a.y * w0 + b.y * w1 + d.y * w2;
+            const float ty = t.position.y + t.GetHeightAt(x, z);
+            if (ty > y + 0.02f) { pokes++; if (ty - y > *worst) { *worst = ty - y; *wx = x; *wz = z; } }
+        }
+    }
+    return pokes;
+}
+
 int main() {
     Engine engine(900, 560, "city_terrain_test", 60);
     engine.SetPlayerBuild(true);
@@ -99,6 +119,10 @@ int main() {
     float worstAfter = 0.0f;
     const int pokesAfter = Pokes(c, terrain, &worstAfter);
     std::printf("terrain shaped: %d vertices changed; terrain above the roads: %d sample points (worst %.2f m)\n", changed, pokesAfter, worstAfter);
+    float wAll = 0.0f, wx = 0.0f, wz = 0.0f;
+    const int pokesAllAfter = PokesAll(c, terrain, &wAll, &wx, &wz);
+    std::printf("terrain above ANY city surface triangle after shaping: %d sample points (worst %.2f m at %.1f, %.1f)\n", pokesAllAfter, wAll, wx, wz);
+    CHECK(pokesAllAfter == 0);
     CHECK(changed > 50);
     CHECK(pokesAfter == 0);
     CHECK(pokesSnapped > 0);               // the test terrain does poke through before shaping

@@ -135,6 +135,10 @@ void SetWireframe(bool enabled);
 bool IsWireframe();
 
 void DrawGround(); // shadow-receiving ground plane (replaces DrawGrid)
+// Things that can reach below the ground plane (a city on hills dips under y = 0) report their lowest point so the
+// plane moves down out of their way instead of covering them. Each owner reports every frame it draws.
+void SetGroundLimit(const void* owner, float lowestY);
+void ClearGroundLimit(const void* owner);
 
 // Planar water reflections. BeginReflectionPass() mirrors the view camera about a
 // horizontal plane (water height) and returns the mirrored camera. Wrap the opaque
