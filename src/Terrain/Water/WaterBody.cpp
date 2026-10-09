@@ -111,6 +111,7 @@ void WaterBody::InitializeShader() {
     chunkFadeLoc = GetShaderLocation(shader, "chunkFade");
     objectCountLoc = GetShaderLocation(shader, "objectCount");
     objectPositionsLoc = GetShaderLocation(shader, "objectPositions");
+    objectShapesLoc = GetShaderLocation(shader, "objectShapes");
     farRimLoc = GetShaderLocation(shader, "farRimParams");
     rippleParamsLoc = GetShaderLocation(shader, "rippleParams");
     rippleTexLoc = GetShaderLocation(shader, "rippleTexFS");
@@ -588,6 +589,7 @@ void WaterBody::Draw() {
     // Gather nearby objects for proximity foam
     const int MAX_FOAM_OBJECTS = 16;
     float objData[MAX_FOAM_OBJECTS * 4];
+    float objShape[MAX_FOAM_OBJECTS * 4]; // half X, half Z, yaw, speed factor
     int objCount = 0;
 
     if (s_activeEngine && objectCountLoc >= 0 && objectPositionsLoc >= 0) {
@@ -616,11 +618,22 @@ void WaterBody::Draw() {
                                                               // water surface.
             objData[objCount * 4 + 2] = op.z;
             objData[objCount * 4 + 3] = fmaxf(os.x, os.z) * 0.5f;
+            {
+                // Outline for the foam ring: the real footprint, not a circle round the centre.
+                const Vector3 ov = obj->GetVelocity();
+                const float sp = sqrtf(ov.x * ov.x + ov.z * ov.z);
+                const float t = fminf(fmaxf((sp - 0.5f) / 3.5f, 0.0f), 1.0f);
+                objShape[objCount * 4 + 0] = os.x * 0.5f;
+                objShape[objCount * 4 + 1] = os.z * 0.5f;
+                objShape[objCount * 4 + 2] = obj->GetYaw();
+                objShape[objCount * 4 + 3] = 0.12f + 0.88f * t * t * (3.0f - 2.0f * t); // calm bodies: faint contact foam only
+            }
             objCount++;
         }
 
         SetShaderValue(shader, objectCountLoc, &objCount, SHADER_UNIFORM_INT);
         SetShaderValueV(shader, objectPositionsLoc, objData, SHADER_UNIFORM_VEC4, objCount);
+        if (objectShapesLoc >= 0) SetShaderValueV(shader, objectShapesLoc, objShape, SHADER_UNIFORM_VEC4, objCount);
     }
 
     // Far shell: covers the water body from the edge of the detailed chunk disk

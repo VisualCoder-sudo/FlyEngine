@@ -592,6 +592,11 @@ void ScatteredObject::SetRenderRotation(const Matrix& rot) {
     useRenderRotation = true;
 }
 
+float ScatteredObject::GetYaw() const {
+    if (useRenderRotation) return atan2f(renderRotation.m2, renderRotation.m0);
+    return -rotation.y * DEG2RAD;
+}
+
 void ScatteredObject::ClearRenderRotation() {
     useRenderRotation = false;
     renderRotation = MatrixIdentity();

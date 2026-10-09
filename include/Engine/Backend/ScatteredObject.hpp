@@ -111,6 +111,8 @@ public:
     // this rotation matrix instead of the Euler angles. Cleared with ClearRenderRotation().
     void SetRenderRotation(const Matrix& rot);
     void ClearRenderRotation();
+    // World-space heading of the object's local X axis (physics orientation if set, else Euler).
+    float GetYaw() const;
 
     bool isSelected = false;
 

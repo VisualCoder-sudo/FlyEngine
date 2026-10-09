@@ -114,7 +114,8 @@ void WaterBody::StampGaussian(float wx, float wz, float radius, float dHeight, f
 }
 
 void WaterBody::AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
-                            float radius, float submergedFraction, float dt) {
+                            float radius, float submergedFraction, float dt,
+                            Vector2 halfExtents, float yaw) {
     if (!ripple.enabled || submergedFraction <= 0.0f) return;
     const float cs = RIPPLE_WINDOW / RIPPLE_N;
     const double now = GetTime();
@@ -143,9 +144,10 @@ void WaterBody::AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
     const float r = std::clamp(radius, 0.4f, 6.0f);
     const float hullPush = std::min(0.00018f * ripple.wakeStrength * speed * submergedFraction, 0.0025f) * stepScale;
     const float bowLift  = std::min(0.0003f * ripple.wakeStrength * speed * submergedFraction, 0.004f) * stepScale;
-    // Bobbing/drifting objects shouldn't churn foam; it ramps in once actually moving.
-    const float foamRamp = std::clamp((speed - 0.5f) / 2.0f, 0.0f, 1.0f);
-    const float foamAmt  = std::clamp(speed / 6.0f, 0.0f, 1.0f) * foamRamp * submergedFraction * 0.03f * stepScale;
+    // Foam only appears once the hull is really moving: nothing below ~0.8 m/s,
+    // easing in (squared) up to ~4 m/s, so a drifting or bobbing body stays clean.
+    const float foamRamp = std::clamp((speed - 0.8f) / 3.2f, 0.0f, 1.0f);
+    const float foamAmt  = std::clamp(speed / 6.0f, 0.0f, 1.0f) * foamRamp * foamRamp * submergedFraction * 0.03f * stepScale;
 
     // Heading for the bow wave; fall back to the path direction.
     Vector2 dir = { velocity.x, velocity.z };
@@ -153,17 +155,55 @@ void WaterBody::AddBodyWake(const void* id, Vector3 worldPos, Vector3 velocity,
     else if (dist > 1e-4f) dir = Vector2Scale(Vector2Subtract(cur, prev), 1.0f / dist);
     else dir = { 1.0f, 0.0f };
 
+    const bool hasHull = halfExtents.x > 0.05f && halfExtents.y > 0.05f;
+    // Hull axes in world XZ (x along yaw, z across).
+    const Vector2 ax = { std::cos(yaw), std::sin(yaw) };
+    const Vector2 az = { -std::sin(yaw), std::cos(yaw) };
+
     for (int s = 0; s < stamps; ++s) {
         const float t = (s + 1) * share;
         const Vector2 p = Vector2Lerp(prev, cur, t);
         // Hull pushes water down and aside along its length...
-        StampGaussian(p.x, p.y, r, 0.0f, -hullPush * share, foamAmt * share);
-        // ...and piles it up in front (the bow wave) with a little foam.
+        StampGaussian(p.x, p.y, r, 0.0f, -hullPush * share, 0.0f);
+        // ...and piles it up in front (the bow wave).
         StampGaussian(p.x + dir.x * r * 1.1f, p.y + dir.y * r * 1.1f, r * 0.8f,
-                      0.0f, bowLift * share, foamAmt * share * 0.6f);
-        // Churned white water right behind the hull.
-        StampGaussian(p.x - dir.x * r * 0.9f, p.y - dir.y * r * 0.9f, r * 0.9f,
-                      0.0f, 0.0f, foamAmt * share * 0.8f);
+                      0.0f, bowLift * share, 0.0f);
+        if (!hasHull) {
+            // No outline known (e.g. propeller wash): a soft churn blob.
+            StampGaussian(p.x - dir.x * r * 0.9f, p.y - dir.y * r * 0.9f, r * 0.9f,
+                          0.0f, 0.0f, foamAmt * share);
+        }
+    }
+
+    // Foam along the hull outline (bow and sides strongest) rather than a blob in
+    // the middle, plus churn just behind the stern where the trail begins.
+    if (hasHull && foamAmt > 0.0f) {
+        const float hx = halfExtents.x, hz = halfExtents.y;
+        const float perim = 4.0f * (hx + hz);
+        const int pts = std::clamp((int)std::ceil(perim / (cs * 0.9f)), 8, 192);
+        const float lineR = std::clamp(std::min(hx, hz) * 0.35f, 0.35f, 0.9f);
+        const float perPt = foamAmt * 3.0f / std::sqrt((float)pts);
+        for (int i = 0; i < pts; ++i) {
+            // Walk the rectangle perimeter, u in [0,4).
+            const float u = 4.0f * (i + 0.5f) / (float)pts;
+            float lx, lz, nx, nz;
+            if (u < 1.0f)      { lx = hx;                 lz = -hz + 2.0f * hz * u;          nx = 1;  nz = 0; }
+            else if (u < 2.0f) { lx = hx - 2.0f * hx * (u - 1.0f); lz = hz;                   nx = 0;  nz = 1; }
+            else if (u < 3.0f) { lx = -hx;                lz = hz - 2.0f * hz * (u - 2.0f);  nx = -1; nz = 0; }
+            else               { lx = -hx + 2.0f * hx * (u - 3.0f); lz = -hz;                 nx = 0;  nz = -1; }
+            const Vector2 wp = { cur.x + ax.x * lx + az.x * lz, cur.y + ax.y * lx + az.y * lz };
+            const Vector2 wn = { ax.x * nx + az.x * nz, ax.y * nx + az.y * nz };
+            // Strongest where the outline faces the direction of travel, none at the stern.
+            const float facing = wn.x * dir.x + wn.y * dir.y;
+            const float wgt = std::clamp(0.45f + 0.75f * facing, 0.0f, 1.0f);
+            if (wgt <= 0.01f) continue;
+            StampGaussian(wp.x + wn.x * lineR * 0.4f, wp.y + wn.y * lineR * 0.4f, lineR,
+                          0.0f, 0.0f, perPt * wgt);
+        }
+        // Churn just behind the stern.
+        const float ext = std::abs(dir.x * ax.x + dir.y * ax.y) * hx + std::abs(dir.x * az.x + dir.y * az.y) * hz;
+        StampGaussian(cur.x - dir.x * (ext + r * 0.3f), cur.y - dir.y * (ext + r * 0.3f), r * 0.7f,
+                      0.0f, 0.0f, foamAmt * 0.8f);
     }
 
     // Bow spray: fast hulls throw droplets forward and out to the sides.
