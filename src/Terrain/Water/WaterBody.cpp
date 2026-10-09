@@ -348,6 +348,8 @@ void WaterBody::BuildFarShell() {
     lastShellPos = position;
 }
 
+bool FlyMeshBuffersValid(Mesh mesh); // rl_models.cpp
+
 void WaterBody::UpdateChunks(const Camera3D& camera) {
     float dt = GetFrameTime();
     if (dt <= 0.0f || dt > 0.1f) dt = 1.0f / 60.0f;
@@ -457,6 +459,23 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
     }
 
     lastChunkCamXZ = { camera.position.x, camera.position.z };
+
+    // Self-heal: a chunk whose GPU buffers failed to create is never drawn (it
+    // shows as an unrendered patch). Rebuild those, a few per frame.
+    {
+        int healed = 0;
+        for (auto& [key, chunk] : chunks) {
+            if (healed >= 8) break;
+            if (chunk.model.meshes == nullptr || chunk.currentLod < 0) continue;
+            if (FlyMeshBuffersValid(chunk.model.meshes[0])) continue;
+            TraceLog(LOG_WARNING, "[WaterBody] chunk (%d,%d) had invalid GPU buffers, rebuilding", chunk.gridX, chunk.gridZ);
+            const int lod = std::max(1, std::min(chunk.currentLod, LOD_COUNT - 1));
+            ReleaseChunkResources(chunk);
+            BuildChunkMesh(chunk, LOD_RESOLUTIONS[lod], CHUNK_SIZE, worldMinX, worldMaxX, worldMinZ, worldMaxZ);
+            chunk.currentLod = lod;
+            ++healed;
+        }
+    }
 
     // 2. Fade active chunks up, inactive chunks down
     for (auto& [key, chunk] : chunks) {

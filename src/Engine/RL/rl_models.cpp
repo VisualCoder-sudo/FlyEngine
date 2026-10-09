@@ -1,6 +1,7 @@
 // raylib mesh API on sokol_gfx: UploadMesh/UpdateMeshBuffer/UnloadMesh and the
 // mesh draw calls. Model loading, mesh generation and materials stay in
 // raylib's own rmodels.c (src/Engine/RL/raylib), which calls into these.
+#include <cstdlib>
 #include "rl_internal.hpp"
 #include "rlgl.h"
 
@@ -98,7 +99,9 @@ uint64_t FrameIndex() { return (uint64_t)Gfx().frameCounter; }
 void FlushBufferPool();
 
 sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, const char* label) {
-    const bool pooled = !dynamic && data && size <= kPooledMaxSize;
+    // FLY_NO_BUFFER_POOL=1 turns recycling off (debugging aid for missing meshes).
+    static const bool poolDisabled = std::getenv("FLY_NO_BUFFER_POOL") != nullptr;
+    const bool pooled = !poolDisabled && !dynamic && data && size <= kPooledMaxSize;
     if (pooled) {
         const uint64_t key = PoolKey(size, index);
         auto& free = g_bufferPool[key];
@@ -134,6 +137,10 @@ sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, co
         sg_destroy_buffer(b);
         FlushBufferPool();
         b = sg_make_buffer(&d);
+        if (sg_query_buffer_state(b) != SG_RESOURCESTATE_VALID) {
+            TraceLog(LOG_WARNING, "[gfx] buffer creation failed (%zu bytes, %s) even after flushing the pool",
+                     size, index ? "index" : "vertex");
+        }
     }
     if ((dynamic || pooled) && data) {
         sg_update_buffer(b, sg_range{ data, size });
@@ -407,6 +414,19 @@ void ModelsShutdown() {
 } // namespace rli
 
 using namespace rli;
+
+// True when every GPU buffer behind the mesh is usable. A buffer that failed to
+// be created is silently skipped by sokol at draw time, which shows up as a mesh
+// that never renders.
+bool FlyMeshBuffersValid(Mesh mesh) {
+    const MeshRec* m = GetMesh(mesh.vaoId);
+    if (!m) return false;
+    for (const sg_buffer& b : m->vb) {
+        if (b.id && sg_query_buffer_state(b) != SG_RESOURCESTATE_VALID) return false;
+    }
+    if (m->ib.id && sg_query_buffer_state(m->ib) != SG_RESOURCESTATE_VALID) return false;
+    return m->vb[0].id != 0;
+}
 
 void UploadMesh(Mesh* mesh, bool dynamic) {
     if (!mesh || !Gfx().initialized) return;
