@@ -2447,6 +2447,16 @@ void City::BuildBlockSurface(const Block& block, BlockSurface& out) const {
                     if (t <= 0.0f) ry = out.B[cornerAt[v]].y;
                     else if (t >= 1.0f) ry = out.B[cornerAt[(v + 1) % nc]].y;
                 }
+                // An acute or reflex corner of an irregular block gives a mitre point far outside the block, which
+                // showed as a long thin spike across the road: keep every ring point near its boundary point.
+                {
+                    Vector2 d = Vector2Subtract(r, { out.B[j].x, out.B[j].z });
+                    const float lim = apron * 1.8f, dl = Vector2Length(d);
+                    if (dl > lim) r = Vector2Add({ out.B[j].x, out.B[j].z }, Vector2Scale(d, lim / dl));
+                    // A ring point that fell outside the block (the inset of an acute or reflex corner can fold over)
+                    // would stretch the apron strip across the road: collapse it onto its boundary point instead.
+                    if (!citygeom::PointInPolygon(r, coarse)) r = { out.B[j].x, out.B[j].z };
+                }
                 out.R[j] = { r.x, ry, r.y };
             }
             out.ringOk = true;
@@ -3388,17 +3398,27 @@ void City::ComputeTileCPU(Tile& t) {
             int baseB = baseV;
             if (sf.ringOk) {
                 baseB = (int)(mb.verts.size() / 3);
-                for (const Vector3& v : sf.B) mb.Vertex({ v.x, v.y + padY, v.z }, padColor);
+                // The outer edge of the apron lies on the road centre line, under the road. Sunk below the road surface so
+                // an apron triangle never pokes through it where the road and the sloped pad edge differ (a thin spike).
+                for (const Vector3& v : sf.B) mb.Vertex({ v.x, v.y + padY - 0.06f, v.z }, padColor);
             }
-            // Triangles are CCW in (x,z); the surface is wound as (a, c, b) like the flat pads.
+            // Every pad triangle is emitted facing up whatever order its corners came in (a concave or acute block
+            // corner can flip the ring/apron strip, and a flipped triangle is culled and leaves a hole).
+            auto upTri = [&](int a, int b, int c) {
+                const float ax = mb.verts[(size_t)a * 3], az = mb.verts[(size_t)a * 3 + 2];
+                const float ux = mb.verts[(size_t)b * 3] - ax, uz = mb.verts[(size_t)b * 3 + 2] - az;
+                const float vx = mb.verts[(size_t)c * 3] - ax, vz = mb.verts[(size_t)c * 3 + 2] - az;
+                if (uz * vx - ux * vz >= 0.0f) mb.Triangle(a, b, c);
+                else mb.Triangle(a, c, b);
+            };
             for (size_t t = 0; t + 2 < sf.tris.size(); t += 3)
-                mb.Triangle(baseV + sf.tris[t], baseV + sf.tris[t + 2], baseV + sf.tris[t + 1]);
+                upTri(baseV + sf.tris[t], baseV + sf.tris[t + 2], baseV + sf.tris[t + 1]);
             if (sf.ringOk) {
                 const int m = (int)sf.B.size();
                 for (int j = 0; j < m; j++) {   // flat apron out to the road slab edge
                     const int k = (j + 1) % m;
-                    mb.Triangle(baseB + j, baseV + k, baseB + k);
-                    mb.Triangle(baseB + j, baseV + j, baseV + k);
+                    upTri(baseB + j, baseV + k, baseB + k);
+                    upTri(baseB + j, baseV + j, baseV + k);
                 }
             }
         }

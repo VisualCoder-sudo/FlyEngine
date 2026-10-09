@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 using namespace city;
 
@@ -32,30 +33,28 @@ int main() {
     Engine engine(900, 700, "city_slope_test", 60);
     engine.SetPlayerBuild(true);
     gfx::SetTimeOfDay(12.0f);
-    struct Case { const char* name; bool organic; float strength; };
-    const Case cases[] = { { "regular", false, 0.0f }, { "organic", true, 0.45f }, { "veryorganic", true, 0.8f } };
-    for (const Case& cs : cases) {
-        auto owner = std::make_unique<City>();
-        City& c = *owner;
-        City* raw = owner.get();
-        engine.AddEntity(std::move(owner));
-        c.GetParams().gridX = 5; c.GetParams().gridZ = 5;
-        c.GetParams().organic = cs.organic;
-        c.GetParams().organicStrength = cs.strength;
-        c.GetParams().cars = 0;
-        c.GenerateGrid({ 0.0f, 0.0f });
-        // One raised node and one road with a 8 % grade, like the Elevate tool makes: the roads and the four blocks
-        // around the node slope while the rest stays flat.
-        {
-            int mid = 0; float bd = 1e30f;
-            for (int i = 0; i < (int)c.GetNodes().size(); i++) { const float d = Vector2Length(c.GetNodes()[(size_t)i].pos); if (d < bd) { bd = d; mid = i; } }
-            c.SetNodeHeight(mid, 6.0f);
-        }
-        Shot(engine, { 0.0f, 55.0f, 0.1f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_top.png", cs.name));
-        Shot(engine, { 0.0f, 28.0f, 70.0f }, { 0.0f, 3.0f, 0.0f }, TextFormat("city_slope_%s_oblique.png", cs.name));
-        std::printf("%s: %zu nodes, %zu blocks\n", cs.name, c.GetNodes().size(), c.GetBlocks().size());
-        engine.RemoveEntity(raw);
+    // Irregular (organic) street layout on uneven ground: every node gets its own height, roads meet at odd angles
+    // and the blocks are irregular polygons with buildings. Close oblique views.
+    auto owner = std::make_unique<City>();
+    City& c = *owner;
+    engine.AddEntity(std::move(owner));
+    c.GetParams().gridX = 5; c.GetParams().gridZ = 5;
+    c.GetParams().organic = true;
+    c.GetParams().organicStrength = 0.6f;
+    c.GetParams().cars = 0;
+    c.GenerateGrid({ 0.0f, 0.0f });
+    for (int i = 0; i < (int)c.GetNodes().size(); i++) {
+        const Vector2 p = c.GetNodes()[(size_t)i].pos;
+        c.SetNodeHeight(i, 5.0f + 4.0f * sinf(p.x * 0.045f) + 4.0f * cosf(p.y * 0.05f + p.x * 0.02f));   // rolling ground, 0..13 m
     }
+    std::printf("organic hills: %zu nodes, %zu blocks\n", c.GetNodes().size(), c.GetBlocks().size());
+    const Vector3 views[4][2] = {
+        { { -30.0f, 45.0f, 50.0f }, { 0.0f, 6.0f, 0.0f } },
+        { { 40.0f, 40.0f, -35.0f }, { 0.0f, 6.0f, 10.0f } },
+        { { 0.0f, 70.0f, 0.1f }, { 0.0f, 0.0f, 0.0f } },
+        { { 60.0f, 50.0f, 60.0f }, { 10.0f, 6.0f, 10.0f } } };
+    for (int v = 0; v < 4; v++) Shot(engine, views[v][0], views[v][1], TextFormat("city_slope_angled_%d.png", v));
+
     std::printf(g_fail ? "city_slope_test: %d FAILED\n" : "city_slope_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }
