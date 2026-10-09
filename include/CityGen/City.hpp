@@ -448,6 +448,9 @@ public:
     GeometryHashes DebugGeometryHashes() const;
     // Number of placed instances of an instanced shape (props, buildings) and the pose of the n-th one
     // (position and yaw about +Y); for tests and screenshots.
+    // All road / pad / park surface triangles of the city (world space, 3 vertices per triangle); needs
+    // collision enabled (the default). For geometry audits in tests.
+    void DebugSurfaceTriangles(std::vector<Vector3>& out) const;
     int CountInstances(int shape) const;
     bool FindBus(int index, Vector3& pos, float& yaw) const;
     bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker = false) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)

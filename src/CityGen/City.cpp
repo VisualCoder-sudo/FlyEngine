@@ -157,6 +157,9 @@ struct MeshBuilder {
             if (nl < 1e-12f) continue;
             if (n.y < 0.0f) n = Vector3Negate(n);
             n = Vector3Scale(n, 1.0f / nl);
+            // A near-vertical triangle that is not a deliberate wall (those have explicit normals) would drag the
+            // normals of the flat surface it touches sideways.
+            if (n.y < 0.2f && !(t / 3 < wallTri.size() && wallTri[t / 3])) continue;
             // Weight by the angle at each corner, not by triangle area: area weights let the long thin triangles of
             // a fan-split sloped pad dominate, which showed as radial shading wedges that depended on the split.
             const Vector3 P[3] = { a, b, c };
@@ -2444,8 +2447,10 @@ void City::BuildBlockSurface(const Block& block, BlockSurface& out) const {
                     r = Vector2Add(a0, Vector2Scale(ab, t));
                     // Points that collapsed onto a mitre corner take that corner's height, so the
                     // inner surface never gets a vertical sliver between stacked ring points.
-                    if (t <= 0.0f) ry = out.B[cornerAt[v]].y;
-                    else if (t >= 1.0f) ry = out.B[cornerAt[(v + 1) % nc]].y;
+                    // (They used to take the corner's height here to avoid vertical slivers between stacked ring points;
+                    // slivers without area are dropped now, and that trick put far-away heights next to a boundary
+                    // point: steep triangles up to 5 m high on irregular blocks.)
+                    (void)cornerAt;
                 }
                 // An acute or reflex corner of an irregular block gives a mitre point far outside the block, which
                 // showed as a long thin spike across the road: keep every ring point near its boundary point.
@@ -3408,6 +3413,14 @@ void City::ComputeTileCPU(Tile& t) {
                 const float ax = mb.verts[(size_t)a * 3], az = mb.verts[(size_t)a * 3 + 2];
                 const float ux = mb.verts[(size_t)b * 3] - ax, uz = mb.verts[(size_t)b * 3 + 2] - az;
                 const float vx = mb.verts[(size_t)c * 3] - ax, vz = mb.verts[(size_t)c * 3 + 2] - az;
+                // Collinear in (x,z) but at different heights = a vertical curtain: it is invisible from above, adds a
+                // sideways normal to the vertices it touches (dark smears) and an invisible wall to the collision surface.
+                if (fabsf(uz * vx - ux * vz) < 2e-3f) return;
+                {   // Nearly vertical too (a sliver whose points are collinear to a few centimetres): same problem.
+                    const float uy = mb.verts[(size_t)b * 3 + 1] - mb.verts[(size_t)a * 3 + 1], vy = mb.verts[(size_t)c * 3 + 1] - mb.verts[(size_t)a * 3 + 1];
+                    const float nx = uy * vz - uz * vy, nz = ux * vy - uy * vx, ny = fabsf(uz * vx - ux * vz);
+                    if (ny < 0.35f * sqrtf(nx * nx + ny * ny + nz * nz)) return;
+                }
                 if (uz * vx - ux * vz >= 0.0f) mb.Triangle(a, b, c);
                 else mb.Triangle(a, c, b);
             };
@@ -4350,6 +4363,18 @@ std::string City::DebugBuses() const {
           << " target " << a.busTarget << " dwell " << a.dwell << " stuck " << a.stuck << " inJ " << a.inJ << " next " << a.nextEdge << " lane " << a.lane << "\n";
     }
     return o.str();
+}
+
+void City::DebugSurfaceTriangles(std::vector<Vector3>& out) const {
+    out.clear();
+    for (const auto& kv : tiles) {
+        const TileCollision& c = kv.second.coll;
+        for (size_t i = 0; i + 2 < c.surfIdx.size(); i += 3) {
+            out.push_back(c.surfVerts[(size_t)c.surfIdx[i]]);
+            out.push_back(c.surfVerts[(size_t)c.surfIdx[i + 1]]);
+            out.push_back(c.surfVerts[(size_t)c.surfIdx[i + 2]]);
+        }
+    }
 }
 
 int City::CountInstances(int shape) const {

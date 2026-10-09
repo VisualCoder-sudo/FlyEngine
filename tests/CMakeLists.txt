@@ -115,3 +115,8 @@ target_link_libraries(city_transit_test PRIVATE FlyEngineCore FlyRL)
 # not registered with ctest: build/tests/city_slope_test
 add_executable(city_slope_test city_slope_test.cpp)
 target_link_libraries(city_slope_test PRIVATE FlyEngineCore FlyRL)
+
+# Numeric audit of the road/pad/park surface on random irregular cities (cliffs, spikes). Opens a window, so built
+# but not registered with ctest: build/tests/city_surface_audit
+add_executable(city_surface_audit city_surface_audit.cpp)
+target_link_libraries(city_surface_audit PRIVATE FlyEngineCore FlyRL)
