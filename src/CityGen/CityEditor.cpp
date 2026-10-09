@@ -740,6 +740,7 @@ void DrawCityEditorPanel() {
             ImGui::RadioButton("Park", &k, (int)BlockKind::Park); ImGui::SameLine();
             ImGui::RadioButton("Buildings", &k, (int)BlockKind::Buildings); ImGui::SameLine();
             ImGui::RadioButton("Concrete", &k, (int)BlockKind::Concrete);
+            ImGui::SameLine(); ImGui::RadioButton("Plaza", &k, (int)BlockKind::Plaza);
             ImGui::RadioButton("Auto (procedural)", &k, (int)BlockKind::Auto);
             s.paintKind = (BlockKind)k;
             ImGui::TextDisabled("Click or drag over blocks in the viewport.");
@@ -1135,7 +1136,7 @@ void DrawCityEditorPanel() {
     {
         const auto& ts = city->GetTrafficStats();
         if (ts.peds + ts.riders > 0)
-            ImGui::Text("People: %d walking (%d queued at stops), %d on buses | %d trips, %d boarded, %d got off", ts.peds, ts.queued, ts.riders, ts.pedTrips, ts.boardings, ts.alightings);
+            ImGui::Text("People: %d walking (%d queued at stops, %d in parks), %d on buses | %d trips, %d boarded, %d got off, %d park visits", ts.peds, ts.queued, ts.inParks, ts.riders, ts.pedTrips, ts.boardings, ts.alightings, ts.parkVisits);
         if (ts.cars + ts.peds > 0)
             ImGui::Text("Traffic: %d cars (%d near, %d far), %d walkers\navg %.1f m/s, %d stopped, min gap %.1f m, step %.2f ms\nwalker max %.1f m/s | crashes: %d | jumps: %d",
                         ts.cars, ts.nearCars, ts.farCars, ts.peds, ts.avgSpeed, ts.stopped, ts.minGap, ts.stepMs, ts.maxWalkerSpeed, ts.overlaps, ts.jumps);

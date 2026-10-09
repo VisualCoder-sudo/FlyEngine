@@ -146,3 +146,7 @@ target_link_libraries(city_tower_facade_test PRIVATE FlyEngineCore FlyRL)
 # Smooth node heights (Max road grade). Opens a window: build/tests/city_grade_test
 add_executable(city_grade_test city_grade_test.cpp)
 target_link_libraries(city_grade_test PRIVATE FlyEngineCore FlyRL)
+
+# Parks and plazas. Opens a window: build/tests/city_park_test
+add_executable(city_park_test city_park_test.cpp)
+target_link_libraries(city_park_test PRIVATE FlyEngineCore FlyRL)

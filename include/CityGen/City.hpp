@@ -29,7 +29,7 @@ extern const Color kBuildingTints[kBuildingColorBuckets];
 
 // Instanced building silhouette shapes. Wedges fill angled corners where two
 // streets meet; slants are sheared slabs that sit along edges/interiors.
-constexpr int kBuildingShapes = 20;   // instanced shape ids (props and agents share the table; 11/12 are drawn outside the tiles)
+constexpr int kBuildingShapes = 21;   // instanced shape ids (props and agents share the table; 11/12 are drawn outside the tiles)
 constexpr float kFloorHeight = 3.4f;   // metres per storey: building heights are whole storeys, the facade shader uses the same value
 enum : int {
     kBuildingBox = 0,
@@ -54,6 +54,7 @@ enum : int {
     kPropSign = 17,       // street name sign on a pole
     kPropBus = 18,        // 11 m bus body (tinted by the line colour), forward is local +x like the car
     kPropBusGlass = 19,   // bus windows and lights (untinted)
+    kPropFountain = 20,   // round stone fountain (~5.4 m across), in the middle of plazas and big parks
 };
 inline bool IsPropShape(int s) { return s >= 5 && s <= 9; }
 
@@ -212,6 +213,7 @@ struct Block {
     std::vector<int> nodes;      // ordered indices into City::nodes (CCW)
     float area = 0.0f;
     bool park = false;
+    bool plaza = false;          // a park block drawn as a paved square (with a fountain) instead of grass
     std::vector<Vector2> inset;  // building placement polygon (CCW)
     std::vector<Vector2> parkPoly; // grass polygon for parks (CCW)
     std::vector<Building> buildings;
@@ -255,7 +257,7 @@ struct BusLine {
 };
 
 // Painted land use for a block. Auto = the procedural area-based rule.
-enum class BlockKind : int { Auto = 0, Park = 1, Buildings = 2, Concrete = 3 };
+enum class BlockKind : int { Auto = 0, Park = 1, Buildings = 2, Concrete = 3, Plaza = 4 };
 
 // A per-building edit that survives regeneration: layout runs as normal, then
 // any override for that building's (blockId, slot) is reapplied on top. Keyed
@@ -572,6 +574,9 @@ private:
         int rideStop = -1;      // bus stop to catch (rideState 0..2) or to get off at (rideState 3)
         int rideState = 0;      // 0 walking to dest, 1 walking along the stop's road to the stop, 2 queued at the stop, 3 riding a bus (hidden)
         float waitStop = 0.0f;  // seconds queued at the stop
+        int parkPhase = 0;      // 0 = on the street, 1 = walking into a park, 2 = sitting there, 3 = walking back out
+        Vector3 parkFrom{}, parkTo{};   // the sidewalk point it left and the spot it is going to in the park
+        float parkT = 0.0f;     // 0..1 along that walk
         // Buses:
         uint32_t busId = 0;     // a bus's id; a rider carries the id of the bus it is on
         int atStop = -1;        // the stop the bus is standing at (-1 = none)
@@ -602,7 +607,7 @@ private:
     };
     std::vector<Agent> agents;
 public:
-    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; busStopsServedCount = 0; busSig = 0; pedTripsCount = boardingsCount = alightingsCount = 0; trafficStats = TrafficStats{}; }
+    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; busStopsServedCount = 0; busSig = 0; pedTripsCount = boardingsCount = alightingsCount = parkVisitsCount = 0; trafficStats = TrafficStats{}; }
     // Runs one traffic step without Play mode (tests).
     void TrafficStepForTest(float dt) { StepTraffic(dt); }
     const std::vector<int>& RouteDestinations() { PickDestinationPool(); return routes.pool; }
@@ -615,16 +620,18 @@ private:
     float trafficClock = 0.0f;
     int tripsCompleted = 0;
     int busStopsServedCount = 0;
-    int pedTripsCount = 0, boardingsCount = 0, alightingsCount = 0;
+    int pedTripsCount = 0, boardingsCount = 0, alightingsCount = 0, parkVisitsCount = 0;
     uint32_t nextBusId = 1;
     uint64_t busSig = 0;   // signature of lines + stops + roads: buses are respawned when it changes
     uint64_t graphVersion = 0;   // bumped on every rebuild: invalidates the cached routes
     struct RouteCache {
         uint64_t version = ~0ull;
         std::vector<int> pool;                              // popular destination nodes (downtown weighs more)
+        std::vector<int> parkNodes;                         // road nodes at a corner of a park or plaza (pedestrians like to visit)
         std::unordered_map<int64_t, std::vector<float>> dist;   // dest node -> travel time field
     } routes;
     void PickDestinationPool();
+    void StartParkVisit(Agent& a, int node, const Vector3& from);   // at a park corner: maybe walk in, sit a while, walk back
     void PickPedTrip(Agent& a, bool allowBus);       // gives a pedestrian its next destination (or a bus stop to catch)
     int PedKerbLane(int stopIdx) const;              // which sidewalk (0/1) of the stop's road the shelter is on
     int PickDestination(uint32_t& rng);
@@ -633,7 +640,7 @@ private:
     unsigned trafficFrame = 0;
     float simTime = 0.0f;       // seconds of Play-mode traffic simulated
 public:
-    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0, buses = 0, busStopsServed = 0, riders = 0, queued = 0, pedTrips = 0, boardings = 0, alightings = 0; };
+    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0, buses = 0, busStopsServed = 0, riders = 0, queued = 0, pedTrips = 0, boardings = 0, alightings = 0, parkVisits = 0, inParks = 0; };
     const TrafficStats& GetTrafficStats() const { return trafficStats; }
 private:
     TrafficStats trafficStats;

@@ -151,7 +151,7 @@ Mesh citySlantMesh{}; // unit sheared slab for silhouette variety
 Mesh cityGableMesh{}; // unit box with a pitched roof
 Mesh cityTowerMesh{}; // unit stepped tower
 Mesh cityShedMesh{};
-Mesh cityBusMesh{}, cityBusGlassMesh{};
+Mesh cityBusMesh{}, cityBusGlassMesh{}, cityFountainMesh{};
 Mesh cityBenchMesh{}, cityHydrantMesh{}, cityBollardMesh{}, cityBusStopMesh{}, citySignMesh{};   // sidewalk furniture
 Mesh cityLampMesh{}, cityTreeMesh{}, cityCarMesh{}, cityCarGlassMesh{}, cityWheelMesh{}, cityPersonMesh{}, citySignalMesh{}; // props and agents
 
@@ -572,6 +572,18 @@ struct ShapeBuilder {
         c.insert(c.end(), (t.size() - before) / 3, col);
         in.insert(in.end(), (t.size() - before) / 3, Vector3{ (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, (z0 + z1) * 0.5f });
     }
+    // Upright prism (a cylinder with `sides` sides) from y0 to y1; the top is capped, the bottom is not.
+    void Cyl(float cx, float y0, float cz, float r, float y1, int sides, Color col) {
+        const Vector3 inside = { cx, (y0 + y1) * 0.5f, cz };
+        for (int i = 0; i < sides; i++) {
+            const float a0 = (float)i / (float)sides * 2.0f * PI, a1 = (float)(i + 1) / (float)sides * 2.0f * PI;
+            const Vector3 b0 = { cx + r * cosf(a0), y0, cz + r * sinf(a0) }, b1 = { cx + r * cosf(a1), y0, cz + r * sinf(a1) };
+            const Vector3 t0 = { b0.x, y1, b0.z }, t1 = { b1.x, y1, b1.z };
+            t.push_back(b0); t.push_back(b1); t.push_back(t1); c.push_back(col); in.push_back(inside);
+            t.push_back(b0); t.push_back(t1); t.push_back(t0); c.push_back(col); in.push_back(inside);
+            t.push_back({ cx, y1, cz }); t.push_back(t0); t.push_back(t1); c.push_back(col); in.push_back(inside);
+        }
+    }
     // Pyramid-ish crown (octahedron-like) for trees: 4-sided bipyramid.
     void Crown(float cx, float cy, float cz, float r, float h, Color col) {
         const Vector3 top = { cx, cy + h, cz }, bot = { cx, cy, cz };
@@ -628,6 +640,19 @@ Mesh GenerateCityBenchMesh() {
     b.Box(-0.8f, 0.42f, -0.22f, 0.8f, 0.48f, 0.22f, wood);          // seat
     b.Box(-0.8f, 0.48f, -0.24f, 0.8f, 0.95f, -0.18f, wood);         // backrest (away from the road)
     for (float x : { -0.7f, 0.7f }) b.Box(x - 0.04f, 0.0f, -0.2f, x + 0.04f, 0.42f, 0.2f, iron);   // legs
+    return BuildColoredShapeMesh(b.t, b.c, b.in);
+}
+
+// Round stone fountain: a wide basin of water with a rim, a pedestal, a bowl and a jet. Authored in metres, origin at the centre of its base.
+Mesh GenerateCityFountainMesh() {
+    ShapeBuilder b;
+    const Color stone{ 172, 170, 162, 255 }, water{ 74, 142, 192, 255 }, jet{ 196, 228, 246, 255 };
+    b.Cyl(0.0f, 0.0f, 0.0f, 2.7f, 0.55f, 14, stone);          // basin wall (its rim is the top edge)
+    b.Cyl(0.0f, 0.0f, 0.0f, 2.35f, 0.58f, 14, water);         // the water inside it
+    b.Cyl(0.0f, 0.5f, 0.0f, 0.45f, 1.7f, 8, stone);           // pedestal
+    b.Cyl(0.0f, 1.3f, 0.0f, 1.25f, 1.55f, 12, stone);         // upper bowl
+    b.Cyl(0.0f, 1.3f, 0.0f, 1.02f, 1.58f, 12, water);
+    b.Cyl(0.0f, 1.5f, 0.0f, 0.12f, 2.7f, 6, jet);             // the jet
     return BuildColoredShapeMesh(b.t, b.c, b.in);
 }
 
@@ -882,6 +907,7 @@ void Init() {
     cityBenchMesh = GenerateCityBenchMesh();
     cityBusMesh = GenerateCityBusMesh();
     cityBusGlassMesh = GenerateCityBusGlassMesh();
+    cityFountainMesh = GenerateCityFountainMesh();
     cityHydrantMesh = GenerateCityHydrantMesh();
     cityBollardMesh = GenerateCityBollardMesh();
     cityBusStopMesh = GenerateCityBusStopMesh();
@@ -936,6 +962,7 @@ void Shutdown() {
     UnloadMesh(cityBenchMesh);
     UnloadMesh(cityBusMesh);
     UnloadMesh(cityBusGlassMesh);
+    UnloadMesh(cityFountainMesh);
     UnloadMesh(cityHydrantMesh);
     UnloadMesh(cityBollardMesh);
     UnloadMesh(cityBusStopMesh);
@@ -991,6 +1018,7 @@ Mesh GetCityShapeMesh(int shape) {
         case 17: return citySignMesh;
         case 18: return cityBusMesh;
         case 19: return cityBusGlassMesh;
+        case 20: return cityFountainMesh;
         default: return cubeModel.meshes[0];
     }
 }

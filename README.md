@@ -260,6 +260,12 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   the roads, pads and parks and blends it back into the natural ground (not under bridges).
   *Restore terrain* undoes the last shaping. With *Keep terrain under the city* on (default)
   the terrain is reshaped automatically after Snap and Limit grades.
+- **Parks and plazas:** big blocks become parks automatically, or paint blocks as *Park* or
+  *Plaza* with the Paint block tool. A park gets sandy paths from its middle to each side, a
+  paved hub with a fountain (bigger parks), benches and lamps beside the paths and trees on a
+  jittered grid. A plaza is a paved square with a fountain, a ring of benches, lamps and corner
+  trees. Pedestrians stroll to parks, walk in to the fountain or a spot on the grass, sit a
+  while and walk back (*People* stats count park visits).
 - **Hills:** *Max road grade* (style settings, default 15 %) is the steepest slope a road ramp
   may have at its steepest point. When you raise a node with the *Elevate road* tool (or edit
   its *Height*), the node stays exactly where you put it and its neighbours follow, so the hill

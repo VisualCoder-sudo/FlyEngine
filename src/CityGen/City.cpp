@@ -395,8 +395,13 @@ void City::PickDestinationPool() {
     if (routes.version == graphVersion && !routes.pool.empty()) return;
     routes.version = graphVersion;
     routes.pool.clear();
+    routes.parkNodes.clear();
     routes.dist.clear();
     if (nodeEdges.size() != nodes.size()) return;
+    for (const Block& b : blocks) {
+        if (!b.park || b.parkPoly.empty()) continue;
+        for (int n : b.nodes) if (std::find(routes.parkNodes.begin(), routes.parkNodes.end(), n) == routes.parkNodes.end()) routes.parkNodes.push_back(n);
+    }
     std::vector<int> cand;
     std::vector<float> w;
     float total = 0.0f;
@@ -770,8 +775,11 @@ void City::PickPedTrip(Agent& a, bool allowBus) {
     }
     a.dest = -1;
     if (nodes.empty()) return;
+    PickDestinationPool();
     for (int tries = 0; tries < 8; tries++) {
-        int n = Lcg01(a.rng) < 0.5f ? PickDestination(a.rng) : (int)(Lcg(a.rng) % (uint32_t)nodes.size());
+        const float roll = Lcg01(a.rng);
+        int n = (roll < 0.25f && !routes.parkNodes.empty()) ? routes.parkNodes[Lcg(a.rng) % (uint32_t)routes.parkNodes.size()]    // a stroll in the park
+              : roll < 0.6f ? PickDestination(a.rng) : (int)(Lcg(a.rng) % (uint32_t)nodes.size());
         if (n < 0 || (size_t)n >= nodes.size() || nodeEdges.size() != nodes.size()) continue;
         bool walkable = false;
         for (int ei : nodeEdges[(size_t)n]) if (edges[(size_t)ei].type != (int)RoadType::Highway) { walkable = true; break; }
@@ -782,7 +790,7 @@ void City::PickPedTrip(Agent& a, bool allowBus) {
 void City::SpawnAgent(Agent& a, bool car) {
     a.car = car;
     a.bus = -1; a.length = 4.2f; a.dwell = 0.0f; a.busSkip = -1; a.busTarget = 0;
-    a.idle = 0.0f; a.rideStop = -1; a.rideState = 0; a.waitStop = 0.0f; a.atStop = -1; a.riders = 0; a.busId = 0;
+    a.idle = 0.0f; a.rideStop = -1; a.rideState = 0; a.waitStop = 0.0f; a.atStop = -1; a.riders = 0; a.busId = 0; a.parkPhase = 0;
     for (int tries = 0; tries < 20; tries++) {
         a.edge = (int)(Lcg(a.rng) % (uint32_t)std::max<size_t>(edges.size(), 1));
         const RoadEdge& e = edges[(size_t)a.edge];
@@ -1256,6 +1264,24 @@ void City::StepTraffic(float dt) {
                 }
                 continue;
             }
+            // In a park: walking in, sitting, walking back out (straight lines over the grass).
+            if (a.parkPhase != 0 && a.placed) {
+                if (a.parkPhase == 2) {
+                    a.idle -= step;
+                    if (a.idle <= 0.0f) { a.parkPhase = 3; a.parkT = 0.0f; }
+                    continue;
+                }
+                const Vector3 from = a.parkPhase == 1 ? a.parkFrom : a.parkTo, to = a.parkPhase == 1 ? a.parkTo : a.parkFrom;
+                a.parkT += a.maxSpeed * 0.8f * step / std::max(Vector3Distance(from, to), 0.5f);
+                if (a.parkT >= 1.0f) {
+                    if (a.parkPhase == 1) { a.parkPhase = 2; a.idle = 12.0f + Lcg01(a.rng) * 40.0f; a.pos = to; }
+                    else { a.parkPhase = 0; a.idle = 0.5f; a.pos = to; }
+                    continue;
+                }
+                a.pos = Vector3Lerp(from, to, a.parkT);
+                a.yaw = atan2f(-(to.z - from.z), to.x - from.x);
+                continue;
+            }
             // Standing at a destination for a while.
             if (a.idle > 0.0f) {
                 a.idle -= step;
@@ -1341,6 +1367,7 @@ void City::StepTraffic(float dt) {
                         pedTripsCount++;
                         PickPedTrip(a, true);
                         a.pos = p0; a.placed = true; a.wait = 0.0f;
+                        StartParkVisit(a, toNode, p0);
                         continue;
                     }
                     std::vector<int> others;
@@ -1801,7 +1828,8 @@ void City::StepTraffic(float dt) {
         }
         st.maxWalkerSpeed = std::max(st.maxWalkerSpeed, trafficStats.maxWalkerSpeed * (1.0f - 0.3f * dt));   // slowly decaying peak
         st.trips = tripsCompleted;
-        st.pedTrips = pedTripsCount; st.boardings = boardingsCount; st.alightings = alightingsCount;
+        st.pedTrips = pedTripsCount; st.boardings = boardingsCount; st.alightings = alightingsCount; st.parkVisits = parkVisitsCount;
+        for (const Agent& ag : agents) if (!ag.car && ag.parkPhase != 0) st.inParks++;
         st.busStopsServed = busStopsServedCount;
         st.avgSpeed = st.cars ? sum / (float)st.cars : 0.0f;
         st.minGap = statMinGap < 1e8f ? statMinGap : -1.0f;
@@ -2295,6 +2323,7 @@ void City::LayoutBlockProcedural(Block& block) {
         uint32_t blockMix = 2166136261u;
         for (int bidx : block.nodes) blockMix = (blockMix ^ (uint32_t)(bidx + 1)) * 16777619u;
         block.park = false;
+        block.plaza = false;
         block.inset.clear();
         block.parkPoly.clear();
         block.buildings.clear();
@@ -2316,12 +2345,13 @@ void City::LayoutBlockProcedural(Block& block) {
         const auto kindIt = blockKinds.find(block.id);
         const BlockKind kind = kindIt == blockKinds.end() ? BlockKind::Auto : kindIt->second;
         if (kind == BlockKind::Concrete) return; // bare pad: no grass, no buildings
-        const bool isPark = kind == BlockKind::Park ||
+        const bool isPark = kind == BlockKind::Park || kind == BlockKind::Plaza ||
             (kind == BlockKind::Auto &&
              block.area >= std::max(p.parkThreshold, regularCellArea * 2.2f));
 
         const auto makePark = [&]() {
             block.park = true;
+            block.plaza = (kind == BlockKind::Plaza);
             if (!citygeom::InsetPolygon(poly, std::min(p.parkInset, roadW * 0.4f), block.parkPoly)) {
                 block.parkPoly = poly;
             }
@@ -3576,7 +3606,7 @@ void City::ComputeTileCPU(Tile& t) {
         mb.curLayer = 0.06f;
         BlockSurface sf;
         BuildBlockSurface(block, sf);
-        const Color padColor = block.park ? Color{ 108, 158, 94, 255 } : Color{ 158, 158, 162, 255 };
+        const Color padColor = block.plaza ? Color{ 176, 172, 162, 255 } : block.park ? Color{ 108, 158, 94, 255 } : Color{ 158, 158, 162, 255 };
         const float padY = 0.06f + kRoadElevation;
         if (sf.flat) {
             std::vector<int> tris;
@@ -3624,9 +3654,126 @@ void City::ComputeTileCPU(Tile& t) {
                 }
             }
             mb.curLayer = 0.08f;
-            const Color grassColor{ 108, 158, 94, 255 };
+            const Color grassColor = block.plaza ? Color{ 196, 190, 176, 255 } : Color{ 108, 158, 94, 255 };
             const int glv = sf.flat ? 0 : DrapeLevels(block.parkPoly, ptris, 4.5f, nodes.size() > 1200 ? 2 : 3);
             DrapeEmit(mb, block.parkPoly, ptris, glv, 0.08f + kRoadElevation, grassColor, [&](float x, float z) { return sf.HeightAt(x, z); });
+            // Park / plaza contents: sandy paths from the middle to each side, a paved hub with a fountain, benches and
+            // lamps beside the paths, trees on a jittered grid. Plazas are paved: a fountain, a ring of benches, lamps and
+            // trees in the corners. Everything follows the block's draped height field.
+            {
+                const std::vector<Vector2>& pp = block.parkPoly;
+                Vector2 cen{ 0.0f, 0.0f };
+                for (const Vector2& v : pp) { cen.x += v.x; cen.y += v.y; }
+                cen = Vector2Scale(cen, 1.0f / (float)pp.size());
+                if (!citygeom::PointInPolygon(cen, pp)) cen = BlockCenter(block);
+                const double areaG = std::fabs((double)citygeom::PolygonArea(pp));
+                const float areaSign = citygeom::PolygonArea(pp) >= 0.0f ? 1.0f : -1.0f;
+                const uint32_t bseed = CoordHash((int)(block.id & 0x7fffffffu), (int)((block.id >> 31) & 0x7fffffffu), params.seed ^ 0x9A4C);
+                const float propY = 0.08f + kRoadElevation + 0.03f;
+                const bool plaza = block.plaza;
+                const bool hasFountain = plaza || areaG > 380.0;
+                const float hubR = hasFountain ? (plaza ? 6.2f : 4.4f) : 0.0f;
+                auto putProp = [&](int shape, float x, float z, float yaw, float scale) {
+                    Matrix m = MatrixMultiply(MatrixScale(scale, scale, scale),
+                               MatrixMultiply(MatrixRotateY(yaw), MatrixTranslate(x, sf.HeightAt(x, z) + propY, z)));
+                    m.m3 = -1.0f; m.m7 = -1.0f; m.m11 = -1.0f;   // negative tint = prop (vertex colours)
+                    t.inst[shape].push_back(m);
+                };
+                // A flat piece of paving (a polygon) draped on the height field, above the grass.
+                auto pave = [&](std::vector<Vector2> poly, Color col, float layer, float lift) {
+                    if (citygeom::PolygonArea(poly) * areaSign < 0.0f) std::reverse(poly.begin(), poly.end());
+                    std::vector<int> tr;
+                    citygeom::TriangulateSimple(poly, tr);
+                    if (tr.empty()) return;
+                    mb.curLayer = layer;
+                    DrapeEmit(mb, poly, tr, sf.flat ? 0 : DrapeLevels(poly, tr, 2.2f, nodes.size() > 1200 ? 3 : 5), 0.08f + kRoadElevation + lift, col, [&](float x, float z) { return sf.HeightAt(x, z); });
+                };
+                auto distToSeg = [](const Vector2& q, const Vector2& a, const Vector2& b) {
+                    const Vector2 ab = Vector2Subtract(b, a);
+                    const float l2 = Vector2DotProduct(ab, ab);
+                    const float u = l2 > 1e-6f ? Clamp(Vector2DotProduct(Vector2Subtract(q, a), ab) / l2, 0.0f, 1.0f) : 0.0f;
+                    return Vector2Distance(q, Vector2Add(a, Vector2Scale(ab, u)));
+                };
+                struct ParkPath { Vector2 a, b; };
+                std::vector<ParkPath> paths;
+                if (!plaza) {
+                    for (size_t k = 0; k < pp.size(); k++) {
+                        const Vector2 p0 = pp[k], p1 = pp[(k + 1) % pp.size()];
+                        if (Vector2Distance(p0, p1) < 9.0f) continue;
+                        const Vector2 mid = { (p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f };
+                        const Vector2 d = Vector2Subtract(mid, cen);
+                        const float dl = Vector2Length(d);
+                        if (dl < hubR + 6.0f) continue;
+                        const Vector2 dn = Vector2Scale(d, 1.0f / dl);
+                        paths.push_back({ Vector2Add(cen, Vector2Scale(dn, hubR * 0.7f)), Vector2Subtract(mid, Vector2Scale(dn, 0.8f)) });
+                    }
+                }
+                const Color pathCol{ 206, 194, 162, 255 }, hubCol = plaza ? Color{ 168, 164, 154, 255 } : Color{ 188, 182, 168, 255 };
+                const float pathHalf = 1.25f;
+                for (const ParkPath& pa : paths) {
+                    const Vector2 d = Vector2Normalize(Vector2Subtract(pa.b, pa.a));
+                    const Vector2 n = { -d.y * pathHalf, d.x * pathHalf };
+                    pave({ Vector2Subtract(pa.a, n), Vector2Subtract(pa.b, n), Vector2Add(pa.b, n), Vector2Add(pa.a, n) }, pathCol, 0.09f, 0.08f);
+                }
+                if (hasFountain) {
+                    std::vector<Vector2> hub;
+                    for (int k = 0; k < 16; k++) hub.push_back({ cen.x + hubR * cosf((float)k / 16.0f * 2.0f * PI), cen.y + hubR * sinf((float)k / 16.0f * 2.0f * PI) });
+                    pave(hub, hubCol, 0.095f, 0.10f);
+                    putProp(kPropFountain, cen.x, cen.y, 0.0f, plaza ? 1.15f : 1.0f);
+                }
+                // Benches and lamps beside the paths (benches face the path), and around the fountain of a plaza.
+                auto faceTo = [](const Vector2& from, const Vector2& to) { return atan2f(to.x - from.x, to.y - from.y); };
+                for (size_t k = 0; k < paths.size(); k++) {
+                    const ParkPath& pa = paths[k];
+                    const float len = Vector2Distance(pa.a, pa.b);
+                    const Vector2 d = Vector2Scale(Vector2Subtract(pa.b, pa.a), 1.0f / std::max(len, 1e-3f));
+                    const Vector2 n = { -d.y, d.x };
+                    const uint32_t hk = CoordHash((int)k, 5, (int)bseed);
+                    const float side = (hk & 1u) ? 1.0f : -1.0f;
+                    const Vector2 bp = Vector2Add(Vector2Add(pa.a, Vector2Scale(d, len * 0.42f)), Vector2Scale(n, side * (pathHalf + 0.9f)));
+                    if (len > 12.0f) putProp(kPropBench, bp.x, bp.y, faceTo(bp, Vector2Add(pa.a, Vector2Scale(d, len * 0.42f))), 1.0f);
+                    const Vector2 lp = Vector2Add(Vector2Add(pa.a, Vector2Scale(d, len * 0.7f)), Vector2Scale(n, -side * (pathHalf + 0.7f)));
+                    if (len > 14.0f && params.furniture) putProp(kPropLamp, lp.x, lp.y, faceTo(lp, Vector2Add(pa.a, Vector2Scale(d, len * 0.7f))), 1.0f);
+                }
+                if (plaza) {
+                    for (int k = 0; k < 6; k++) {   // benches in a ring around the fountain, facing it
+                        const float a = ((float)k + 0.5f) / 6.0f * 2.0f * PI;
+                        const Vector2 bp = { cen.x + 4.6f * cosf(a), cen.y + 4.6f * sinf(a) };
+                        putProp(kPropBench, bp.x, bp.y, faceTo(bp, cen), 1.0f);
+                    }
+                    for (int k = 0; k < 4 && params.furniture; k++) {
+                        const float a = ((float)k + 0.0f) / 4.0f * 2.0f * PI + 0.785f;
+                        const Vector2 lp = { cen.x + (hubR + 2.2f) * cosf(a), cen.y + (hubR + 2.2f) * sinf(a) };
+                        putProp(kPropLamp, lp.x, lp.y, faceTo(lp, cen), 1.0f);
+                    }
+                }
+                // Trees: a plaza only in its corners; a park on a jittered grid clear of the paths and the hub.
+                int trees = 0;
+                auto tryTree = [&](const Vector2& q, float clearHub) {
+                    if (trees >= 48 || !citygeom::PointInPolygon(q, pp)) return;
+                    if (Vector2Distance(q, cen) < hubR + clearHub) return;
+                    for (const ParkPath& pa : paths) if (distToSeg(q, pa.a, pa.b) < pathHalf + 2.2f) return;
+                    const uint32_t ht = CoordHash((int)floorf(q.x * 2.0f), (int)floorf(q.y * 2.0f), (int)bseed);
+                    putProp(kPropTree, q.x, q.y, (float)(ht % 628) * 0.01f, 1.15f + (float)(ht % 50) * 0.01f);
+                    trees++;
+                };
+                if (plaza) {
+                    for (const Vector2& v : pp) {
+                        const Vector2 d = Vector2Subtract(cen, v);
+                        const float dl = Vector2Length(d);
+                        if (dl > 14.0f) tryTree(Vector2Add(v, Vector2Scale(d, 3.2f / dl)), 2.0f);
+                    }
+                } else {
+                    const float step = 9.0f;
+                    float minX = 1e30f, maxX = -1e30f, minZ = 1e30f, maxZ = -1e30f;
+                    for (const Vector2& v : pp) { minX = std::min(minX, v.x); maxX = std::max(maxX, v.x); minZ = std::min(minZ, v.y); maxZ = std::max(maxZ, v.y); }
+                    for (float gx = minX + step * 0.5f; gx < maxX; gx += step)
+                        for (float gz = minZ + step * 0.5f; gz < maxZ; gz += step) {
+                            const uint32_t hj = CoordHash((int)floorf(gx), (int)floorf(gz), (int)bseed ^ 0x3C);
+                            tryTree({ gx + ((float)(hj & 0xFFu) / 255.0f - 0.5f) * step * 0.6f, gz + ((float)((hj >> 8) & 0xFFu) / 255.0f - 0.5f) * step * 0.6f }, 2.2f);
+                        }
+                }
+            }
         }
     }
 
@@ -3670,7 +3817,7 @@ void City::ComputeTileCPU(Tile& t) {
                 t.hasBldg = true;
             }
         }
-        for (int sp : { (int)kPropLamp, (int)kPropTree, (int)kPropBench, (int)kPropHydrant, (int)kPropBollard, (int)kPropBusStop, (int)kPropSign })
+        for (int sp : { (int)kPropLamp, (int)kPropTree, (int)kPropBench, (int)kPropHydrant, (int)kPropBollard, (int)kPropBusStop, (int)kPropSign, (int)kPropFountain })
             for (const Matrix& pm : t.inst[sp]) {
                 bmin.x = fminf(bmin.x, pm.m12 - 3.0f); bmax.x = fmaxf(bmax.x, pm.m12 + 3.0f);
                 bmin.y = fminf(bmin.y, pm.m13 - 0.5f); bmax.y = fmaxf(bmax.y, pm.m13 + 8.0f);
@@ -3980,6 +4127,52 @@ int64_t City::TileKeyOf(const Vector2& p) const {
     const int tx = (int)floorf(p.x / kTileSize);
     const int tz = (int)floorf(p.y / kTileSize);
     return (int64_t)(((uint64_t)(uint32_t)tx << 32) | (uint64_t)(uint32_t)tz);
+}
+
+// A pedestrian that arrives at a corner of a park or plaza may walk in to a spot (beside the fountain or anywhere on the
+// grass), sit there a while and walk back to the corner (StepTraffic moves it while parkPhase != 0).
+void City::StartParkVisit(Agent& a, int node, const Vector3& from) {
+    if (Lcg01(a.rng) > 0.75f) return;
+    for (const Block& b : blocks) {
+        if (!b.park || b.parkPoly.empty()) continue;
+        if (std::find(b.nodes.begin(), b.nodes.end(), node) == b.nodes.end()) continue;
+        const std::vector<Vector2>& pp = b.parkPoly;
+        // The corner must be on this park's side of the road: close to its outline (a sidewalk across the street is not).
+        const Vector2 f2 = { from.x, from.z };
+        float dEdge = 1e30f;
+        for (size_t k = 0; k < pp.size(); k++) {
+            const Vector2 p0 = pp[k], p1 = pp[(k + 1) % pp.size()];
+            const Vector2 ab = Vector2Subtract(p1, p0);
+            const float l2 = Vector2DotProduct(ab, ab);
+            const float u = l2 > 1e-6f ? Clamp(Vector2DotProduct(Vector2Subtract(f2, p0), ab) / l2, 0.0f, 1.0f) : 0.0f;
+            dEdge = std::min(dEdge, Vector2Distance(f2, Vector2Add(p0, Vector2Scale(ab, u))));
+        }
+        if (dEdge > 6.5f) continue;
+        Vector2 cen{ 0.0f, 0.0f };
+        for (const Vector2& v : pp) { cen.x += v.x; cen.y += v.y; }
+        cen = Vector2Scale(cen, 1.0f / (float)pp.size());
+        if (!citygeom::PointInPolygon(cen, pp)) cen = BlockCenter(b);
+        Vector2 q = cen;
+        if (b.plaza || Lcg01(a.rng) < 0.45f) {
+            const float ang = Lcg01(a.rng) * 2.0f * PI, r = b.plaza ? 7.4f : 5.8f;
+            q = { cen.x + r * cosf(ang), cen.y + r * sinf(ang) };      // beside the fountain
+        } else {
+            float minX = 1e30f, maxX = -1e30f, minZ = 1e30f, maxZ = -1e30f;
+            for (const Vector2& v : pp) { minX = std::min(minX, v.x); maxX = std::max(maxX, v.x); minZ = std::min(minZ, v.y); maxZ = std::max(maxZ, v.y); }
+            for (int tries = 0; tries < 12; tries++) {
+                const Vector2 c = { minX + Lcg01(a.rng) * (maxX - minX), minZ + Lcg01(a.rng) * (maxZ - minZ) };
+                if (citygeom::PointInPolygon(c, pp)) { q = c; break; }
+            }
+        }
+        if (!citygeom::PointInPolygon(q, pp)) q = cen;
+        BlockSurface sf;
+        BuildBlockSurface(b, sf);
+        a.parkFrom = from;
+        a.parkTo = { q.x, sf.HeightAt(q.x, q.y) + 0.08f + kRoadElevation + 0.03f, q.y };
+        a.parkPhase = 1; a.parkT = 0.0f;
+        parkVisitsCount++;
+        return;
+    }
 }
 
 Vector2 City::BlockCenter(const Block& b) const {
@@ -5951,7 +6144,7 @@ bool City::ReadFromStream(std::istream& in) {
                 for (size_t i = 0; i < kc; i++) {
                     uint64_t id = 0; int k = 0;
                     if (!(in >> id >> k)) return false;
-                    if (k > 0 && k <= (int)BlockKind::Concrete) blockKinds[id] = (BlockKind)k;
+                    if (k > 0 && k <= (int)BlockKind::Plaza) blockKinds[id] = (BlockKind)k;
                 }
             } else if (tag == "COLL") {
                 int c = 1;
