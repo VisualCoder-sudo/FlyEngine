@@ -717,9 +717,15 @@ void Simulation::ApplyBuoyancy() {
                 const b3Pos bp = { pt.w.x, pt.w.y, pt.w.z };
                 const b3Vec3 pv = b3Body_GetWorldPointVelocity(rec.bodyId, bp);
                 const float k = pt.frac * perPointMass;
-                const b3Vec3 f = { -dragXZ * k * pv.x,
-                                   GRAVITY * densityRatio * k - dragY * k * pv.y,
-                                   -dragXZ * k * pv.z };
+                // Linear (viscous) drag plus quadratic (form) drag: the quadratic
+                // term is what makes a fast impact slam to a stop instead of
+                // gliding on, and fades as the body slows.
+                const float pvSpeed = sqrtf(pv.x * pv.x + pv.y * pv.y + pv.z * pv.z);
+                const float quadXZ = isBoat ? 0.0f : 0.5f;
+                const float quadY = 1.0f;
+                const b3Vec3 f = { -(dragXZ + quadXZ * pvSpeed) * k * pv.x,
+                                   GRAVITY * densityRatio * k - (dragY + quadY * pvSpeed) * k * pv.y,
+                                   -(dragXZ + quadXZ * pvSpeed) * k * pv.z };
                 b3Body_ApplyForce(rec.bodyId, f, bp, true);
             }
 
@@ -744,7 +750,17 @@ void Simulation::ApplyBuoyancy() {
             Vector3 angVel = b3wrap::GetBodyAngularVelocity(rec.bodyId);
             float angSpeed = Vector3Length(angVel);
             if (angSpeed > 0.01f) {
-                float angDrag = (isBoat ? 4.0f : 1.5f) * submergedFraction * angSpeed;
+                float angDrag;
+                if (isBoat) {
+                    angDrag = 4.0f * submergedFraction * angSpeed;
+                } else {
+                    // Scale by rotational inertia (~ m * size^2) so big and small
+                    // bodies both lose spin in about a second, with a quadratic
+                    // term so a fast spin is killed quickly.
+                    const Vector3 sz = *obj->GetSizePtr();
+                    const float inertia = mass * (sz.x * sz.x + sz.y * sz.y + sz.z * sz.z) / 12.0f;
+                    angDrag = inertia * submergedFraction * (3.0f * angSpeed + 0.6f * angSpeed * angSpeed);
+                }
                 Vector3 angDragVec = Vector3Scale(angVel, -angDrag / angSpeed);
                 b3Body_ApplyTorque(rec.bodyId, { angDragVec.x, angDragVec.y, angDragVec.z }, true);
             }
