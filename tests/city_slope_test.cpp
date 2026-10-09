@@ -44,14 +44,15 @@ int main() {
         c.GetParams().organicStrength = cs.strength;
         c.GetParams().cars = 0;
         c.GenerateGrid({ 0.0f, 0.0f });
-        // A hill (every node within 100 m of the centre rises up to 14 m): sloped roads and sloped blocks.
-        const int nn = (int)c.GetNodes().size();
-        for (int i = 0; i < nn; i++) {
-            const float d = Vector2Length(c.GetNodes()[(size_t)i].pos);
-            if (d < 100.0f) c.SetNodeHeight(i, 14.0f * (1.0f - d / 100.0f));
+        // One raised node and one road with a 8 % grade, like the Elevate tool makes: the roads and the four blocks
+        // around the node slope while the rest stays flat.
+        {
+            int mid = 0; float bd = 1e30f;
+            for (int i = 0; i < (int)c.GetNodes().size(); i++) { const float d = Vector2Length(c.GetNodes()[(size_t)i].pos); if (d < bd) { bd = d; mid = i; } }
+            c.SetNodeHeight(mid, 6.0f);
         }
-        Shot(engine, { 0.0f, 150.0f, 0.1f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_top.png", cs.name));
-        Shot(engine, { 0.0f, 150.0f, 170.0f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_oblique.png", cs.name));
+        Shot(engine, { 0.0f, 55.0f, 0.1f }, { 0.0f, 0.0f, 0.0f }, TextFormat("city_slope_%s_top.png", cs.name));
+        Shot(engine, { 0.0f, 28.0f, 70.0f }, { 0.0f, 3.0f, 0.0f }, TextFormat("city_slope_%s_oblique.png", cs.name));
         std::printf("%s: %zu nodes, %zu blocks\n", cs.name, c.GetNodes().size(), c.GetBlocks().size());
         engine.RemoveEntity(raw);
     }

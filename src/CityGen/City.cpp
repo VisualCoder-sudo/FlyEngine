@@ -167,6 +167,29 @@ struct MeshBuilder {
                 acc[I[k]] = Vector3Add(acc[I[k]], Vector3Scale(n, ang));
             }
         }
+        // Vertices are unshared (every quad has its own), so each quad would be shaded flat: a sloped road, whose profile
+        // curves along its length, then shows as steps of dark and light rectangles. Weld the accumulated normals of
+        // vertices at the same position (to the centimetre) so the surface shades continuously across quad borders.
+        {
+            auto key = [&](size_t i) {
+                const int64_t x = (int64_t)llroundf(verts[i * 3] * 100.0f), y = (int64_t)llroundf(verts[i * 3 + 1] * 100.0f), z = (int64_t)llroundf(verts[i * 3 + 2] * 100.0f);
+                return (uint64_t)(x * 73856093LL) ^ (uint64_t)(y * 19349663LL) ^ (uint64_t)(z * 83492791LL);
+            };
+            std::unordered_map<uint64_t, Vector3> sum;
+            sum.reserve(vc);
+            for (size_t i = 0; i < vc; i++) {
+                if (fixedNormal[i]) continue;
+                const float l = Vector3Length(acc[i]);
+                if (l < 1e-9f) continue;
+                Vector3& dst = sum[key(i)];
+                dst = Vector3Add(dst, Vector3Scale(acc[i], 1.0f / l));   // unit normals: every quad weighs the same at the shared corner
+            }
+            for (size_t i = 0; i < vc; i++) {
+                if (fixedNormal[i]) continue;
+                const auto it = sum.find(key(i));
+                if (it != sum.end()) acc[i] = it->second;
+            }
+        }
         for (size_t i = 0; i < vc; i++) {
             if (fixedNormal[i]) continue;
             const float l = Vector3Length(acc[i]);
