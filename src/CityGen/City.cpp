@@ -2445,11 +2445,6 @@ void City::BuildBlockSurface(const Block& block, BlockSurface& out) const {
                     const float l2 = ab.x * ab.x + ab.y * ab.y;
                     const float t = l2 > 1e-9f ? Clamp(Vector2DotProduct(Vector2Subtract(q, a0), ab) / l2, 0.0f, 1.0f) : 0.0f;
                     r = Vector2Add(a0, Vector2Scale(ab, t));
-                    // Points that collapsed onto a mitre corner take that corner's height, so the
-                    // inner surface never gets a vertical sliver between stacked ring points.
-                    // (They used to take the corner's height here to avoid vertical slivers between stacked ring points;
-                    // slivers without area are dropped now, and that trick put far-away heights next to a boundary
-                    // point: steep triangles up to 5 m high on irregular blocks.)
                     (void)cornerAt;
                 }
                 // An acute or reflex corner of an irregular block gives a mitre point far outside the block, which
@@ -3003,13 +2998,25 @@ void City::ComputeTileCPU(Tile& t) {
                 auto side = [&](const Vector2& p, const Vector2& q, float f, float yy) {
                     return Vector3{ p.x + (q.x - p.x) * f, yy, p.y + (q.y - p.y) * f };
                 };
+                // Each vertex takes the surface height at ITS OWN position along the road. The two side edges of a
+                // strip are stepped by the same fraction, but when the strip's end cuts are skewed (a junction that
+                // is not square) the left and right points of one fraction are at different distances along the
+                // road; giving both the same centre-line height twisted the surface sideways (e.g. 10 degrees on a
+                // 5 m ramp), so a pad that is level across the road showed above or below it.
+                auto along = [&](const Vector3& pt) { return Clamp(Vector2DotProduct(Vector2Subtract({ pt.x, pt.z }, A), d) / elen, 0.0f, 1.0f); };
+                // The two end lines stay level (both corners at the end station's height) so they meet the junction
+                // plate, which is flat at the node height, exactly; only the interior follows the true position.
+                auto vtx = [&](const Vector2& p0, const Vector2& p1, float f, float lat, size_t station) {
+                    const Vector3 xz = side(p0, p1, f, 0.0f);
+                    const bool endLine = station == 0 || station + 1 == sp.ss.size();
+                    const float sv = endLine ? sp.ss[station] : along(xz);
+                    return Vector3{ xz.x, y + planeY(sp, sv, lat), xz.z };
+                };
                 for (size_t i = 0; i + 1 < sp.ss.size(); i++) {
                     const float f0 = (sp.ss[i] - sp.s0) / (sp.s1 - sp.s0), f1 = (sp.ss[i + 1] - sp.s0) / (sp.s1 - sp.s0);
-                    const float bk0 = bankTan * sp.tp[i] * sp.w, bk1 = bankTan * sp.tp[i + 1] * sp.w;
-                    const float y0 = y + sp.yc[i], y1 = y + sp.yc[i + 1];
                     // P side = right of travel (lateral -w), Q side = left (+w).
-                    mb.Quad(side(sp.rA, sp.lB, f0, y0 - bk0), side(sp.lA, sp.rB, f0, y0 + bk0),
-                            side(sp.lA, sp.rB, f1, y1 + bk1), side(sp.rA, sp.lB, f1, y1 - bk1), col);
+                    mb.Quad(vtx(sp.rA, sp.lB, f0, -sp.w, i), vtx(sp.lA, sp.rB, f0, sp.w, i),
+                            vtx(sp.lA, sp.rB, f1, sp.w, i + 1), vtx(sp.rA, sp.lB, f1, -sp.w, i + 1), col);
                 }
             };
 
@@ -3547,6 +3554,8 @@ void City::ComputeTileCPU(Tile& t) {
         t.coll.surfVerts.reserve(mb.verts.size() / 3);
         for (size_t i = 0; i + 2 < mb.verts.size(); i += 3)
             t.coll.surfVerts.push_back({ mb.verts[i], mb.verts[i + 1], mb.verts[i + 2] });
+        t.coll.surfLayer.reserve(mb.verts.size() / 3);
+        for (size_t i = 0; i + 1 < mb.texcoords.size(); i += 2) t.coll.surfLayer.push_back(mb.texcoords[i]);
         t.coll.surfIdx.reserve(mb.indices.size());
         for (size_t i = 0; i + 2 < mb.indices.size(); i += 3) {
             int a = mb.indices[i], b = mb.indices[i + 1], c = mb.indices[i + 2];
@@ -4262,6 +4271,24 @@ void City::DrawOverlay3D() {
         }
     }
 
+    // Geometry problems: red outlines on steep / thin triangles, red vertical lines on steps and cracks.
+    if (state.activeCity == this && state.showProblems && collisionEnabled) {
+        const GeometryProblems& gp = GetGeometryProblemsCached();
+        const Color red{ 255, 40, 40, 255 };
+        for (const auto& t : gp.steep) for (int i = 0; i < 3; i++) DrawLine3D(Vector3Add(t[(size_t)i], { 0, 0.15f, 0 }), Vector3Add(t[(size_t)((i + 1) % 3)], { 0, 0.15f, 0 }), red);
+        const Color orange{ 255, 150, 30, 255 };
+        for (const auto& t : gp.thin) for (int i = 0; i < 3; i++) DrawLine3D(Vector3Add(t[(size_t)i], { 0, 0.15f, 0 }), Vector3Add(t[(size_t)((i + 1) % 3)], { 0, 0.15f, 0 }), orange);
+        const Color magenta{ 255, 40, 255, 255 };
+        for (const Vector3& p : gp.padOverRoad) {
+            DrawLine3D(Vector3Add(p, { -0.8f, 0.4f, 0 }), Vector3Add(p, { 0.8f, 0.4f, 0 }), magenta);
+            DrawLine3D(Vector3Add(p, { 0, 0.4f, -0.8f }), Vector3Add(p, { 0, 0.4f, 0.8f }), magenta);
+        }
+        for (const auto& st : gp.steps) {
+            DrawLine3D(st.first, Vector3Add(st.second, { 0, 1.0f, 0 }), red);
+            DrawCube(Vector3Add(st.second, { 0, 1.0f, 0 }), 0.5f, 0.5f, 0.5f, red);
+        }
+    }
+
     // Transit tool: stop pillars (coloured by the selected line) and the selected line's route as a polyline.
     if (state.activeCity == this && state.tool == CityTool::Transit) {
         const float top = BusStopMarkerHeight();
@@ -4363,6 +4390,128 @@ std::string City::DebugBuses() const {
           << " target " << a.busTarget << " dwell " << a.dwell << " stuck " << a.stuck << " inJ " << a.inJ << " next " << a.nextEdge << " lane " << a.lane << "\n";
     }
     return o.str();
+}
+
+void City::ComputeGeometryProblems(GeometryProblems& out) const {
+    out = GeometryProblems{};
+    std::vector<Vector3> v;
+    DebugSurfaceTriangles(v);
+    struct Key { int64_t x, y, z; bool operator==(const Key& o) const { return x == o.x && y == o.y && z == o.z; } };
+    struct KeyHash { size_t operator()(const Key& k) const { return (size_t)(k.x * 73856093LL) ^ (size_t)(k.y * 19349663LL) ^ (size_t)(k.z * 83492791LL); } };
+    auto q = [](const Vector3& p) { return Key{ (int64_t)llroundf(p.x * 50.0f), (int64_t)llroundf(p.y * 100.0f), (int64_t)llroundf(p.z * 50.0f) }; };   // 2 cm in x,z; 1 cm in y
+    // Open edges: used by exactly one triangle.
+    struct EKey { Key a, b; bool operator==(const EKey& o) const { return a == o.a && b == o.b; } };
+    struct EHash { size_t operator()(const EKey& e) const { KeyHash h; return h(e.a) * 31u ^ h(e.b); } };
+    std::unordered_map<EKey, int, EHash> edgeUse;
+    std::unordered_map<EKey, std::pair<Vector3, Vector3>, EHash> edgePts;
+    auto addEdge = [&](const Vector3& a, const Vector3& b) {
+        Key ka = q(a), kb = q(b);
+        if (kb.x < ka.x || (kb.x == ka.x && (kb.y < ka.y || (kb.y == ka.y && kb.z < ka.z)))) std::swap(ka, kb);
+        const EKey ek{ ka, kb };
+        edgeUse[ek]++;
+        edgePts[ek] = { a, b };
+    };
+    for (size_t i = 0; i + 2 < v.size(); i += 3) {
+        const Vector3 &p = v[i], &r = v[i + 1], &s = v[i + 2];
+        const Vector3 n = Vector3CrossProduct(Vector3Subtract(r, p), Vector3Subtract(s, p));
+        const float area3 = Vector3Length(n);
+        if (area3 < 1e-6f) continue;
+        const float ny = fabsf(n.y) / area3;
+        const float areaXZ = 0.5f * fabsf((r.x - p.x) * (s.z - p.z) - (r.z - p.z) * (s.x - p.x));
+        const float L = std::max({ Vector3Distance(p, r), Vector3Distance(r, s), Vector3Distance(p, s) });
+        if (ny < 0.5f && 0.5f * area3 > 0.5f) out.steep.push_back({ p, r, s });
+        if (L > 6.0f && areaXZ > 0.2f && areaXZ < 0.012f * L * L) out.thin.push_back({ p, r, s });
+        addEdge(p, r); addEdge(r, s); addEdge(s, p);
+    }
+    // Steps: open-edge vertices at the same x,z with clearly different heights (layers sit within ~10 cm of each other).
+    struct XZ { int64_t x, z; bool operator==(const XZ& o) const { return x == o.x && z == o.z; } };
+    struct XZHash { size_t operator()(const XZ& k) const { return (size_t)(k.x * 73856093LL) ^ (size_t)(k.z * 83492791LL); } };
+    std::unordered_map<XZ, std::pair<Vector3, Vector3>, XZHash> col;   // lowest and highest open-edge vertex per column
+    for (const auto& kv : edgeUse) {
+        if (kv.second != 1) continue;
+        const auto& pts = edgePts[kv.first];
+        for (const Vector3& p : { pts.first, pts.second }) {
+            const XZ k{ (int64_t)llroundf(p.x * 50.0f), (int64_t)llroundf(p.z * 50.0f) };
+            auto it = col.find(k);
+            if (it == col.end()) col[k] = { p, p };
+            else { if (p.y < it->second.first.y) it->second.first = p; if (p.y > it->second.second.y) it->second.second = p; }
+        }
+    }
+    for (const auto& kv : col)
+        if (kv.second.second.y - kv.second.first.y > 0.15f) out.steps.push_back(kv.second);
+
+    // Pad over road: the road shader biases every layer toward the camera (about 2 m per layer unit), so a pad
+    // (layer 0.06/0.08) hides the asphalt (layer 0.10/0.12) wherever it is more than ~8 cm higher than the asphalt.
+    // Sample each pad triangle and look up the asphalt triangles over the same x,z.
+    struct Tri { Vector3 a, b, c; float layer; };
+    std::vector<Tri> pads, roads;
+    for (const auto& kv : tiles) {
+        const TileCollision& cl = kv.second.coll;
+        if (cl.surfLayer.size() != cl.surfVerts.size()) continue;
+        for (size_t i = 0; i + 2 < cl.surfIdx.size(); i += 3) {
+            const size_t ia = (size_t)cl.surfIdx[i], ib = (size_t)cl.surfIdx[i + 1], ic = (size_t)cl.surfIdx[i + 2];
+            const float lay = cl.surfLayer[ia];
+            Tri t{ cl.surfVerts[ia], cl.surfVerts[ib], cl.surfVerts[ic], lay };
+            if (fabsf(lay - 0.06f) < 0.011f || fabsf(lay - 0.08f) < 0.011f) pads.push_back(t);
+            else if (fabsf(lay - 0.10f) < 0.011f || fabsf(lay - 0.12f) < 0.011f) roads.push_back(t);
+        }
+    }
+    const float cell = 4.0f;
+    std::unordered_map<int64_t, std::vector<int>> grid;
+    auto cellKey = [&](int cx, int cz) { return ((int64_t)cx << 32) ^ (int64_t)(uint32_t)cz; };
+    for (size_t i = 0; i < roads.size(); i++) {
+        const Tri& t = roads[i];
+        const int x0 = (int)floorf(std::min({ t.a.x, t.b.x, t.c.x }) / cell), x1 = (int)floorf(std::max({ t.a.x, t.b.x, t.c.x }) / cell);
+        const int z0 = (int)floorf(std::min({ t.a.z, t.b.z, t.c.z }) / cell), z1 = (int)floorf(std::max({ t.a.z, t.b.z, t.c.z }) / cell);
+        for (int cx = x0; cx <= x1; cx++) for (int cz = z0; cz <= z1; cz++) grid[cellKey(cx, cz)].push_back((int)i);
+    }
+    auto heightIn = [](const Tri& t, float x, float z, float& y) {
+        const float d = (t.b.z - t.c.z) * (t.a.x - t.c.x) + (t.c.x - t.b.x) * (t.a.z - t.c.z);
+        if (fabsf(d) < 1e-9f) return false;
+        const float l1 = ((t.b.z - t.c.z) * (x - t.c.x) + (t.c.x - t.b.x) * (z - t.c.z)) / d;
+        const float l2 = ((t.c.z - t.a.z) * (x - t.c.x) + (t.a.x - t.c.x) * (z - t.c.z)) / d;
+        const float l3 = 1.0f - l1 - l2;
+        if (l1 < 0.02f || l2 < 0.02f || l3 < 0.02f) return false;   // clearly inside, not on an edge
+        y = l1 * t.a.y + l2 * t.b.y + l3 * t.c.y;
+        return true;
+    };
+    for (const Tri& pt : pads) {
+        const float areaXZ = 0.5f * fabsf((pt.b.x - pt.a.x) * (pt.c.z - pt.a.z) - (pt.b.z - pt.a.z) * (pt.c.x - pt.a.x));
+        if (areaXZ < 0.5f) continue;
+        const float w[4][3] = { { 1 / 3.f, 1 / 3.f, 1 / 3.f }, { 0.6f, 0.2f, 0.2f }, { 0.2f, 0.6f, 0.2f }, { 0.2f, 0.2f, 0.6f } };
+        for (int k = 0; k < 4; k++) {
+            const float x = pt.a.x * w[k][0] + pt.b.x * w[k][1] + pt.c.x * w[k][2];
+            const float z = pt.a.z * w[k][0] + pt.b.z * w[k][1] + pt.c.z * w[k][2];
+            const float yPad = pt.a.y * w[k][0] + pt.b.y * w[k][1] + pt.c.y * w[k][2];
+            const auto it = grid.find(cellKey((int)floorf(x / cell), (int)floorf(z / cell)));
+            if (it == grid.end()) continue;
+            bool hit = false;
+            for (int ri : it->second) {
+                float yRoad;
+                if (!heightIn(roads[(size_t)ri], x, z, yRoad)) continue;
+                // effective drawn height = surface + ~2 m per layer unit of bias
+                if (yPad + 2.0f * pt.layer > yRoad + 2.0f * roads[(size_t)ri].layer + 0.02f) { out.padOverRoad.push_back({ x, yPad, z }); out.padOverDelta.push_back((yPad + 2.0f * pt.layer) - (yRoad + 2.0f * roads[(size_t)ri].layer)); hit = true; break; }
+            }
+            if (hit) break;
+        }
+    }
+}
+
+const City::GeometryProblems& City::GetGeometryProblemsCached() {
+    const double now = GetTime();
+    if (now - problemsTime > 0.5) {
+        ComputeGeometryProblems(problemsCache);
+        problemsTime = now;
+    }
+    return problemsCache;
+}
+
+void City::DebugSurfaceLayers(std::vector<float>& out) const {
+    out.clear();
+    for (const auto& kv : tiles) {
+        const TileCollision& c = kv.second.coll;
+        for (size_t i = 0; i + 2 < c.surfIdx.size(); i += 3) out.push_back(c.surfLayer.size() == c.surfVerts.size() ? c.surfLayer[(size_t)c.surfIdx[i]] : -1.0f);
+    }
 }
 
 void City::DebugSurfaceTriangles(std::vector<Vector3>& out) const {
@@ -4776,6 +4925,30 @@ float City::BlockRoadHalf(const Block& block) const {
     return any ? widest : half;
 }
 
+void City::EdgePlateau(int ei, float len, float& atA, float& atB) const {
+    const RoadEdge& e = edges[(size_t)ei];
+    const float slabHalf = EdgeSlabHalf(ei);
+    const float base = slabHalf + std::max(params.cornerRadius, 0.0f) + 1.5f;
+    float lenAt[2] = { base, base };
+    for (int end = 0; end < 2 && nodeEdges.size() == nodes.size(); end++) {
+        const int n = end == 0 ? e.a : e.b, other = end == 0 ? e.b : e.a;
+        const Vector2 mine = Vector2Normalize(Vector2Subtract(nodes[(size_t)other].pos, nodes[(size_t)n].pos));
+        float minAngle = PI;
+        for (int ej : nodeEdges[(size_t)n]) {
+            if (ej == ei) continue;
+            const RoadEdge& f = edges[(size_t)ej];
+            const int o2 = f.a == n ? f.b : f.a;
+            const Vector2 theirs = Vector2Normalize(Vector2Subtract(nodes[(size_t)o2].pos, nodes[(size_t)n].pos));
+            minAngle = std::min(minAngle, acosf(Clamp(Vector2DotProduct(mine, theirs), -1.0f, 1.0f)));
+        }
+        // Two roads meeting at angle a: the corner of their edges is slabHalf / tan(a/2) from the node along the arm,
+        // so the strip's end cut reaches that far when the junction is sharp.
+        if (minAngle < PI * 0.5f) lenAt[end] = std::max(base, slabHalf / std::max(tanf(std::max(minAngle, 0.35f) * 0.5f), 0.05f) + 1.5f);
+    }
+    atA = std::min(0.45f, lenAt[0] / len);
+    atB = std::min(0.45f, lenAt[1] / len);
+}
+
 float City::EdgeRampU(int ei, float s) const {
     if (ei < 0 || (size_t)ei >= edges.size()) return 0.0f;
     const RoadEdge& e = edges[(size_t)ei];
@@ -4783,8 +4956,9 @@ float City::EdgeRampU(int ei, float s) const {
     if (len < 1e-3f) return 0.0f;
     // Flat across each junction (plates and the strip ends meet at exactly the node height),
     // eased ramp in between.
-    const float plateau = std::min(0.45f, (EdgeSlabHalf(ei) + std::max(params.cornerRadius, 0.0f) + 1.5f) / len);
-    const float u = Clamp((s - plateau) / std::max(1.0f - 2.0f * plateau, 1e-3f), 0.0f, 1.0f);
+    float pa, pb;
+    EdgePlateau(ei, len, pa, pb);
+    const float u = Clamp((s - pa) / std::max(1.0f - pa - pb, 1e-3f), 0.0f, 1.0f);
     return u * u * (3.0f - 2.0f * u);
 }
 
@@ -4803,11 +4977,12 @@ std::vector<float> City::EdgeStations(int ei) const {
         const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
         if ((nodes[(size_t)e.a].h != nodes[(size_t)e.b].h || e.bank != 0.0f) && len > 1e-3f) {
             const int steps = std::max(1, (int)ceilf(len / kProfileStep));
-            const float plateau = std::min(0.45f, (EdgeSlabHalf(ei) + std::max(params.cornerRadius, 0.0f) + 1.5f) / len);
+            float plateauA, plateauB;
+            EdgePlateau(ei, len, plateauA, plateauB);
             std::vector<float> v;
             for (int k = 1; k < steps; k++) v.push_back((float)k / (float)steps);
-            v.push_back(plateau);          // the surface is exactly level up to here (junction plateau)
-            v.push_back(1.0f - plateau);
+            v.push_back(plateauA);          // the surface is exactly level up to here (junction plateau)
+            v.push_back(1.0f - plateauB);
             std::sort(v.begin(), v.end());
             for (float x : v)
                 if (x > st.back() + 1e-3f && x < 1.0f - 1e-3f) st.push_back(x);

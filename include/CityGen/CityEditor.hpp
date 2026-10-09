@@ -83,6 +83,9 @@ namespace city {
         int transitAutoLines = 3;
         int transitAutoStops = 6;
 
+        // "Show geometry problems": paints suspicious road/pad/park surface spots red in the viewport.
+        bool showProblems = false;
+
         // Keyboard nudge step (Shift scales it down for fine control).
         float nudgeStep = 1.0f;
 

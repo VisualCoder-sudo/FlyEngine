@@ -1133,6 +1133,20 @@ void DrawCityEditorPanel() {
                         ts.cars, ts.nearCars, ts.farCars, ts.peds, ts.avgSpeed, ts.stopped, ts.minGap, ts.stepMs, ts.maxWalkerSpeed, ts.overlaps, ts.jumps);
     }
 
+    ImGui::SeparatorText("Diagnostics");
+    {
+        ImGui::Checkbox("Show geometry problems", &s.showProblems);
+        if (s.showProblems) {
+            if (!city->GetCollisionEnabled()) ImGui::TextDisabled("Needs \"Building collision\" on (it builds the surface data).");
+            else {
+                const auto& gp = city->GetGeometryProblemsCached();
+                ImGui::Text("steep: %zu   thin: %zu   steps/cracks: %zu", gp.steep.size(), gp.thin.size(), gp.steps.size());
+                ImGui::Text("pad drawn over road: %zu", gp.padOverRoad.size());
+                ImGui::TextWrapped("Red outline = steep triangle, orange = thin spike, red vertical line = a step or crack between two surfaces, magenta cross = a pad drawn over the road asphalt. Move the camera over the broken area.");
+            }
+        }
+    }
+
     ImGui::SeparatorText("Performance");
     {
         bool persistent = gfx::GetInstanceBuffersEnabled();

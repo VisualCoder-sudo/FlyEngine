@@ -5,6 +5,7 @@
 #include "raymath.h"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <functional>
 #include <cstdint>
@@ -451,6 +452,22 @@ public:
     // All road / pad / park surface triangles of the city (world space, 3 vertices per triangle); needs
     // collision enabled (the default). For geometry audits in tests.
     void DebugSurfaceTriangles(std::vector<Vector3>& out) const;
+    void DebugSurfaceLayers(std::vector<float>& out) const;   // the stack layer of each triangle returned by DebugSurfaceTriangles
+
+    // Geometry diagnostics ("Show geometry problems" in the editor): suspicious spots in the road/pad/park surface.
+    //  steep - a surface triangle steeper than 60 degrees (a cliff)
+    //  thin  - a long triangle that is paper-thin seen from above (a spike)
+    //  steps - a place where the surface has an open edge and another open edge at the same x,z but a different
+    //          height: a crack or step between neighbouring surfaces (e.g. a sloped pad that does not meet the road)
+    struct GeometryProblems {
+        std::vector<std::array<Vector3, 3>> steep, thin;
+        std::vector<std::pair<Vector3, Vector3>> steps;   // (low, high) point at the same x,z
+        std::vector<float> padOverDelta;                  // how far (m, with the layer bias) the pad is above the road there
+        std::vector<Vector3> padOverRoad;                 // a pad / park drawn on top of road asphalt (it hides the road)
+    };
+    void ComputeGeometryProblems(GeometryProblems& out) const;
+    // The last computed set, refreshed about twice a second while the editor asks for it.
+    const GeometryProblems& GetGeometryProblemsCached();
     int CountInstances(int shape) const;
     bool FindBus(int index, Vector3& pos, float& yaw) const;
     bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker = false) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
@@ -472,6 +489,11 @@ private:
     void LayoutBuildings(); // fills per-block building boxes (parks first)
     float FreeGroundY(const Vector2& p) const;               // ground height under a NoCollision building
     int EdgeBetween(int a, int b) const;                   // edge joining nodes a and b, or -1
+    // Fractions of the edge, from each end, over which the road surface is exactly level (the junction plateau).
+    // It covers the junction plate and the (possibly skewed) cut where the road strip meets it.
+public:
+    void EdgePlateau(int ei, float len, float& atA, float& atB) const;
+private:
     float EdgeRampU(int ei, float s) const;                // 0..1 eased ramp position along an edge (flat at junctions)
     // Cross-section stations (fractions 0..1 along edge a->b) shared by the road surface and the block
     // pads beside it, and the piecewise-linear surface height through them.
@@ -604,6 +626,8 @@ private:
     std::unordered_map<uint64_t, BuildingOverride> buildingOverrides; // key: (blockId<<20)|slot
     std::vector<PlacedBuilding> placed;
     std::vector<District> districts;
+    GeometryProblems problemsCache;
+    double problemsTime = -1e9;
     std::vector<BusStop> busStops;
     std::vector<BusLine> busLines;
     void ResolveBusStops();
@@ -627,6 +651,7 @@ private:
         std::vector<CollBox> buildings;             // oriented boxes; non-box shapes become hulls
         std::vector<Vector3> surfVerts;             // road/pad/park surface triangles
         std::vector<int> surfIdx;
+        std::vector<float> surfLayer;               // per surface vertex: the road shader's stack layer (pad 0.06, asphalt 0.10 ...)
     };
     struct TilePhysics;                             // Box3D body/hulls/mesh (City.cpp)
     struct Tile {

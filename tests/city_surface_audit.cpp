@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 using namespace city;
@@ -49,12 +50,13 @@ static Audit Run(const City& c) {
     return a;
 }
 
+static std::vector<std::pair<std::string, int>> hist;
 static uint32_t Hash(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x; }
 
 int main() {
     InitWindow(256, 256, "city_surface_audit");
     int fail = 0;
-    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0;
+    long sumFlat = 0, sumHill = 0, cliffFlat = 0, cliffHill = 0, stepsFlat = 0, stepsHill = 0, overFlat = 0, overHill = 0;
     const int first = getenv("AUDIT_DUMP") ? atoi(getenv("AUDIT_DUMP")) : 1, last = getenv("AUDIT_DUMP") ? first : 12;
     for (int seed = first; seed <= last; seed++) {
         for (int mode = 0; mode < 2; mode++) {
@@ -78,12 +80,77 @@ int main() {
             if (getenv("AUDIT_DUMP") && mode == 1) {
                 for (int i = 0; i < (int)c.GetNodes().size(); i++) {
                     const RoadNode& nd = c.GetNodes()[(size_t)i];
-                    if (Vector2Distance(nd.pos, { 78.0f, 102.0f }) < 45.0f) std::printf("  node %d at (%.1f,%.1f) h %.2f junction %d\n", i, nd.pos.x, nd.pos.y, nd.h, (int)nd.junction);
+                    if (Vector2Distance(nd.pos, { -5.0f, 74.0f }) < 45.0f) std::printf("  node %d at (%.1f,%.1f) h %.2f junction %d\n", i, nd.pos.x, nd.pos.y, nd.h, (int)nd.junction);
                 }
                 for (int e = 0; e < (int)c.GetEdges().size(); e++) {
                     const RoadEdge& ed = c.GetEdges()[(size_t)e];
                     const Vector2 pa = c.GetNodes()[(size_t)ed.a].pos, pb = c.GetNodes()[(size_t)ed.b].pos;
-                    if (Vector2Distance(pa, { 78.0f, 102.0f }) < 40.0f && Vector2Distance(pb, { 78.0f, 102.0f }) < 60.0f) std::printf("  edge %d: node %d -> %d\n", e, ed.a, ed.b);
+                    if (Vector2Distance(pa, { -5.0f, 74.0f }) < 40.0f && Vector2Distance(pb, { -5.0f, 74.0f }) < 60.0f) {
+                        float fa, fb; const float el = Vector2Distance(pa, pb); c.EdgePlateau(e, el, fa, fb);
+                        std::printf("  edge %d: node %d -> %d  len %.1f plateau %.1f m / %.1f m  slabHalf %.1f\n", e, ed.a, ed.b, el, fa * el, fb * el, c.EdgeSlabHalf(e));
+                    }
+                }
+            }
+            City::GeometryProblems gp;
+            c.ComputeGeometryProblems(gp);
+            if (mode == 1 && getenv("AUDIT_LAYERS")) {
+                std::vector<Vector3> tv; std::vector<float> tl;
+                c.DebugSurfaceTriangles(tv); c.DebugSurfaceLayers(tl);
+                auto layerAt = [&](const Vector3& p) {
+                    for (size_t i = 0; i < tv.size(); i++)
+                        if (fabsf(tv[i].x - p.x) < 0.02f && fabsf(tv[i].y - p.y) < 0.02f && fabsf(tv[i].z - p.z) < 0.02f) return tl[i / 3];
+                    return -1.0f;
+                };
+                for (const auto& st : gp.steps) {
+                    char key[64]; std::snprintf(key, sizeof key, "L%.2f -> L%.2f", layerAt(st.first), layerAt(st.second));
+                    bool found = false;
+                    for (auto& h : hist) if (h.first == key) { h.second++; found = true; }
+                    if (!found) hist.push_back({ key, 1 });
+                }
+            }
+            (mode ? stepsHill : stepsFlat) += (long)gp.steps.size();
+            (mode ? overHill : overFlat) += (long)gp.padOverRoad.size();
+            if (getenv("AUDIT_DUMP") && mode == 1)
+                for (size_t k = 0; k < gp.steps.size() && k < 12; k++)
+                    std::printf("  step at (%.2f, %.2f): y %.2f -> %.2f\n", gp.steps[k].first.x, gp.steps[k].first.z, gp.steps[k].first.y, gp.steps[k].second.y);
+            if (getenv("AUDIT_DUMP") && mode == 1) {
+                float mx = 0; double avg = 0;
+                for (float d : gp.padOverDelta) { mx = std::max(mx, d); avg += d; }
+                std::printf("  pad-over-road: max excess %.3f m, mean %.3f m\n", mx, gp.padOverDelta.empty() ? 0.0 : avg / (double)gp.padOverDelta.size());
+                // Worst cases first, with the nearest node (distance along the ground) so we know where they are.
+                std::vector<size_t> order(gp.padOverRoad.size());
+                for (size_t k = 0; k < order.size(); k++) order[k] = k;
+                std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return gp.padOverDelta[x] > gp.padOverDelta[y]; });
+                for (size_t oi = 0; oi < order.size() && oi < 10; oi++) {
+                    const size_t k = order[oi];
+                    int nn = 0; float bd = 1e30f;
+                    for (int i = 0; i < (int)c.GetNodes().size(); i++) { const float d = Vector2Distance(c.GetNodes()[(size_t)i].pos, { gp.padOverRoad[k].x, gp.padOverRoad[k].z }); if (d < bd) { bd = d; nn = i; } }
+                    std::printf("  over at (%.1f, %.1f) pad y %.2f excess %.3f; nearest node %d is %.1f m away (h %.2f)\n", gp.padOverRoad[k].x, gp.padOverRoad[k].z, gp.padOverRoad[k].y, gp.padOverDelta[k], nn, bd, c.GetNodes()[(size_t)nn].h);
+                }
+            }
+            std::printf("  seed %d %s: steps/cracks %zu  pad-over-road %zu\n", seed, mode ? "hill" : "flat", gp.steps.size(), gp.padOverRoad.size());
+            if (getenv("AUDIT_XS") && mode == 1) {
+                // Cross-section of one edge at 55 % of its length: every surface layer's height at each lateral offset.
+                const int ei = atoi(getenv("AUDIT_XS"));
+                const RoadEdge& ed = c.GetEdges()[(size_t)ei];
+                const Vector2 pa = c.GetNodes()[(size_t)ed.a].pos, pb = c.GetNodes()[(size_t)ed.b].pos;
+                const Vector2 dir = Vector2Normalize(Vector2Subtract(pb, pa)), nrm = { -dir.y, dir.x };
+                const Vector2 mid = Vector2Add(pa, Vector2Scale(Vector2Subtract(pb, pa), getenv("AUDIT_XSF") ? (float)atof(getenv("AUDIT_XSF")) : 0.55f));
+                std::vector<Vector3> tv; std::vector<float> tl;
+                c.DebugSurfaceTriangles(tv); c.DebugSurfaceLayers(tl);
+                std::printf("  cross-section of edge %d (len %.1f, h %.2f -> %.2f), asphalt half %.1f, slab half %.1f\n", ei, Vector2Distance(pa, pb), c.GetNodes()[(size_t)ed.a].h, c.GetNodes()[(size_t)ed.b].h, c.EdgeAsphaltHalf(ei), c.EdgeSlabHalf(ei));
+                for (int off = -14; off <= 14; off += 1) {
+                    const float x = mid.x + nrm.x * (float)off, z = mid.y + nrm.y * (float)off;
+                    std::printf("   lat %3d:", off);
+                    for (size_t i = 0; i + 2 < tv.size(); i += 3) {
+                        const Vector3 &A = tv[i], &B = tv[i + 1], &C = tv[i + 2];
+                        const float d = (B.z - C.z) * (A.x - C.x) + (C.x - B.x) * (A.z - C.z);
+                        if (fabsf(d) < 1e-9f) continue;
+                        const float l1 = ((B.z - C.z) * (x - C.x) + (C.x - B.x) * (z - C.z)) / d, l2 = ((C.z - A.z) * (x - C.x) + (A.x - C.x) * (z - C.z)) / d, l3 = 1 - l1 - l2;
+                        if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+                        std::printf(" [L%.2f y%.2f]", tl[i / 3], l1 * A.y + l2 * B.y + l3 * C.y);
+                    }
+                    std::printf("\n");
                 }
             }
             const Audit a = Run(c);
@@ -96,7 +163,12 @@ int main() {
     }
     // Curtains (zero-area vertical triangles) and sideways normals used to make thousands of cliff triangles on
     // uneven ground; what is left is the steep middle of a short road ramp.
-    if (cliffFlat != 0 || cliffHill > 40) { std::printf("FAIL: cliffs flat %ld uneven %ld\n", cliffFlat, cliffHill); fail++; }
+    // Regression bounds (uneven ground, 12 cities). Before the road-twist fix pad-over-road was 1187 and steps 21.
+    if (cliffFlat != 0 || cliffHill > 80) { std::printf("FAIL: cliffs flat %ld uneven %ld\n", cliffFlat, cliffHill); fail++; }
+    if (stepsFlat != 0 || stepsHill > 40) { std::printf("FAIL: steps flat %ld uneven %ld\n", stepsFlat, stepsHill); fail++; }
+    if (overFlat != 0 || overHill > 700) { std::printf("FAIL: pad-over-road flat %ld uneven %ld\n", overFlat, overHill); fail++; }
+    for (auto& h : hist) std::printf("  step layers %s : %d\n", h.first.c_str(), h.second);
+    std::printf("steps/cracks: flat %ld, uneven %ld; pad-over-road: flat %ld, uneven %ld\n", stepsFlat, stepsHill, overFlat, overHill);
     std::printf("spikes: flat total %ld, uneven-ground total %ld; cliffs: flat %ld, uneven %ld\n", sumFlat, sumHill, cliffFlat, cliffHill);
     std::printf(fail ? "city_surface_audit: FAILED\n" : "city_surface_audit: ok\n");
     return fail ? 1 : 0;
