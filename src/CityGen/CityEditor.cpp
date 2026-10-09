@@ -1128,6 +1128,8 @@ void DrawCityEditorPanel() {
     if (city->IsRebuilding()) ImGui::TextDisabled("Rebuilding in background...");
     {
         const auto& ts = city->GetTrafficStats();
+        if (ts.peds + ts.riders > 0)
+            ImGui::Text("People: %d walking (%d queued at stops), %d on buses | %d trips, %d boarded, %d got off", ts.peds, ts.queued, ts.riders, ts.pedTrips, ts.boardings, ts.alightings);
         if (ts.cars + ts.peds > 0)
             ImGui::Text("Traffic: %d cars (%d near, %d far), %d walkers\navg %.1f m/s, %d stopped, min gap %.1f m, step %.2f ms\nwalker max %.1f m/s | crashes: %d | jumps: %d",
                         ts.cars, ts.nearCars, ts.farCars, ts.peds, ts.avgSpeed, ts.stopped, ts.minGap, ts.stepMs, ts.maxWalkerSpeed, ts.overlaps, ts.jumps);

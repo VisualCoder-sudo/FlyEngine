@@ -683,9 +683,103 @@ void City::AutoTransit(int lineCount, int stopsPerLine) {
     RebuildAll();
 }
 
+const std::vector<float>& City::RouteFieldWalk(int dest) {
+    PickDestinationPool();
+    const int64_t key = ((int64_t)dest << 32) | 0x80000000LL;
+    const auto it = routes.dist.find(key);
+    if (it != routes.dist.end()) return it->second;
+    const float kInf = std::numeric_limits<float>::infinity();
+    std::vector<float> d(nodes.size(), kInf);
+    if (dest >= 0 && (size_t)dest < nodes.size() && nodeEdges.size() == nodes.size()) {
+        using Item = std::pair<float, int>;
+        std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
+        d[(size_t)dest] = 0.0f;
+        pq.push({ 0.0f, dest });
+        while (!pq.empty()) {
+            const auto [dv, v] = pq.top(); pq.pop();
+            if (dv > d[(size_t)v]) continue;
+            for (int ei : nodeEdges[(size_t)v]) {
+                const RoadEdge& e = edges[(size_t)ei];
+                if (e.type == (int)RoadType::Highway) continue;
+                const int u = e.a == v ? e.b : e.a;
+                const float nd = dv + Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+                if (nd < d[(size_t)u]) { d[(size_t)u] = nd; pq.push({ nd, u }); }
+            }
+        }
+    }
+    return routes.dist.emplace(key, std::move(d)).first->second;
+}
+
+// The sidewalk (lane 0 or 1 of a pedestrian) a bus stop's shelter is on: the kerb of the direction it serves.
+int City::PedKerbLane(int stopIdx) const {
+    if (stopIdx < 0 || (size_t)stopIdx >= busStops.size() || busStops[(size_t)stopIdx].edge < 0) return 0;
+    const BusStop& bs = busStops[(size_t)stopIdx];
+    // The shelter itself says which sidewalk: take the one nearest to the shelter that was placed for this stop.
+    {
+        float bestD = 15.0f; Vector2 shelter{};
+        bool have = false;
+        for (const auto& kv : tiles)
+            for (const Matrix& m : kv.second.inst[kPropBusStop]) {
+                const float d = Vector2Distance({ m.m12, m.m14 }, bs.pos);
+                if (d < bestD) { bestD = d; shelter = { m.m12, m.m14 }; have = true; }
+            }
+        if (have) {
+            int bestLane = 0; float bd = 1e30f;
+            for (int lane = 0; lane < 2; lane++) {
+                Vector3 p; Vector2 h;
+                LanePose(bs.edge, true, bs.s, (float)lane, false, p, h);
+                const float d = Vector2Distance({ p.x, p.z }, shelter);
+                if (d < bd) { bd = d; bestLane = lane; }
+            }
+            return bestLane;
+        }
+    }
+    const Vector2 f = bs.heading;
+    const Vector2 right = params.leftHandTraffic ? Vector2{ f.y, -f.x } : Vector2{ -f.y, f.x };
+    int best = 0; float bd = -1e30f;
+    for (int lane = 0; lane < 2; lane++) {
+        Vector3 p; Vector2 h;
+        LanePose(bs.edge, true, bs.s, (float)lane, false, p, h);
+        const float side = (p.x - bs.pos.x) * right.x + (p.z - bs.pos.y) * right.y;
+        if (side > bd) { bd = side; best = lane; }
+    }
+    return best;
+}
+
+// Next trip of a pedestrian: sometimes a bus stop to catch (when there are lines), else a node to walk to.
+void City::PickPedTrip(Agent& a, bool allowBus) {
+    a.rideStop = -1;
+    a.rideState = 0;
+    a.waitStop = 0.0f;
+    std::vector<int> usable;
+    if (allowBus)
+        for (const BusLine& L : busLines) {
+            if (L.stops.size() < 2) continue;
+            for (int s : L.stops) if ((size_t)s < busStops.size() && busStops[(size_t)s].edge >= 0) usable.push_back(s);
+        }
+    if (!usable.empty() && Lcg01(a.rng) < 0.4f) {
+        const int s = usable[Lcg(a.rng) % (uint32_t)usable.size()];
+        const BusStop& bs = busStops[(size_t)s];
+        const RoadEdge& se = edges[(size_t)bs.edge];
+        a.rideStop = s;
+        a.dest = bs.fwd ? se.a : se.b;      // the node the buses enter the stop's road from
+        return;
+    }
+    a.dest = -1;
+    if (nodes.empty()) return;
+    for (int tries = 0; tries < 8; tries++) {
+        int n = Lcg01(a.rng) < 0.5f ? PickDestination(a.rng) : (int)(Lcg(a.rng) % (uint32_t)nodes.size());
+        if (n < 0 || (size_t)n >= nodes.size() || nodeEdges.size() != nodes.size()) continue;
+        bool walkable = false;
+        for (int ei : nodeEdges[(size_t)n]) if (edges[(size_t)ei].type != (int)RoadType::Highway) { walkable = true; break; }
+        if (walkable) { a.dest = n; return; }
+    }
+}
+
 void City::SpawnAgent(Agent& a, bool car) {
     a.car = car;
     a.bus = -1; a.length = 4.2f; a.dwell = 0.0f; a.busSkip = -1; a.busTarget = 0;
+    a.idle = 0.0f; a.rideStop = -1; a.rideState = 0; a.waitStop = 0.0f; a.atStop = -1; a.riders = 0; a.busId = 0;
     for (int tries = 0; tries < 20; tries++) {
         a.edge = (int)(Lcg(a.rng) % (uint32_t)std::max<size_t>(edges.size(), 1));
         const RoadEdge& e = edges[(size_t)a.edge];
@@ -713,10 +807,15 @@ void City::SpawnAgent(Agent& a, bool car) {
     a.lane = car ? (int)(Lcg(a.rng) % (uint32_t)std::max(edges[(size_t)a.edge].oneWay ? lanes : lanes / 2, 1)) : (int)(Lcg(a.rng) & 1u);
     static const Color kCar[8] = { {200,40,40,255}, {40,90,200,255}, {230,230,230,255}, {30,30,34,255},
                                    {220,180,40,255}, {50,150,90,255}, {150,150,158,255}, {180,100,40,255} };
-    static const Color kPed[6] = { {200,60,60,255}, {60,120,200,255}, {230,200,60,255}, {70,170,100,255}, {200,200,200,255}, {160,80,160,255} };
+    static const Color kPed[12] = { {200,60,60,255}, {60,120,200,255}, {230,200,60,255}, {70,170,100,255}, {200,200,200,255}, {160,80,160,255},
+                                    {230,120,50,255}, {40,150,160,255}, {90,90,100,255}, {230,160,190,255}, {120,80,50,255}, {235,235,225,255} };
     a.laneF = (float)a.lane; a.turn = 0;
     a.colorRoll = Lcg01(a.rng); a.colorRoll2 = Lcg01(a.rng);
-    a.color = car ? kCar[Lcg(a.rng) % 8u] : kPed[Lcg(a.rng) % 6u];
+    a.color = car ? kCar[Lcg(a.rng) % 8u] : kPed[Lcg(a.rng) % 12u];
+    if (!car) {
+        a.scale = 0.86f + Lcg01(a.rng) * 0.24f;               // people differ in height
+        PickPedTrip(a, true);
+    }
 }
 
 // Car colour from the table: weighted by chance, or uniform in "all" mode. "Other" entries use a vivid palette.
@@ -1046,6 +1145,7 @@ void City::StepTraffic(float dt) {
                 SpawnAgent(a, true);
                 a.bus = (int)li;
                 a.length = 11.0f;
+                a.busId = nextBusId++;
                 a.dest = -1;
                 a.busTarget = (have * (int)L.stops.size() / std::max(L.buses, 1)) % (int)L.stops.size();
                 const BusStop& stp = busStops[(size_t)L.stops[(size_t)a.busTarget]];
@@ -1084,6 +1184,11 @@ void City::StepTraffic(float dt) {
         return false;
     };
 
+    // Buses by id (riders find their bus) and the list of buses (queued pedestrians look for one at their stop).
+    std::unordered_map<uint32_t, int> busById;
+    std::vector<int> busIdx;
+    for (int i = 0; i < (int)agents.size(); i++) if (agents[(size_t)i].bus >= 0) { busById[agents[(size_t)i].busId] = i; busIdx.push_back(i); }
+
     const float D = params.trafficDetailDistance;
     for (int i = 0; i < (int)agents.size(); i++) {
         Agent& a = agents[(size_t)i];
@@ -1091,8 +1196,10 @@ void City::StepTraffic(float dt) {
 
         // A planned junction path only belongs to the road pair it was made for; drop it otherwise (e.g. after a
         // far-model hand-over) so a car never rides a path from a different junction.
-        if (!a.jpath.empty() && !a.inJ && (a.jFrom != a.edge || a.jTo != a.nextEdge)) a.jpath.clear();
-        if (a.inJ && (a.jpath.size() < 2 || a.jTo != a.nextEdge)) { a.inJ = false; a.jpath.clear(); }
+        // (Pedestrians use inJ for crossing a junction without a planned car path, so this is for cars only: it used to
+        // reset every pedestrian out of its crossing on the next frame, and they walked straight past the end of the road.)
+        if (a.car && !a.jpath.empty() && !a.inJ && (a.jFrom != a.edge || a.jTo != a.nextEdge)) a.jpath.clear();
+        if (a.car && a.inJ && (a.jpath.size() < 2 || a.jTo != a.nextEdge)) { a.inJ = false; a.jpath.clear(); }
 
         // Detail level by distance to the camera (with hysteresis).
         if (a.car) {
@@ -1119,6 +1226,60 @@ void City::StepTraffic(float dt) {
 
         // ---- pedestrians: walk the sidewalk, round corners, wait for the light and use the crossing ----
         if (!a.car) {
+            // On a bus: hidden until the bus stands at the stop to get off at.
+            if (a.rideState == 3) {
+                const auto bit = busById.find(a.busId);
+                if (bit == busById.end() || a.rideStop < 0 || (size_t)a.rideStop >= busStops.size() || busStops[(size_t)a.rideStop].edge < 0) {
+                    a.rideState = 0; a.rideStop = -1; SpawnAgent(a, false);   // its bus is gone: back on the street somewhere
+                    continue;
+                }
+                Agent& bus = agents[(size_t)bit->second];
+                if (bus.atStop == a.rideStop) {
+                    const BusStop& bs = busStops[(size_t)a.rideStop];
+                    const RoadEdge& se = edges[(size_t)bs.edge];
+                    const float selen = std::max(Vector2Distance(nodes[(size_t)se.a].pos, nodes[(size_t)se.b].pos), 1e-3f);
+                    a.edge = bs.edge; a.fwd = bs.fwd;
+                    a.s = std::clamp(bs.fwd ? bs.s : selen - bs.s, 0.5f, selen - 0.5f);
+                    a.lane = PedKerbLane(a.rideStop);
+                    a.inJ = false; a.nextEdge = -1; a.wait = 0.0f;
+                    if (bus.riders > 0) bus.riders--;
+                    alightingsCount++;
+                    a.rideState = 0; a.rideStop = -1;
+                    PickPedTrip(a, false);
+                    a.idle = 0.0f;
+                    Vector3 ap; Vector2 ah;
+                    LanePose(a.edge, a.fwd, a.s, (float)a.lane, false, ap, ah);
+                    a.pos = ap; a.yaw = atan2f(-ah.y, ah.x); a.placed = true;
+                }
+                continue;
+            }
+            // Standing at a destination for a while.
+            if (a.idle > 0.0f) {
+                a.idle -= step;
+                if (a.placed) continue;
+            }
+            // Queued at a bus stop: board a bus of a line serving it when one stands there.
+            if (a.rideState == 2) {
+                a.waitStop += step;
+                bool boarded = false;
+                for (int bi : busIdx) {
+                    Agent& o = agents[(size_t)bi];
+                    if (o.atStop != a.rideStop || o.riders >= 45 || o.bus < 0 || (size_t)o.bus >= busLines.size()) continue;
+                    const BusLine& L = busLines[(size_t)o.bus];
+                    if (L.stops.size() < 2) continue;
+                    const int k = 1 + (int)(Lcg(a.rng) % (uint32_t)std::min<size_t>(4, L.stops.size() - 1));
+                    a.rideStop = L.stops[((size_t)o.busTarget + (size_t)k) % L.stops.size()];   // where to get off
+                    a.busId = o.busId;
+                    a.rideState = 3;
+                    a.placed = false;
+                    o.riders++;
+                    boardingsCount++;
+                    boarded = true;
+                    break;
+                }
+                if (!boarded && a.waitStop > 150.0f) { PickPedTrip(a, false); a.waitStop = 0.0f; }   // no bus came: walk instead
+                continue;
+            }
             const float Jp = std::min(ArmClear(a.edge) + 2.0f, len * 0.48f);
             auto sideSign = [](int lane) { return lane > 0 ? 1.0f : -1.0f; };
             // Sidewalk point on edge ei at distance sEdge from node a, on `lane` side.
@@ -1131,7 +1292,9 @@ void City::StepTraffic(float dt) {
             if (a.inJ) {
                 if (a.wait > 0.5f) {
                     // Standing at the kerb until traffic on the road being crossed has a red light.
-                    if (SignalState(toNode, a.edge) == 0) a.wait = 0.0f;
+                    // The road being crossed (the one they walk onto) must have a red light; never wait longer than 25 s.
+                    a.stuck += step;
+                    if (SignalState(toNode, a.nextEdge >= 0 ? a.nextEdge : a.edge) == 0 || a.stuck > 25.0f) { a.wait = 0.0f; a.stuck = 0.0f; }
                     tp = { a.jc0.x, a.jy0, a.jc0.y };
                 } else {
                     a.jt += a.maxSpeed * step / a.jlen;
@@ -1158,34 +1321,70 @@ void City::StepTraffic(float dt) {
                 }
             } else {
                 a.s += a.maxSpeed * step;
-                if (a.s >= len - Jp) {
+                if (a.rideState == 1 && a.rideStop >= 0 && (size_t)a.rideStop < busStops.size() && busStops[(size_t)a.rideStop].edge == a.edge) {
+                    const BusStop& bs = busStops[(size_t)a.rideStop];
+                    const float targetS = std::min(bs.fwd ? bs.s : len - bs.s, len - Jp - 0.5f);
+                    if (a.s >= targetS) { a.s = std::min(targetS + (Lcg01(a.rng) - 0.5f) * 2.6f, len - Jp - 0.2f); a.rideState = 2; a.waitStop = 0.0f; }   // at the shelter: queue up, spread along it
+                }
+                if (a.rideState != 2 && a.s >= len - Jp) {
                     // Reached the corner: choose to turn onto another road or cross this one.
                     const float sEnd = a.fwd ? len - Jp : Jp;                 // end point in edge coordinates
                     const Vector3 p0 = walkPoint(a.edge, sEnd, a.lane);
+                    const bool stopOk = a.rideStop >= 0 && (size_t)a.rideStop < busStops.size() && busStops[(size_t)a.rideStop].edge >= 0;
+                    const bool toStop = stopOk && a.rideState == 0 && a.dest == toNode;     // arrived at the road the bus stop is on
+                    // Arrived at the destination: stand there a while, then set off on the next trip.
+                    if (a.dest >= 0 && a.dest == toNode && !toStop) {
+                        a.idle = 3.0f + Lcg01(a.rng) * 12.0f;
+                        pedTripsCount++;
+                        PickPedTrip(a, true);
+                        a.pos = p0; a.placed = true; a.wait = 0.0f;
+                        continue;
+                    }
                     std::vector<int> others;
                     for (int ei2 : nodeEdges[(size_t)toNode])
                         if (ei2 != a.edge && edges[(size_t)ei2].type != (int)RoadType::Highway) others.push_back(ei2);
-                    const bool cross = others.empty() || (Lcg01(a.rng) < 0.35f && nodes[(size_t)toNode].junction);
+                    const bool signalled = nodes[(size_t)toNode].junction && nodes[(size_t)toNode].jkind == (int)JunctionKind::TrafficLight;
+                    const int kerb = toStop ? PedKerbLane(a.rideStop) : 0;
+                    bool cross = false;
+                    int e2 = -1;
+                    if (toStop) {
+                        const int stopEdge = busStops[(size_t)a.rideStop].edge;
+                        a.rideState = 1;                                                   // walk along the stop's road to the shelter
+                        if (stopEdge == a.edge) cross = true;                              // came along it: turn round (crossing puts them on the kerb side)
+                        else e2 = stopEdge;
+                    } else if (a.dest >= 0 && !others.empty()) {
+                        const std::vector<float>& wf = RouteFieldWalk(a.dest);              // follow the shortest walking route
+                        float best = std::numeric_limits<float>::infinity();
+                        for (int cand : others) {
+                            const RoadEdge& ce = edges[(size_t)cand];
+                            const int other = ce.a == toNode ? ce.b : ce.a;
+                            const float cost = Vector2Distance(nodes[(size_t)ce.a].pos, nodes[(size_t)ce.b].pos) + wf[(size_t)other];
+                            if (cost < best) { best = cost; e2 = cand; }
+                        }
+                        if (e2 < 0 || !std::isfinite(best)) e2 = others[Lcg(a.rng) % (uint32_t)others.size()];
+                    } else {
+                        cross = others.empty() || (Lcg01(a.rng) < 0.35f && nodes[(size_t)toNode].junction);
+                        if (!cross) e2 = others[Lcg(a.rng) % (uint32_t)others.size()];
+                    }
                     Vector3 p2; int newSide;
                     if (cross) {
-                        newSide = a.lane > 0 ? 0 : 1;
+                        newSide = toStop ? kerb : (a.lane > 0 ? 0 : 1);
                         p2 = walkPoint(a.edge, sEnd, newSide);
                         a.nextEdge = a.edge; a.nextFwd = !a.fwd; a.jExit = Jp;
-                        const bool signalled = nodes[(size_t)toNode].junction && nodes[(size_t)toNode].jkind == (int)JunctionKind::TrafficLight;
                         a.wait = signalled ? 1.0f : 0.0f;
                     } else {
-                        const int e2 = others[Lcg(a.rng) % (uint32_t)others.size()];
                         const float len2 = std::max(Vector2Distance(nodes[(size_t)edges[(size_t)e2].a].pos, nodes[(size_t)edges[(size_t)e2].b].pos), 1e-3f);
                         const float J2 = std::min(ArmClear(e2) + 2.0f, len2 * 0.48f);
                         const bool fwd2 = edges[(size_t)e2].a == toNode;      // walking away from the junction
                         const float s2 = fwd2 ? J2 : len2 - J2;
                         const Vector3 q0 = walkPoint(e2, s2, 0), q1 = walkPoint(e2, s2, 1);
                         const float d0 = Vector3Distance(p0, q0), d1 = Vector3Distance(p0, q1);
-                        newSide = d0 <= d1 ? 0 : 1;
+                        newSide = toStop ? kerb : (d0 <= d1 ? 0 : 1);
                         p2 = newSide == 0 ? q0 : q1;
                         a.nextEdge = e2; a.nextFwd = fwd2; a.jExit = J2;
-                        a.wait = 0.0f;
+                        a.wait = signalled ? 1.0f : 0.0f;                         // wait for the walk signal at a signalled junction
                     }
+                    a.stuck = 0.0f;
                     a.turn = newSide > 0 ? 1 : 0;                                // reused: side to adopt on arrival
                     a.jc0 = { p0.x, p0.z }; a.jc2 = { p2.x, p2.z }; a.jy0 = p0.y; a.jy2 = p2.y;
                     a.jlen = std::max(Vector2Distance(a.jc0, a.jc2), 0.3f);
@@ -1449,12 +1648,14 @@ void City::StepTraffic(float dt) {
             const int sidx = L.stops[(size_t)a.busTarget % L.stops.size()];
             const int key = a.edge * 2 + (a.fwd ? 1 : 0);
             if (a.busSkip >= 0 && key != a.busSkip) a.busSkip = -1;
+            a.atStop = -1;
             if ((size_t)sidx < busStops.size() && busStops[(size_t)sidx].edge == a.edge && busStops[(size_t)sidx].fwd == a.fwd && key != a.busSkip) {
                 const BusStop& stp = busStops[(size_t)sidx];
                 const float dist = (a.fwd ? stp.s : len - stp.s) - a.s;
                 if (dist > -1.0f) {
                     if (dist < gap) { gap = std::max(dist, 0.0f); leaderV = 0.0f; }
                     if (dist < a.minGap + 2.5f && a.speed < 0.4f) {
+                        a.atStop = sidx;            // standing at the stop: passengers may get on and off
                         a.dwell += step;
                         if (a.dwell >= 7.0f + Lcg01(a.rng) * 4.0f) {
                             a.dwell = 0.0f;
@@ -1568,6 +1769,8 @@ void City::StepTraffic(float dt) {
         float sum = 0.0f;
         for (Agent& a : agents) {
             if (!a.car) {
+                if (a.rideState == 3) { st.riders++; continue; }
+                if (a.rideState == 2) st.queued++;
                 st.peds++;
                 if (a.placed && (a.lastPos.x != 0.0f || a.lastPos.z != 0.0f)) { const float v = Vector3Distance(a.pos, a.lastPos) / std::max(dt, 1e-4f); if (v < 1000.0f) st.maxWalkerSpeed = std::max(st.maxWalkerSpeed, v); }
                 a.lastPos = a.pos;
@@ -1595,6 +1798,7 @@ void City::StepTraffic(float dt) {
         }
         st.maxWalkerSpeed = std::max(st.maxWalkerSpeed, trafficStats.maxWalkerSpeed * (1.0f - 0.3f * dt));   // slowly decaying peak
         st.trips = tripsCompleted;
+        st.pedTrips = pedTripsCount; st.boardings = boardingsCount; st.alightings = alightingsCount;
         st.busStopsServed = busStopsServedCount;
         st.avgSpeed = st.cars ? sum / (float)st.cars : 0.0f;
         st.minGap = statMinGap < 1e8f ? statMinGap : -1.0f;
@@ -3153,7 +3357,13 @@ void City::ComputeTileCPU(Tile& t) {
                 if (sH2 - aH2 >= 0.9f) {
                     const float lat = aH2 + (sH2 - aH2) * 0.5f;
                     const float lo = slabS.s0 * elen + 5.0f, hi = slabS.s1 * elen - 5.0f;
+                    // Bus stops on this road: lamps, trees and other furniture keep clear of the shelter on its sidewalk.
+                    std::vector<std::pair<float, int>> busHere;
+                    for (const BusStop& bs : busStops)
+                        if (bs.edge == ei) busHere.push_back({ std::clamp(bs.s, lo, hi), (bs.fwd ? -1 : 1) * (params.leftHandTraffic ? -1 : 1) });
                     auto place = [&](int shape, float dist, int sd, float yawBase, float scale) {
+                        if (shape != kPropBusStop)
+                            for (const auto& b : busHere) if (b.second == sd && fabsf(b.first - dist) < 3.6f) return;
                         const float sv = dist / elen;
                         const Vector2 c = Vector2Add(centreAt(sv), Vector2Scale(nL, lat * (float)sd));
                         const float y = planeY(slabS, sv, lat * (float)sd) + kRoadElevation + 0.07f + e.curbH;
@@ -4012,6 +4222,7 @@ void City::Draw() {
             // Cars and buses tilt with the road (pitch about the car's own z axis, then turn to the heading).
             const Matrix carBase = MatrixMultiply(MatrixMultiply(MatrixRotateZ(CarPitch(a)), MatrixRotateY(a.yaw)), MatrixTranslate(a.pos.x, a.pos.y, a.pos.z));
             if (a.car && a.far) m = MatrixMultiply(MatrixScale(4.2f, 1.4f, 1.8f), MatrixMultiply(MatrixRotateY(a.yaw), MatrixTranslate(a.pos.x, a.pos.y + 0.7f, a.pos.z)));
+            else if (!a.car) m = MatrixMultiply(MatrixScale(a.scale, a.scale, a.scale), carBase);   // people differ in height
             else m = carBase;
             m.m3 = cr; m.m7 = cg; m.m11 = cb;
             if (a.bus >= 0) {
@@ -4290,6 +4501,29 @@ bool City::FindBus(int index, Vector3& pos, float& yaw) const {
         if (index-- == 0) { pos = a.pos; yaw = a.yaw; return true; }
     }
     return false;
+}
+
+bool City::FindQueuedPed(int index, Vector3& pos, float& yaw) const {
+    for (const Agent& a : agents) {
+        if (a.car || a.rideState != 2 || !a.placed) continue;
+        if (index-- == 0) { pos = a.pos; yaw = a.yaw; return true; }
+    }
+    return false;
+}
+
+std::string City::DebugPeds(int count) const {
+    std::ostringstream o;
+    int n = 0;
+    for (const Agent& a : agents) {
+        if (a.car) continue;
+        if (n++ >= count) break;
+        float len = 0.0f;
+        if (a.edge >= 0 && (size_t)a.edge < edges.size()) len = Vector2Distance(nodes[(size_t)edges[(size_t)a.edge].a].pos, nodes[(size_t)edges[(size_t)a.edge].b].pos);
+        const int toNode = (a.edge >= 0 && (size_t)a.edge < edges.size()) ? (a.fwd ? edges[(size_t)a.edge].b : edges[(size_t)a.edge].a) : -1;
+        o << "ped edge " << a.edge << (a.fwd ? " fwd" : " bwd") << " s " << a.s << "/" << len << " toNode " << toNode << " dest " << a.dest << " rideStop " << a.rideStop
+          << " state " << a.rideState << " inJ " << a.inJ << " wait " << a.wait << " idle " << a.idle << " speed " << a.maxSpeed << "\n";
+    }
+    return o.str();
 }
 
 std::string City::DebugBuses() const {

@@ -473,7 +473,9 @@ public:
     int CountInstances(int shape) const;
     bool FindBus(int index, Vector3& pos, float& yaw) const;
     bool FindSlopedCar(Vector3& pos, float& yaw, float& pitch, bool needBlinker = false) const;   // a detailed car on a noticeable slope (tests / screenshots)   // pose of the n-th bus (tests / screenshots)
-    std::string DebugBuses() const;   // one line per bus: road, position, speed, target stop, dwell
+    std::string DebugBuses() const;
+    std::string DebugPeds(int count) const;
+    bool FindQueuedPed(int index, Vector3& pos, float& yaw) const;   // the n-th pedestrian queued at a bus stop (tests / screenshots)   // the first few pedestrians: road, position, destination, state   // one line per bus: road, position, speed, target stop, dwell
     bool FindInstance(int shape, int index, Vector3& pos, float& yaw) const;
 
     // Geometry helpers used by the editor.
@@ -544,6 +546,16 @@ private:
         float yaw = 0.0f;
         bool placed = false;    // pos/yaw initialised
         int dest = -1;          // destination node of the current trip (routed traffic), -1 = none
+        // Pedestrians (see the pedestrian branch of StepTraffic):
+        float scale = 1.0f;     // body size
+        float idle = 0.0f;      // seconds left standing at a destination
+        int rideStop = -1;      // bus stop to catch (rideState 0..2) or to get off at (rideState 3)
+        int rideState = 0;      // 0 walking to dest, 1 walking along the stop's road to the stop, 2 queued at the stop, 3 riding a bus (hidden)
+        float waitStop = 0.0f;  // seconds queued at the stop
+        // Buses:
+        uint32_t busId = 0;     // a bus's id; a rider carries the id of the bus it is on
+        int atStop = -1;        // the stop the bus is standing at (-1 = none)
+        int riders = 0;         // passengers on board
         int bus = -1;           // >= 0: a bus of that line (index into GetBusLines())
         int busTarget = 0;      // index into the line's stops: the stop it is heading for
         int busSkip = -1;       // edge*2+dir of a stop it just left (ignored until it is on another road)
@@ -570,17 +582,21 @@ private:
     };
     std::vector<Agent> agents;
 public:
-    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; busStopsServedCount = 0; busSig = 0; trafficStats = TrafficStats{}; }
+    void ClearAgents() { agents.clear(); simTime = 0.0f; tripsCompleted = 0; busStopsServedCount = 0; busSig = 0; pedTripsCount = boardingsCount = alightingsCount = 0; trafficStats = TrafficStats{}; }
     // Runs one traffic step without Play mode (tests).
     void TrafficStepForTest(float dt) { StepTraffic(dt); }
     const std::vector<int>& RouteDestinations() { PickDestinationPool(); return routes.pool; }
     // Travel time (s) from every node to `dest` along allowed one-way/car roads (infinity = unreachable).
     // avoidEdge >= 0: that road is not used to get there (buses must reach a stop road's start from elsewhere).
     const std::vector<float>& RouteField(int dest, int avoidEdge = -1);
+    // Walking distance (m) from every node to `dest` on foot: every road but highways, in both directions.
+    const std::vector<float>& RouteFieldWalk(int dest);
 private:
     float trafficClock = 0.0f;
     int tripsCompleted = 0;
     int busStopsServedCount = 0;
+    int pedTripsCount = 0, boardingsCount = 0, alightingsCount = 0;
+    uint32_t nextBusId = 1;
     uint64_t busSig = 0;   // signature of lines + stops + roads: buses are respawned when it changes
     uint64_t graphVersion = 0;   // bumped on every rebuild: invalidates the cached routes
     struct RouteCache {
@@ -589,13 +605,15 @@ private:
         std::unordered_map<int64_t, std::vector<float>> dist;   // dest node -> travel time field
     } routes;
     void PickDestinationPool();
+    void PickPedTrip(Agent& a, bool allowBus);       // gives a pedestrian its next destination (or a bus stop to catch)
+    int PedKerbLane(int stopIdx) const;              // which sidewalk (0/1) of the stop's road the shelter is on
     int PickDestination(uint32_t& rng);
     Vector3 trafficFocus{};      // camera position (set while drawing), drives the traffic detail distance
     bool hasTrafficFocus = false;
     unsigned trafficFrame = 0;
     float simTime = 0.0f;       // seconds of Play-mode traffic simulated
 public:
-    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0, buses = 0, busStopsServed = 0; };
+    struct TrafficStats { int cars = 0, nearCars = 0, farCars = 0, peds = 0, stopped = 0; float avgSpeed = 0.0f, minGap = 0.0f, stepMs = 0.0f, maxWalkerSpeed = 0.0f; int overlaps = 0, jumps = 0, trips = 0, buses = 0, busStopsServed = 0, riders = 0, queued = 0, pedTrips = 0, boardings = 0, alightings = 0; };
     const TrafficStats& GetTrafficStats() const { return trafficStats; }
 private:
     TrafficStats trafficStats;

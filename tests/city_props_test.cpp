@@ -135,6 +135,46 @@ int main() {
         }
     }
 
+    // Pedestrians: people walk, queue at bus stops and ride; a close-up of a queue at a stop.
+    {
+        c.GetParams().pedestrians = 140;
+        for (int i = 0; i < 12000; i++) c.TrafficStepForTest(0.05f);
+        const City::TrafficStats ps = c.GetTrafficStats();
+        std::printf("pedestrians: %d walking, %d queued, %d on buses, %d trips\n", ps.peds, ps.queued, ps.riders, ps.pedTrips);
+        CHECK(ps.pedTrips > 100);
+        Vector3 pos; float yaw;
+        bool found = false;
+        for (int i = 0; i < 3000 && !found; i++) { c.TrafficStepForTest(0.05f); found = c.FindQueuedPed(0, pos, yaw); }
+        CHECK(found);
+        // Queued pedestrians must stand at a bus shelter.
+        {
+            const int shelters = c.CountInstances(kPropBusStop);
+            int queuedSeen = 0, atShelter = 0;
+            float worst = 0.0f;
+            for (int q = 0; q < 40; q++) {
+                Vector3 qp; float qy;
+                if (!c.FindQueuedPed(q, qp, qy)) break;
+                queuedSeen++;
+                float best = 1e30f;
+                for (int k = 0; k < shelters; k++) { Vector3 sp; float sy; if (c.FindInstance(kPropBusStop, k, sp, sy)) best = std::min(best, Vector2Distance({ qp.x, qp.z }, { sp.x, sp.z })); }
+                worst = std::max(worst, best);
+                if (best < 4.0f) atShelter++;
+            }
+            std::printf("queued pedestrians: %d, %d within 4 m of a shelter (worst %.1f m), %d shelters\n", queuedSeen, atShelter, worst, shelters);
+            CHECK(queuedSeen == 0 || atShelter == queuedSeen);
+        }
+        if (found) {
+            Camera3D& cam = engine.GetCamera();
+            const Vector3 fwd = { cosf(yaw), 0.0f, -sinf(yaw) };
+            cam.position = { pos.x + fwd.x * -5.0f - fwd.z * 7.0f, pos.y + 2.2f, pos.z + fwd.z * -5.0f + fwd.x * 7.0f };   // from the road side
+            cam.target = { pos.x, pos.y + 1.0f, pos.z };
+            cam.up = { 0.0f, 1.0f, 0.0f };
+            cam.fovy = 55.0f;
+            for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
+            TakeScreenshot("city_ped_queue.png");
+        }
+    }
+
     std::printf(g_fail ? "city_props_test: %d FAILED\n" : "city_props_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }

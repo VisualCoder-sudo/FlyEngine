@@ -41,6 +41,22 @@ int main() {
     CHECK(st.buses == wantBuses);
     CHECK(st.busStopsServed >= wantBuses * 3);          // every bus served several stops
 
+    // ---- pedestrians: trips, queueing at stops, riding buses ----
+    a.GetParams().pedestrians = 80;
+    Run(a, 30.0f);
+    std::printf("%s", a.DebugPeds(6).c_str());
+    Run(a, 870.0f);
+    std::printf("%s", a.DebugPeds(6).c_str());
+    {
+        const City::TrafficStats ps = a.GetTrafficStats();
+        std::printf("pedestrians: %d walking (%d queued at stops), %d on buses; %d trips, %d boardings, %d alightings\n", ps.peds, ps.queued, ps.riders, ps.pedTrips, ps.boardings, ps.alightings);
+        CHECK(ps.peds + ps.riders == 80);                 // nobody is lost while riding
+        CHECK(ps.pedTrips >= 80);                         // they walk to destinations and move on
+        CHECK(ps.boardings >= 10);                        // and some catch buses
+        CHECK(ps.alightings >= 5);                        // and get off again
+        CHECK(ps.alightings <= ps.boardings);
+    }
+
     // ---- manual ----
     City m;
     m.GetParams().gridX = 6; m.GetParams().gridZ = 6;
