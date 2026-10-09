@@ -381,9 +381,21 @@ void main() {
             vec3 t = normalize(cross(vec3(0.0, 1.0, 0.0), n));
             float u = dot(fragWorldPos, t);
             float y = fragWorldPos.y - fragBaseY;
-            const float floorH = 3.4;
+            float floorH = 3.4;
             const float bayW = 3.2;
             float topEdge = fragInst.y;                            // building height (storeys * floorH + any foundation)
+            // A stepped tower marks each tier in its texcoords (-1 - bottom, top, fractions of the height): the floors of
+            // a tier are laid out between its own bottom and top, a whole number of them, so windows and slab bands
+            // line up with every ledge whatever the building's height or foundation.
+            bool tiered = fragTexCoord.x < -0.5;
+            float tierBot = 0.0;
+            if (tiered) {
+                topEdge = fragInst.y * fragTexCoord.y;
+                float botF = -1.0 - fragTexCoord.x;
+                tierBot = botF < 0.001 ? fragFound : fragInst.y * botF;
+                float hT = max(topEdge - tierBot, 0.5);
+                floorH = hT / max(floor(hT / floorH + 0.5), 1.0);
+            }
             // Floors are counted down from the roof, so the top is never chopped; any foundation sits at the bottom.
             float fy = (topEdge - y) / floorH;
             float floorIdx = floor(fy);
@@ -394,14 +406,14 @@ void main() {
             // Below fragFound the building is a plain plinth (it is mostly buried by a sloped pad: windows there would be
             // cut diagonally by the ground); the first floor and its windows start above it.
             bool plinth = y < fragFound;
-            bool groundFloor = y < fragFound + floorH;
+            bool groundFloor = y < fragFound + floorH && (!tiered || tierBot <= fragFound + 0.01);
             bool inGlass = !plinth && fu > 0.18 && fu < 0.82 && fv > 0.22 && fv < 0.78;
             if (groundFloor) inGlass = !plinth && fu > 0.1 && fu < 0.9 && fv > 0.12 && fv < 0.7;
             float r = hash21(vec2(bayIdx, floorIdx) + floor(fragBaseY));
             // Shop signs along the ground floor of the tall (downtown) buildings: painted by day, lit at night.
             float yy = y - fragFound;
             bool isSign = false;
-            if (!plinth && topEdge > 22.0 && yy > 2.4 && yy < 3.3 && fu > 0.08 && fu < 0.92) {
+            if (!plinth && fragInst.y > 22.0 && groundFloor && yy > 2.4 && yy < 3.3 && fu > 0.08 && fu < 0.92) {
                 float sr = hash21(vec2(bayIdx * 1.7 + 3.0, 9.0) + floor(fragBaseY * 0.5));
                 if (sr > 0.45) {
                     float pick = fract(sr * 7.31);

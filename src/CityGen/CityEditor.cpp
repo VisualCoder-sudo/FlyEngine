@@ -331,6 +331,9 @@ bool UpdateCityEditor(Engine& engine, Camera3D& camera) {
                     city->RebuildAfterNodeMove(s.elevNode);
                 }
             } else {
+                // Let go: the neighbours follow the raised node so the hill spreads out (steepest ramp <= Max road grade).
+                if (s.elevMoved && s.elevNode >= 0 && (size_t)s.elevNode < city->GetNodes().size() && city->GetParams().maxGrade > 0.0f)
+                    city->LimitRoadGrades(city->GetParams().maxGrade, s.elevNode);
                 s.elevDragging = false;
                 s.elevNode = -1;
             }
@@ -774,6 +777,9 @@ void DrawCityEditorPanel() {
     ImGui::DragFloat("Lane width", &p.laneWidth, 0.1f, 2.0f, 6.0f);
     ImGui::DragFloat("Sidewalk", &p.sidewalk, 0.1f, 0.0f, 5.0f);
     ImGui::DragFloat("Corner radius", &p.cornerRadius, 0.1f, 0.0f, 10.0f);
+    ImGui::DragFloat("Max road grade (0 = off)##hill", &p.maxGrade, 0.2f, 0.0f, 40.0f, p.maxGrade > 0.0f ? "%.0f %%" : "off");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When you raise or lower a road node (Elevate tool or the node's Height), its neighbours follow\nso no ramp is steeper than this at its steepest point: hills spread out instead of ramping up sharply.\nThe node you edit stays exactly where you put it.");
     ImGui::DragFloat("Avg height", &p.avgHeight, 0.5f, 2.0f, 160.0f);
     ImGui::DragFloat("Height variance", &p.heightVariance, 0.01f, 0.0f, 1.0f);
     ImGui::DragFloat("Building size", &p.buildingSize, 0.25f, 3.0f, 30.0f);
@@ -865,7 +871,7 @@ void DrawCityEditorPanel() {
             float hh = city->GetNodes()[(size_t)s.selectedNode].h;
             if (ImGui::DragFloat("Height", &hh, 0.1f, -200.0f, 500.0f, "%.2f m")) {
                 if (!s.dragMoved) { s.dragMoved = true; NotifyCityEdit(); }
-                city->SetNodeHeight(s.selectedNode, hh);
+                city->SetNodeHeightSmooth(s.selectedNode, hh);
             }
         }
         if (city->GetNodes()[(size_t)s.selectedNode].junction) {

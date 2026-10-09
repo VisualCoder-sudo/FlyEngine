@@ -81,7 +81,7 @@ bool operator==(const CityParams& a, const CityParams& b) {
            a.heightVariance == b.heightVariance &&
            a.buildingSize == b.buildingSize && a.buildingGap == b.buildingGap &&
            a.parkThreshold == b.parkThreshold && a.parkInset == b.parkInset &&
-           a.cornerRadius == b.cornerRadius &&
+           a.cornerRadius == b.cornerRadius && a.maxGrade == b.maxGrade &&
            a.style == b.style && a.shapeVariety == b.shapeVariety &&
            a.shortChance == b.shortChance && a.footprintVariety == b.footprintVariety &&
            a.furniture == b.furniture && a.cars == b.cars && a.pedestrians == b.pedestrians &&
@@ -1892,6 +1892,7 @@ void City::GenerateGrid(const Vector2& origin) {
     p.gridZ = Clamp(p.gridZ, 2, 999);
     p.lanes = Clamp(p.lanes, 1, 8);
     p.cornerRadius = std::max(p.cornerRadius, 0.0f);
+    p.maxGrade = Clamp(p.maxGrade, 0.0f, 60.0f);
     params = p;
 
     const int nx = p.gridX + 2;
@@ -4710,10 +4711,28 @@ int City::SnapToTerrain(const BasicTerrain& terrain, float offset, float maxGrad
     return snapped;
 }
 
-float City::LimitRoadGrades(float maxGradePercent) {
+float City::LimitRoadGrades(float maxGradePercent, int pinnedNode) {
+    // A ramp eases with a smoothstep, whose steepest point is 1.5x the average slope: the limit applies to that point.
+    constexpr float kPeak = 1.5f;
     const float g = std::max(maxGradePercent, 0.5f) * 0.01f;
+    // With a pinned node the hill stays local: of the two ends of a too-steep road, the one farther (along the roads) from
+    // the pinned node gives way, so only the nodes that must move do, and the rest of the city stays put.
+    std::vector<float> distFromPin;
+    if (pinnedNode >= 0 && (size_t)pinnedNode < nodes.size()) {
+        distFromPin.assign(nodes.size(), 1e30f);
+        distFromPin[(size_t)pinnedNode] = 0.0f;
+        for (size_t pass = 0; pass < nodes.size(); pass++) {      // Bellman-Ford relaxation over the road graph
+            bool changed = false;
+            for (const RoadEdge& e : edges) {
+                const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
+                if (distFromPin[(size_t)e.a] + len < distFromPin[(size_t)e.b]) { distFromPin[(size_t)e.b] = distFromPin[(size_t)e.a] + len; changed = true; }
+                if (distFromPin[(size_t)e.b] + len < distFromPin[(size_t)e.a]) { distFromPin[(size_t)e.a] = distFromPin[(size_t)e.b] + len; changed = true; }
+            }
+            if (!changed) break;
+        }
+    }
     float worst = 0.0f;
-    for (int it = 0; it < 80; it++) {
+    for (int it = 0; it < 400; it++) {
         worst = 0.0f;
         for (int ei = 0; ei < (int)edges.size(); ei++) {
             const RoadEdge& e = edges[(size_t)ei];
@@ -4723,27 +4742,28 @@ float City::LimitRoadGrades(float maxGradePercent) {
             EdgePlateau(ei, len, pa, pb);
             const float slopeLen = std::max(len * (1.0f - pa - pb), 3.0f);   // the road only slopes between the level junction zones
             const float dh = nodes[(size_t)e.a].h - nodes[(size_t)e.b].h;
-            const float limit = g * slopeLen;
-            worst = std::max(worst, fabsf(dh) / slopeLen);
+            const float limit = g * slopeLen / kPeak;
+            worst = std::max(worst, kPeak * fabsf(dh) / slopeLen);
             if (fabsf(dh) > limit) {
-                const float excess = (fabsf(dh) - limit) * 0.5f * (dh > 0 ? 1.0f : -1.0f);
-                nodes[(size_t)e.a].h -= excess;
-                nodes[(size_t)e.b].h += excess;
+                const float excess = (fabsf(dh) - limit) * (dh > 0 ? 1.0f : -1.0f);
+                if (e.a == pinnedNode) nodes[(size_t)e.b].h += excess;
+                else if (e.b == pinnedNode) nodes[(size_t)e.a].h -= excess;
+                else if (!distFromPin.empty() && distFromPin[(size_t)e.a] > distFromPin[(size_t)e.b]) nodes[(size_t)e.a].h -= excess;   // a is farther: it gives way
+                else if (!distFromPin.empty() && distFromPin[(size_t)e.b] > distFromPin[(size_t)e.a]) nodes[(size_t)e.b].h += excess;
+                else { nodes[(size_t)e.a].h -= excess * 0.5f; nodes[(size_t)e.b].h += excess * 0.5f; }
             }
         }
         if (worst <= g * 1.01f) break;
     }
     RebuildAll();
-    float steepest = 0.0f;
-    for (int ei = 0; ei < (int)edges.size(); ei++) {
-        const RoadEdge& e = edges[(size_t)ei];
-        const float len = Vector2Distance(nodes[(size_t)e.a].pos, nodes[(size_t)e.b].pos);
-        if (len < 1e-3f) continue;
-        float pa, pb;
-        EdgePlateau(ei, len, pa, pb);
-        steepest = std::max(steepest, fabsf(nodes[(size_t)e.a].h - nodes[(size_t)e.b].h) / std::max(len * (1.0f - pa - pb), 3.0f));
-    }
-    return steepest * 100.0f;
+    return worst * 100.0f;
+}
+
+void City::SetNodeHeightSmooth(int index, float h) {
+    if (index < 0 || (size_t)index >= nodes.size()) return;
+    nodes[(size_t)index].h = Clamp(h, -200.0f, 500.0f);
+    if (params.maxGrade > 0.0f) LimitRoadGrades(params.maxGrade, index);
+    else RebuildAll();
 }
 
 int City::ShapeTerrainToCity(BasicTerrain& terrain, float clearance, float margin) {
@@ -5650,6 +5670,7 @@ bool City::WriteToStream(std::ostream& out) const {
         << params.buildingSize << ' ' << params.buildingGap << '\n';
     out << params.parkThreshold << ' ' << params.parkInset << '\n';
     out << "R " << params.cornerRadius << '\n';
+    out << "G " << params.maxGrade << '\n';
 
     out << edges.size() << '\n';
     for (const auto& e : edges) out << e.a << ' ' << e.b << ' ' << e.lanes << '\n';
@@ -5849,10 +5870,13 @@ bool City::ReadFromStream(std::istream& in) {
     size_t edgeCount = 0;
     if (tok == "R") {
         if (!(in >> p.cornerRadius)) return false;
-        if (!(in >> edgeCount)) return false;
-    } else {
-        try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
+        if (!(in >> tok)) return false;
     }
+    if (tok == "G") {      // optional: the editor's steepest-road setting (absent in older files)
+        if (!(in >> p.maxGrade)) return false;
+        if (!(in >> tok)) return false;
+    }
+    try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
     params = p;
 
     edges.resize(edgeCount);

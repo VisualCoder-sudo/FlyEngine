@@ -252,13 +252,18 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   Buildings keep clear of them.
 - **Buildings:** four styles (Modern, Brick, Industrial, Suburban), roof/shape
   variety (flat, gable, shed, tower), short buildings, footprint variety, floor
-  counts with facade windows aligned to floors. *Insert building* places buildings
+  counts with facade windows aligned to floors (stepped towers lay out whole floors per tier). *Insert building* places buildings
   by hand, with an optional *NoCollision* mode.
 - **Terrain:** *City panel > Terrain* fits the city to a *Basic Terrain*: *Snap city to terrain*
   puts every road node on the ground (with an optional maximum grade), *Limit grades* only
   relaxes steep roads, and *Shape terrain to city* lowers or raises the ground to just under
   the roads, pads and parks and blends it back into the natural ground (not under bridges).
-  *Restore terrain* undoes the last shaping.
+  *Restore terrain* undoes the last shaping. With *Keep terrain under the city* on (default)
+  the terrain is reshaped automatically after Snap and Limit grades.
+- **Hills:** *Max road grade* (style settings, default 15 %) is the steepest slope a road ramp
+  may have at its steepest point. When you raise a node with the *Elevate road* tool (or edit
+  its *Height*), the node stays exactly where you put it and its neighbours follow, so the hill
+  spreads out gradually instead of ramping up sharply. 0 turns it off. Saved with the city.
 - **Lighting:** besides *Time*, the Explorer's Lighting **+** menu inserts *Sun* (direction,
   height, intensity, colour), *Ambient*, *Sky*, *Fog* and *Weather*. The terrain and the water
   follow them too. The sun follows the time of day (rises at 6:00, peaks at the Sun item's

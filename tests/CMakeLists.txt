@@ -138,3 +138,11 @@ target_link_libraries(weather_test PRIVATE FlyEngineCore FlyRL)
 # Holes in the city surface (ground plane hidden, magenta sky). Opens a window: build/tests/city_hole_audit
 add_executable(city_hole_audit city_hole_audit.cpp)
 target_link_libraries(city_hole_audit PRIVATE FlyEngineCore FlyRL)
+
+# Stepped tower facade close-ups. Opens a window: build/tests/city_tower_facade_test
+add_executable(city_tower_facade_test city_tower_facade_test.cpp)
+target_link_libraries(city_tower_facade_test PRIVATE FlyEngineCore FlyRL)
+
+# Smooth node heights (Max road grade). Opens a window: build/tests/city_grade_test
+add_executable(city_grade_test city_grade_test.cpp)
+target_link_libraries(city_grade_test PRIVATE FlyEngineCore FlyRL)

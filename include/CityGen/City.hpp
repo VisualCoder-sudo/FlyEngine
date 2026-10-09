@@ -90,6 +90,7 @@ struct CityParams {
     float laneWidth = 3.2f;     // width of a single lane (m)
     float sidewalk = 2.0f;      // sidewalk width that roads reserve (m)
     float cornerRadius = 6.0f;  // fillet radius of intersection/bend corners (m); 0 = sharp
+    float maxGrade = 15.0f;     // steepest road slope (%, at the steepest point of a ramp) the editor allows when you raise a node: its neighbours follow so hills spread out; 0 = off
 
     // Buildings
     float avgHeight = 14.0f;    // mean building height (m)
@@ -463,7 +464,11 @@ public:
     // Returns how many nodes got a terrain height (nodes off the terrain keep theirs).
     int SnapToTerrain(const BasicTerrain& terrain, float offset, float maxGradePercent);
     // Only the grade relaxation, on the heights the nodes have now. Returns the steepest remaining grade (%).
-    float LimitRoadGrades(float maxGradePercent);
+    // Relaxes node heights until no road ramp is steeper (at its steepest point) than maxGradePercent. `pinnedNode` keeps
+    // that node exactly where it is: the other nodes give way (the editor pins the node you just raised).
+    float LimitRoadGrades(float maxGradePercent, int pinnedNode = -1);
+    // Sets a node's height, then lets its neighbours follow so no ramp is steeper than params.maxGrade (editor use).
+    void SetNodeHeightSmooth(int index, float h);
     // Reshapes the terrain under and around the city: each heightmap vertex near the road, pad and park surfaces is
     // set to the lowest city surface around it minus `clearance`, and the ground fades back to its natural height over
     // `margin` metres. Bridge spans do not count. Returns the number of vertices changed.

@@ -463,8 +463,10 @@ Mesh GenerateCitySlantMesh() {
 
 // Flat-shaded unit mesh from a triangle soup (each triangle gets its own vertices and face normal;
 // wound so the face normal points away from the shape's centre).
+// triTex (optional, one per triangle) goes into the texcoords: the stepped tower marks each tier with
+// (-1 - bottom, top), both as a fraction of the shape's height, so the facade shader can lay out whole floors per tier.
 Mesh BuildFlatShapeMesh(const std::vector<Vector3>& tris, const std::vector<Color>* triColors = nullptr,
-                        const std::vector<Vector3>* triInside = nullptr) {
+                        const std::vector<Vector3>* triInside = nullptr, const std::vector<Vector2>* triTex = nullptr) {
     Mesh mesh = { 0 };
     const int vc = (int)tris.size();
     mesh.vertexCount = vc;
@@ -486,7 +488,8 @@ Mesh BuildFlatShapeMesh(const std::vector<Vector3>& tris, const std::vector<Colo
             const int i = t + k;
             mesh.vertices[i * 3] = v[k].x; mesh.vertices[i * 3 + 1] = v[k].y; mesh.vertices[i * 3 + 2] = v[k].z;
             mesh.normals[i * 3] = n.x; mesh.normals[i * 3 + 1] = n.y; mesh.normals[i * 3 + 2] = n.z;
-            mesh.texcoords[i * 2] = 0.0f; mesh.texcoords[i * 2 + 1] = 0.0f;
+            const Vector2 tex = (triTex && (size_t)(t / 3) < triTex->size()) ? (*triTex)[(size_t)(t / 3)] : Vector2{ 0.0f, 0.0f };
+            mesh.texcoords[i * 2] = tex.x; mesh.texcoords[i * 2 + 1] = tex.y;
             Color col = WHITE;
             if (triColors && (size_t)(t / 3) < triColors->size()) col = (*triColors)[(size_t)(t / 3)];
             mesh.colors[i * 4] = col.r; mesh.colors[i * 4 + 1] = col.g; mesh.colors[i * 4 + 2] = col.b; mesh.colors[i * 4 + 3] = col.a;
@@ -541,15 +544,18 @@ Mesh GenerateCityTowerMesh() {
     // Winding is decided per box against that box's own centre: against the whole shape's origin the
     // base's top face (y = -0.05, below the origin) came out inverted and the ledge had no roof.
     std::vector<Vector3> t, in;
+    std::vector<Vector2> tex;
     const auto box = [&](float x0, float y0, float z0, float x1, float y1, float z1, bool bottom) {
         const size_t before = t.size();
         AddBoxTris(t, x0, y0, z0, x1, y1, z1, bottom);
         in.insert(in.end(), (t.size() - before) / 3, Vector3{ (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, (z0 + z1) * 0.5f });
+        // Tier bottom / top as fractions of the height (the shader lays out whole floors between them).
+        tex.insert(tex.end(), (t.size() - before) / 3, Vector2{ -1.0f - (y0 + 0.5f), y1 + 0.5f });
     };
     box(-0.5f, -0.5f, -0.5f, 0.5f, -0.05f, 0.5f, true);
     box(-0.4f, -0.05f, -0.4f, 0.4f, 0.35f, 0.4f, false);
     box(-0.27f, 0.35f, -0.27f, 0.27f, 0.5f, 0.27f, false);
-    return BuildFlatShapeMesh(t, nullptr, &in);
+    return BuildFlatShapeMesh(t, nullptr, &in, &tex);
 }
 
 Mesh BuildColoredShapeMesh(const std::vector<Vector3>& tris, const std::vector<Color>& triColors, const std::vector<Vector3>& inside) {
