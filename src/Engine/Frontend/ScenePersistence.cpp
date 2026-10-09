@@ -49,7 +49,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 20\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 21\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         const Vector3& pos = *object->GetPosPtr();
@@ -81,7 +81,13 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         // v9: collision settings.
         // v10: transparency (0 = visible, 1 = invisible).
         // v11: texture path (project-relative).
-        file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath()) << '\n';
+        file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath());
+        {   // v21: boat parameters
+            const auto& bp = object->boat;
+            file << ' ' << (int)bp.enabled << ' ' << (int)bp.playerControlled << ' ' << bp.thrust << ' ' << bp.steering
+                 << ' ' << bp.keel << ' ' << bp.planeSpeed;
+        }
+        file << '\n';
     }
 
     // Standalone scripts (the explorer "Scripts" group). Each entry carries a
@@ -239,7 +245,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 20) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 21) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -353,6 +359,15 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (!texturePath.empty()) {
                 object->SetTexturePath(texturePath, baseDir);
             }
+        }
+
+        // v21 added boat parameters.
+        if (version >= 21) {
+            int en = 0, pc = 1;
+            auto& bp = object->boat;
+            if (!(file >> en >> pc >> bp.thrust >> bp.steering >> bp.keel >> bp.planeSpeed)) return false;
+            bp.enabled = (en != 0);
+            bp.playerControlled = (pc != 0);
         }
 
         loaded.push_back(std::move(object));

@@ -3065,7 +3065,7 @@ static float PropertiesContentHeight() {
     }
 
     float h = 50.0f; // below the title strip
-    h += group(true, 6.0f);               // General (color + anchored + can collide + collision + transparency + mass)
+    h += group(true, 7.0f);               // General (color + anchored + can collide + boat + collision + transparency + mass)
     if (g_selectedObject && g_selectedObject->HasModel()) h += rowHeight; // mesh info line
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
     h += group(g_positionOpen, 3.0f);     // Position
@@ -3367,6 +3367,34 @@ if (g_selection.size() > 1) {
             }
             Log("'%s' canCollide = %s", g_selectedObject->GetName().c_str(),
                 g_selectedObject->canCollide ? "true" : "false");
+        }
+
+        // --- Boat (floats, thrust + rudder + planing; W/S throttle, A/D rudder in play) ---
+        y += rowHeight;
+        DrawTextArial("Boat:", labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
+        {
+            Rectangle boatCheck = { generalControlX, y, 22.0f, 22.0f };
+            bool boatOn = g_selectedObject != nullptr && g_selectedObject->boat.enabled;
+            bool boatDisabled = g_selectedObject == nullptr;
+            bool boatHovered = CheckCollisionPointRec(mouse, boatCheck);
+            DrawRectangleRounded(boatCheck, 0.2f, 4, boatDisabled ? theme::BG_WIDGET : theme::BG_INPUT);
+            DrawRectangleLinesEx(boatCheck, boatHovered ? 2.0f : 1.0f, boatHovered ? theme::ACCENT : theme::BORDER);
+            if (boatOn) {
+                Vector2 c1 = { boatCheck.x + 3.0f, boatCheck.y + boatCheck.height * 0.5f };
+                Vector2 c2 = { boatCheck.x + boatCheck.width * 0.5f, boatCheck.y + boatCheck.height - 5.0f };
+                Vector2 c3 = { boatCheck.x + boatCheck.width - 3.0f, boatCheck.y + 4.0f };
+                DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
+                DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
+            }
+            if (boatHovered && !boatDisabled) MarkHand();
+            if (!boatDisabled && boatHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                bool nv = !g_selectedObject->boat.enabled;
+                g_selectedObject->boat.enabled = nv;
+                if (g_selection.size() > 1) {
+                    for (auto* obj : g_selection) if (obj && obj != g_selectedObject) obj->boat.enabled = nv;
+                }
+                Log("'%s' boat = %s", g_selectedObject->GetName().c_str(), nv ? "true" : "false");
+            }
         }
 
         // --- Collision accuracy (combo) ---
