@@ -130,6 +130,20 @@ float fbm(vec3 p, int octaves, float persistence, float lacunarity, int seed) {
     return value / maxValue;
 }
 
+// Displacement of the water surface at a world XZ position: procedural waves plus
+// the dynamic ripple layer. Used to stitch chunk borders (see main).
+float surfaceHeightAt(vec2 xz) {
+    float amplitude = waterBodyNoiseParams1.x;
+    float frequency = waterBodyNoiseParams1.y;
+    float time = waterBodyNoiseParams2.w * waterBodyNoiseParams1.z;
+    vec2 flowOffset = waterBodyNoiseDirection * time;
+    vec3 np = vec3((xz.x - flowOffset.x) * frequency, time * 0.5, (xz.y - flowOffset.y) * frequency);
+    float n = fbm(np, int(waterBodyNoiseParams1.w), waterBodyNoiseParams2.x, waterBodyNoiseParams2.y, int(waterBodyNoiseParams2.z));
+    vec2 uv = (xz - rippleParams.xy) * rippleParams.z;
+    float rh = textureLod(sampler2D(rippleTexVS, rippleTexVS_smp), uv, 0.0).r * rippleParams.w;
+    return n * amplitude + rh;
+}
+
 void main() {
     vec3 localPos = vertexPosition;
 
@@ -176,6 +190,29 @@ void main() {
     vec2 rippleSlope = vec2(rhR - rhL, rhU - rhD) / (2.0 * rippleCell);
 
     float heightOffsetLocal = noise * amplitude + rh;
+
+    // Crack-free LOD borders: chunks of different resolution share an edge but
+    // tessellate it differently, so their displaced edges drift apart and leave
+    // slivers (wide ribbons where a wake displaces the water) that show the
+    // background. Vertices on a chunk border (local |x| or |z| = CHUNK_SIZE/2 = 10)
+    // are therefore displaced along the straight line between the two lattice
+    // points of the coarsest LOD (5 m), which every LOD includes - so both sides of
+    // any border compute the identical height.
+    {
+        const float HALF = 10.0;
+        const float LATTICE = 5.0;
+        bool onZ = abs(abs(localPos.z) - HALF) < 0.002; // edge running along x
+        bool onX = abs(abs(localPos.x) - HALF) < 0.002; // edge running along z
+        if (onZ || onX) {
+            float along = onZ ? localPos.x : localPos.z;
+            float a0 = floor((along + HALF) / LATTICE) * LATTICE - HALF;
+            float t = (along - a0) / LATTICE;
+            vec2 p0 = worldXZ, p1 = worldXZ;
+            if (onZ) { p0.x += a0 - along; p1.x = p0.x + LATTICE; }
+            else     { p0.y += a0 - along; p1.y = p0.y + LATTICE; }
+            heightOffsetLocal = mix(surfaceHeightAt(p0), surfaceHeightAt(p1), t);
+        }
+    }
     worldPos4.y += heightOffsetLocal;
 
     // Analytic normal via central-difference of the height field, so lighting
