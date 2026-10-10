@@ -60,6 +60,19 @@ void BeginShadowPass();
 void EndShadowPass();
 bool IsInShadowPass(); // true while BeginShadowPass()/EndShadowPass() is active
 
+// Shadow cascades: the map above is a box of ground round the camera; with more than one cascade
+// (Preferences > Rendering) further, wider boxes carry shadows out into the distance. Draw the
+// casters once per cascade:
+//     for (int c = 0; c < ShadowCascadeCount(); c++) {
+//         if (!BeginShadowCascade(c)) continue;     // this cascade keeps its map this frame
+//         ...draw...
+//         EndShadowCascade();
+//     }
+// Cascade 0 is BeginShadowPass()/EndShadowPass(); the further ones are redrawn every few frames.
+int ShadowCascadeCount();
+bool BeginShadowCascade(int index);
+void EndShadowCascade();
+
 // The sun's shadow map, for passes outside the lit shaders (the shafts of light in fog).
 Texture2D GetShadowMapTexture();     // depth; read through a comparison sampler. id 0 when shadows are off
 Matrix GetLightViewProj();

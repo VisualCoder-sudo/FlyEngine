@@ -70,6 +70,19 @@ static float ImageDiff(const std::string& a, const std::string& b) {
     return (float)(sum / (3.0 * (double)n));
 }
 
+// Mean brightness (0..255) of a part of a picture; the corners are fractions of its width and height.
+static float RegionLum(const std::string& path, float x0, float y0, float x1, float y1) {
+    Image img = LoadImage(path.c_str());
+    double sum = 0; long n = 0;
+    for (int y = (int)(y0 * img.height); y < (int)(y1 * img.height); y += 2)
+        for (int x = (int)(x0 * img.width); x < (int)(x1 * img.width); x += 2) {
+            const Color c = GetImageColor(img, x, y);
+            sum += (c.r + c.g + c.b) / 3.0; n++;
+        }
+    UnloadImage(img);
+    return n > 0 ? (float)(sum / (double)n) : 0.0f;
+}
+
 // Looks from the city towards a point `distance` away in the compass direction the sun (or anything) is in.
 static void LookTowards(Camera3D& cam, Vector3 dir, float pitchUp) {
     Vector3 flat = Vector3Normalize({ dir.x, 0.0f, dir.z });
@@ -181,6 +194,25 @@ int main() {
     cam.position = { 0.0f, 3000.0f, 800.0f };
     cam.target = { 0.0f, 2600.0f, -2000.0f };
     Shoot(engine, "high", 30);
+
+    // ---- Shadow cascades: from the air, the one shadow map round the camera does not reach the city; the further
+    // cascades do, so the same view has more shadow in it (and nothing else about it changes).
+    {
+        gfx::SetTimeOfDay(16.2f);
+        cam.position = { -250.0f, 170.0f, 330.0f };
+        cam.target = { 0.0f, 0.0f, 0.0f };
+        L.autoExposure = false;         // or the eye would brighten the shadowed picture back up
+        gfx::Quality().shadowCascades = 1;
+        const Shot one = Shoot(engine, "cascades_1", 24);
+        gfx::Quality().shadowCascades = 4;
+        const Shot four = Shoot(engine, "cascades_4", 24);
+        const float cityOne = RegionLum(one.path, 0.32f, 0.42f, 0.74f, 0.72f), cityFour = RegionLum(four.path, 0.32f, 0.42f, 0.74f, 0.72f);
+        std::printf("shadow cascades: the city's brightness with one %.1f, with four %.1f; pictures differ by %.2f\n", cityOne, cityFour, ImageDiff(one.path, four.path));
+        CHECK(cityFour < cityOne - 1.5f);
+        CHECK(ImageDiff(one.path, four.path) < 12.0f);
+        gfx::Quality().shadowCascades = 3;
+        L.autoExposure = true;
+    }
 
     // ---- Clouds.
     {

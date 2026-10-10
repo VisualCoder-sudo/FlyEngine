@@ -133,6 +133,13 @@ layout(binding=1) uniform sampler shadowMap_smp;
 @sampler_type shadowMap_smp comparison
 layout(binding=2) uniform texture2D cloudShadowTex;
 layout(binding=2) uniform sampler cloudShadowTex_smp;
+// The further shadow cascades (see ShadowCalculation); they share shadowMap's sampler.
+layout(binding=3) uniform texture2D shadowMap1;
+layout(binding=4) uniform texture2D shadowMap2;
+layout(binding=5) uniform texture2D shadowMap3;
+@image_sample_type shadowMap1 depth
+@image_sample_type shadowMap2 depth
+@image_sample_type shadowMap3 depth
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -141,36 +148,62 @@ in vec4 fragShadowCoord;
 in vec3 fragWorldPos;
 out vec4 finalColor;
 
+// 1 = lit, 0 = in shadow, filtered by the hardware.
+float ShadowTap(int cascade, vec3 p) {
+    if (cascade == 0) return texture(sampler2DShadow(shadowMap, shadowMap_smp), p);
+    if (cascade == 1) return texture(sampler2DShadow(shadowMap1, shadowMap_smp), p);
+    if (cascade == 2) return texture(sampler2DShadow(shadowMap2, shadowMap_smp), p);
+    return texture(sampler2DShadow(shadowMap3, shadowMap_smp), p);
+}
+vec2 ShadowTexel(int cascade) {
+    if (cascade == 0) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap, shadowMap_smp), 0));
+    if (cascade == 1) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap1, shadowMap_smp), 0));
+    if (cascade == 2) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap2, shadowMap_smp), 0));
+    return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap3, shadowMap_smp), 0));
+}
+
+// The sun's shadow: 0 = lit, 1 = in shadow.
+//
+// The shadow maps are cascades: the first is a box of ground round the camera drawn
+// in fine detail, each further one a box about three times as wide at the same
+// resolution (shadowVP[i] takes a world position into box i; sunDir.w says how many
+// there are, 0 = shadows off). A point takes its shadow from the finest box it is in.
 float ShadowCalculation(vec3 normal) {
+    int count = int(sunDir.w + 0.5);
     // Combined anti-acne scheme (shared by every lit mesh).
     //
-    // (A) NORMAL-BASED BIAS - shift the shadow comparison point along the
-    //     surface normal in WORLD space before projecting to light space, a
-    //     fixed world-units offset that stays correct at every camera altitude.
-    vec4 biasedLightPos = lightVP * vec4(fragWorldPos + normalize(normal) * 0.05, 1.0);
-    vec3 ndc = biasedLightPos.xyz / biasedLightPos.w;
-    vec2 uvGL = ndc.xy * 0.5 + 0.5;
-    float currentDepth = ndc.z * 0.5 + 0.5;
-    float shadow = 0.0;
+    // (B) SLOPE-SCALE DEPTH BIAS - grows as the surface tilts away from the
+    //     light, where acne is worst. In depth-buffer units: tuned for the first box's
+    //     1..430 m range, and the further boxes' ranges are longer in step with their texels.
+    float facing = 1.0 - dot(normal, -sunDir.xyz);
+    float bias = max(0.0037 * facing * facing, 0.00093);
+    float scale0 = length(vec3(shadowVP[0][0][0], shadowVP[0][1][0], shadowVP[0][2][0]));
+    vec3 n = normalize(normal);
+    for (int c = 0; c < 4; ++c) {
+        if (c >= count) break;
+        // (A) NORMAL-BASED BIAS - shift the shadow comparison point along the
+        //     surface normal in WORLD space before projecting to light space: 5 cm in
+        //     the first box (correct at every camera altitude), more where texels are larger.
+        float coarser = scale0 / max(length(vec3(shadowVP[c][0][0], shadowVP[c][1][0], shadowVP[c][2][0])), 1e-9);
+        vec4 biasedLightPos = shadowVP[c] * vec4(fragWorldPos + n * (0.05 * coarser), 1.0);
+        vec3 ndc = biasedLightPos.xyz / biasedLightPos.w;
+        float currentDepth = ndc.z * 0.5 + 0.5;
+        // The rim of a box is left to the next one (its taps would reach over the edge).
+        float rim = c + 1 < count ? 0.97 : 1.0;
+        if (abs(ndc.x) > rim || abs(ndc.y) > rim || currentDepth > 1.0) continue;
 
-    if (uvGL.x >= 0.0 && uvGL.x <= 1.0 && uvGL.y >= 0.0 && uvGL.y <= 1.0 && currentDepth <= 1.0) {
-        // (B) SLOPE-SCALE DEPTH BIAS - grows as the surface tilts away from the
-        //     light, where acne is worst.
-        float facing = 1.0 - dot(normal, -sunDir.xyz);
-        float bias = max(0.0037 * facing * facing, 0.00093); // tuned for the 1..430 shadow depth range
         vec2 uv = fly_rt_uv(ndc.xy);
-        vec2 texelSize = 1.0 / vec2(textureSize(sampler2DShadow(shadowMap, shadowMap_smp), 0));
-
+        vec2 texelSize = ShadowTexel(c);
         // 3x3 PCF; each tap is itself a filtered hardware comparison.
+        float shadow = 0.0;
         for (int x = -1; x <= 1; ++x) {
             for (int y = -1; y <= 1; ++y) {
-                vec3 tap = vec3(uv + vec2(x, y) * texelSize, currentDepth - bias);
-                shadow += 1.0 - texture(sampler2DShadow(shadowMap, shadowMap_smp), tap);
+                shadow += 1.0 - ShadowTap(c, vec3(uv + vec2(x, y) * texelSize, currentDepth - bias));
             }
         }
-        shadow /= 9.0;
+        return shadow / 9.0;
     }
-    return shadow;
+    return 0.0;
 }
 
 // How much of the sun the clouds let through to this point: the clouds' shadow is a texture over the
@@ -188,7 +221,7 @@ float CloudLight() {
 vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     vec3 normal = normalize(fragNormal);
     float diffuse = max(dot(normal, -sunDir.xyz), 0.0);
-    float shadow = ShadowCalculation(normal) * sunDir.w;
+    float shadow = ShadowCalculation(normal);
 
     // Light from the sky on what faces up, light bounced off the ground on what faces down.
     vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, normal.y * 0.5 + 0.5);
@@ -213,7 +246,8 @@ vec3 ShadeLit(out float alpha) {
 @end
 
 // The scene's light, shared by the three programs (gfx::UpdateLighting fills it in):
-//   sunDir         xyz = unit vector the sunlight (or moonlight) travels along, w = shadows on (1) or off (0)
+//   sunDir         xyz = unit vector the sunlight (or moonlight) travels along, w = how many shadow cascades there are (0 = shadows off)
+//   shadowVP       world to shadow-map space, one matrix per cascade
 //   sunColor       rgb = linear light on a surface that faces the sun
 //   ambientSky     rgb = linear light from the sky on a surface that faces up
 //   ambientGround  rgb = linear light bounced off the ground on a surface that faces down
@@ -227,7 +261,7 @@ layout(binding=1) uniform fs_params {
     vec4 ambientGround;
     vec4 cloudShadow;
     float waterSurfaceY;
-    mat4 lightVP;
+    mat4 shadowVP[4];
 };
 @include_block lit_fs_common
 void main() {
@@ -277,7 +311,7 @@ layout(binding=1) uniform fs_road_params {
     vec4 nightLights[32];
     vec4 weather;       // x = wetness 0..1
     vec4 camPos;        // xyz = camera position
-    mat4 lightVP;
+    mat4 shadowVP[4];
     mat4 matProjection;
 };
 @include_block lit_fs_common
@@ -348,7 +382,7 @@ layout(binding=1) uniform fs_building_params {
     float lightCount;
     vec4 nightLights[32];
     vec4 weather;           // x = wetness 0..1, y = time (s)
-    mat4 lightVP;
+    mat4 shadowVP[4];
 };
 @include_block lit_fs_common
 @include_block night_glow

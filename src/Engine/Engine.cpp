@@ -119,12 +119,15 @@ void Engine::Draw() {
 
     double p0 = GetTime();
     // 0. Shadow map pass: render occluders from the light's point of view.
-    gfx::BeginShadowPass();
-    for (auto& entity : entities) {
-        if (isPlayerBuild && entity->IsEditorOnly()) continue;
-        entity->Draw();
+    // (Once per shadow cascade; the further cascades only ask for it every few frames.)
+    for (int cascade = 0; cascade < gfx::ShadowCascadeCount(); cascade++) {
+        if (!gfx::BeginShadowCascade(cascade)) continue;
+        for (auto& entity : entities) {
+            if (isPlayerBuild && entity->IsEditorOnly()) continue;
+            entity->Draw();
+        }
+        gfx::EndShadowCascade();
     }
-    gfx::EndShadowPass();
     double p1 = GetTime();
 
     gfx::UpdateLighting(camera);

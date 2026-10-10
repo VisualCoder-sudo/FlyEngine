@@ -203,6 +203,7 @@ struct LitLocs {
     int lightVP = -1, shadowMap = -1, waterSurfaceY = -1;
     int night = -1, lightCount = -1, lights = -1, weather = -1, camPos = -1;
     int cloudShadow = -1, cloudShadowTex = -1;
+    int shadowVP = -1, shadowMapFar[3] = { -1, -1, -1 };
 };
 LitLocs litLocs, roadLocs, cityLocs;
 void FindLitLocs(Shader& sh, LitLocs& l) {
@@ -221,6 +222,10 @@ void FindLitLocs(Shader& sh, LitLocs& l) {
     l.camPos = GetShaderLocation(sh, "camPos");
     l.cloudShadow = GetShaderLocation(sh, "cloudShadow");
     l.cloudShadowTex = GetShaderLocation(sh, "cloudShadowTex");
+    l.shadowVP = GetShaderLocation(sh, "shadowVP");
+    l.shadowMapFar[0] = GetShaderLocation(sh, "shadowMap1");
+    l.shadowMapFar[1] = GetShaderLocation(sh, "shadowMap2");
+    l.shadowMapFar[2] = GetShaderLocation(sh, "shadowMap3");
     int shadowSlot = SHADOW_TEXTURE_SLOT;
     if (l.shadowMap != -1) SetShaderValue(sh, l.shadowMap, &shadowSlot, SHADER_UNIFORM_INT);
     // A texture unit nothing else binds: with no clouds the sampler reads the default white texture.
@@ -241,6 +246,24 @@ bool initialized = false;
 bool shadowsEnabled = true;
 
 RenderTexture2D shadowMap{};
+// The further shadow cascades: boxes of ground round the camera, each about three times as wide as
+// the one before, drawn into maps of their own. They need not be fresh every frame (what they show
+// is far away), so one of them is redrawn per frame, the further the less often.
+constexpr int kMaxCascades = 4;
+constexpr float kCascadeGrowth = 2.7f;
+constexpr int kFarCascadeMaxRes = 2048;
+struct FarCascade {
+    RenderTexture2D map{};
+    Matrix viewProj = MatrixIdentity();
+    bool valid = false;
+    int res = 0;
+    float half = 0.0f;
+    Vector3 sun{};
+};
+FarCascade farCascades[kMaxCascades - 1];
+int activeFarCascade = 0;       // the far cascade being drawn (1..3), 0 = none
+unsigned shadowFrame = 0;
+bool nearCascadeReused = false; // the first cascade kept its map this frame (the scene is idle)
 Camera3D lightCamera{};
 Matrix lightView = MatrixIdentity();
 Matrix lightProj = MatrixIdentity();
@@ -972,6 +995,10 @@ void Shutdown() {
     UnloadTexture(defaultTexture);
     UnloadTexture(groundTexture);
     if (shadowMap.id > 0) UnloadRenderTexture(shadowMap);
+    for (FarCascade& fc : farCascades) {
+        if (fc.map.id > 0) UnloadRenderTexture(fc.map);
+        fc = FarCascade{};
+    }
     if (reflectionTarget.id > 0) UnloadRenderTexture(reflectionTarget);
     if (cityInstancedShader.id != 0) UnloadShader(cityInstancedShader);
     if (roadShader.id != 0) UnloadShader(roadShader);
@@ -1140,6 +1167,7 @@ void BeginShadowPass() {
                        now - shadowStillSince >= kShadowStillSeconds &&
                        !ui::IsPlayActive();
     if (shadowInputHold > 0) shadowInputHold--;
+    nearCascadeReused = shadowPassReused;
 
     BeginTextureMode(shadowMap);
     if (shadowPassReused) {
@@ -1185,6 +1213,93 @@ void EndShadowPass() {
 
 bool IsInShadowPass() {
     return inShadowPass;
+}
+
+int ShadowCascadeCount() {
+    return (shadowsEnabled && shadowMap.id != 0) ? Clamp(Quality().shadowCascades, 1, kMaxCascades) : 1;
+}
+
+bool BeginShadowCascade(int index) {
+    if (!shadowsEnabled || shadowMap.id == 0) return false;
+    if (index <= 0) {
+        shadowFrame++;
+        BeginShadowPass();
+        return true;
+    }
+    if (index >= kMaxCascades || !haveShadowViewCamera) return false;
+
+    FarCascade& fc = farCascades[index - 1];
+    const int res = shadowMapResolution < kFarCascadeMaxRes ? shadowMapResolution : kFarCascadeMaxRes;
+    const float half = (shadowStableHalf > 0.0f ? shadowStableHalf : kShadowMinHalf) * powf(kCascadeGrowth, (float)index);
+    const Vector3 sunDir = SunDir();
+    const bool stale = !fc.valid || fc.res != res || fc.half != half || !Vector3Equals(fc.sun, sunDir);
+    if (!stale) {
+        // Cascade 1 on every 2nd frame, 2 on every 4th, 3 on every 8th, never two in one frame.
+        const unsigned period = 1u << index;
+        if (nearCascadeReused || (shadowFrame % period) != period / 2) return false;
+    }
+    if (fc.map.id == 0 || fc.res != res) {
+        if (fc.map.id > 0) UnloadRenderTexture(fc.map);
+        fc.map = LoadRenderTextureDepth(res, res);
+        fc.res = res;
+    }
+
+    // Centred a little ahead of the camera on the ground, in whole texels (as the first cascade is).
+    const Camera3D& cam = shadowViewCamera;
+    Vector3 fh = { cam.target.x - cam.position.x, 0.0f, cam.target.z - cam.position.z };
+    const float fl = Vector3Length(fh);
+    fh = fl > 1e-3f ? Vector3Scale(fh, 1.0f / fl) : Vector3{ 0.0f, 0.0f, -1.0f };
+    Vector3 focus = { cam.position.x + fh.x * half * 0.35f, 0.0f, cam.position.z + fh.z * half * 0.35f };
+    const Vector3 lightRight = Vector3Normalize(Vector3CrossProduct(sunDir, { 0.0f, 1.0f, 0.0f }));
+    const Vector3 lightUp = Vector3CrossProduct(lightRight, sunDir);
+    const float texel = (2.0f * half) / (float)res;
+    const float cx = Vector3DotProduct(focus, lightRight), cy = Vector3DotProduct(focus, lightUp);
+    focus = Vector3Add(focus, Vector3Add(Vector3Scale(lightRight, floorf(cx / texel) * texel - cx),
+                                         Vector3Scale(lightUp, floorf(cy / texel) * texel - cy)));
+
+    // A wider box sees further along the light as well: its depth range grows with it.
+    const float k = half / 64.0f;
+    Camera3D cascadeCamera = lightCamera;
+    cascadeCamera.target = focus;
+    cascadeCamera.position = Vector3Subtract(focus, Vector3Scale(sunDir, kShadowLightDist * k));
+    cascadeCamera.up = { 0.0f, 1.0f, 0.0f };
+    cascadeCamera.projection = CAMERA_ORTHOGRAPHIC;
+
+    BeginTextureMode(fc.map);
+    ClearBackground(WHITE);
+    BeginMode3D(cascadeCamera);
+    rlSetMatrixProjection(MatrixOrtho(-half, half, -half, half, kShadowNear * k, kShadowFar * k));
+    fc.viewProj = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+    fc.half = half;
+    fc.sun = sunDir;
+    fc.valid = true;
+    inShadowPass = true;
+    activeFarCascade = index;
+    return true;
+}
+
+void EndShadowCascade() {
+    if (activeFarCascade == 0) { EndShadowPass(); return; }
+    EndMode3D();
+    EndTextureMode();
+    inShadowPass = false;
+    activeFarCascade = 0;
+}
+
+namespace {
+// The cascades for the lit shaders: their matrices (column-major, one after another) and how many
+// there are (every cascade up to the first that has no map yet).
+int ShadowCascadeData(float out[16 * kMaxCascades]) {
+    const Matrix id = MatrixIdentity();
+    int count = 0;
+    for (int i = 0; i < kMaxCascades; i++) {
+        const bool have = shadowsEnabled && count == i && i < ShadowCascadeCount() && (i == 0 || farCascades[i - 1].valid);
+        const float16 f = MatrixToFloatV(have ? (i == 0 ? lightViewProj : farCascades[i - 1].viewProj) : id);
+        memcpy(out + 16 * i, f.v, sizeof(float) * 16);
+        if (have) count++;
+    }
+    return count;
+}
 }
 
 Texture2D GetShadowMapTexture() { return (shadowsEnabled && shadowHaveRendered) ? shadowMap.depth : Texture2D{}; }
@@ -1431,7 +1546,12 @@ Vector3 lightingCamPos{};   // the camera UpdateLighting() last saw
 void UploadLitEnvironment(Shader& sh, const LitLocs& l) {
     if (sh.id == 0) return;
     const Vector3 dir = SunDir(), sun = SunRadiance(), sky = AmbientSky(), ground = AmbientGround(), refl = SkyRadiance();
-    const Vector4 sunDir = { dir.x, dir.y, dir.z, shadowsEnabled ? 1.0f : 0.0f };
+    float cascades[16 * kMaxCascades];
+    const int cascadeCount = ShadowCascadeData(cascades);
+    if (l.shadowVP != -1) SetShaderValueV(sh, l.shadowVP, cascades, SHADER_UNIFORM_VEC4, 4 * kMaxCascades);
+    for (int i = 1; i < kMaxCascades; i++)
+        if (l.shadowMapFar[i - 1] != -1) SetShaderValueTexture(sh, l.shadowMapFar[i - 1], i < cascadeCount ? farCascades[i - 1].map.depth : Texture2D{});
+    const Vector4 sunDir = { dir.x, dir.y, dir.z, (float)cascadeCount };
     const Vector4 sunColor = { sun.x, sun.y, sun.z, 1.0f };
     const Vector4 ambientSky = { sky.x, sky.y, sky.z, 1.0f };
     const Vector4 ambientGround = { ground.x, ground.y, ground.z, 1.0f };
