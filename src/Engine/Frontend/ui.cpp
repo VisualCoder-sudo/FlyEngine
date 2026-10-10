@@ -547,8 +547,10 @@ LogEntry g_log[kLogCapacity];
 int g_logWrite = 0;   // next slot to write
 int g_logCount = 0;   // total entries currently held
 
-// Output panel scrollback, in wrapped-row units. 0 = pinned to the bottom.
-int g_logScrollRows = 0;
+// Lines ever written (clearing the log does not rewind it), and how many of them the Output tab has shown:
+// the difference is what the red dot on the tab announces.
+unsigned long long g_logTotal = 0;
+unsigned long long g_logSeenTotal = 0;
 
 } // namespace
 
@@ -562,6 +564,7 @@ static void LogImpl(LogSeverity severity, const char* fmt, va_list args) {
     g_log[g_logWrite].time = GetTime();
     g_logWrite = (g_logWrite + 1) % kLogCapacity;
     if (g_logCount < kLogCapacity) g_logCount++;
+    g_logTotal++;
 }
 
 namespace {
@@ -1048,13 +1051,13 @@ Rectangle GetConsoleBarArea() {
     return Rectangle{ explorer.x + explorer.width, 0.0f, props.x - (explorer.x + explorer.width), static_cast<float>(GetScreenHeight()) };
 }
 
-// Asset browser: docked directly above the command console bar, spanning the
-// same middle strip (between Explorer and Properties) as the console itself.
+// The bottom panel (Assets and Output tabs): docked directly on the command console bar, flush with it, spanning
+// the same middle strip (between Explorer and Properties) as the console itself.
 static Rectangle GetAssetBrowserPanelBounds() {
     constexpr float h = 230.0f;
     Rectangle area = GetConsoleBarArea();
     Rectangle bar = console::GetBounds();
-    return Rectangle{ area.x, bar.y - h - 8.0f, area.width, h };
+    return Rectangle{ area.x, bar.y - h, area.width, h };
 }
 
 static void GetColorPickerWindowBounds(Rectangle& popupRec) {
@@ -1128,14 +1131,6 @@ static int ExplorerMenuItemCount() {
     return n;
 }
 
-static Rectangle GetOutputPanelBounds() {
-    if (g_logCount == 0) return Rectangle{ 0.0f, 0.0f, 0.0f, 0.0f };
-    constexpr float h = 170.0f;
-    Rectangle area = GetConsoleBarArea();
-    Rectangle assetBar = GetAssetBrowserPanelBounds();
-    return Rectangle{ area.x, assetBar.y - h - 8.0f, area.width, h };
-}
-
 // Script build panel: a strip over the top of the viewport. While compiling it
 // is a one-line status (shown only once a build has taken a moment, so quick
 // rebuilds don't flash it); after a failure it lists the compiler messages.
@@ -1184,9 +1179,6 @@ bool IsMouseOverUI() {
 
     Rectangle terrRec = GetTerrainPanelBounds();
     if (terrRec.width > 0.0f && CheckCollisionPointRec(mouse, terrRec)) return true;
-
-    Rectangle outRec = GetOutputPanelBounds();
-    if (outRec.width > 0.0f && CheckCollisionPointRec(mouse, outRec)) return true;
 
     Rectangle scriptRec = GetScriptPanelBounds();
     if (scriptRec.width > 0.0f && CheckCollisionPointRec(mouse, scriptRec)) return true;
@@ -1253,81 +1245,6 @@ static void DrawCenteredTextArial(const char* text, const Rectangle& rec, float 
     float x = rec.x + (rec.width - textW) * 0.5f;
     float y = rec.y + (rec.height - fontSize) * 0.5f;
     DrawTextArial(text, x, y, fontSize, color);
-}
-
-// Splits `text` into visual lines that each fit within maxWidth, wrapping on
-// word boundaries. Words longer than the column are hard-broken so nothing ever
-// spills past the right edge. Returns the list of wrapped lines.
-static std::vector<std::string> WrapTextToLines(const char* text, float fontSize, float maxWidth) {
-    std::vector<std::string> out;
-    if (!text || !*text) return out;
-    std::string s = text;
-    if (MeasureTextArial(s.c_str(), fontSize) <= maxWidth) {
-        out.push_back(s);
-        return out;
-    }
-
-    auto flush = [&out](std::string& l) {
-        out.push_back(l);
-        l.clear();
-    };
-
-    std::string line;
-    std::string word;
-    size_t i = 0;
-    while (i < s.size()) {
-        char ch = s[i];
-        if (ch == ' ' || ch == '\n') {
-            if (!word.empty()) {
-                std::string candidate = line.empty() ? word : line + " " + word;
-                if (MeasureTextArial(candidate.c_str(), fontSize) <= maxWidth) {
-                    line = candidate;
-                } else {
-                    if (!line.empty()) flush(line);
-                    if (MeasureTextArial(word.c_str(), fontSize) > maxWidth) {
-                        std::string part;
-                        for (size_t k = 0; k < word.size(); ++k) {
-                            part += word[k];
-                            if (k + 1 < word.size() && MeasureTextArial((part + word[k + 1]).c_str(), fontSize) > maxWidth) {
-                                out.push_back(part);
-                                part.clear();
-                            }
-                        }
-                        if (!part.empty()) out.push_back(part);
-                    } else {
-                        line = word;
-                    }
-                }
-                word.clear();
-            }
-            if (ch == '\n') {
-                if (!line.empty()) flush(line);
-            }
-            i++;
-        } else {
-            word += ch;
-            i++;
-        }
-    }
-
-    // Flush the trailing word, then any remaining line.
-    if (!word.empty()) {
-        std::string candidate = line.empty() ? word : line + " " + word;
-        if (MeasureTextArial(candidate.c_str(), fontSize) <= maxWidth) {
-            line = candidate;
-        } else {
-            if (!line.empty()) flush(line);
-            line = word;
-        }
-        word.clear();
-    }
-    if (!line.empty()) out.push_back(line);
-    return out;
-}
-
-// Counts how many wrapped lines `text` occupies within maxWidth.
-static int CountWrappedLines(const char* text, float fontSize, float maxWidth) {
-    return static_cast<int>(WrapTextToLines(text, fontSize, maxWidth).size());
 }
 
 static bool DrawDialogButton(Rectangle rec, const char* text, bool isPrimary) {
@@ -4014,86 +3931,6 @@ if (g_selection.size() > 1) {
     EndScissorMode();
 }
 
-static void DrawOutputPanel() {
-    Rectangle panel = GetOutputPanelBounds();
-    if (panel.width <= 0.0f) return;
-
-    constexpr float rowH = 17.0f;
-    constexpr float textSize = 12.0f;
-    const float textX = panel.x + 10.0f;
-    const float maxTextW = panel.width - 28.0f;
-    const float topY = panel.y + 28.0f;
-    const float bottom = panel.y + panel.height - 4.0f;
-    const int visibleRows = std::max(1, static_cast<int>((bottom - topY) / rowH));
-
-    DrawRectangleRec({ panel.x + 3.0f, panel.y + 3.0f, panel.width, panel.height }, theme::SHADOW);
-    DrawRectangleRec(panel, Color{ 20, 21, 26, 235 });
-    DrawRectangleLinesEx(panel, 1.0f, theme::BORDER_STRONG);
-    DrawTextArial("OUTPUT", panel.x + 8.0f, panel.y + 5.0f, 13.0f, theme::ACCENT);
-    DrawLine(static_cast<int>(panel.x + 6.0f), static_cast<int>(panel.y + 22.0f), static_cast<int>(panel.x + panel.width - 6.0f), static_cast<int>(panel.y + 22.0f), theme::DIVIDER);
-
-    Rectangle clearBtn = { panel.x + panel.width - 24.0f, panel.y + 3.0f, 18.0f, 18.0f };
-    Vector2 mouse = GetMousePosition();
-    bool clearHover = CheckCollisionPointRec(mouse, clearBtn);
-    float clearT = HoverProgress(22, clearHover);
-    DrawRectangleRounded(clearBtn, 0.2f, 4, Mix(theme::BG_WIDGET, theme::DANGER, clearT));
-    DrawRectangleLinesEx(clearBtn, 1.0f, Mix(theme::BORDER, theme::DANGER_HOVER, clearT));
-    DrawCenteredTextArial("X", clearBtn, 12.0f, clearHover ? theme::TEXT : theme::TEXT_MUTED);
-    if (clearHover) MarkHand();
-    if (clearHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        g_logCount = 0;
-        g_logWrite = 0;
-    }
-
-    // Total wrapped-line count across all held entries (oldest -> newest).
-    int totalRows = 0;
-    int entryRows[kLogCapacity];
-    for (int i = 0; i < g_logCount; ++i) {
-        int idx = (g_logWrite - g_logCount + i + kLogCapacity) % kLogCapacity;
-        entryRows[i] = CountWrappedLines(g_log[idx].text, textSize, maxTextW);
-        totalRows += entryRows[i];
-    }
-
-    const bool hasScroll = totalRows > visibleRows;
-    const int maxScroll = std::max(0, totalRows - visibleRows);
-    if (g_logScrollRows > maxScroll) g_logScrollRows = maxScroll;
-
-    float wheel = GetMouseWheelMove();
-    if (wheel != 0.0f && CheckCollisionPointRec(mouse, panel)) {
-        g_logScrollRows = std::clamp(g_logScrollRows + static_cast<int>(-wheel * 3.0f), 0, maxScroll);
-    }
-
-    if (hasScroll) {
-        const int sbX = static_cast<int>(panel.x + panel.width - 8.0f);
-        const int sbTop = static_cast<int>(topY);
-        const int sbH = static_cast<int>(bottom - topY);
-        DrawRectangle(sbX, sbTop, 4, sbH, Color{ 255, 255, 255, 18 });
-        float thumbH = static_cast<float>(sbH) * static_cast<float>(visibleRows) / static_cast<float>(totalRows);
-        if (thumbH < 12.0f) thumbH = 12.0f;
-        const float thumbY = static_cast<float>(sbTop) + (static_cast<float>(sbH) - thumbH) * (static_cast<float>(g_logScrollRows) / static_cast<float>(maxScroll));
-        DrawRectangle(sbX, static_cast<int>(thumbY), 4, static_cast<int>(thumbH), theme::BORDER);
-    }
-
-    const int visibleStart = std::max(0, totalRows - g_logScrollRows - visibleRows);
-    int row = 0;
-    for (int i = 0; i < g_logCount; ++i) {
-        int idx = (g_logWrite - g_logCount + i + kLogCapacity) % kLogCapacity;
-        int used = entryRows[i];
-        if (used > 0 && row + used > visibleStart && row < visibleStart + visibleRows) {
-            int drawFirst = std::max(0, visibleStart - row);
-            int drawLast = std::min(used, visibleStart + visibleRows - row);
-            auto lines = WrapTextToLines(g_log[idx].text, textSize, maxTextW);
-            Color lineColor = theme::TEXT;
-            if (g_log[idx].severity == LogSeverity::Error) lineColor = theme::DANGER;
-            else if (g_log[idx].severity == LogSeverity::Success) lineColor = theme::SUCCESS;
-            for (int l = drawFirst; l < drawLast; ++l) {
-                DrawTextArial(lines[static_cast<size_t>(l)].c_str(), textX, topY + static_cast<float>(row + l - visibleStart) * rowH, textSize, lineColor);
-            }
-        }
-        row += used;
-    }
-}
-
 // Cuts `text` to fit `maxWidth`, ending in "..." when it had to be shortened.
 static std::string FitTextToWidth(const std::string& text, float fontSize, float maxWidth) {
     if (MeasureTextArial(text.c_str(), fontSize) <= maxWidth) return text;
@@ -5249,7 +5086,6 @@ void Draw() {
 
     // Docked console + output panel
     console::Draw();
-    DrawOutputPanel();
     DrawScriptErrorPanel();
 
     // Terrain editor UI
@@ -6132,6 +5968,35 @@ static void HandleAssetBrowserViewportDrop(const Camera3D& camera) {
     }
 }
 
+// The bottom panel's tabs: 0 = Assets, 1 = Output. g_bottomTabRequest switches tab for one frame (-1 = none).
+static int g_bottomTabActive = 0;
+static int g_bottomTabRequest = -1;
+
+// The Output tab: the log, oldest line first, in the line's severity colour. It follows the newest line while
+// the view is at the bottom; scroll up to read back. "Clear" empties it.
+static void DrawOutputTab() {
+    if (ImGui::SmallButton("Clear")) ClearLog();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d line%s", g_logCount, g_logCount == 1 ? "" : "s");
+    ImGui::Separator();
+    ImGui::BeginChild("##OutputLines", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoSavedSettings);
+    for (int i = 0; i < g_logCount; ++i) {
+        const int idx = (g_logWrite - g_logCount + i + kLogCapacity) % kLogCapacity;
+        Color c = theme::TEXT;
+        if (g_log[idx].severity == LogSeverity::Error) c = theme::DANGER;
+        else if (g_log[idx].severity == LogSeverity::Success) c = theme::SUCCESS;
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f));
+        ImGui::TextWrapped("%s", g_log[idx].text);
+        ImGui::PopStyleColor();
+    }
+    static unsigned long long followedTotal = 0;
+    if (g_logTotal != followedTotal) {          // a new line since last frame: stay at the bottom if we were there
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40.0f) ImGui::SetScrollHereY(1.0f);
+        followedTotal = g_logTotal;
+    }
+    ImGui::EndChild();
+}
+
 static void DrawImGuiAssetBrowser(const Camera3D& camera) {
     Rectangle panelRec = GetAssetBrowserPanelBounds();
     HandleAssetBrowserFileDrop(panelRec);
@@ -6159,20 +6024,48 @@ static void DrawImGuiAssetBrowser(const Camera3D& camera) {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings;
+    // Flush with the console bar below it: no padding or border that would leave a strip of viewport showing.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::Begin("##AssetBrowser", nullptr, flags);
+    ImGui::PopStyleVar();
 
-    const auto& proj = ::project::GetCurrentProject();
-    if (proj.path.empty()) {
-        ImGui::TextDisabled("No project open");
-        ImGui::End();
-        return;
+    // Two tabs of one panel: the asset browser, and the output (log). The Output tab carries a small red dot
+    // while lines have been written that it has not shown yet.
+    if (ImGui::BeginTabBar("##BottomTabs", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
+        ImGuiTabItemFlags assetsFlags = ImGuiTabItemFlags_None, outputFlags = ImGuiTabItemFlags_None;
+        if (g_bottomTabRequest == 0) assetsFlags |= ImGuiTabItemFlags_SetSelected;
+        if (g_bottomTabRequest == 1) outputFlags |= ImGuiTabItemFlags_SetSelected;
+        g_bottomTabRequest = -1;
+
+        if (ImGui::BeginTabItem("Assets", nullptr, assetsFlags)) {
+            g_bottomTabActive = 0;
+            const auto& proj = ::project::GetCurrentProject();
+            if (proj.path.empty()) {
+                ImGui::TextDisabled("No project open");
+            } else {
+                DrawAssetBrowserToolbar();
+                ImGui::Separator();
+                ImGui::BeginChild("##AssetBrowserGrid", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoSavedSettings);
+                DrawAssetBrowserGrid();
+                ImGui::EndChild();
+            }
+            ImGui::EndTabItem();
+        }
+
+        const bool unread = g_logTotal != g_logSeenTotal;
+        const bool outputOpen = ImGui::BeginTabItem("Output", nullptr, outputFlags);
+        const ImVec2 outMin = ImGui::GetItemRectMin(), outMax = ImGui::GetItemRectMax();
+        if (outputOpen) {
+            g_bottomTabActive = 1;
+            g_logSeenTotal = g_logTotal;
+            DrawOutputTab();
+            ImGui::EndTabItem();
+        } else if (unread) {
+            // The dot sits at the top-right of the tab's label.
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(outMax.x - 6.0f, outMin.y + 6.0f), 4.0f, IM_COL32(235, 64, 52, 255), 12);
+        }
+        ImGui::EndTabBar();
     }
-
-    DrawAssetBrowserToolbar();
-    ImGui::Separator();
-    ImGui::BeginChild("##AssetBrowserGrid", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoSavedSettings);
-    DrawAssetBrowserGrid();
-    ImGui::EndChild();
 
     ImGui::End();
 }
@@ -6837,6 +6730,9 @@ static void DrawImGuiLightingPanel() {
 }
 
 void SelectLightingItem(int id) { g_lightingSel = id; }
+void SelectBottomTab(int tab) { g_bottomTabRequest = tab; }
+int BottomTabShown() { return g_bottomTabActive; }
+bool OutputHasUnread() { return g_logTotal != g_logSeenTotal; }
 void ShowPreferences(bool show, int category) {
     g_showPreferences = show;
     if (show) g_prefsCategory = category;

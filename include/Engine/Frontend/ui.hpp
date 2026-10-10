@@ -101,6 +101,10 @@ void SetPlayActive(bool active);
 // Explorer's Lighting section (0 = none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather,
 // 7 Clouds, 8 Picture), and opens or closes Preferences on one of its tabs (4 = Rendering).
 void SelectLightingItem(int id);
+// Switches the bottom panel to a tab (0 = Assets, 1 = Output) on the next frame; BottomTabShown() is the one showing.
+void SelectBottomTab(int tab);
+int BottomTabShown();
+bool OutputHasUnread();     // lines were written that the Output tab has not shown (the red dot)
 void ShowPreferences(bool show, int category);
 
 // The top-bar Import button requests a mesh import; the interaction manager
