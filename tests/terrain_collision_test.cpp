@@ -212,6 +212,48 @@ int main() {
         CHECK(PlayerPos(w).z < 3.0f);
     }
 
+    // ---- 5b. Standing and walking on lumpy, coarse (8 m cell) terrain must not slide ----------------------------
+    {
+        std::printf("-- lumpy terrain\n");
+        auto t = MakeTerrain(128, 8.0f, { 0.0f, 0.0f, 0.0f }, [](float x, float z) {
+            return 30.0f * std::sin(x * 0.02f) * std::cos(z * 0.025f) + 6.0f * std::sin(x * 0.11f + z * 0.07f); });
+        w.sim->StartPlay();
+        w.cc->EnsurePhysicsBody();
+        float worstDrift = 0.0f; int airborneStill = 0;
+        for (int k = 0; k < 12; ++k) {
+            const float x = -200.0f + 37.0f * k, z = 150.0f - 23.0f * k;
+            Teleport(w, { x, TriangleHeight(*t, x, z) + 3.0f, z });
+            Settle(w, 120);
+            const Vector3 a = PlayerPos(w);
+            for (int i = 0; i < 120; ++i) { Frame(w, false); if (!w.cc->IsGrounded()) airborneStill++; }
+            const Vector3 b = PlayerPos(w);
+            const float drift = std::sqrt((b.x-a.x)*(b.x-a.x) + (b.y-a.y)*(b.y-a.y) + (b.z-a.z)*(b.z-a.z));
+            worstDrift = std::max(worstDrift, drift);
+            if (std::getenv("DBG")) std::printf("  spot %d: drift %.3f grounded %d\n", k, drift, (int)w.cc->IsGrounded());
+        }
+        std::printf("worst standing drift %.3f m, airborne frames while standing %d\n", worstDrift, airborneStill);
+        CHECK(worstDrift < 0.05f);
+        CHECK(airborneStill == 0);
+
+        // Walking straight along +z: the path must stay straight (a slide shows up as sideways drift in x),
+        // and the player must stay on the ground.
+        float worstSide = 0.0f; int airborneWalk = 0; float minProgress = 1e9f;
+        for (int k = 0; k < 12; ++k) {
+            const float x = -200.0f + 37.0f * k, z = -150.0f + 11.0f * k;
+            Teleport(w, { x, TriangleHeight(*t, x, z) + 3.0f, z });
+            Settle(w, 120);
+            const Vector3 a = PlayerPos(w);
+            for (int i = 0; i < 120; ++i) { Frame(w, true); if (!w.cc->IsGrounded()) airborneWalk++; }
+            const Vector3 b = PlayerPos(w);
+            worstSide = std::max(worstSide, std::fabs(b.x - a.x));
+            minProgress = std::min(minProgress, b.z - a.z);
+            if (std::getenv("DBG")) std::printf("  walk %d: side %.3f progress %.2f\n", k, b.x - a.x, b.z - a.z);
+        }
+        std::printf("worst sideways drift %.3f m, min forward progress %.2f m (10 expected), airborne frames %d\n", worstSide, minProgress, airborneWalk);
+        CHECK(worstSide < 0.1f);
+        CHECK(minProgress > 8.0f);
+    }
+
     // ---- 6. Steps and walls on flat terrain ------------------------------------------------------------------
     for (float height : { 0.3f, 1.0f }) {
         std::printf("-- obstacle %.1f m tall\n", height);

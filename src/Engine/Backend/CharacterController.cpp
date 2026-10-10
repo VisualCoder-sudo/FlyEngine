@@ -340,10 +340,27 @@ void CharacterController::UpdateKinematic(float dt) {
     Vector3 newPos;
     Vector3 movedTotal;
     float movedVertical;   // the fall/jump part of the move, which is what vertical velocity must match
-    if (grounded) {
+    // Standing still on the ground: do not move at all. Pushing the capsule out of the surface it rests
+    // on goes along the surface normal, which on a slope is sideways, and snapping back down each frame
+    // turned that into a slow slide.
+    const bool standingStill = grounded && vel.x == 0.0f && vel.z == 0.0f;
+    if (standingStill) {
+        newPos = pos;
+        movedTotal = { 0.0f, 0.0f, 0.0f };
+        movedVertical = 0.0f;
+    } else if (grounded) {
         const auto m = sim.MoveCapsule(body, pos, delta, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y);
         newPos = m.position;
-        movedTotal = m.moved;
+        // Unblocked walking: the solver's sideways nudges are just it pushing the capsule off the surface
+        // along the surface normal, which on a cross-slope drifts the player downhill. Keep the intended
+        // horizontal position and take only the vertical correction from the solver.
+        const float offX = m.position.x - (pos.x + delta.x);
+        const float offZ = m.position.z - (pos.z + delta.z);
+        if (offX * offX + offZ * offZ < 0.05f * 0.05f) {
+            newPos.x = pos.x + delta.x;
+            newPos.z = pos.z + delta.z;
+        }
+        movedTotal = Vector3Subtract(newPos, pos);
         movedVertical = m.moved.y;
     } else {
         const auto walk = sim.MoveCapsule(body, pos, { delta.x, 0.0f, delta.z }, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y);
@@ -383,7 +400,7 @@ void CharacterController::UpdateKinematic(float dt) {
 
     // Stay on the ground over bumps and down slopes: if we were standing and are not rising, drop to
     // the surface below (up to STEP_HEIGHT) rather than going airborne for a frame.
-    if (grounded && verticalVelocity <= 0.0f) {
+    if (grounded && !standingStill && verticalVelocity <= 0.0f) {
         const float fraction = sim.CastCapsule(body, newPos, { 0.0f, -STEP_HEIGHT, 0.0f }, CAPSULE_RADIUS, halfSegment);
         if (fraction < 1.0f) {
             Vector3 dropped = newPos;
