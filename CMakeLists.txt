@@ -221,6 +221,7 @@ add_library(FlyEngineCore STATIC
         src/Terrain/TerrainIO.cpp
         src/Terrain/TerrainSculpt.cpp
         src/Terrain/TerrainPhysics.cpp
+        src/Terrain/TerrainCollider.cpp
         src/Terrain/TerrainEditor.cpp
         src/Terrain/BasicTerrain.cpp
         src/Terrain/BasicTerrainIO.cpp

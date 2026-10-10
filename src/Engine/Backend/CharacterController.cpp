@@ -6,6 +6,7 @@
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/TechnicalTools.hpp"
+#include "../../../include/Terrain/BasicTerrain.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <algorithm>
@@ -19,6 +20,29 @@ namespace {
     // that put the eyes 2.5 m up, far above a 1.72 m pedestrian).
     constexpr float CAMERA_OFFSET = CAMERA_HEIGHT - CAPSULE_HEIGHT * 0.5f;
     constexpr float GROUND_CHECK_DIST = 0.1f;
+    constexpr float CAPSULE_HALF_HEIGHT = CAPSULE_HEIGHT * 0.5f;
+    // Steepest slope the player can stand and walk on (50 degrees); anything steeper is slid down.
+    // This is cos(50 deg), the smallest upward component of the surface normal that still counts as ground.
+    constexpr float WALKABLE_NORMAL_Y = 0.6428f;
+    // Tallest ledge the player steps onto without jumping, and the longest drop it stays glued to.
+    constexpr float STEP_HEIGHT = 0.4f;
+    // How far forward a step-up carries the player in the one frame it happens (see UpdateKinematic).
+    constexpr float STEP_FORWARD = CAPSULE_RADIUS * 0.75f;
+
+    // Where the player starts: above the origin, lifted clear of any terrain that covers it so a hill
+    // at the origin does not swallow the capsule (a capsule that starts inside the ground has no surface
+    // to be pushed out of).
+    Vector3 SpawnPosition() {
+        float y = 3.0f;
+        for (const BasicTerrain* t : BasicTerrain::GetInstances()) {
+            if (!t) continue;
+            const float hx = t->GetWidth() * t->GetScale() * 0.5f;
+            const float hz = t->GetDepth() * t->GetScale() * 0.5f;
+            if (fabsf(t->position.x) > hx || fabsf(t->position.z) > hz) continue;
+            y = std::max(y, t->position.y + t->GetHeightAt(0.0f, 0.0f) + CAPSULE_HALF_HEIGHT + 0.5f);
+        }
+        return { 0.0f, y, 0.0f };
+    }
 
     // Report a ground-check raycast to the physics debug overlay (F2). The
     // ground check is a one-frame boolean that decides whether the player can
@@ -87,7 +111,7 @@ void CharacterController::EnsurePhysicsBody() {
     if (body) {
         sim.SpawnBodyForObject(body, b3_kinematicBody);
         // Position at spawn height
-        Vector3 spawnPos = {0, 3, 0};
+        Vector3 spawnPos = SpawnPosition();
         sim.SetBodyPosition(body, spawnPos);
         *body->GetPosPtr() = spawnPos;
         camera->position = {spawnPos.x, spawnPos.y + CAMERA_OFFSET, spawnPos.z};
@@ -225,25 +249,23 @@ void CharacterController::UpdateCamera() {
 void CharacterController::UpdateKinematic(float dt) {
     if (!body) return;
 
-    Vector3 pos = *body->GetPosPtr();
-    Vector3 vel = {0, 0, 0};
+    const Vector3 pos = *body->GetPosPtr();
+    const float halfSegment = CAPSULE_HALF_HEIGHT - CAPSULE_RADIUS;   // straight part of the capsule, each side of the centre
 
-    // Ground check via raycast from capsule CENTER downward
-    // Capsule half-height = 0.9. When standing on ground (y=0), center at y=0.9, bottom at 0.0.
-    // Raycast distance = half-height + TINY epsilon (0.01) so it ONLY hits when capsule actually touches ground.
-    // With D=0.91: hits when center ≤ 0.91 (bottom at 0.01), grounded when center ≈ 0.9 (bottom ≈ 0.0).
-    const float CAPSULE_HALF_HEIGHT = CAPSULE_HEIGHT * 0.5f;  // 0.9f
-    const float GROUND_CHECK_EPSILON = 0.01f;
-    // The body is teleported, so a fast fall can end a frame inside the surface (or past it). Reach
-    // down by this frame's fall distance so the landing is caught, then snap to the surface below.
-    const float fallStep = verticalVelocity < 0.0f ? -verticalVelocity * dt : 0.0f;
-    float groundCheckDist = CAPSULE_HALF_HEIGHT + GROUND_CHECK_EPSILON + fallStep;  // 0.91 units from center (+ fall)
-    auto rayHit = sim.RayCast(pos, {0, -1, 0}, groundCheckDist, body);
-    ReportGroundCheck(rayHit, pos, groundCheckDist);
-    bool wasGrounded = grounded;
-    // Rising means we just jumped: the ray still reaches the surface for the first few frames of the
-    // jump, and counting that as ground would cancel the jump velocity (a tiny hop, then stuck).
-    grounded = rayHit.hit && verticalVelocity <= 0.0f;
+    // Ground check: is something walkable touching the bottom of the capsule? Rising means we just
+    // jumped: the surface is still within reach for the first frames of the jump, and counting that
+    // as ground would cancel the jump velocity (a tiny hop, then stuck).
+    Vector3 groundNormal = { 0.0f, 1.0f, 0.0f };
+    const bool wasGrounded = grounded;
+    grounded = verticalVelocity <= 0.0f &&
+               sim.GetCapsuleGround(body, pos, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y, groundNormal);
+    {
+        phys::RaycastHit probe;
+        probe.hit = grounded;
+        probe.point = { pos.x, pos.y - CAPSULE_HALF_HEIGHT, pos.z };
+        probe.normal = groundNormal;
+        ReportGroundCheck(probe, pos, CAPSULE_HALF_HEIGHT + GROUND_CHECK_DIST);
+    }
 
     // Coyote time: allow jump for a short time after leaving ground
     const float COYOTE_TIME = 0.1f;
@@ -273,8 +295,7 @@ void CharacterController::UpdateKinematic(float dt) {
     float speed = sprint ? sprintSpeed : walkSpeed;
     if (crouch) speed *= 0.5f;
 
-    vel.x = moveDir.x * speed;
-    vel.z = moveDir.z * speed;
+    Vector3 vel = { moveDir.x * speed, 0.0f, moveDir.z * speed };
 
     // Vertical velocity - handle jump BEFORE applying gravity.
     // verticalVelocity is a class member, so it carries over frame to frame
@@ -304,48 +325,87 @@ void CharacterController::UpdateKinematic(float dt) {
     if (fabsf(vel.x) < VEL_THRESHOLD) vel.x = 0;
     if (fabsf(vel.z) < VEL_THRESHOLD) vel.z = 0;
 
-    // The kinematic body is teleported, so physics never stops it against static geometry
-    // (city buildings, walls). Sweep short horizontal rays at foot/body/head height and
-    // cancel the velocity component pushing into a near-vertical surface, so the player
-    // slides along walls. Slopes (normal.y >= 0.5) and the ground are left to the
-    // ground-check ray.
-    {
-        const float radius = CAPSULE_RADIUS;
-        const float heights[3] = { -CAPSULE_HALF_HEIGHT + 0.4f, 0.0f, CAPSULE_HALF_HEIGHT - 0.1f };
-        for (int pass = 0; pass < 2; ++pass) {
-            const float hspeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
-            if (hspeed < 1e-4f) break;
-            const Vector3 hdir = { vel.x / hspeed, 0.0f, vel.z / hspeed };
-            const float reach = radius + hspeed * dt;
-            bool blocked = false;
-            for (float h : heights) {
-                const Vector3 origin = { pos.x, pos.y + h, pos.z };
-                const auto hit = sim.RayCast(origin, hdir, reach, body);
-                if (!hit.hit || fabsf(hit.normal.y) >= 0.5f) continue;
-                Vector3 n = { hit.normal.x, 0.0f, hit.normal.z };
-                const float nl = sqrtf(n.x * n.x + n.z * n.z);
-                if (nl < 1e-4f) continue;
-                n.x /= nl; n.z /= nl;
-                const float into = vel.x * n.x + vel.z * n.z;
-                if (into >= 0.0f) continue;
-                vel.x -= n.x * into;
-                vel.z -= n.z * into;
-                blocked = true;
+    // Walking: follow the ground. Tilt the velocity into the surface plane at the same horizontal
+    // speed, so going uphill climbs and going downhill stays planted instead of skipping off it.
+    if (grounded) {
+        vel.y = -(groundNormal.x * vel.x + groundNormal.z * vel.z) / groundNormal.y;
+    }
+
+    // The capsule slides: it stops against walls, runs along slopes and terrain, and is pushed out of
+    // anything it overlaps. The body itself is teleported to the result below. Slopes steeper than
+    // WALKABLE_NORMAL_Y count as walls for the walking part of the move (otherwise walking into one
+    // would carry the player up it); airborne, that part is separate from the fall so a steep face
+    // blocks the walk but still lets gravity slide the player down it.
+    const Vector3 delta = Vector3Scale(vel, dt);
+    Vector3 newPos;
+    Vector3 movedTotal;
+    float movedVertical;   // the fall/jump part of the move, which is what vertical velocity must match
+    if (grounded) {
+        const auto m = sim.MoveCapsule(body, pos, delta, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y);
+        newPos = m.position;
+        movedTotal = m.moved;
+        movedVertical = m.moved.y;
+    } else {
+        const auto walk = sim.MoveCapsule(body, pos, { delta.x, 0.0f, delta.z }, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y);
+        const auto fall = sim.MoveCapsule(body, walk.position, { 0.0f, delta.y, 0.0f }, CAPSULE_RADIUS, halfSegment);
+        newPos = fall.position;
+        movedTotal = Vector3Add(walk.moved, fall.moved);
+        movedVertical = fall.moved.y;
+    }
+
+    const float wantedH = sqrtf(delta.x * delta.x + delta.z * delta.z);
+    const float gotH = sqrtf(movedTotal.x * movedTotal.x + movedTotal.z * movedTotal.z);
+
+    // Step up: walking into a ledge lower than STEP_HEIGHT (a curb, a stair, a lip of terrain) lifts the
+    // capsule over it instead of stopping dead.
+    if (grounded && wantedH > 1e-5f && gotH < wantedH * 0.5f) {
+        const auto lifted = sim.MoveCapsule(body, pos, { 0.0f, STEP_HEIGHT, 0.0f }, CAPSULE_RADIUS, halfSegment);
+        // Go forward at least STEP_FORWARD: a round capsule bottom perched on the ledge's edge sits on a
+        // surface too steep to stand on, so a single frame's stride would often fall back off it.
+        const float stride = std::max(wantedH, STEP_FORWARD) / wantedH;
+        const auto across = sim.MoveCapsule(body, lifted.position, { delta.x * stride, 0.0f, delta.z * stride }, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y);
+        const float acrossH = sqrtf(across.moved.x * across.moved.x + across.moved.z * across.moved.z);
+        if (acrossH > gotH + 0.01f) {
+            const float lift = lifted.position.y - pos.y;
+            const float reach = lift + GROUND_CHECK_DIST;
+            const float fraction = sim.CastCapsule(body, across.position, { 0.0f, -reach, 0.0f }, CAPSULE_RADIUS, halfSegment);
+            if (fraction < 1.0f) {
+                Vector3 landed = across.position;
+                landed.y -= reach * fraction;
+                Vector3 landedNormal;
+                if (landed.y > pos.y + 0.01f &&
+                    sim.GetCapsuleGround(body, landed, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y, landedNormal)) {
+                    newPos = landed;
+                }
             }
-            if (!blocked) break;
         }
     }
 
-    // For Box3D kinematic body: manually integrate position from velocity
-    // Use SetBodyPosition - it sets physics body position and wakes it
-    Vector3 newPos = Vector3Add(pos, Vector3Scale(vel, dt));
+    // Stay on the ground over bumps and down slopes: if we were standing and are not rising, drop to
+    // the surface below (up to STEP_HEIGHT) rather than going airborne for a frame.
+    if (grounded && verticalVelocity <= 0.0f) {
+        const float fraction = sim.CastCapsule(body, newPos, { 0.0f, -STEP_HEIGHT, 0.0f }, CAPSULE_RADIUS, halfSegment);
+        if (fraction < 1.0f) {
+            Vector3 dropped = newPos;
+            dropped.y -= STEP_HEIGHT * fraction;
+            Vector3 droppedNormal;
+            if (sim.GetCapsuleGround(body, dropped, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y, droppedNormal)) {
+                newPos = dropped;
+            }
+        }
+    }
 
-    // Standing: sit exactly on the surface (undoes any penetration left by a hard landing; also follows slopes).
-    if (grounded && rayHit.hit) newPos.y = rayHit.point.y + CAPSULE_HALF_HEIGHT;
-    
+    // Blocked vertically (landed, bumped a ceiling, resting on a slope too steep to stand on): the
+    // velocity cannot exceed what the capsule actually travelled.
+    if (!grounded && fabsf(movedVertical - delta.y) > 1e-4f) {
+        const float actual = movedVertical / dt;
+        verticalVelocity = verticalVelocity < 0.0f ? std::clamp(actual, verticalVelocity, 0.0f)
+                                                   : std::clamp(actual, 0.0f, verticalVelocity);
+    }
+
     // Update physics body position directly
     sim.SetBodyPosition(body, newPos);
-    
+
     // Also update the ScatteredObject position for camera sync
     *body->GetPosPtr() = newPos;
 }
