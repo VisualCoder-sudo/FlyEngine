@@ -21,9 +21,9 @@ namespace {
     constexpr float CAMERA_OFFSET = CAMERA_HEIGHT - CAPSULE_HEIGHT * 0.5f;
     constexpr float GROUND_CHECK_DIST = 0.1f;
     constexpr float CAPSULE_HALF_HEIGHT = CAPSULE_HEIGHT * 0.5f;
-    // Steepest slope the player can stand and walk on (50 degrees); anything steeper is slid down.
-    // This is cos(50 deg), the smallest upward component of the surface normal that still counts as ground.
-    constexpr float WALKABLE_NORMAL_Y = 0.6428f;
+    // Steepest slope the player can stand and walk on (75 degrees); anything steeper is slid down.
+    // This is cos(75 deg), the smallest upward component of the surface normal that still counts as ground.
+    constexpr float WALKABLE_NORMAL_Y = 0.2588f;
     // Tallest ledge the player steps onto without jumping, and the longest drop it stays glued to.
     constexpr float STEP_HEIGHT = 0.4f;
     // How far forward a step-up carries the player in the one frame it happens (see UpdateKinematic).
