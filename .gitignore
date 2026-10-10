@@ -92,3 +92,6 @@ crashlog.txt
 .texture_gpu_cache.json
 road_shader_status.txt
 scene_*.png
+
+# Screenshots written by the rendering tests into the working directory
+/*.png
