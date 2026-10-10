@@ -295,7 +295,25 @@ int Run(int argc, char** argv) {
             cityPtr->MoveNode(ni, Vector2{ p.x + 0.5f, p.y }, false);
             cityPtr->RebuildAfterNodeMove(ni);
         }
+        // "sky": the atmosphere sky with clouds, and a walk through the panels that set it (each
+        // Lighting item's settings, then Preferences > Rendering), so that they are all drawn once
+        // under the validation layer. Pictures: sky_panel_<n>.png.
+        const bool skyMode = argc > 3 && std::string(argv[3]) == "sky";
+        if (skyMode) {
+            gfx::LightingSettings& L = gfx::Lighting();
+            L.hasSky = true; L.skyMode = 1; L.hasClouds = true; L.hasFog = true; L.fogDensity = 0.002f; L.fogHeight = 120.0f;
+            L.hasWeather = true; L.hasPicture = true; L.hasSun = true; L.hasAmbient = true; L.timeOfDay = 16.5f;
+            const int step = f / 12;            // a new panel every 12 frames
+            if (step >= 1 && step <= 8) { ui::ShowPreferences(false, 0); ui::SelectLightingItem(step); }
+            else if (step == 9) { ui::SelectLightingItem(0); ui::ShowPreferences(true, 4); }
+            else if (step == 10) ui::ShowPreferences(false, 0);
+        }
         engine.StepFrame(1.0f / 60.0f);
+        if (skyMode && f % 12 == 10 && f / 12 >= 1 && f / 12 <= 9) {
+            char name[64];
+            std::snprintf(name, sizeof(name), "sky_panel_%d.png", f / 12);
+            TakeScreenshot(name);
+        }
         if (parkMode && (f == 50 || f == 110)) {
             char name[64];
             std::snprintf(name, sizeof(name), "park_%03d.png", f);

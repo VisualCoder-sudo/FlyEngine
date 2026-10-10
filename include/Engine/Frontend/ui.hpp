@@ -97,6 +97,12 @@ bool ConsumePlayToggle();
 bool IsPlayActive();
 void SetPlayActive(bool active);
 
+// For the scene test (Flyengine --testscene ... sky), which cannot click: selects a row of the
+// Explorer's Lighting section (0 = none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather,
+// 7 Clouds, 8 Picture), and opens or closes Preferences on one of its tabs (4 = Rendering).
+void SelectLightingItem(int id);
+void ShowPreferences(bool show, int category);
+
 // The top-bar Import button requests a mesh import; the interaction manager
 // consumes the request once per frame it was set (never while play is active).
 bool ConsumeImportRequest();

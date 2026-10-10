@@ -6359,7 +6359,7 @@ static void DrawPreferencesRenderingTab() {
 
     const char* clouds[] = { "Low", "Medium", "High", "Ultra" };
     combo("Clouds", "##clouds", &q.clouds, clouds, 4);
-    const char* fog[] = { "Plain", "Light shafts", "Light shafts (fine)" };
+    const char* fog[] = { "Plain", "Light shafts", "Fine light shafts" };
     combo("Air and fog", "##volumetrics", &q.volumetrics, fog, 3);
 
     DrawPrefsSettingRowBegin("Shadow distance steps");
@@ -6719,6 +6719,12 @@ static void DrawImGuiLightingPanel() {
     default: break;
     }
     ImGui::End();
+}
+
+void SelectLightingItem(int id) { g_lightingSel = id; }
+void ShowPreferences(bool show, int category) {
+    g_showPreferences = show;
+    if (show) g_prefsCategory = category;
 }
 
 void DrawImGuiFrame(const Camera3D& camera) {
