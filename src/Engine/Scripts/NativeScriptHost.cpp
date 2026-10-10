@@ -157,6 +157,8 @@ FlyApi MakeScriptApi() {
     a.GetRestitution = FlyNative_GetRestitution;
     a.SetRestitution = FlyNative_SetRestitution;
     a.Print = FlyNative_Print;
+    a.GetEnvironment = FlyNative_GetEnvironment;
+    a.SetEnvironment = FlyNative_SetEnvironment;
     return a;
 }
 

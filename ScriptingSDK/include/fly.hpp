@@ -34,6 +34,7 @@
 #include "FlyScriptABI.h"
 
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <sstream>
 #include <string>
@@ -172,6 +173,42 @@ inline int  ShadowQuality()            { return detail::Api()->GetShadowQuality(
 inline void SetShadowQuality(int q)    { detail::Api()->SetShadowQuality(q); }
 inline float Ambient()                 { float a = 0; detail::Api()->GetAmbient(&a); return a; }
 inline void SetAmbient(float a)        { detail::Api()->SetAmbient(a); }
+}
+
+// The scene's time, weather, sky and picture: what the Explorer's Lighting
+// section sets. Setting something inserts its item there if it is not there yet
+// (SetRain(0.5f) brings the Weather item). Clouds need the Sky item's atmosphere.
+namespace Environment {
+namespace detail_env {
+// An engine from before these existed has a shorter function table: reads give 0, writes do nothing.
+inline bool Have() { return detail::Api()->size >= offsetof(FlyApi, SetEnvironment) + sizeof(void*); }
+inline float Get(int what)          { return Have() ? detail::Api()->GetEnvironment(what) : 0.0f; }
+inline void Set(int what, float v)  { if (Have()) detail::Api()->SetEnvironment(what, v); }
+}
+inline float TimeOfDay()               { return detail_env::Get(FLY_ENV_TIME_OF_DAY); }      // hours, 0..24
+inline void SetTimeOfDay(float hours)  { detail_env::Set(FLY_ENV_TIME_OF_DAY, hours); }
+inline float DayLength()               { return detail_env::Get(FLY_ENV_DAY_LENGTH); }       // real minutes per day, 0 = time stands still
+inline void SetDayLength(float min)    { detail_env::Set(FLY_ENV_DAY_LENGTH, min); }
+inline float Overcast()                { return detail_env::Get(FLY_ENV_OVERCAST); }         // 0..1
+inline void SetOvercast(float v)       { detail_env::Set(FLY_ENV_OVERCAST, v); }
+inline float Rain()                    { return detail_env::Get(FLY_ENV_RAIN); }             // 0..1
+inline void SetRain(float v)           { detail_env::Set(FLY_ENV_RAIN, v); }
+inline float WetGround()               { return detail_env::Get(FLY_ENV_WET_GROUND); }       // 0..1
+inline void SetWetGround(float v)      { detail_env::Set(FLY_ENV_WET_GROUND, v); }
+inline float Fog()                     { return detail_env::Get(FLY_ENV_FOG); }              // density per metre
+inline void SetFog(float density)      { detail_env::Set(FLY_ENV_FOG, density); }
+inline float CloudCover()              { return detail_env::Get(FLY_ENV_CLOUD_COVER); }      // 0..1
+inline void SetCloudCover(float v)     { detail_env::Set(FLY_ENV_CLOUD_COVER, v); }
+inline float WindSpeed()               { return detail_env::Get(FLY_ENV_WIND_SPEED); }       // m/s
+inline void SetWindSpeed(float v)      { detail_env::Set(FLY_ENV_WIND_SPEED, v); }
+inline float WindDirection()           { return detail_env::Get(FLY_ENV_WIND_DIRECTION); }   // compass degrees
+inline void SetWindDirection(float d)  { detail_env::Set(FLY_ENV_WIND_DIRECTION, d); }
+inline float Exposure()                { return detail_env::Get(FLY_ENV_EXPOSURE); }         // stops
+inline void SetExposure(float stops)   { detail_env::Set(FLY_ENV_EXPOSURE, stops); }
+inline float SunIntensity()            { return detail_env::Get(FLY_ENV_SUN_INTENSITY); }    // 0..3
+inline void SetSunIntensity(float v)   { detail_env::Set(FLY_ENV_SUN_INTENSITY, v); }
+inline float Bloom()                   { return detail_env::Get(FLY_ENV_BLOOM); }            // 0..1
+inline void SetBloom(float v)          { detail_env::Set(FLY_ENV_BLOOM, v); }
 }
 
 namespace Rendering {

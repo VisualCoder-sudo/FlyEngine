@@ -10,6 +10,8 @@
 #include "Engine/Graphics.hpp"
 #include "Engine/PostFX.hpp"
 #include "Engine/Backend/ScenePersistence.hpp"
+#include "Engine/Scripts/FlyScriptApi.hpp"
+#include "FlyScriptABI.h"
 #include "../include/CityGen/City.hpp"
 
 #include <cmath>
@@ -344,6 +346,26 @@ int main() {
         CHECK(LoadSceneFromStream(so, engine, objs3, models3, "", nullptr, nullptr));
         CHECK(gfx::Lighting().hasSky && gfx::Lighting().skyMode == 0 && !gfx::Lighting().hasClouds && !gfx::Lighting().hasPicture);
         CHECK(!gfx::AtmosphereActive());
+        gfx::ResetLighting();
+    }
+
+    // ---- Scripts reach the environment (Game::Environment in fly.hpp goes through these two calls), and setting
+    // something brings the Lighting item it belongs to.
+    {
+        gfx::ResetLighting();
+        FlyNative_SetEnvironment(FLY_ENV_TIME_OF_DAY, 30.5f);          // wraps round the clock
+        CHECK(std::fabs(FlyNative_GetEnvironment(FLY_ENV_TIME_OF_DAY) - 6.5f) < 1e-3f);
+        CHECK(!gfx::Lighting().hasWeather && FlyNative_GetEnvironment(FLY_ENV_RAIN) == 0.0f);
+        FlyNative_SetEnvironment(FLY_ENV_RAIN, 0.6f);
+        CHECK(gfx::Lighting().hasWeather && std::fabs(gfx::RainNow() - 0.6f) < 1e-4f);
+        FlyNative_SetEnvironment(FLY_ENV_CLOUD_COVER, 7.0f);           // clamped
+        CHECK(gfx::Lighting().hasClouds && gfx::Lighting().cloudCoverage == 1.0f);
+        FlyNative_SetEnvironment(FLY_ENV_FOG, 0.01f);
+        CHECK(gfx::Lighting().hasFog && std::fabs(FlyNative_GetEnvironment(FLY_ENV_FOG) - 0.01f) < 1e-6f);
+        FlyNative_SetEnvironment(FLY_ENV_EXPOSURE, -1.5f);
+        CHECK(std::fabs(gfx::Lighting().exposure + 1.5f) < 1e-5f);
+        FlyNative_SetEnvironment(9999, 1.0f);                           // an unknown one does nothing
+        CHECK(FlyNative_GetEnvironment(9999) == 0.0f);
         gfx::ResetLighting();
     }
 

@@ -99,7 +99,31 @@ typedef struct FlyApi {
 
     /* misc */
     void  (*Print)(const char* text);
+
+    /* environment: the scene's time, weather, sky and picture (the Explorer's
+     * Lighting section). `what` is one of the FLY_ENV_* numbers below. Added
+     * after the first release of this table: an engine older than that has a
+     * smaller `size`, and fly.hpp checks it before calling these. */
+    float (*GetEnvironment)(int what);
+    void  (*SetEnvironment)(int what, float value);
 } FlyApi;
+
+/* What GetEnvironment / SetEnvironment read and write. Append only. */
+enum {
+    FLY_ENV_TIME_OF_DAY = 0,    /* hours, 0..24 */
+    FLY_ENV_DAY_LENGTH = 1,     /* real minutes per day; 0 = time stands still */
+    FLY_ENV_OVERCAST = 2,       /* 0..1, the Weather item's cloud cover */
+    FLY_ENV_RAIN = 3,           /* 0..1 */
+    FLY_ENV_WET_GROUND = 4,     /* 0..1 */
+    FLY_ENV_FOG = 5,            /* density per metre, 0..0.2 */
+    FLY_ENV_CLOUD_COVER = 6,    /* 0..1, the Clouds item's (needs the atmosphere sky) */
+    FLY_ENV_WIND_SPEED = 7,     /* metres a second */
+    FLY_ENV_WIND_DIRECTION = 8, /* degrees, the compass direction the wind blows towards */
+    FLY_ENV_EXPOSURE = 9,       /* stops, -4..4 */
+    FLY_ENV_SUN_INTENSITY = 10, /* 0..3 */
+    FLY_ENV_BLOOM = 11,         /* 0..1 */
+    FLY_ENV_COUNT
+};
 
 /* One script class compiled into the module. Instances are opaque to the
  * engine. tick() advances the script's coroutine by one frame and returns 0

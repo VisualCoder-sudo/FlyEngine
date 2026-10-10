@@ -4,7 +4,9 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
+#include "Engine/Clouds.hpp"
 #include "Engine/Graphics.hpp"
+#include "Engine/PostFX.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <chrono>
@@ -43,6 +45,16 @@ int main(int argc, char** argv) {
     Engine engine(1000, 640, "city_lod_test", 1000);
     engine.SetPlayerBuild(true);
     gfx::SetTimeOfDay(12.0f);
+    // What the picture costs: city_lod_test <grid> <tier 0..3> [sky]. "sky" turns on the atmosphere sky with clouds
+    // (without it the scene has the plain sky of one colour, and the tier only decides anti-aliasing, occlusion and cascades).
+    if (argc > 2) gfx::SetQualityTier(atoi(argv[2]));
+    if (argc > 3) {
+        gfx::Lighting().hasSky = true; gfx::Lighting().skyMode = 1;
+        gfx::Lighting().hasClouds = true;
+        const double w0 = NowMs();
+        while (!gfx::CloudsActive() && NowMs() - w0 < 30000.0) engine.StepFrame(1.0f / 60.0f);
+    }
+    std::printf("quality tier %d, %s\n", gfx::Quality().tier, argc > 3 ? "atmosphere sky with clouds" : "sky of one colour");
     gfx::SetShadowReuseEnabled(false);       // measure the worst case: shadows redrawn every frame
     auto owner = std::make_unique<City>();
     City& c = *owner;
@@ -71,7 +83,7 @@ int main(int argc, char** argv) {
     for (const View& v : views) {
         gfx::FrameTimings ft; int draws = 0, tris = 0;
         const double ms = Measure(engine, v, 20, &ft, &draws, &tris);
-        std::printf("%-9s %7.2f ms/frame   (shadow %.2f, opaque %.2f)  %5d draws  %8d triangles\n", v.name, ms, ft.shadowMs, ft.opaqueMs, draws, tris);
+        std::printf("%-9s %7.2f ms/frame   (shadow %.2f, sky %.2f, opaque %.2f, post %.2f)  %5d draws  %8d triangles\n", v.name, ms, ft.shadowMs, ft.skyMs, ft.opaqueMs, ft.postMs, draws, tris);
         frameMs.push_back(ms);
         TakeScreenshot(TextFormat("city_lod_%s.png", v.name));
     }

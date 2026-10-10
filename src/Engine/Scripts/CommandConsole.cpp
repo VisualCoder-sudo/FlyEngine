@@ -167,7 +167,7 @@ float ComputeScrollOffset(const std::string& s, int cursor, Font font, float vis
 //   print <text>                 echo to the log
 //   <Object>.<Prop>              show a property ("Model.Part.Prop" for parts)
 //   <Object>.<Prop> = <value>    set it, e.g. Cube.Position = (0, 5, 0)
-//   Lighting|Rendering|Camera|Physics.<Prop> [= <value>]   world settings
+//   Lighting|Environment|Rendering|Camera|Physics.<Prop> [= <value>]   world settings
 //   scripts                      list compiled script classes
 //   run <Class> / stop <Class>   start/stop a standalone script
 //   rebuild                      recompile Scripts/*.cpp
@@ -177,7 +177,7 @@ float ComputeScrollOffset(const std::string& s, int cursor, Font font, float vis
 
 constexpr const char* kHelpText =
     "Commands: help, print <text>, <Object>.<Prop> [= value], "
-    "Lighting|Rendering|Camera|Physics.<Prop> [= value], scripts, run <Class>, "
+    "Lighting|Environment|Rendering|Camera|Physics.<Prop> [= value], scripts, run <Class>, "
     "stop <Class>, rebuild, fcloud --help";
 
 std::string Lower(std::string s) {
@@ -260,6 +260,25 @@ CommandResult WorldProperty(const std::string& group, const std::string& prop,
             float a = 0.0f;
             FlyNative_GetAmbient(&a);
             return { FormatFloat(a) };
+        }
+    } else if (group == "Environment") {
+        // The same names and numbers as Game::Environment in fly.hpp.
+        struct EnvProp { const char* name; int what; };
+        static const EnvProp props[] = {
+            { "TimeOfDay", FLY_ENV_TIME_OF_DAY }, { "DayLength", FLY_ENV_DAY_LENGTH }, { "Overcast", FLY_ENV_OVERCAST },
+            { "Rain", FLY_ENV_RAIN }, { "WetGround", FLY_ENV_WET_GROUND }, { "Fog", FLY_ENV_FOG }, { "CloudCover", FLY_ENV_CLOUD_COVER },
+            { "WindSpeed", FLY_ENV_WIND_SPEED }, { "WindDirection", FLY_ENV_WIND_DIRECTION }, { "Exposure", FLY_ENV_EXPOSURE },
+            { "SunIntensity", FLY_ENV_SUN_INTENSITY }, { "Bloom", FLY_ENV_BLOOM },
+        };
+        const std::string p = Canonical(prop, { "TimeOfDay", "DayLength", "Overcast", "Rain", "WetGround", "Fog", "CloudCover",
+                                                "WindSpeed", "WindDirection", "Exposure", "SunIntensity", "Bloom" });
+        for (const EnvProp& e : props) {
+            if (p != e.name) continue;
+            if (!rhs) return { FormatFloat(FlyNative_GetEnvironment(e.what)) };
+            float v;
+            if (!ParseFloatValue(*rhs, v)) return { "'" + *rhs + "' is not a number", true };
+            FlyNative_SetEnvironment(e.what, v);
+            return { "OK" };
         }
     } else if (group == "Rendering") {
         const std::string p = Canonical(prop, { "Grid", "Wireframe" });
@@ -393,7 +412,7 @@ CommandResult Evaluate(const std::string& line) {
     const std::string target = lhs.substr(0, dot);
     const std::string prop = lhs.substr(dot + 1);
 
-    const std::string group = Canonical(target, { "Lighting", "Rendering", "Camera", "Physics" });
+    const std::string group = Canonical(target, { "Lighting", "Environment", "Rendering", "Camera", "Physics" });
     if (!group.empty()) return WorldProperty(group, prop, assign ? &rhs : nullptr);
     return ObjectProperty(*rt, target, prop, assign ? &rhs : nullptr);
 }
