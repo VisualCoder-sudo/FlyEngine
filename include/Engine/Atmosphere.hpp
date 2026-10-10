@@ -55,6 +55,7 @@ struct ViewInfo {
     Vector4 depth{};            // (P22, P32, orthographic ? 1 : 0, far plane)
     Vector3 right{}, up{}, fwd{}, pos{};
     Matrix invView{};           // camera to world
+    Matrix viewProj{};          // world to clip space (OpenGL's: z in -w..w), without any jitter
     bool ortho = false;
     float pixelAngle = 0.0f;    // radians one pixel spans
 };

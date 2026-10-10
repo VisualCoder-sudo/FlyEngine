@@ -52,6 +52,17 @@ struct PostState {
     Shader aoShader{}, aoBlurShader{};
     int aoCamProjLoc = -1, aoCamDepthLoc = -1, aoParamsLoc = -1, aoParams2Loc = -1, aoDepthLoc = -1;
     int abCamDepthLoc = -1, abParamsLoc = -1, abDepthLoc = -1, abAoLoc = -1;
+
+    // Temporal anti-aliasing: the picture so far (two targets, written in turn) and last frame's camera.
+    bool taa = false;
+    RenderTexture2D history[2]{};
+    int historyIndex = 0;
+    bool historyValid = false;
+    Vector2 jitter{};
+    Matrix prevViewProj{};
+    Shader taaShader{};
+    int taCamProjLoc = -1, taCamDepthLoc = -1, taCamInvViewLoc = -1, taPrevViewProjLoc = -1, taParamsLoc = -1, taJitterLoc = -1;
+    int taCurLoc = -1, taHistoryLoc = -1, taDepthLoc = -1;
     Shader bloomDownShader{}, bloomUpShader{};
     int bdParamsLoc = -1, bdSrcLoc = -1, buParamsLoc = -1, buSrcLoc = -1;
     Shader fxaaShader{};
@@ -144,6 +155,9 @@ void UnloadTargets() {
     Unload(ps.ao);
     Unload(ps.aoBlur);
     Unload(ps.ldr);
+    Unload(ps.history[0]);
+    Unload(ps.history[1]);
+    ps.historyValid = false;
     for (RenderTexture2D& b : ps.bloom) Unload(b);
     ps.bloom.clear();
     ps.width = ps.height = 0;
@@ -173,6 +187,11 @@ void EnsureTargets(int width, int height) {
 void SetVec4(Shader sh, int loc, const Vector4& v) {
     if (loc >= 0) SetShaderValue(sh, loc, &v, SHADER_UNIFORM_VEC4);
 }
+
+// The half-size passes start their steps at a different point in each pixel so the steps do not show as
+// bands. With temporal anti-aliasing the pattern changes every frame and averages away; without it the
+// pattern stays put, since grain that flickers is worse than grain that does not.
+int NoiseFrame() { return ps.taa ? ps.frame % 8 : 0; }
 
 void Pass(RenderTexture2D target, Shader shader, int blend = -1) {
     BeginTextureMode(target);
@@ -221,7 +240,7 @@ void RenderFog() {
     }
     // With an atmosphere the fog is drawn over the sky too (out to twice the far plane); a flat sky is
     // already the fog's colour.
-    SetVec4(ps.fogShader, ps.fgParamsLoc, { (float)steps, (float)(ps.frame % 8) * 3.7f, atmosphere && (density > 0.0f || haze > 0.0f) ? 1.0f : 0.0f, v.depth.w * 2.0f });
+    SetVec4(ps.fogShader, ps.fgParamsLoc, { (float)steps, (float)NoiseFrame() * 3.7f,atmosphere && (density > 0.0f || haze > 0.0f) ? 1.0f : 0.0f, v.depth.w * 2.0f });
     SetShaderValueMatrix(ps.fogShader, ps.fgLightVPLoc, GetLightViewProj());
     SetShaderValueTexture(ps.fogShader, ps.fgDepthLoc, ps.scene.depth);
     SetShaderValueTexture(ps.fogShader, ps.fgShadowLoc, shadow);
@@ -229,6 +248,29 @@ void RenderFog() {
     SetVec4(ps.fogShader, ps.fgCloudShadowLoc, GetCloudShadowParams());
     SetShaderValueTexture(ps.fogShader, ps.fgCloudShadowTexLoc, GetCloudShadowTexture());
     Pass(ps.fog, ps.fogShader);
+}
+
+// Blends this frame into the picture so far (fs_taa) and returns the result.
+Texture2D ResolveTemporal(Texture2D src) {
+    if (ps.history[0].id == 0) {
+        for (RenderTexture2D& h : ps.history) h = LoadRenderTextureEx(ps.width, ps.height, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, false);
+        ps.historyValid = false;
+    }
+    const int prev = ps.historyIndex, cur = 1 - prev;
+    const ViewInfo& v = ps.view;
+    SetVec4(ps.taaShader, ps.taCamProjLoc, v.proj);
+    SetVec4(ps.taaShader, ps.taCamDepthLoc, v.depth);
+    SetShaderValueMatrix(ps.taaShader, ps.taCamInvViewLoc, v.invView);
+    SetShaderValueMatrix(ps.taaShader, ps.taPrevViewProjLoc, ps.prevViewProj);
+    SetVec4(ps.taaShader, ps.taParamsLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height, 0.1f, ps.historyValid ? 1.0f : 0.0f });
+    SetVec4(ps.taaShader, ps.taJitterLoc, { ps.jitter.x, ps.jitter.y, 0.0f, 0.0f });
+    SetShaderValueTexture(ps.taaShader, ps.taCurLoc, src);
+    SetShaderValueTexture(ps.taaShader, ps.taHistoryLoc, ps.history[prev].texture);
+    SetShaderValueTexture(ps.taaShader, ps.taDepthLoc, ps.scene.depth);
+    Pass(ps.history[cur], ps.taaShader);
+    ps.historyIndex = cur;
+    ps.historyValid = true;
+    return ps.history[cur].texture;
 }
 
 // How much of the sky's light each pixel is cut off from by what is near it (fs_ao), then smoothed.
@@ -400,6 +442,16 @@ void InitPostFX() {
     ps.aoParamsLoc = GetShaderLocation(ps.aoShader, "aoParams");
     ps.aoParams2Loc = GetShaderLocation(ps.aoShader, "aoParams2");
     ps.aoDepthLoc = GetShaderLocation(ps.aoShader, "aoDepthTex");
+    ps.taaShader = LoadShaderProgram("post_taa");
+    ps.taCamProjLoc = GetShaderLocation(ps.taaShader, "camProj");
+    ps.taCamDepthLoc = GetShaderLocation(ps.taaShader, "camDepth");
+    ps.taCamInvViewLoc = GetShaderLocation(ps.taaShader, "camInvView");
+    ps.taPrevViewProjLoc = GetShaderLocation(ps.taaShader, "taPrevViewProj");
+    ps.taParamsLoc = GetShaderLocation(ps.taaShader, "taParams");
+    ps.taJitterLoc = GetShaderLocation(ps.taaShader, "taJitter");
+    ps.taCurLoc = GetShaderLocation(ps.taaShader, "taCurTex");
+    ps.taHistoryLoc = GetShaderLocation(ps.taaShader, "taHistoryTex");
+    ps.taDepthLoc = GetShaderLocation(ps.taaShader, "taDepthTex");
     ps.aoBlurShader = LoadShaderProgram("post_ao_blur");
     ps.abCamDepthLoc = GetShaderLocation(ps.aoBlurShader, "camDepth");
     ps.abParamsLoc = GetShaderLocation(ps.aoBlurShader, "abParams");
@@ -435,7 +487,7 @@ void ShutdownPostFX() {
     for (RenderTexture2D& e : ps.exposure) if (e.id > 0) UnloadRenderTexture(e);
     if (ps.luma.id > 0) UnloadRenderTexture(ps.luma);
     for (Shader* s : { &ps.exposureShader, &ps.lumaShader, &ps.tonemapShader, &ps.fogShader, &ps.compositeShader,
-                       &ps.bloomDownShader, &ps.bloomUpShader, &ps.fxaaShader, &ps.aoShader, &ps.aoBlurShader })
+                       &ps.bloomDownShader, &ps.bloomUpShader, &ps.fxaaShader, &ps.aoShader, &ps.aoBlurShader, &ps.taaShader })
         UnloadShader(*s);
     ps = PostState{};
 }
@@ -453,6 +505,19 @@ void BeginScene(const Camera3D& camera) {
     ps.view = MakeViewInfo(camera, w, h);
     ps.frame++;
 
+    // Temporal anti-aliasing draws each frame shifted by a different fraction of a pixel (a Halton sequence).
+    ps.taa = quality.antiAliasing == 2 && !ps.view.ortho;
+    ps.jitter = { 0.0f, 0.0f };
+    if (ps.taa) {
+        static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
+        static const float kHalton3[8] = { 0.3333f, 0.6667f, 0.1111f, 0.4444f, 0.7778f, 0.2222f, 0.5556f, 0.8889f };
+        ps.jitter = { (kHalton2[ps.frame % 8] - 0.5f) * 2.0f / (float)w, (kHalton3[ps.frame % 8] - 0.5f) * 2.0f / (float)h };
+        // The passes that rebuild positions from depth must know about the shift.
+        ps.view.proj.z -= ps.jitter.x;
+        ps.view.proj.w -= ps.jitter.y;
+    }
+    SetProjectionJitter(ps.jitter.x, ps.jitter.y);
+
     BeginTextureMode(ps.scene);
     ClearBackground(BLACK);
     DrawSky(camera);
@@ -462,12 +527,13 @@ void BeginScene(const Camera3D& camera) {
 void EndScene() {
     if (!ps.sceneActive) return;
     EndTextureMode();
+    SetProjectionJitter(0.0f, 0.0f);
     ps.sceneActive = false;
     const LightingSettings& L = Lighting();
     Texture2D src = ps.scene.texture;
 
     // Clouds, then air and fog, over the scene.
-    const Texture2D clouds = RenderClouds(ps.view, ps.scene.depth, ps.width, ps.height, ps.frame);
+    const Texture2D clouds = RenderClouds(ps.view, ps.scene.depth, ps.width, ps.height, NoiseFrame());
     const bool fog = !ps.view.ortho && (AtmosphereActive() || FogDensity() > 0.0f);
     if (fog) RenderFog();
     const bool ao = quality.ambientOcclusion && !ps.view.ortho;
@@ -487,6 +553,10 @@ void EndScene() {
         src = ps.hdr.texture;
     }
 
+    if (ps.taa) src = ResolveTemporal(src);
+    else ps.historyValid = false;
+    ps.prevViewProj = ps.view.viewProj;
+
     // Bloom, and from one of its small steps the picture's brightness for the next frame's exposure.
     const bool bloom = quality.bloom && L.bloom > 0.001f && !ps.bloom.empty();
     if (bloom) RenderBloom(src);
@@ -502,7 +572,8 @@ void EndScene() {
     SetShaderValueTexture(ps.tonemapShader, ps.tmSceneLoc, src);
     if (bloom) SetShaderValueTexture(ps.tonemapShader, ps.tmBloomLoc, ps.bloom[0].texture);
     SetShaderValueTexture(ps.tonemapShader, ps.tmExposureLoc, GetExposureTexture());
-    if (quality.antiAliasing == 1) {
+    // FXAA, also for the views temporal anti-aliasing does not handle (orthographic ones).
+    if (quality.antiAliasing >= 1 && !ps.taa) {
         Pass(ps.ldr, ps.tonemapShader);
         SetVec4(ps.fxaaShader, ps.fxTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height, 0.0f, 0.0f });
         SetShaderValueTexture(ps.fxaaShader, ps.fxSrcLoc, ps.ldr.texture);

@@ -542,6 +542,7 @@ ViewInfo MakeViewInfo(const Camera3D& camera, int width, int height) {
                   v.right.y, v.up.y, -v.fwd.y, v.pos.y,
                   v.right.z, v.up.z, -v.fwd.z, v.pos.z,
                   0.0f, 0.0f, 0.0f, 1.0f };
+    v.viewProj = MatrixMultiply(MatrixLookAt(camera.position, camera.target, camera.up), p);
     return v;
 }
 

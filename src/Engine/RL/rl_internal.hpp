@@ -206,6 +206,8 @@ struct GfxState {
     int currentHeight = 0;
     double cullNear = 0.05;
     double cullFar = 4000.0;
+    // Sub-pixel shift (in clip-space units) BeginMode3D() adds to the projection: temporal anti-aliasing.
+    float jitterX = 0.0f, jitterY = 0.0f;
 
     DrawState state;
 

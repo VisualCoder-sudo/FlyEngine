@@ -359,6 +359,82 @@ void main() {
 @program post_composite vs_fullscreen fs_composite
 
 // ---------------------------------------------------------------------------
+// Temporal anti-aliasing. Each frame is drawn shifted by a different fraction of
+// a pixel, and this pass blends it into the frames before it, which over a few
+// frames is as good as having drawn every pixel many times over: edges turn
+// smooth, and the grain of the half-size passes (clouds, fog) averages away.
+// Where the camera has moved, the earlier picture is looked up where each point
+// was then (from its depth); and it is held to the range of colours round the
+// pixel now, so what has since been uncovered or has moved does not leave a ghost.
+// ---------------------------------------------------------------------------
+@fs fs_taa
+@include_block fly_camera
+@include_block fly_rt_uv
+@include_block fly_uv_ndc
+@include_block fly_color
+layout(binding=0) uniform fs_taa_params {
+    vec4 camProj;
+    vec4 camDepth;
+    mat4 camInvView;
+    mat4 taPrevViewProj;    // the previous frame's world-to-clip matrix, without its shift
+    vec4 taParams;          // xy = 1 / size, z = the new frame's share, w = 1: there is an earlier picture
+    vec4 taJitter;          // xy = this frame's shift (clip-space units)
+};
+layout(binding=0) uniform texture2D taCurTex;
+layout(binding=0) uniform sampler taCurTex_smp;
+layout(binding=1) uniform texture2D taHistoryTex;
+layout(binding=1) uniform sampler taHistoryTex_smp;
+layout(binding=2) uniform texture2D taDepthTex;
+layout(binding=2) uniform sampler taDepthTex_smp;
+@image_sample_type taDepthTex unfilterable_float
+@sampler_type taDepthTex_smp nonfiltering
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+
+// Bright values are squeezed before blending, or one sparkling pixel would outweigh all its neighbours.
+vec3 Squeeze(vec3 c) { return c / (1.0 + fly_luma(c)); }
+vec3 Unsqueeze(vec3 c) { return c / max(1.0 - fly_luma(c), 1e-4); }
+
+void main() {
+    vec2 t = taParams.xy;
+    vec3 cur = max(textureLod(sampler2D(taCurTex, taCurTex_smp), uv, 0.0).rgb, vec3(0.0));
+    if (taParams.w < 0.5) { fragColor = vec4(cur, 1.0); return; }
+
+    vec3 c = Squeeze(cur);
+    vec3 lo = c, hi = c;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            if (i == 0 && j == 0) continue;
+            vec3 s = Squeeze(max(textureLod(sampler2D(taCurTex, taCurTex_smp), uv + vec2(float(i), float(j)) * t, 0.0).rgb, vec3(0.0)));
+            lo = min(lo, s);
+            hi = max(hi, s);
+        }
+    }
+
+    // The nearest of this pixel and its neighbours decides the motion, so the edge of a near thing moves with it.
+    float dBest = textureLod(sampler2D(taDepthTex, taDepthTex_smp), uv, 0.0).r;
+    vec2 uvBest = uv;
+    for (int k = 0; k < 4; ++k) {
+        vec2 p = uv + vec2(k < 2 ? -1.0 : 1.0, (k & 1) == 0 ? -1.0 : 1.0) * t;
+        float d = textureLod(sampler2D(taDepthTex, taDepthTex_smp), p, 0.0).r;
+        if (d < dBest) { dBest = d; uvBest = p; }
+    }
+    vec2 ndcB = fly_uv_ndc(uvBest);
+    float viewDepth = dBest >= 0.999999 ? camDepth.w : fly_view_depth(dBest, camDepth);
+    vec3 world = (camInvView * vec4(fly_view_pos(ndcB, viewDepth, camProj, camDepth), 1.0)).xyz;
+    vec4 prevClip = taPrevViewProj * vec4(world, 1.0);
+    vec2 histNdc = ndc - ((ndcB - taJitter.xy) - prevClip.xy / max(prevClip.w, 1e-5));
+    if (prevClip.w <= 0.0 || abs(histNdc.x) >= 1.0 || abs(histNdc.y) >= 1.0) { fragColor = vec4(cur, 1.0); return; }
+
+    vec3 hist = Squeeze(max(textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), fly_rt_uv(histNdc), 0.0).rgb, vec3(0.0)));
+    hist = clamp(hist, lo, hi);
+    fragColor = vec4(Unsqueeze(mix(hist, c, taParams.z)), 1.0);
+}
+@end
+@program post_taa vs_fullscreen fs_taa
+
+// ---------------------------------------------------------------------------
 // Bloom: the picture is halved again and again, each step a wide soft blur, and
 // then added back up from the smallest; what is very bright spreads its light
 // over its surroundings, as it does in an eye or a lens.

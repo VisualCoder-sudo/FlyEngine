@@ -593,8 +593,13 @@ void BeginMode3D(Camera3D camera) {
         const double top = camera.fovy / 2.0;
         const double right = top * aspect;
         g.projection = MatrixOrtho(-right, right, -top, top, g.cullNear, g.cullFar);
+        g.projection.m12 += g.jitterX;
+        g.projection.m13 += g.jitterY;
     } else {
         g.projection = MatrixPerspective(camera.fovy * DEG2RAD, aspect, g.cullNear, g.cullFar);
+        // clip.w is -z here, so a shift of the picture goes into the z column.
+        g.projection.m8 -= g.jitterX;
+        g.projection.m9 -= g.jitterY;
     }
     g.modelview = MatrixLookAt(camera.position, camera.target, camera.up);
     g.transform = MatrixIdentity();
@@ -743,6 +748,12 @@ void DrawFullscreen(Shader shader, int blendMode) {
     sg_apply_bindings(&bind);
     ApplyShaderUniforms(*sh);
     sg_draw(0, 3, 1);
+}
+
+void SetProjectionJitter(float x, float y) {
+    BatchFlush();
+    Gfx().jitterX = x;
+    Gfx().jitterY = y;
 }
 
 Vector2 GetRenderTargetSize(void) {

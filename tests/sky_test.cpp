@@ -57,6 +57,19 @@ static Shot Shoot(Engine& engine, const char* name, int frames = 10) {
     return s;
 }
 
+// Mean difference of two pictures, 0..255.
+static float ImageDiff(const std::string& a, const std::string& b) {
+    Image ia = LoadImage(a.c_str()), ib = LoadImage(b.c_str());
+    double sum = 0; long n = 0;
+    for (int y = 0; y < ia.height && y < ib.height; y += 2)
+        for (int x = 0; x < ia.width && x < ib.width; x += 2) {
+            const Color p = GetImageColor(ia, x, y), q = GetImageColor(ib, x, y);
+            sum += std::abs(p.r - q.r) + std::abs(p.g - q.g) + std::abs(p.b - q.b); n++;
+        }
+    UnloadImage(ia); UnloadImage(ib);
+    return (float)(sum / (3.0 * (double)n));
+}
+
 // Looks from the city towards a point `distance` away in the compass direction the sun (or anything) is in.
 static void LookTowards(Camera3D& cam, Vector3 dir, float pitchUp) {
     Vector3 flat = Vector3Normalize({ dir.x, 0.0f, dir.z });
@@ -220,6 +233,31 @@ int main() {
         cam.position = { -60.0f, 14.0f, 110.0f };
         cam.target = { 10.0f, 60.0f, -40.0f };
         Shoot(engine, "clouds_night", 50);
+
+        // ---- Anti-aliasing. A still view under temporal anti-aliasing settles to much the same picture as FXAA
+        // gives (it is the same scene), and a view that has just been moving does not carry a smear of where it was.
+        gfx::SetTimeOfDay(13.0f);
+        const Vector3 eye = { -60.0f, 9.0f, 110.0f }, look = { 10.0f, 16.0f, -40.0f };
+        cam.position = eye; cam.target = look;
+        gfx::Quality().antiAliasing = 0;
+        const Shot aaOff = Shoot(engine, "aa_off", 20);
+        gfx::Quality().antiAliasing = 1;
+        const Shot aaFxaa = Shoot(engine, "aa_fxaa", 20);
+        gfx::Quality().antiAliasing = 2;
+        const Shot aaTaa = Shoot(engine, "aa_taa", 40);
+        std::printf("anti-aliasing: off vs fxaa %.2f, fxaa vs temporal %.2f\n", ImageDiff(aaOff.path, aaFxaa.path), ImageDiff(aaFxaa.path, aaTaa.path));
+        CHECK(ImageDiff(aaFxaa.path, aaTaa.path) < 3.0f);
+        CHECK(std::fabs(aaTaa.lum - aaFxaa.lum) < 2.0f);
+        for (int i = 30; i >= 1; i--) {          // slide sideways into the same place
+            cam.position = { eye.x - 0.3f * (float)i, eye.y, eye.z };
+            cam.target = { look.x - 0.3f * (float)i, look.y, look.z };
+            engine.StepFrame(1.0f / 60.0f);
+        }
+        cam.position = eye; cam.target = look;
+        const Shot aaMoved = Shoot(engine, "aa_taa_moved", 1);
+        std::printf("temporal: just stopped vs settled %.2f\n", ImageDiff(aaMoved.path, aaTaa.path));
+        CHECK(ImageDiff(aaMoved.path, aaTaa.path) < 4.0f);
+        gfx::Quality().antiAliasing = 1;
         L.hasClouds = false;
     }
 
