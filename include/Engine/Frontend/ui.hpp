@@ -129,6 +129,26 @@ void LogAlways(const char* fmt, ...);
 void LogWithSeverity(LogSeverity severity, const char* fmt, ...);
 void ClearLog();
 
+// Re-skins the editor's accent colour (selection highlights, panel headings,
+// buttons, sliders). Hover/pressed shades are derived from it. Exposed to
+// plugins as CP_EngineAPI::ui_set_accent_color.
+void SetAccentColor(Color accent);
+
+// Script build status, shown as a panel over the top of the viewport while the
+// project's Scripts/*.cpp compile and, when a build fails, listing each
+// compiler error (click one to open the file at that line). Fed by
+// NativeScriptHost; the panel stays hidden for Idle and Succeeded.
+enum class ScriptBuildState : int { Idle = 0, Building, Succeeded, Failed };
+struct ScriptDiagnostic {
+    enum class Severity : int { Note = 0, Warning, Error };
+    Severity severity = Severity::Error;
+    std::string file;   // absolute path; empty when the message has no location
+    int line = 0;       // 1-based, 0 = unknown
+    int column = 0;
+    std::string message;
+};
+void SetScriptBuildState(ScriptBuildState state, std::vector<ScriptDiagnostic> diagnostics = {});
+
 // UI State Checks
 bool IsEditingText();
 bool IsMouseOverUI();

@@ -1,7 +1,7 @@
 // ProcessRunner.cpp -- spawn a child process and capture its output.
 //
 // Replaces the CreateProcess/CreatePipe/ReadFile/WaitForSingleObject blocks
-// that were duplicated in ScriptCompiler.cpp (running `dotnet build`) and
+// that were duplicated in ScriptCompiler.cpp (running the compiler) and
 // ScriptLauncher.cpp (probing vswhere.exe).
 
 #include "Engine/Platform/Platform.hpp"
@@ -240,7 +240,7 @@ bool LaunchDetached(const std::string& exe, const std::vector<std::string>& args
 
 #if defined(_WIN32)
     // ShellExecute is the right tool here: it goes through the shell
-    // association table, so it handles .cs files, non-executable targets, and
+    // association table, so it handles .cpp files, non-executable targets, and
     // the "no path given means use the default app" case uniformly.
     std::string params;
     for (size_t i = 0; i < args.size(); ++i) {

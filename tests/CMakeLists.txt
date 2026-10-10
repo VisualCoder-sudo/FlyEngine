@@ -158,3 +158,12 @@ target_link_libraries(city_lod_test PRIVATE FlyEngineCore FlyRL)
 # "City attempting to load [n%]" progress message. Opens a window: build/tests/city_loading_test
 add_executable(city_loading_test city_loading_test.cpp)
 target_link_libraries(city_loading_test PRIVATE FlyEngineCore FlyRL)
+
+# Unit tests for the compiler-output parser behind the editor's script error
+# panel (src/Engine/Scripts/ScriptDiagnostics.cpp). Pure string handling, so it
+# links neither FlyEngineCore nor a window.
+add_executable(script_diagnostics_test
+    script_diagnostics_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Engine/Scripts/ScriptDiagnostics.cpp)
+target_include_directories(script_diagnostics_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME script_diagnostics COMMAND script_diagnostics_test)

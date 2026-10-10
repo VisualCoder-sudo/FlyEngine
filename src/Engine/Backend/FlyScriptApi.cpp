@@ -1,8 +1,9 @@
-// FlyScriptApi.cpp - C API bridge between C++ engine and C# scripting runtime.
-// Provides 55 FlyNative_* functions for object manipulation, world services, and script control.
+// FlyScriptApi.cpp - C API bridge between the engine and C++ game scripts.
+// Provides the FlyNative_* functions for object manipulation, world services, and script control.
 
 #include "../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
@@ -17,9 +18,9 @@
 
 namespace {
 
-// The C++ world context the managed host binds each frame via
-// FlyNative_BindRuntime. Set at bind time and cleared at shutdown; when null,
-// every world-touching FlyNative_* call no-ops (scripting disabled).
+// The world context owned by the active NativeScriptHost (or bound via
+// FlyNative_BindRuntime). When null or not yet bound to a scene, every
+// world-touching FlyNative_* call no-ops (scripting disabled).
 ScriptRuntime* ActiveRuntime() {
     return GetActiveRuntime();
 }
@@ -29,7 +30,7 @@ ScriptRuntime* ActiveRuntime() {
 ScatteredObject* Resolve(unsigned long long handle) {
     if (handle == 0) return nullptr;
     ScriptRuntime* rt = ActiveRuntime();
-    if (!rt) return nullptr;
+    if (!rt || !rt->HasWorld()) return nullptr;
 
     // Validate pointer before casting
     auto* obj = reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(handle));
@@ -312,17 +313,49 @@ unsigned long long FlyNative_CreateObject_Impl(const char* shapeName) {
     return MakeHandle(rt->CreateObject(shapeName));
 }
 
-// ---- script control (placeholders - C# side handles these) ----
+// ---- script control (forwarded to the NativeScriptHost) ----
 
-unsigned long long FlyNative_StartObjectScript_Impl(unsigned long long objectHandle, const char* typeName) {
-    (void)objectHandle; (void)typeName; return 0;
+NativeScript::NativeScriptHost* ActiveHost() {
+    ScriptRuntime* rt = ActiveRuntime();
+    return rt ? rt->GetHost() : nullptr;
 }
-void FlyNative_StopObjectScript_Impl(unsigned long long objectHandle) { (void)objectHandle; }
-short FlyNative_IsObjectScriptRunning_Impl(unsigned long long objectHandle) { (void)objectHandle; return 0; }
-unsigned long long FlyNative_StartStandaloneScript_Impl(int index, const char* typeName) { (void)index; (void)typeName; return 0; }
-void FlyNative_StopStandaloneScript_Impl(int index) { (void)index; }
-short FlyNative_IsStandaloneScriptRunning_Impl(int index) { (void)index; return 0; }
-void FlyNative_ClearAllScripts_Impl(void) { }
+
+// Returns the object handle (nonzero) when the script started.
+unsigned long long FlyNative_StartObjectScript_Impl(unsigned long long objectHandle, const char* typeName) {
+    auto* host = ActiveHost();
+    auto* obj = Resolve(objectHandle);
+    if (!host || !obj) return 0;
+    if (typeName && *typeName) obj->script = typeName;
+    return host->StartObjectScriptOn(obj) ? objectHandle : 0;
+}
+void FlyNative_StopObjectScript_Impl(unsigned long long objectHandle) {
+    if (auto* host = ActiveHost()) host->StopObjectScriptOn(Resolve(objectHandle));
+}
+short FlyNative_IsObjectScriptRunning_Impl(unsigned long long objectHandle) {
+    auto* host = ActiveHost();
+    auto* obj = Resolve(objectHandle);
+    return (host && obj && host->IsObjectScriptRunning(obj)) ? 1 : 0;
+}
+// Returns index + 1 (nonzero) when the script started.
+unsigned long long FlyNative_StartStandaloneScript_Impl(int index, const char* typeName) {
+    ScriptRuntime* rt = ActiveRuntime();
+    auto* host = ActiveHost();
+    if (!rt || !host) return 0;
+    auto& scripts = rt->StandaloneScripts();
+    if (index < 0 || index >= static_cast<int>(scripts.size())) return 0;
+    if (typeName && *typeName) scripts[index].typeName = typeName;
+    return host->StartStandaloneScriptAt(index) ? static_cast<unsigned long long>(index) + 1 : 0;
+}
+void FlyNative_StopStandaloneScript_Impl(int index) {
+    if (auto* host = ActiveHost()) host->StopStandaloneScriptAt(index);
+}
+short FlyNative_IsStandaloneScriptRunning_Impl(int index) {
+    auto* host = ActiveHost();
+    return (host && host->IsStandaloneScriptRunning(index)) ? 1 : 0;
+}
+void FlyNative_ClearAllScripts_Impl(void) {
+    if (auto* host = ActiveHost()) host->ClearAllScripts();
+}
 
 // ---- print ----
 
@@ -439,7 +472,7 @@ FLY_API unsigned long long FlyNative_CreateObject(const char* shapeName) {
     FLY_TRY { return impl::FlyNative_CreateObject_Impl(shapeName); } FLY_CATCH(return 0;)
 }
 
-// ---- script control (forwarded to C# ScriptHost) ----
+// ---- script control ----
 
 FLY_API unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName) {
     FLY_TRY { return impl::FlyNative_StartObjectScript_Impl(objectHandle, typeName); } FLY_CATCH(return 0;)

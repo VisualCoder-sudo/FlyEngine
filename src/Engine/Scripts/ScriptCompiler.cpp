@@ -1,186 +1,354 @@
-// ScriptCompiler.cpp - builds the project's C# scripts into Scripts/FlyScript.dll
-// via the dotnet CLI. Stages the SDK wrapper sources next to the user's *.cs
-// files and compiles them all into one assembly CoreCLRHost then loads.
+// ScriptCompiler.cpp - builds the project's C++ scripts into a shared library
+// with whichever compiler the system has (clang++, g++, MSVC). See
+// ScriptCompiler.hpp for the layout of Scripts/.build/.
 
 #include "../../../include/Engine/Scripts/ScriptCompiler.hpp"
-#include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
 
 namespace fs = std::filesystem;
 
 namespace {
 
-// A solid (unquoted) command argument. Paths are quoted by the caller.
-std::string PlainArg(const fs::path& p) {
-    return p.string();
+constexpr const char* kBuildDirName = ".build";
+constexpr const char* kLibPrefix = "FlyScripts-";
+#if defined(_WIN32)
+constexpr const char* kLibExt = ".dll";
+#else
+constexpr const char* kLibExt = ".so";
+#endif
+constexpr int kBuildTimeoutMs = 5 * 60 * 1000;
+
+enum class CompilerKind {
+    None,
+    Gnu,         // clang++ / g++ / MinGW g++ (GNU-style flags)
+    Msvc,        // cl.exe or clang-cl on PATH (developer prompt)
+    MsvcVcvars,  // cl.exe reached by running vcvars64.bat first
+};
+
+struct Compiler {
+    CompilerKind kind = CompilerKind::None;
+    std::string exe;    // compiler, or vcvars64.bat for MsvcVcvars
+    bool isGcc = false; // GNU g++ (not clang): needs -fno-gnu-unique / static runtime
+};
+
+bool IsMsvcStyleName(const std::string& exe) {
+    std::string stem = fs::u8path(exe).stem().string();
+    std::transform(stem.begin(), stem.end(), stem.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return stem == "cl" || stem == "clang-cl";
 }
 
-// Find the engine's SDK source directory. The SDK .cs files live in
-// ScriptingSDK/FlyScript relative to the source tree. At runtime we resolve
-// relative to the executable's directory (Flyengine.exe sits in the build dir,
-// which is a sibling of ScriptingSDK).
-fs::path FindSdkDir() {
-    // GetModuleFileNameW on Windows, readlink("/proc/self/exe") on Linux.
-    const std::string exe = platform::ExecutablePath();
-    if (exe.empty()) return {};
-    fs::path exePath = fs::u8path(exe);
-    fs::path candidate = exePath.parent_path().parent_path() / "ScriptingSDK" / "FlyScript";
-    if (fs::exists(candidate / "FlyScript.cs")) return candidate;
-
-    // Fallback: assume the working directory is the repo root.
-    if (fs::exists(fs::path("ScriptingSDK") / "FlyScript" / "FlyScript.cs"))
-        return fs::path("ScriptingSDK") / "FlyScript";
-    return {};
+bool IsGccName(const std::string& exe) {
+    const std::string name = fs::u8path(exe).filename().string();
+    return name.find("g++") != std::string::npos && name.find("clang") == std::string::npos;
 }
 
-// Copy a text file if the destination is missing or older than the source.
-bool StageFile(const fs::path& src, const fs::path& dst) {
+#if defined(_WIN32)
+// Finds vcvars64.bat of the newest Visual Studio with the C++ workload.
+std::string FindVcvars() {
+    const std::string vswhere =
+        "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
     std::error_code ec;
-    if (fs::exists(src, ec) && fs::is_regular_file(src, ec)) {
-        if (!fs::exists(dst, ec) || fs::last_write_time(src, ec) > fs::last_write_time(dst, ec)) {
-            std::ifstream in(src, std::ios::binary);
-            std::ofstream out(dst, std::ios::binary);
-            if (!in || !out) return false;
-            out << in.rdbuf();
-            out.close();
-            in.close();
-        }
-        return true;
+    if (!fs::is_regular_file(vswhere, ec)) return {};
+    platform::ProcessResult r = platform::RunProcessCapture(
+        vswhere, {"-latest", "-products", "*", "-requires",
+                  "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                  "-property", "installationPath"}, 10000);
+    std::string path = r.output;
+    while (!path.empty() && (path.back() == '\r' || path.back() == '\n' || path.back() == ' '))
+        path.pop_back();
+    if (!r.launched || path.empty()) return {};
+    const fs::path bat = fs::u8path(path) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat";
+    return fs::is_regular_file(bat, ec) ? bat.string() : std::string();
+}
+#endif
+
+Compiler DetectCompiler() {
+    Compiler c;
+    // Explicit override, e.g. FLYENGINE_CXX=clang++-18.
+    if (const char* env = std::getenv("FLYENGINE_CXX"); env && *env) {
+        c.exe = env;
+        c.kind = IsMsvcStyleName(c.exe) ? CompilerKind::Msvc : CompilerKind::Gnu;
+        c.isGcc = IsGccName(c.exe);
+        return c;
     }
-    return false;
+#if defined(_WIN32)
+    if (std::string cl = platform::FindOnPath({"cl"}); !cl.empty()) {
+        c.kind = CompilerKind::Msvc;
+        c.exe = cl;
+        return c;
+    }
+    if (std::string gnu = platform::FindOnPath({"clang++", "g++"}); !gnu.empty()) {
+        c.kind = CompilerKind::Gnu;
+        c.exe = gnu;
+        c.isGcc = IsGccName(gnu);
+        return c;
+    }
+    if (std::string vcvars = FindVcvars(); !vcvars.empty()) {
+        c.kind = CompilerKind::MsvcVcvars;
+        c.exe = vcvars;
+        return c;
+    }
+#else
+    if (std::string gnu = platform::FindOnPath({"clang++", "g++", "c++"}); !gnu.empty()) {
+        c.kind = CompilerKind::Gnu;
+        c.exe = gnu;
+        c.isGcc = IsGccName(gnu);
+        return c;
+    }
+#endif
+    return c;
 }
 
-const char* kCsprojContent =
-    "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
-    "  <PropertyGroup>\n"
-    "    <TargetFramework>net8.0</TargetFramework>\n"
-    "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n"
-    "    <ImplicitUsings>enable</ImplicitUsings>\n"
-    "    <Nullable>enable</Nullable>\n"
-    "    <PlatformTarget>x64</PlatformTarget>\n"
-    "    <OutputType>Library</OutputType>\n"
-    "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
-    "    <UseLibraryImport>true</UseLibraryImport>\n"
-    "    <EnableDefaultItems>false</EnableDefaultItems>\n"
-    "    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>\n"
-    "  </PropertyGroup>\n"
-    "  <ItemGroup>\n"
-    "    <Compile Include=\"**/*.cs\" Exclude=\"obj/**;bin/**\" />\n"
-    "  </ItemGroup>\n"
-    "  <ItemGroup>\n"
-    "    <PackageReference Include=\"Microsoft.CodeAnalysis.CSharp.Scripting\" Version=\"4.9.2\" />\n"
-    "  </ItemGroup>\n"
-    "</Project>\n";
+const Compiler& GetCompiler() {
+    static Compiler compiler;
+    static std::once_flag once;
+    std::call_once(once, [] { compiler = DetectCompiler(); });
+    return compiler;
+}
 
-// Run `dotnet` with arguments and capture the exit code.
-bool RunDotnet(const std::string& dotnetExe, const std::vector<std::string>& args,
-               std::string& outLog) {
-    // posix_spawn on Linux, CreateProcess on Windows, both with a pipe for the
-    // child's stdout+stderr. 10-minute cap, matching the old
-    // WaitForSingleObject(pi.hProcess, 600000).
-    platform::ProcessResult r = platform::RunProcessCapture(dotnetExe, args, 600000);
-    outLog = r.output;
-    if (!r.launched) return false;
-    return r.exitCode == 0;
+bool IsSourceExt(const fs::path& p, bool includeHeaders) {
+    const std::string ext = p.extension().string();
+    if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") return true;
+    return includeHeaders && (ext == ".hpp" || ext == ".h" || ext == ".hh");
+}
+
+// Every script source under Scripts/, skipping hidden folders (.build, .vscode).
+std::vector<fs::path> CollectFiles(const fs::path& scriptsDir, bool includeHeaders) {
+    std::vector<fs::path> files;
+    std::error_code ec;
+    if (!fs::is_directory(scriptsDir, ec)) return files;
+    fs::recursive_directory_iterator it(scriptsDir, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        const fs::path& p = it->path();
+        if (it->is_directory(ec)) {
+            if (p.filename().string().rfind('.', 0) == 0) it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file(ec) && IsSourceExt(p, includeHeaders)) files.push_back(p);
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+fs::path FindSdkRoot() {
+    const std::string fly = platform::ResolveAsset("ScriptingSDK/include/fly.hpp");
+    if (fly.empty()) return {};
+    return fs::u8path(fly).parent_path().parent_path();
+}
+
+// Lets clangd (VS Code, CLion, etc.) resolve "fly.hpp" in the user's scripts.
+void WriteCompileFlags(const fs::path& scriptsDir, const fs::path& sdkInclude) {
+    const fs::path file = scriptsDir / "compile_flags.txt";
+    const std::string want = "-std=c++20\n-I" + sdkInclude.string() + "\n";
+    {
+        std::ifstream in(file, std::ios::binary);
+        std::string have((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (have == want) return;
+    }
+    std::ofstream out(file, std::ios::binary);
+    out << want;
+}
+
+std::string QuoteForCmd(const std::string& s) {
+    return "\"" + s + "\"";
+}
+
+// A failed build must always carry an Error diagnostic, so the UI has
+// something to show even when the output wasn't in a recognised format.
+void FinishFailure(scriptCompiler::Result& r) {
+    for (const auto& d : r.diagnostics)
+        if (d.severity == scriptCompiler::Diagnostic::Severity::Error) return;
+    scriptCompiler::Diagnostic d;
+    d.severity = scriptCompiler::Diagnostic::Severity::Error;
+    std::istringstream in(r.log);
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        if (!line.empty()) { d.message = line; break; }
+    }
+    if (d.message.empty()) d.message = "Script build failed.";
+    r.diagnostics.insert(r.diagnostics.begin(), std::move(d));
 }
 
 } // namespace
 
 namespace scriptCompiler {
 
-bool IsPresent(const std::string& projectFolder)
-{
-    return fs::exists(fs::path(projectFolder) / "Scripts" / "FlyScript.dll");
+std::string SdkIncludeDir() {
+    const fs::path root = FindSdkRoot();
+    return root.empty() ? std::string() : (root / "include").string();
 }
 
-bool EnsureBuilt(const std::string& projectFolder)
-{
-    fs::path project(projectFolder);
-    fs::path scriptsDir = project / "Scripts";
+std::string CompilerDescription() {
+    const Compiler& c = GetCompiler();
+    switch (c.kind) {
+        case CompilerKind::Gnu:
+        case CompilerKind::Msvc:       return c.exe;
+        case CompilerKind::MsvcVcvars: return "MSVC via " + c.exe;
+        default:                       return {};
+    }
+}
+
+bool HasSources(const std::string& projectFolder) {
+    return !CollectFiles(fs::u8path(projectFolder) / "Scripts", false).empty();
+}
+
+uint64_t SourcesStamp(const std::string& projectFolder) {
+    uint64_t h = 1469598103934665603ULL; // FNV-1a
+    auto mix = [&h](uint64_t v) {
+        for (int i = 0; i < 8; ++i) { h ^= (v >> (i * 8)) & 0xff; h *= 1099511628211ULL; }
+    };
+    for (const fs::path& p : CollectFiles(fs::u8path(projectFolder) / "Scripts", true)) {
+        std::error_code ec;
+        for (char ch : p.string()) mix(static_cast<unsigned char>(ch));
+        mix(static_cast<uint64_t>(fs::file_size(p, ec)));
+        mix(static_cast<uint64_t>(fs::last_write_time(p, ec).time_since_epoch().count()));
+    }
+    return h;
+}
+
+std::string LatestBuiltLibrary(const std::string& projectFolder) {
+    const fs::path dir = fs::u8path(projectFolder) / "Scripts" / kBuildDirName;
     std::error_code ec;
+    fs::path best;
+    fs::file_time_type bestTime{};
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        const std::string name = e.path().filename().string();
+        if (name.rfind(kLibPrefix, 0) != 0 || e.path().extension() != kLibExt) continue;
+        const auto t = e.last_write_time(ec);
+        if (best.empty() || t > bestTime) { best = e.path(); bestTime = t; }
+    }
+    return best.string();
+}
 
-    if (!fs::exists(scriptsDir, ec)) fs::create_directories(scriptsDir, ec);
-    if (!fs::exists(scriptsDir, ec)) {
-        ui::LogAlways("[ScriptCompiler] Could not create Scripts dir: %s", scriptsDir.string().c_str());
-        return false;
+void RemoveStaleLibraries(const std::string& projectFolder, const std::string& keep) {
+    const fs::path dir = fs::u8path(projectFolder) / "Scripts" / kBuildDirName;
+    std::error_code ec;
+    std::vector<fs::path> victims;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        const std::string name = e.path().filename().string();
+        if (name.rfind(kLibPrefix, 0) != 0) continue;
+        if (!keep.empty() && e.path().stem() == fs::u8path(keep).stem()) continue;
+        victims.push_back(e.path()); // .so/.dll plus MSVC's .lib/.exp/.pdb siblings
+    }
+    for (const auto& v : victims) {
+        std::error_code rmEc;
+        fs::remove(v, rmEc);
+    }
+}
+
+Result Build(const std::string& projectFolder) {
+    Result result;
+    const fs::path scriptsDir = fs::u8path(projectFolder) / "Scripts";
+    const fs::path buildDir = scriptsDir / kBuildDirName;
+
+    const std::vector<fs::path> sources = CollectFiles(scriptsDir, false);
+    if (sources.empty()) {
+        result.log = "No .cpp files in " + scriptsDir.string();
+        FinishFailure(result);
+        return result;
     }
 
-    // 1. Stage the SDK wrapper sources next to the user scripts.
-    fs::path sdkDir = FindSdkDir();
-    if (sdkDir.empty()) {
-        ui::LogAlways("[ScriptCompiler] SDK sources not found (ScriptingSDK/FlyScript).");
-        return false;
+    const fs::path sdkRoot = FindSdkRoot();
+    if (sdkRoot.empty()) {
+        result.log = "Script SDK not found (ScriptingSDK/include/fly.hpp).";
+        FinishFailure(result);
+        return result;
     }
-    StageFile(sdkDir / "FlyScript.cs",   scriptsDir / "_FlyScriptSDK.cs");
-    StageFile(sdkDir / "ScriptHost.cs",  scriptsDir / "_FlyScriptSDK_Host.cs");
+    const fs::path sdkInclude = sdkRoot / "include";
+    const fs::path moduleSource = sdkRoot / "src" / "fly_module.cpp";
 
-    // 2. Write the project file (always resync so user .cs files are globbed).
-    {
-        std::ofstream csproj(scriptsDir / "FlyScript.csproj", std::ios::binary);
-        if (!csproj) {
-            ui::LogAlways("[ScriptCompiler] Could not write FlyScript.csproj.");
-            return false;
-        }
-        csproj.write(kCsprojContent, static_cast<std::streamsize>(std::strlen(kCsprojContent)));
-        csproj.close();
-    }
-
-    // 3. Invoke the dotnet CLI. Prefer the per-user .dotnet SDK, then PATH.
-    //    The SDK install script drops `dotnet` (no extension) in ~/.dotnet on
-    //    Unix and `dotnet.exe` on Windows.
-    std::string dotnet = {};
-    const std::string home = platform::UserHomeDir();
-    if (!home.empty()) {
+    const Compiler& cc = GetCompiler();
+    if (cc.kind == CompilerKind::None) {
 #if defined(_WIN32)
-        const char* exeName = "dotnet.exe";
+        result.log = "No C++ compiler found. Install Visual Studio (Desktop development with C++), "
+                     "LLVM clang, or MinGW-w64 g++, or set FLYENGINE_CXX.";
 #else
-        const char* exeName = "dotnet";
+        result.log = "No C++ compiler found. Install clang or g++ (e.g. your distro's "
+                     "clang / gcc package), or set FLYENGINE_CXX.";
 #endif
-        fs::path candidate = fs::u8path(home) / ".dotnet" / exeName;
-        if (fs::exists(candidate)) dotnet = candidate.string();
+        FinishFailure(result);
+        return result;
     }
-    if (dotnet.empty()) dotnet = "dotnet"; // fall back to PATH
 
-    std::vector<std::string> args;
-    args.push_back("build");
-    args.push_back(PlainArg(scriptsDir / "FlyScript.csproj"));
-    args.push_back("-c");
-    args.push_back("Release");
-    args.push_back("-o");
-    args.push_back(PlainArg(scriptsDir));
-    args.push_back("-v");
-    args.push_back("m");
-    args.push_back("--nologo");
+    std::error_code ec;
+    fs::create_directories(buildDir, ec);
+    WriteCompileFlags(scriptsDir, sdkInclude);
 
-    ui::LogAlways("[ScriptCompiler] Building scripts with dotnet CLI...");
-    std::string log;
-    bool ok = RunDotnet(dotnet, args, log);
-    if (!log.empty()) {
-        for (std::string::size_type s = 0, i; s < log.size(); s = i + 1) {
-            i = log.find('\n', s);
-            if (i == std::string::npos) i = log.size();
-            std::string line = log.substr(s, i - s);
-            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-            if (!line.empty()) ui::LogAlways("[dotnet] %s", line.c_str());
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const fs::path output = buildDir / (std::string(kLibPrefix) + std::to_string(stamp) + kLibExt);
+
+    platform::ProcessResult pr;
+    if (cc.kind == CompilerKind::Gnu) {
+        std::vector<std::string> args = {
+            "-std=c++20", "-shared", "-O2", "-g",
+            "-fvisibility=hidden", "-fvisibility-inlines-hidden",
+            "-I" + sdkInclude.string(), "-I" + scriptsDir.string(),
+        };
+#if !defined(_WIN32)
+        args.push_back("-fPIC");
+        // g++ marks some inline statics STB_GNU_UNIQUE, which pins the library
+        // in memory and breaks hot reload.
+        if (cc.isGcc) args.push_back("-fno-gnu-unique");
+#else
+        if (cc.isGcc) { args.push_back("-static-libgcc"); args.push_back("-static-libstdc++"); }
+#endif
+        args.push_back(moduleSource.string());
+        for (const auto& s : sources) args.push_back(s.string());
+        args.push_back("-o");
+        args.push_back(output.string());
+        pr = platform::RunProcessCapture(cc.exe, args, kBuildTimeoutMs);
+    } else {
+        std::vector<std::string> args = {
+            "/nologo", "/std:c++20", "/EHsc", "/O2", "/MD", "/LD", "/utf-8",
+            "/I" + sdkInclude.string(), "/I" + scriptsDir.string(),
+            // Two trailing backslashes: a quoted argument ending in one would
+            // escape its closing quote. cl accepts the doubled separator.
+            "/Fo" + buildDir.string() + "\\\\",
+            moduleSource.string(),
+        };
+        for (const auto& s : sources) args.push_back(s.string());
+        args.push_back("/Fe" + output.string());
+
+        if (cc.kind == CompilerKind::Msvc) {
+            pr = platform::RunProcessCapture(cc.exe, args, kBuildTimeoutMs);
+        } else {
+            // cl.exe needs the environment vcvars64.bat sets up, so run both
+            // from one batch file.
+            const fs::path bat = buildDir / "build.bat";
+            {
+                std::ofstream out(bat, std::ios::binary);
+                out << "@echo off\r\n";
+                out << "call " << QuoteForCmd(cc.exe) << " >nul\r\n";
+                out << "if errorlevel 1 exit /b 1\r\n";
+                out << "cl";
+                for (const auto& a : args) out << " " << QuoteForCmd(a);
+                out << "\r\n";
+                out << "exit /b %errorlevel%\r\n";
+            }
+            pr = platform::RunProcessCapture("cmd.exe", {"/c", bat.string()}, kBuildTimeoutMs);
         }
     }
 
-    if (!ok) {
-        ui::LogAlways("[ScriptCompiler] Build FAILED (exit code != 0).");
-        return false;
-    }
-
-    ui::LogAlways("[ScriptCompiler] FlyScript.dll built: %s",
-            (scriptsDir / "FlyScript.dll").string().c_str());
-    return true;
+    result.log = pr.launched ? pr.output : pr.error;
+    result.ok = pr.launched && pr.exitCode == 0 && fs::exists(output, ec);
+    if (result.ok) result.libraryPath = output.string();
+    result.diagnostics = ParseDiagnostics(result.log);
+    if (!result.ok) FinishFailure(result);
+    return result;
 }
 
 } // namespace scriptCompiler

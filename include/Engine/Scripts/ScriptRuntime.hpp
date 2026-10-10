@@ -9,26 +9,23 @@
 class ScatteredObject;
 class ModelGroup;
 class Engine;
-class CoreCLRHost;
+namespace NativeScript { class NativeScriptHost; }
 
 namespace phys {
 class Simulation;
 }
 
-// ScriptRuntime - the C++ side world context + lifecycle for C# scripting.
+// ScriptRuntime - the world context + lifecycle bookkeeping for game scripts.
 //
-// Replaces the legacy flyscript::Runtime. It does NOT interpret Flyscript
-// source anymore: scripts are C# classes (IScript implementations) compiled
-// into the project's Scripts/FlyScript.dll and executed by the hosted
-// CoreCLR. This class owns the world bindings (object list, model list,
-// camera, physics simulation, engine) that the FlyNative_* C# bridge reads
-// and mutates, plus the standalone-script list and play-state tracking.
+// Scripts are C++ classes (fly::Script, registered with FLY_SCRIPT) compiled
+// from the project's Scripts/*.cpp into a shared library that
+// NativeScriptHost loads and ticks. This class owns the world bindings
+// (object list, model list, camera, physics simulation, engine) that the
+// FlyNative_* API reads and mutates, plus the standalone-script list and
+// play-state tracking.
 //
-// It is owned by CoreCLRHost, which ticks the C# ScriptHost each frame and
-// routes start/stop lifecycle calls into the managed registries. The pointer
-// passed to FlyNative_BindRuntime is a ScriptRuntime*; FlyScriptApi's
-// ActiveRuntime() casts the bound handle back to this type. Script lifecycle
-// start/stop is forwarded to the bound CoreCLRHost (SetHost).
+// It is owned by NativeScriptHost. FlyScriptApi's ActiveRuntime() resolves
+// to it; script lifecycle start/stop is forwarded to the host (SetHost).
 class ScriptRuntime : public Entity {
 public:
     ScriptRuntime();
@@ -37,8 +34,8 @@ public:
     void Update(float dt) override;
 
     // A standalone script from the explorer's "Scripts" group. `name` is a
-    // unique label; `typeName` is the fully-qualified IScript class name in
-    // FlyScript.dll to instantiate when the script runs (e.g. "MyGame.Bouncer").
+    // unique label; `typeName` is the FLY_SCRIPT class to instantiate when the
+    // script runs (e.g. "Bouncer").
     struct StandaloneScript {
         std::string name = "Script";
         std::string typeName;
@@ -62,11 +59,11 @@ public:
                    std::vector<std::unique_ptr<ModelGroup>>& models,
                    Camera3D& camera, phys::Simulation& sim, Engine& engine);
 
-    // Bind the host that owns this runtime, so lifecycle calls can reach C#.
-    void SetHost(CoreCLRHost* host) { hostPtr = host; }
+    // Bind the host that owns this runtime, so lifecycle calls reach it.
+    void SetHost(NativeScript::NativeScriptHost* host) { hostPtr = host; }
 
-    // The owning host (may be null when the CLR never loaded).
-    CoreCLRHost* GetHost() const { return hostPtr; }
+    // The owning host.
+    NativeScript::NativeScriptHost* GetHost() const { return hostPtr; }
 
     // Project info (set by editor/player on initialization)
     void SetProjectPath(const std::string& path) { m_projectPath = path; }
@@ -74,7 +71,8 @@ public:
     const std::string& GetProjectPath() const { return m_projectPath; }
     const std::string& GetProjectName() const { return m_projectName; }
 
-    // ---- world services (read by FlyNative_* / C#) ----
+    // ---- world services (read by FlyNative_*) ----
+    bool HasWorld() const { return objectsPtr != nullptr; }
     const std::vector<ScatteredObject*>& GetObjects() const { return *objectsPtr; }
     const std::vector<std::unique_ptr<ModelGroup>>& GetModels() const { return *modelsPtr; }
     Camera3D& GetCamera() { return *cameraPtr; }
@@ -83,9 +81,9 @@ public:
     bool IsSimPlaying() const { return isPlaying; }
     void SetSimPlaying(bool playing);
 
-    // The per-coroutine "self" object, bound by the C# host right before a
-    // script's Run() advances so GameObject.Self resolves to the object the
-    // script is attached to. Null for standalone scripts and between frames.
+    // The per-coroutine "self" object, bound by the host right before a
+    // script's Run() advances so fly::Object::Self() resolves to the object
+    // the script is attached to. Null for standalone scripts and between frames.
     void SetScriptSelf(ScatteredObject* obj) { scriptSelf = obj; }
     ScatteredObject* GetScriptSelf() const { return scriptSelf; }
 
@@ -112,8 +110,8 @@ public:
     const std::vector<StandaloneScript>& StandaloneScripts() const { return standaloneScripts; }
     void RemoveStandalone(int index);
 
-    // ---- per-object script lifecycle (forwarded to the C# host) ----
-    // `obj->script` holds the IScript type name for that object.
+    // ---- per-object script lifecycle (forwarded to the host) ----
+    // `obj->script` holds the FLY_SCRIPT class name for that object.
     void StartObjectScript(ScatteredObject* obj);
     void StopObjectScript(ScatteredObject* obj);
     void StartStandaloneScript(int index);
@@ -125,7 +123,12 @@ public:
     void OnPlayStarted();
     void OnPlayStopped();
     void LogCreatedObject(ScatteredObject* obj);
+    // Deletes the objects scripts created during play (scene list, physics and
+    // the engine's entity), for hosts with no scene snapshot to restore.
     void RollbackCreatedObjects();
+    // Drops the play-created list without touching the objects: called when the
+    // editor restores its pre-play scene snapshot, which frees them itself.
+    void ForgetCreatedObjects() { playCreatedObjects.clear(); }
 
     // Plugin registration (for native C/C++ plugins)
     void RegisterPluginEntry(const FlyPluginEntry* entry) { (void)entry; /* TODO: store for multi-plugin support */ }
@@ -133,13 +136,24 @@ public:
 private:
     phys::Simulation* sim = nullptr;
     Engine* engine = nullptr;
-    CoreCLRHost* hostPtr = nullptr;
+    NativeScript::NativeScriptHost* hostPtr = nullptr;
     std::vector<ScatteredObject*>* objectsPtr = nullptr;
     std::vector<std::unique_ptr<ModelGroup>>* modelsPtr = nullptr;
     Camera3D* cameraPtr = nullptr;
 
     std::vector<StandaloneScript> standaloneScripts;
     std::vector<ScatteredObject*> playCreatedObjects;
+
+    // World settings (game.Lighting/Rendering/Camera/Physics) as they were when
+    // play started, put back when it stops.
+    struct WorldSettings {
+        bool valid = false;
+        short shadows = 0, grid = 0, wireframe = 0;
+        int shadowQuality = 0;
+        float ambient = 0, fov = 0, gravity = 0, friction = 0, restitution = 0;
+    } savedWorld;
+    void CaptureWorldSettings();
+    void RestoreWorldSettings();
     bool isPlaying = false;
     ScatteredObject* scriptSelf = nullptr;
 
@@ -149,14 +163,14 @@ private:
 };
 
 // Global play-state hook: phys::Simulation calls it (with the new play state)
-// whenever the user toggles play/stop, so the active CoreCLRHost can start/stop
-// runOnPlay scripts in the managed host. CoreCLRHost registers itself here.
+// whenever the user toggles play/stop, so the active NativeScriptHost can
+// start/stop runOnPlay scripts. NativeScriptHost registers itself here.
 using PlayStateHook = void(*)(bool playing);
 void SetPlayStateHook(PlayStateHook hook);
 PlayStateHook GetPlayStateHook();
 
-// Module-level access to the active runtime, set by CoreCLRHost at construction
+// Module-level access to the active runtime, set by NativeScriptHost at construction
 // and used by editor code (ui, scene persistence, command console) to reach the
-// standalone-script list and world services without coupling to CoreCLRHost.
+// standalone-script list and world services without coupling to the host.
 void SetActiveRuntime(ScriptRuntime* rt);
 ScriptRuntime* GetActiveRuntime();

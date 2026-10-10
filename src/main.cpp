@@ -3,8 +3,6 @@
 #include "../include/Engine/Backend/CameraController.hpp"
 #include "../include/Engine/Frontend/ObjectInteractionManager.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
-#include "../include/Engine/Scripts/CoreCLRHost.hpp"
-#include "../include/Engine/Scripts/ScriptCompiler.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
 #include "../include/Engine/Frontend/ui.hpp"
 #include "../include/Engine/Backend/CrashReporter.hpp"
@@ -134,20 +132,13 @@ void RunEditor(const project::Info& info) {
     ObjectInteractionManager* interactionMgrPtr = interactionMgr.get();
     engine.AddEntity(std::move(interactionMgr));
 
-    // Compile the project's C# scripts into Scripts/FlyScript.dll before the
-    // CLR boots. If the build fails (e.g. no dotnet SDK), Initialize below
-    // falls back to any pre-existing FlyScript.dll.
-    scriptCompiler::EnsureBuilt(info.path);
-
-    // CoreCLR host for C# scripting (runs as an Entity, gets Update called each frame).
-    auto coreClrHost = std::make_unique<CoreCLRHost>();
-    CoreCLRHost* coreClrHostPtr = coreClrHost.get();
-    if (coreClrHost->Initialize(info.path)) {
-        ui::LogAlways("CoreCLR host initialized for project: %s", info.path.c_str());
-        engine.AddEntity(std::move(coreClrHost));
-    } else {
-        ui::LogAlways("CoreCLR host failed, C# Scripting unable to load: %s", coreClrHost->GetError().c_str());
-    }
+    // Native script host: compiles the project's Scripts/*.cpp into a shared
+    // library and loads it. Created before the scene loads because scene
+    // persistence restores the standalone-script list into its runtime. If the
+    // build fails it falls back to the last successful build.
+    auto nativeHost = std::make_unique<NativeScript::NativeScriptHost>();
+    NativeScript::NativeScriptHost* nativeHostPtr = nativeHost.get();
+    nativeHost->InitializeScripts(info.path);
 
     project::Info loaded = info;
 
@@ -171,14 +162,12 @@ void RunEditor(const project::Info& info) {
     }
 
     // Bind the loaded world into the script runtime so FlyNative_* and standalone
-    // scripts can read/mutate it. Safe even when the CLR failed to load: the
-    // runtime still owns the script list and world services for the editor UI.
-    if (coreClrHostPtr) {
-        coreClrHostPtr->BindWorld(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
-        // Make every IScript type in the compiled assembly show up in the
-        // explorer's SCRIPTS group (and run on Play), not just saved entries.
-        coreClrHostPtr->SyncStandaloneScripts();
-    }
+    // scripts can read/mutate it. Safe even when the scripts failed to build:
+    // the runtime still owns the script list and world services for the editor UI.
+    nativeHostPtr->BindWorld(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
+    // Make every script class in the library show up in the explorer's
+    // SCRIPTS group (and run on Play), not just saved entries.
+    nativeHostPtr->SyncStandaloneScripts();
 
     // If terrain was loaded, set it up with editor
     if (loadedTerrain) {
@@ -193,8 +182,7 @@ void RunEditor(const project::Info& info) {
 
     // Native plugins: SetEngine must come before Initialize, which loads
     // plugins/nat/*/build/*.so and calls on_load. The engine owns the host
-    // and ticks it each frame (also handles hot-reload).
-    auto nativeHost = std::make_unique<NativeScript::NativeScriptHost>();
+    // and ticks it each frame (scripts, plugins, and their hot-reload).
     nativeHost->SetEngine(&engine);
     nativeHost->Initialize(info.path);
     engine.AddEntity(std::move(nativeHost));

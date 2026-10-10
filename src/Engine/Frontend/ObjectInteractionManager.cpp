@@ -17,6 +17,7 @@
 #include "../../../include/CityGen/City.hpp"
 #include "../../../include/CityGen/CityEditor.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -493,6 +494,37 @@ void ObjectInteractionManager::EndDragUndoCapture() {
     }
 }
 
+void ObjectInteractionManager::CapturePlaySnapshot() {
+    playSnapshotValid = false;
+    playSnapshotSel.clear();
+    if (!SnapshotSceneToMemory(objects, models, project::GetCurrentProject().path, playSnapshotBytes)) return;
+    for (auto* o : ui::GetSelection()) {
+        if (o) playSnapshotSel.push_back(o->GetName());
+    }
+    playSnapshotValid = true;
+}
+
+void ObjectInteractionManager::RestorePlaySnapshot() {
+    if (!playSnapshotValid) return;
+    playSnapshotValid = false;
+
+    // The runtime's list of play-created objects is about to dangle (or already
+    // does, once their entities are freed below).
+    if (ScriptRuntime* rt = GetActiveRuntime()) rt->ForgetCreatedObjects();
+
+    // Unchanged scene: leave it alone rather than rebuild every object.
+    std::string now;
+    if (SnapshotSceneToMemory(objects, models, project::GetCurrentProject().path, now) &&
+        now == playSnapshotBytes) {
+        return;
+    }
+
+    const size_t before = objects.size();
+    RestoreFromSnapshot(playSnapshotBytes, playSnapshotSel);
+    ui::LogAlways("[Play] Scene restored to how it was before Play (%zu object(s) in the scene during play).", before);
+    playSnapshotBytes.clear();
+}
+
 void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, const std::vector<std::string>& selNames) {
     std::istringstream in(bytes);
     const size_t previousObjectCount = objects.size();
@@ -876,7 +908,16 @@ void ObjectInteractionManager::Update(float dt) {
     // while the user is mid-click must not be starved for a frame.
     PumpDialogs();
 
-    if (ui::IsPlayActive()) return; // editing disabled while physics runs
+    // Play/Stop edges. Must run before the early return below, and after
+    // Simulation::Update (which toggles play) in the same frame.
+    const bool playing = ui::IsPlayActive();
+    if (playing != wasPlaying) {
+        wasPlaying = playing;
+        if (playing) CapturePlaySnapshot();
+        else RestorePlaySnapshot();
+    }
+
+    if (playing) return; // editing disabled while physics runs
 
     // Update terrain editor
     ui::UpdateTerrainEditor(engine, cameraController, physicsSim);

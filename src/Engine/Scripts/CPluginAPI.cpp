@@ -16,6 +16,7 @@
 #include <raylib.h>
 #include <raymath.h>
 #include <imgui.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <map>
@@ -555,6 +556,10 @@ static void api_ui_same_line(void) { ImGui::SameLine(); }
 static void api_ui_set_next_item_width(float width) { ImGui::SetNextItemWidth(width); }
 static void api_ui_push_id(const char* id) { ImGui::PushID(id); }
 static void api_ui_pop_id(void) { ImGui::PopID(); }
+static void api_ui_set_accent_color(CP_Color color) {
+    auto channel = [](float v) { return static_cast<unsigned char>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    ui::SetAccentColor(Color{ channel(color.r), channel(color.g), channel(color.b), 255 });
+}
 
 // Asset System (stubs)
 static CP_AssetHandle api_asset_load(const char* path, int type) { (void)path; (void)type; return 0; }
@@ -749,6 +754,8 @@ static CP_EngineAPI g_engine_api = {
     
     .get_project_path = api_get_project_path,
     .get_project_name = api_get_project_name,
+
+    .ui_set_accent_color = api_ui_set_accent_color,
 };
 
 } // namespace

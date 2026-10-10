@@ -1,7 +1,8 @@
-// ScriptRuntime.cpp - C++ world context + lifecycle backing the C# script host.
+// ScriptRuntime.cpp - world context + lifecycle backing the native script host.
 
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
-#include "../../../include/Engine/Scripts/CoreCLRHost.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
+#include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/PhysicsCollision.hpp"
@@ -71,10 +72,8 @@ bool ScriptRuntime::IsValid() const {
 
 void ScriptRuntime::Update(float dt)
 {
-    // The owning CoreCLRHost already forwards dt to the managed host through
-    // its delegates; this runtime only needs to keep its play-state in sync,
-    // which CoreCLRHost drives via OnPlayStarted()/OnPlayStopped(). Nothing to
-    // step here - scripts are ticked entirely on the managed side.
+    // The owning NativeScriptHost ticks the scripts and drives play-state via
+    // SetSimPlaying(); nothing to step here.
     (void)dt;
 }
 
@@ -238,7 +237,7 @@ float ScriptRuntime::GetPhysicsRestitution() const { return sim ? sim->GetRestit
 void ScriptRuntime::RemoveStandalone(int index)
 {
     if (index < 0 || index >= static_cast<int>(standaloneScripts.size())) return;
-    StopStandaloneScript(index);
+    if (hostPtr) hostPtr->OnStandaloneRemoved(index);
     standaloneScripts.erase(standaloneScripts.begin() + index);
 }
 
@@ -272,6 +271,7 @@ void ScriptRuntime::OnPlayStarted()
 {
     if (!hostPtr) return;
     playCreatedObjects.clear();
+    CaptureWorldSettings();
 
     // Start every runOnPlay object script and standalone script.
     if (objectsPtr) {
@@ -286,23 +286,59 @@ void ScriptRuntime::OnPlayStarted()
 
 void ScriptRuntime::RollbackCreatedObjects()
 {
-    // Remove objects created during play and give the engine back ownership
-    // only for the ones we tracked.
-    if (objectsPtr) {
-        for (auto it = playCreatedObjects.rbegin(); it != playCreatedObjects.rend(); ++it) {
-            ScatteredObject* obj = *it;
-            if (!obj) continue;
+    // Take the objects scripts created out of the scene for real: the scene
+    // list, any physics body, and the engine entity that owns (and draws) them.
+    for (auto it = playCreatedObjects.rbegin(); it != playCreatedObjects.rend(); ++it) {
+        ScatteredObject* obj = *it;
+        if (!obj) continue;
+        if (objectsPtr) {
             auto fit = std::find(objectsPtr->begin(), objectsPtr->end(), obj);
-            if (fit != objectsPtr->end()) objectsPtr->erase(fit);
+            if (fit == objectsPtr->end()) continue; // already gone
+            objectsPtr->erase(fit);
         }
+        if (sim) sim->RemoveObject(obj);
+        if (engine) engine->RemoveEntity(obj);
     }
     playCreatedObjects.clear();
+}
+
+void ScriptRuntime::CaptureWorldSettings()
+{
+    savedWorld.valid = true;
+    savedWorld.shadows = FlyNative_GetShadowsEnabled();
+    savedWorld.shadowQuality = FlyNative_GetShadowQuality();
+    savedWorld.grid = FlyNative_GetGridVisible();
+    savedWorld.wireframe = FlyNative_GetWireframe();
+    float v = 0.0f;
+    FlyNative_GetAmbient(&v);
+    savedWorld.ambient = v;
+    FlyNative_GetFov(&v);
+    savedWorld.fov = v;
+    savedWorld.gravity = FlyNative_GetGravity();
+    savedWorld.friction = FlyNative_GetFriction();
+    savedWorld.restitution = FlyNative_GetRestitution();
+}
+
+void ScriptRuntime::RestoreWorldSettings()
+{
+    if (!savedWorld.valid) return;
+    savedWorld.valid = false;
+    FlyNative_SetShadowsEnabled(savedWorld.shadows);
+    FlyNative_SetShadowQuality(savedWorld.shadowQuality);
+    FlyNative_SetGridVisible(savedWorld.grid);
+    FlyNative_SetWireframe(savedWorld.wireframe);
+    FlyNative_SetAmbient(savedWorld.ambient);
+    FlyNative_SetFov(savedWorld.fov);
+    FlyNative_SetGravity(savedWorld.gravity);
+    FlyNative_SetFriction(savedWorld.friction);
+    FlyNative_SetRestitution(savedWorld.restitution);
 }
 
 void ScriptRuntime::OnPlayStopped()
 {
     if (hostPtr) hostPtr->ClearAllScripts();
     RollbackCreatedObjects();
+    RestoreWorldSettings();
 }
 
 void ScriptRuntime::LogCreatedObject(ScatteredObject* obj)

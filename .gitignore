@@ -56,10 +56,6 @@ Desktop.ini
 *.new
 *.orig
 
-# --- ScriptingSDK dotnet build output ---
-/ScriptingSDK/FlyScript/bin/
-/ScriptingSDK/FlyScript/obj/
-
 # --- Machine-specific scratch build scripts ---
 /rebuild_debug.bat
 /build_check.bat

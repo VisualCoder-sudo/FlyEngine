@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include "raylib.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -17,7 +18,7 @@ namespace fs = std::filesystem;
 
 namespace scriptLauncher {
 
-// Builds a valid C# identifier (class name) from an arbitrary object/script
+// Builds a valid C++ identifier (class name) from an arbitrary object/script
 // name: non-identifier characters become underscores, and a leading digit is
 // prefixed so the class still compiles. Falls back to "Script".
 std::string MakeClassName(const std::string& name) {
@@ -37,30 +38,25 @@ namespace {
 enum class EditorKind { None, VSCode, VisualStudio, Rider, Notepad };
 constexpr const char* kScriptDirName = "Scripts";
 
-// Builds the source of a C# script stub with the given class name. The class
-// implements FlyScript.IScript (IEnumerable<object> Run()) so the hosted C#
-// ScriptHost can instantiate it by type name.
+// Builds the source of a C++ script stub with the given class name. The class
+// derives from fly::Script and is registered with FLY_SCRIPT so the native
+// script host can instantiate it by name.
 std::string MakeScriptStub(const std::string& className) {
     std::string body;
-    body += "using System;\n";
-    body += "using System.Collections;\n";
-    body += "using System.Collections.Generic;\n";
-    body += "using FlyScript;\n";
+    body += "#include \"fly.hpp\"\n";
     body += "\n";
-    body += "public class " + className + " : IScript\n";
-    body += "{\n";
-    body += "    public IEnumerable<object> Run()\n";
-    body += "    {\n";
-    body += "        // Logic runs once per frame while the game is playing.\n";
-    body += "        // Use \"self\" for the attached object, e.g.:\n";
-    body += "        //   var self = GameObject.Self;\n";
-    body += "        //   self.Position = new Vec3(0, 2, 0);\n";
-    body += "        while (true)\n";
-    body += "        {\n";
-    body += "            yield return Tick.Wait(0f);\n";
+    body += "struct " + className + " : fly::Script {\n";
+    body += "    fly::Task Run() override {\n";
+    body += "        // Runs while the game is playing; each co_await waits a frame.\n";
+    body += "        // Use Self() for the attached object, e.g.:\n";
+    body += "        //   fly::Object self = fly::Object::Self();\n";
+    body += "        //   self.SetPosition({0, 2, 0});\n";
+    body += "        while (true) {\n";
+    body += "            co_await fly::NextFrame();\n";
     body += "        }\n";
     body += "    }\n";
-    body += "}\n";
+    body += "};\n";
+    body += "FLY_SCRIPT(" + className + ")\n";
     return body;
 }
 
@@ -103,39 +99,7 @@ std::string FindKnownExe(const std::vector<std::string>& candidates) {
     return {};
 }
 
-// Search PATH for one of `names`, returning the first that resolves to an
-// executable file. Windows PATH entries are separated by ';' and need the
-// .cmd/.exe suffix; POSIX uses ':' and bare names.
-std::string FindOnPath(const std::vector<std::string>& names) {
-    const char* pathEnv = std::getenv("PATH");
-    if (!pathEnv) return {};
-    const std::string envPath(pathEnv);
-    const char sep =
-#if defined(_WIN32)
-        ';';
-    const std::vector<std::string> suffixes = {"", ".cmd", ".exe", ".bat"};
-#else
-        ':';
-    const std::vector<std::string> suffixes = {""};
-#endif
-    size_t start = 0;
-    while (start <= envPath.size()) {
-        const size_t end = envPath.find(sep, start);
-        const std::string dir =
-            envPath.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (!dir.empty()) {
-            for (const std::string& name : names) {
-                for (const std::string& suffix : suffixes) {
-                    const std::string full = (fs::path(dir) / (name + suffix)).string();
-                    if (FileIsExecutable(full)) return full;
-                }
-            }
-        }
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return {};
-}
+using platform::FindOnPath;
 
 std::string FindVSCode() {
     // The official Linux packages (apt/deb, rpm, snap, AUR, tarball) all
@@ -297,26 +261,42 @@ bool ShellOpen(const std::string& exe, const std::vector<std::string>& args) {
     return platform::LaunchDetached(exe, args);
 }
 
-// Actually launch an editor on `file`.
-bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string& file) {
+// Actually launch an editor on `file`, at `line`:`column` (1-based) when the
+// editor supports it; line 0 just opens the file.
+bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string& file,
+                  int line = 0, int column = 0) {
     if (file.empty()) return false;
 
     if (kind == EditorKind::VSCode ||
         kind == EditorKind::Rider ||
         kind == EditorKind::VisualStudio ||
         kind == EditorKind::Notepad) {
-        // Each of these takes the file as a plain argument, except Visual
-        // Studio which needs /edit to open an existing file rather than a new
-        // project.
         std::vector<std::string> args;
-        if (kind == EditorKind::VisualStudio) args.push_back("/edit");
-        args.push_back(file);
+        if (kind == EditorKind::VSCode && line > 0) {
+            // code -g <file>:<line>:<column>
+            args.push_back("-g");
+            args.push_back(file + ":" + std::to_string(line) + ":" + std::to_string(std::max(column, 1)));
+        } else if (kind == EditorKind::Rider && line > 0) {
+            // rider --line <n> --column <n> <file>
+            args.push_back("--line");
+            args.push_back(std::to_string(line));
+            if (column > 0) {
+                args.push_back("--column");
+                args.push_back(std::to_string(column));
+            }
+            args.push_back(file);
+        } else {
+            // Visual Studio needs /edit to open an existing file rather than
+            // a new project, and has no line argument.
+            if (kind == EditorKind::VisualStudio) args.push_back("/edit");
+            args.push_back(file);
+        }
         return ShellOpen(exePath, args);
     }
 
     // Auto / default: hand the file to the desktop's own handler. xdg-open
-    // (ShellExecuteW's counterpart) picks the right .cs association, or falls
-    // back to a generic text editor for unknown types.
+    // (ShellExecuteW's counterpart) picks the right .cpp association, or falls
+    // back to a generic text editor for unknown types. It cannot take a line.
     platform::OpenWithDefaultApp(file);
     return true;
 }
@@ -324,6 +304,8 @@ bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string
 // --- Picker state ----------------------------------------------------------
 
 std::string g_pendingFile;          // file queued to open behind the picker
+int         g_pendingLine = 0;      // 1-based position to jump to (0 = none)
+int         g_pendingColumn = 0;
 bool        g_editorSet = false;    // a remembered editor is available
 EditorKind  g_editorKind = EditorKind::None;
 std::string g_editorPath;           // cached resolved exe (empty for notepad/default)
@@ -390,7 +372,7 @@ std::string MaterializeScript(const std::string& className) {
     const std::string dir = EnsureScriptsDir();
     const std::string classIdent = MakeClassName(className);
     const std::string stem = SanitizeStem(classIdent);
-    const std::string fileName = stem + ".cs";
+    const std::string fileName = stem + ".cpp";
     const std::string filePath =
         dir.empty() ? fileName : (fs::path(dir) / fileName).string();
 
@@ -407,16 +389,22 @@ std::string MaterializeScript(const std::string& className) {
     return filePath;
 }
 
-void RequestOpen(const std::string& file) {
+void RequestOpenAt(const std::string& file, int line, int column) {
     if (file.empty()) return;
     if (g_editorSet) {
-        if (LaunchEditor(g_editorKind, g_editorPath, file)) return;
+        if (LaunchEditor(g_editorKind, g_editorPath, file, line, column)) return;
         // Remembered editor didn't launch (uninstalled/moved) - forget it
         // and fall through to asking again below.
         g_editorSet = false;
         g_editorPath.clear();
     }
     g_pendingFile = file;
+    g_pendingLine = line;
+    g_pendingColumn = column;
+}
+
+void RequestOpen(const std::string& file) {
+    RequestOpenAt(file, 0, 0);
 }
 
 // Always shows the picker, even when an editor is already remembered - used
@@ -425,6 +413,8 @@ void RequestOpen(const std::string& file) {
 void RequestChooseEditor(const std::string& file) {
     if (file.empty()) return;
     g_pendingFile = file;
+    g_pendingLine = 0;
+    g_pendingColumn = 0;
 }
 
 bool HasPending() {
@@ -476,7 +466,7 @@ bool DrawImGuiModal() {
                 std::string file = g_pendingFile;
                 std::string exePath = ResolveEditorPath(o.kind);
                 // Only remember a choice that actually launched successfully.
-                if (LaunchEditor(o.kind, exePath, file)) {
+                if (LaunchEditor(o.kind, exePath, file, g_pendingLine, g_pendingColumn)) {
                     g_editorSet = true;
                     g_editorKind = o.kind;
                     g_editorPath = exePath;
@@ -504,10 +494,10 @@ bool DrawImGuiModal() {
 
 std::string EditObjectScript(ScatteredObject* obj) {
     if (!obj) return {};
-    // `obj->script` holds the C# IScript type name (e.g. "RotateScript"); the
-    // materialized file is the .cs source for that class. Auto-bind the class
+    // `obj->script` holds the FLY_SCRIPT class name (e.g. "RotateScript"); the
+    // materialized file is the .cpp source for that class. Auto-bind the class
     // from the object name the first time a script is added, and mark it to run
-    // on Play so the C# host actually starts it.
+    // on Play so the script host actually starts it.
     std::string className = MakeClassName(obj->script.empty() ? obj->GetName() : obj->script);
     if (obj->script.empty() || !obj->runOnPlay) {
         obj->script = className;
@@ -521,7 +511,7 @@ std::string EditObjectScript(ScatteredObject* obj) {
 std::string EditStandaloneScript(const std::string& scriptName,
                                  const std::string& typeName,
                                  std::string* outClassName /* = nullptr */) {
-    // `typeName` is the C# IScript class to edit; fall back to the display name.
+    // `typeName` is the FLY_SCRIPT class to edit; fall back to the display name.
     std::string className = MakeClassName(typeName.empty() ? scriptName : typeName);
     if (outClassName) *outClassName = className;
     std::string file = MaterializeScript(className);

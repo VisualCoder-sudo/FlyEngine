@@ -91,7 +91,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
     }
 
     // Standalone scripts (the explorer "Scripts" group). Each entry carries a
-    // name and the C# IScript type name compiled into FlyScript.dll.
+    // name and the FLY_SCRIPT class name compiled from Scripts/*.cpp.
     if (ScriptRuntime* rt = GetActiveRuntime()) {
         const auto& scripts = rt->StandaloneScripts();
         file << scripts.size() << "\n";

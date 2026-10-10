@@ -1,10 +1,17 @@
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
-#include "../include/Engine/Scripts/CoreCLRHost.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
+#include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine/Backend/fcloudint.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -154,35 +161,261 @@ float ComputeScrollOffset(const std::string& s, int cursor, Font font, float vis
     return std::clamp(offset, 0.0f, fullW - visibleW);
 }
 
-// Sends a single line of C# to the hosted CLR for evaluation.
+// ---- built-in command language --------------------------------------------
+//
+//   help                         list commands
+//   print <text>                 echo to the log
+//   <Object>.<Prop>              show a property ("Model.Part.Prop" for parts)
+//   <Object>.<Prop> = <value>    set it, e.g. Cube.Position = (0, 5, 0)
+//   Lighting|Rendering|Camera|Physics.<Prop> [= <value>]   world settings
+//   scripts                      list compiled script classes
+//   run <Class> / stop <Class>   start/stop a standalone script
+//   rebuild                      recompile Scripts/*.cpp
+//   fcloud ...                   cloud commands
+//
+// An optional "game." / "game.Workspace." prefix is accepted, as in Flyscript.
+
+constexpr const char* kHelpText =
+    "Commands: help, print <text>, <Object>.<Prop> [= value], "
+    "Lighting|Rendering|Camera|Physics.<Prop> [= value], scripts, run <Class>, "
+    "stop <Class>, rebuild, fcloud --help";
+
+std::string Lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+// Case-insensitive lookup of `name` in `names`; returns the canonical spelling or "".
+std::string Canonical(const std::string& name, std::initializer_list<const char*> names) {
+    const std::string want = Lower(name);
+    for (const char* n : names)
+        if (Lower(n) == want) return n;
+    return {};
+}
+
+bool StripPrefix(std::string& s, const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    if (s.size() > n && Lower(s.substr(0, n)) == Lower(prefix)) { s.erase(0, n); return true; }
+    return false;
+}
+
+bool ParseBoolValue(const std::string& s, bool& out) {
+    const std::string l = Lower(s);
+    if (l == "true" || l == "1") { out = true; return true; }
+    if (l == "false" || l == "0") { out = false; return true; }
+    return false;
+}
+
+bool ParseFloatValue(const std::string& s, float& out) {
+    char* end = nullptr;
+    out = std::strtof(s.c_str(), &end);
+    return end && end != s.c_str() && *end == '\0';
+}
+
+std::string FormatFloat(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", v);
+    return buf;
+}
+
+std::string FormatVec(float x, float y, float z) {
+    return "(" + FormatFloat(x) + ", " + FormatFloat(y) + ", " + FormatFloat(z) + ")";
+}
+
+struct CommandResult {
+    std::string text;
+    bool error = false;
+};
+
+CommandResult WorldProperty(const std::string& group, const std::string& prop,
+                            const std::string* rhs) {
+    auto setBool = [&](void (*set)(short)) -> CommandResult {
+        bool v;
+        if (!ParseBoolValue(*rhs, v)) return { "'" + *rhs + "' is not a valid boolean (true/false)", true };
+        set(v ? 1 : 0);
+        return { "OK" };
+    };
+    auto setFloat = [&](void (*set)(float)) -> CommandResult {
+        float v;
+        if (!ParseFloatValue(*rhs, v)) return { "'" + *rhs + "' is not a number", true };
+        set(v);
+        return { "OK" };
+    };
+    auto boolText = [](short v) { return std::string(v ? "true" : "false"); };
+
+    if (group == "Lighting") {
+        const std::string p = Canonical(prop, { "GlobalShadows", "ShadowQuality", "Ambient" });
+        if (p == "GlobalShadows")
+            return rhs ? setBool(FlyNative_SetShadowsEnabled) : CommandResult{ boolText(FlyNative_GetShadowsEnabled()) };
+        if (p == "ShadowQuality") {
+            if (!rhs) return { std::to_string(FlyNative_GetShadowQuality()) };
+            float v;
+            if (!ParseFloatValue(*rhs, v)) return { "'" + *rhs + "' is not a number", true };
+            FlyNative_SetShadowQuality(static_cast<int>(v));
+            return { "OK" };
+        }
+        if (p == "Ambient") {
+            if (rhs) return setFloat(FlyNative_SetAmbient);
+            float a = 0.0f;
+            FlyNative_GetAmbient(&a);
+            return { FormatFloat(a) };
+        }
+    } else if (group == "Rendering") {
+        const std::string p = Canonical(prop, { "Grid", "Wireframe" });
+        if (p == "Grid")
+            return rhs ? setBool(FlyNative_SetGridVisible) : CommandResult{ boolText(FlyNative_GetGridVisible()) };
+        if (p == "Wireframe")
+            return rhs ? setBool(FlyNative_SetWireframe) : CommandResult{ boolText(FlyNative_GetWireframe()) };
+    } else if (group == "Camera") {
+        if (Canonical(prop, { "FOV" }) == "FOV") {
+            if (rhs) return setFloat(FlyNative_SetFov);
+            float f = 0.0f;
+            FlyNative_GetFov(&f);
+            return { FormatFloat(f) };
+        }
+    } else if (group == "Physics") {
+        const std::string p = Canonical(prop, { "Gravity", "Friction", "Restitution" });
+        if (p == "Gravity")
+            return rhs ? setFloat(FlyNative_SetGravity) : CommandResult{ FormatFloat(FlyNative_GetGravity()) };
+        if (p == "Friction")
+            return rhs ? setFloat(FlyNative_SetFriction) : CommandResult{ FormatFloat(FlyNative_GetFriction()) };
+        if (p == "Restitution")
+            return rhs ? setFloat(FlyNative_SetRestitution) : CommandResult{ FormatFloat(FlyNative_GetRestitution()) };
+    }
+    return { "Unknown property '" + group + "." + prop + "'", true };
+}
+
+CommandResult ObjectProperty(ScriptRuntime& rt, const std::string& objectName,
+                             const std::string& propName, const std::string* rhs) {
+    const unsigned long long h = FlyNative_FindObject(objectName.c_str());
+    if (!h) return { "No object named '" + objectName + "'", true };
+
+    const std::string prop = Canonical(propName, {
+        "Position", "Size", "Rotation", "Origin", "Velocity", "AngularVelocity", "Color",
+        "Anchored", "CanCollide", "Mass", "Transparency", "CollisionAccuracy" });
+    if (prop.empty()) return { "Unknown property '" + propName + "'", true };
+
+    if (rhs) {
+        // The handle is the object pointer, already validated by FindObject.
+        auto* obj = reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h));
+        std::string error;
+        if (!rt.SetObjectProperty(obj, prop, *rhs, error)) return { error, true };
+        return { "OK" };
+    }
+
+    float x = 0, y = 0, z = 0;
+    if (prop == "Position")        { FlyNative_GetPosition(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "Size")            { FlyNative_GetSize(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "Rotation")        { FlyNative_GetRotation(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "Origin")          { FlyNative_GetOrigin(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "Velocity")        { FlyNative_GetVelocity(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "AngularVelocity") { FlyNative_GetAngularVelocity(h, &x, &y, &z); return { FormatVec(x, y, z) }; }
+    if (prop == "Color") {
+        unsigned char r = 0, g = 0, b = 0;
+        FlyNative_GetColor(h, &r, &g, &b);
+        return { "(" + std::to_string(r) + ", " + std::to_string(g) + ", " + std::to_string(b) + ")" };
+    }
+    if (prop == "Anchored")     return { FlyNative_GetAnchored(h) ? "true" : "false" };
+    if (prop == "CanCollide")   return { FlyNative_GetCanCollide(h) ? "true" : "false" };
+    if (prop == "Mass")         return { FormatFloat(FlyNative_GetMass(h)) };
+    if (prop == "Transparency") return { FormatFloat(FlyNative_GetTransparency(h)) };
+    static const char* kAccuracy[] = { "Box", "Hull", "Default", "Precise" };
+    const int acc = FlyNative_GetCollisionAccuracy(h);
+    return { acc >= 0 && acc < 4 ? kAccuracy[acc] : "?" };
+}
+
+// Finds the standalone entry running `className`, adding one if needed.
+int StandaloneIndexFor(ScriptRuntime& rt, const std::string& className, bool create) {
+    auto& scripts = rt.StandaloneScripts();
+    for (int i = 0; i < static_cast<int>(scripts.size()); ++i)
+        if (scripts[i].typeName == className) return i;
+    if (!create) return -1;
+    ScriptRuntime::StandaloneScript s;
+    s.name = className;
+    s.typeName = className;
+    s.runOnPlay = false;
+    scripts.push_back(std::move(s));
+    return static_cast<int>(scripts.size()) - 1;
+}
+
+CommandResult Evaluate(const std::string& line) {
+    if (line == "help" || line == "?") return { kHelpText };
+
+    if (line.rfind("print ", 0) == 0) {
+        ui::Log("%s", line.substr(6).c_str());
+        return { "OK" };
+    }
+
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt || !rt->HasWorld()) return { "No scene is loaded", true };
+    NativeScript::NativeScriptHost* host = rt->GetHost();
+
+    // Script management.
+    if (line == "scripts") {
+        if (!host || !host->ScriptsReady()) return { "No script library loaded (see the compiler output)", true };
+        std::string names;
+        for (const auto& n : host->GetScriptClassNames()) names += (names.empty() ? "" : ", ") + n;
+        return { names.empty() ? "(no FLY_SCRIPT classes)" : names };
+    }
+    if (line == "rebuild") {
+        if (!host) return { "Script host not available", true };
+        host->RequestScriptRebuild();
+        return { "Recompiling scripts..." };
+    }
+    if (line.rfind("run ", 0) == 0 || line.rfind("stop ", 0) == 0) {
+        const bool run = line[0] == 'r';
+        const std::string cls = Trim(line.substr(run ? 4 : 5));
+        if (!host) return { "Script host not available", true };
+        const int idx = StandaloneIndexFor(*rt, cls, run);
+        if (idx < 0) return { "'" + cls + "' is not running", true };
+        if (!run) { host->StopStandaloneScriptAt(idx); return { "OK" }; }
+        return host->StartStandaloneScriptAt(idx) ? CommandResult{ "OK" }
+                                                  : CommandResult{ "Could not start '" + cls + "' (see the log)", true };
+    }
+
+    // Property get/set.
+    std::string lhs = line;
+    std::string rhs;
+    const size_t eq = line.find('=');
+    const bool assign = eq != std::string::npos;
+    if (assign) {
+        lhs = Trim(line.substr(0, eq));
+        rhs = Trim(line.substr(eq + 1));
+        if (rhs.empty()) return { "Missing value after '='", true };
+    }
+
+    if (StripPrefix(lhs, "game.")) StripPrefix(lhs, "Workspace.");
+
+    const size_t dot = lhs.rfind('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 >= lhs.size())
+        return { "Unknown command '" + line + "'. Type 'help'.", true };
+    const std::string target = lhs.substr(0, dot);
+    const std::string prop = lhs.substr(dot + 1);
+
+    const std::string group = Canonical(target, { "Lighting", "Rendering", "Camera", "Physics" });
+    if (!group.empty()) return WorldProperty(group, prop, assign ? &rhs : nullptr);
+    return ObjectProperty(*rt, target, prop, assign ? &rhs : nullptr);
+}
+
+// Runs one console line through the built-in command language.
 void ExecuteCommand(const std::string& line) {
     std::string trimmed = Trim(line);
     if (trimmed.empty()) return;
 
-    // Native fcloud commands are handled directly and never reach the CLR.
+    // Native fcloud commands are dispatched to the cloud client.
     if (trimmed.rfind("fcloud", 0) == 0) {
         fcloud::DispatchCommand(trimmed);
         return;
     }
 
-    CoreCLRHost* host = nullptr;
-    if (ScriptRuntime* rt = GetActiveRuntime()) host = rt->GetHost();
-    if (!host || !host->IsReady()) {
-        feedback = { "C# host not ready (Scripts/FlyScript.dll missing or failed to load)", true, GetTime() };
-        return;
-    }
+    CommandResult r = Evaluate(trimmed);
+    const std::string& result = r.text;
 
-    std::string result;
-    bool isError = false;
-    host->ExecuteConsoleCode(trimmed, result, isError);
-
-    if (isError) {
+    if (r.error) {
         feedback = { result, true, GetTime() };
         ui::Log("[console] %s", trimmed.c_str());
         ui::Log("[console] %s", result.c_str());
-        if (result.rfind("CS ", 0) == 0) {
-            ui::Log("[console] Tip: this console evaluates C# - or type 'fcloud --help' for cloud commands.");
-        }
     } else {
         std::string text = (result == "OK") ? ("> " + trimmed) : ("> " + trimmed + "  ->  " + result);
         feedback = { text, false, GetTime() };
@@ -229,7 +462,7 @@ void Blur() {
 }
 
 void AttachCamera(Camera3D&) {
-    // Retained for API compatibility; C# commands reach the camera through the
+    // Retained for API compatibility; commands reach the camera through the
     // ScriptRuntime world binding instead.
 }
 
@@ -371,7 +604,7 @@ void Draw() {
             DrawTextEx(font, feedback.text.c_str(), { promptX + 18.0f, textY }, FEEDBACK_FONT_SIZE, 1.0f, feedbackCol);
             EndScissorMode();
         } else {
-            DrawTextEx(font, "Press ` to run C# code.",
+            DrawTextEx(font, "Press ` to enter a command (type help).",
                 { promptX + 18.0f, textY }, FONT_SIZE, 1.0f, Color{ 150, 150, 160, 255 });
         }
     } else {

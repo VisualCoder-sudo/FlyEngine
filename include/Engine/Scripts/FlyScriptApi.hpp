@@ -1,11 +1,12 @@
 #pragma once
 
-// External .NET scripting C API.
+// Scripting C API.
 //
-// This is the stable ABI between the C++ engine and the C# scripting runtime.
-// C# game scripts P/Invoke these functions (exported from the engine exe) to
-// read and mutate the world, exactly as Flyscript's "game.Workspace.X.Prop"
-// / "self.Prop" syntax used to. See the C# mirror in the scripting SDK.
+// The engine-side functions game scripts use to read and mutate the world.
+// Script libraries do not link against these directly: NativeScriptHost hands
+// them over as the FlyApi function table (ScriptingSDK/include/FlyScriptABI.h),
+// which the C++ SDK (fly.hpp) wraps. They are also exported from the engine
+// executable for native plugins.
 //
 // Conventions
 // -----------
@@ -109,10 +110,10 @@ FLY_API unsigned long long FlyNative_CreateObject(const char* shapeName);
 
 // ---- Scripting helpers ----
 
-// Prints a line from C# to the engine log.
+// Prints a line to the engine log.
 FLY_API void FlyNative_Print(const char* text);
 
-// ---- Script lifecycle (called from editor UI, forwarded to C# ScriptHost) ----
+// ---- Script lifecycle (forwarded to the NativeScriptHost) ----
 // Returns script ID (>0) or 0 on failure.
 FLY_API unsigned long long FlyNative_StartObjectScript(unsigned long long objectHandle, const char* typeName);
 FLY_API void FlyNative_StopObjectScript(unsigned long long objectHandle);
@@ -127,13 +128,12 @@ FLY_API void FlyNative_ClearAllScripts(void);
 
 // ---- Runtime binding ----
 
-// Binds the CoreCLR host pointer so C# can call back into C++ via P/Invoke.
-// Called by the engine after CoreCLR initialization.
+// Makes `hostPtr` (a ScriptRuntime*) the active world context.
 FLY_API void FlyNative_BindRuntime(void* hostPtr);
 
 // ---- Scripting helpers ----
 
-// Prints a line from C# to the engine log.
+// Prints a line to the engine log.
 FLY_API void FlyNative_Print(const char* text);
 
 #ifdef __cplusplus

@@ -6,8 +6,8 @@ A 3D game engine and editor built on [sokol](https://github.com/floooh/sokol)
 
 Terrain with splatmap painting and LOD geomorphing, water bodies, rigid-body
 physics, glTF/OBJ/FBX/PLY model import, a PBR terrain shader, a procedural
-[city maker](#city-maker) with traffic, an ImGui editor, and a C# scripting host
-(Windows).
+[city maker](#city-maker) with traffic, an ImGui editor, and
+[C++ scripting](#c-scripting) with hot reload.
 
 Builds from **one `CMakeLists.txt` on Linux and Windows**.
 
@@ -84,7 +84,6 @@ is configured for it.
 | `FLYENGINE_VULKAN_VALIDATION` | `OFF` | Use `VK_LAYER_KHRONOS_validation` in release builds too. Debug builds use it automatically when it is installed, and always run sokol's own validation layer. |
 | `FLYENGINE_SOKOL_SHDC` | downloaded | Path to the `sokol-shdc` shader compiler. |
 | `FLYENGINE_ENABLE_FLYCLOUD` | `ON` | Builds the FlyCloud integration (vendored libcurl, miniz, nlohmann/json). Turning it off drops the libcurl build, which is the slowest part of a cold compile. |
-| `FLYENGINE_ENABLE_CSHARP` | `ON` | C# scripting host. **Windows only** - see below. |
 | `FLYENGINE_ENABLE_DESKTOP_VALIDATION` | `OFF` | Validate `packaging/*.desktop` and the MIME XML at build time. |
 | `FLYENGINE_BUILD_TESTS` | `OFF` | Build the `tests/` targets. |
 | `FLYENGINE_DATA_DIR` | `<prefix>/share/flyengine` | Where the binary looks for `assets/`. Also the install destination, so the two cannot drift apart. |
@@ -192,20 +191,47 @@ on the frame after it completes, so the render loop never stalls. Results are
 tagged with a `DialogPurpose` so several subsystems can poll every frame
 without consuming each other's results.
 
-### C# scripting
+### C++ scripting
 
-**Windows only.** The CoreCLR host embeds `coreclr.dll` and is guarded by
-`#if defined(_WIN32)`; on other platforms `LoadCoreCLR()` reports that
-scripting is unavailable and the editor runs with it disabled.
+Game scripts are C++20 files in a project's `Scripts/` folder. The editor
+compiles them into one shared library with the system compiler and hot-reloads
+it when a file changes (running scripts restart; their state is not kept).
 
-This is a known gap, not a claim that it works. The managed assembly itself
-builds on any platform:
+```cpp
+#include "fly.hpp"
 
-```sh
-./ScriptingSDK/build_sdk.sh [project_path]
+struct Spinner : fly::Script {
+    fly::Task Run() override {
+        fly::Object self = fly::Object::Self();
+        while (true) {
+            fly::Vec3 r = self.Rotation();
+            r.y += 45.0f * fly::DeltaTime();
+            self.SetRotation(r);
+            co_await fly::NextFrame();   // or fly::Wait(seconds), fly::WaitFrames(n)
+        }
+    }
+};
+FLY_SCRIPT(Spinner)
 ```
 
-The Linux CLR host is the next piece of work.
+Compiler lookup: `FLYENGINE_CXX` if set, then `clang++` / `g++` on Linux;
+`cl` (developer prompt), `clang++` / MinGW `g++`, then Visual Studio found via
+`vswhere` on Windows. Compiler output goes to the editor log. A failed build
+lists each error in a panel over the viewport (click one to open the file at
+that line in VS Code or Rider) while the previous library stays loaded. Builds
+land in `Scripts/.build/`, and a `Scripts/compile_flags.txt` is written so
+clangd-based editors find `fly.hpp`. See `ScriptingSDK/samples/` for more.
+
+**Playtests are temporary.** When Play starts the editor snapshots the scene
+objects and the world settings scripts can change (lighting, grid, wireframe,
+field of view, gravity, friction, restitution). When Stop is pressed, anything
+that differs is put back: objects scripts created disappear and changes to
+existing objects are undone. Cities are not snapshotted, since nothing at play
+time changes them. `FlyPlayer` starts the scripts marked "run on play" as soon
+as the scene loads; the player's body is the object named `PlayerCharacter`.
+
+The editor console (`` ` ``) takes commands such as `Cube.Position = (0, 5, 0)`,
+`Physics.Gravity`, `run Spinner`, `scripts` and `rebuild`; type `help`.
 
 ### Fonts
 
@@ -215,11 +241,28 @@ Liberation Sans on Linux.
 
 ### The scripting ABI
 
-The C# side P/Invokes `FlyNative_*` through the process's own exported symbols.
-On Linux that means the executable must export its dynamic symbol table, which
-CMake does with `ENABLE_EXPORTS ON`. Without it the build and link succeed and
-every script call fails on the first tick - CI checks the export count
-explicitly for this reason.
+Script libraries talk to the engine only through plain C
+(`ScriptingSDK/include/FlyScriptABI.h`): the engine passes a table of
+`FlyNative_*` function pointers to the library's `FlyScript_GetModule` entry
+point and gets back the list of script classes. C++ exceptions, allocations and
+coroutine frames never cross it, so scripts built with any compiler work with an
+engine built by any other.
+
+The same `FlyNative_*` functions are exported from the executable for native
+plugins. On Linux that needs `ENABLE_EXPORTS ON`; CI checks the export count.
+
+### Native plugins
+
+Plugins are plain C or C++ shared libraries built against `include/CPluginAPI.h`
+(API 1.1). Put the library in `<project>/plugins/nat/<name>/build/`; the editor
+loads it at startup and reloads it when the file changes. A plugin exports
+`CP_GetPluginEntry` (use `CP_REGISTER_PLUGIN`) and gets `on_load`, `on_update`
+and `on_unload` callbacks plus the engine function table (entities, input,
+physics, audio, ImGui, files, ...). The editor does not compile plugins; build
+them yourself, e.g. `cc -shared -fPIC -I<FlyEngine>/include -o build/x.so x.c`.
+
+API 1.1 added `ui_set_accent_color`, which re-skins the editor's accent colour
+(editor only). A plugin built against a newer API than the engine is refused.
 
 ---
 
@@ -325,7 +368,7 @@ block/outline geometry headlessly.
 
 ```sh
 cmake -S . -B build -G Ninja -DFLYENGINE_BUILD_TESTS=ON && cmake --build build
-ctest --test-dir build                 # headless: math, projection depth, memory tracker, texture hash
+ctest --test-dir build                 # headless: math, projection depth, memory tracker, texture hash, script diagnostics
 build/tests/rl_smoke_test              # needs a display + GPU: textures, mesh churn, instancing
 build/Flyengine --testscene [frames]   # terrain tools + city + shapes; run from a Debug build
 build/Flyengine --testwater [objects] [frames]
@@ -369,7 +412,7 @@ include/rl/               its public headers (raylib.h, raymath.h, rlgl.h subset
 sokol/                    vendored sokol headers (sokol_app.h carries one marked patch)
 assets/                   editor icons, logo, preset and terrain textures
 packaging/                .desktop entry, MIME XML, tarball script
-ScriptingSDK/             the C# SDK and its build scripts
+ScriptingSDK/             the C++ script SDK (fly.hpp, the C ABI, samples)
 extern/box3d/             vendored Box3D
 ```
 

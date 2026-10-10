@@ -2,7 +2,6 @@
 // Loads a project and runs it without editor UI.
 
 #include "Engine.hpp"
-#include "Engine/Scripts/CoreCLRHost.hpp"
 #include "Engine/Scripts/NativeScriptHost.hpp"
 #include "Engine/TechnicalTools.hpp"
 #include "Engine/Frontend/ProjectManager.hpp"
@@ -13,7 +12,6 @@
 #include "Engine/Backend/CameraController.hpp"
 #include "Engine/Backend/CharacterController.hpp"
 #include "Engine/Platform/Platform.hpp"
-#include "Engine/Scripts/ScriptCompiler.hpp"
 #include "Engine/Graphics.hpp"
 #include "Terrain/Terrain.hpp"
 #include "Terrain/Water/WaterBody.hpp"
@@ -75,11 +73,11 @@ struct DebugStats {
     int cityBuildings = 0;
 
     // Scripting. There is deliberately no "active scripts" count here: the
-    // script registries live on the managed and native hosts and neither
-    // exposes a count, so the old field could only ever report whether a host
-    // object existed. What a player actually needs to know is "did my C# load,
-    // and did my plugins load", so that is what this reports.
-    bool clrReady = false;
+    // script registry lives on the native host and is not exposed, so the old
+    // field could only ever report whether a host object existed. What a
+    // player actually needs to know is "did my scripts load, and did my
+    // plugins load", so that is what this reports.
+    bool scriptsReady = false;
     int nativePlugins = 0;
     
     // Physics
@@ -289,9 +287,9 @@ struct DebugStats {
             line(WHITE, 13, "Water:       %d bodies", waterBodies);
             line(WHITE, 13, "City:        %d buildings", cityBuildings);
             // There is no active-script count to show -- the registries live on
-            // the script hosts and expose no count. Reporting "did my C# load"
+            // the script host and expose no count. Reporting "did my scripts load"
             // and "how many plugins loaded" is the part a player can act on.
-            line(WHITE, 13, "C# Runtime:  %s", clrReady ? "ready" : "not loaded");
+            line(WHITE, 13, "Scripts:     %s", scriptsReady ? "loaded" : "not loaded");
             line(WHITE, 13, "Plugins:     %d loaded", nativePlugins);
             
             gap(6);
@@ -570,7 +568,7 @@ static void PrintUsage(const char* exeName) {
         "Options:\n"
         "  --capfps30           Cap framerate at 30 FPS\n"
         "  --capfps60           Cap framerate at 60 FPS (default)\n"
-        "  --noscripts          Disable C# scripting entirely\n"
+        "  --noscripts          Disable game scripts (Scripts/*.cpp) entirely\n"
         "  --nocacherecompile   Skip shader cache recompilation on startup\n"
         "  --fullscreen         Start in fullscreen mode\n"
         "  --res WxH            Window resolution (e.g., --res 1920x1080)\n"
@@ -606,7 +604,7 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             opts.targetFPS = 60;
         } else if (arg == "--noscripts") {
             opts.noScripts = true;
-            std::printf("[Player] --noscripts flag detected, C# scripting disabled\n");
+            std::printf("[Player] --noscripts flag detected, game scripts disabled\n");
         } else if (arg == "--nocacherecompile") {
             opts.noCacheRecompile = true;
         } else if (arg == "--fullscreen") {
@@ -740,25 +738,10 @@ int main(int argc, char* argv[]) {
         rawObjectPtrs.push_back(charControllerPtr->GetPlayerBody());
     }
 
-    // CoreCLR Host (C# scripting)
-    CoreCLRHost* coreClrHostPtr = nullptr;
-    if (!opts.noScripts) {
-        std::printf("[Player] Initializing CoreCLR host...\n");
-        scriptCompiler::EnsureBuilt(info.path);
-        auto coreClrHost = std::make_unique<CoreCLRHost>();
-        coreClrHostPtr = coreClrHost.get();
-        if (coreClrHost->Initialize(info.path)) {
-            engine.AddEntity(std::move(coreClrHost));
-            std::printf("[Player] CoreCLR host initialized successfully\n");
-        } else {
-            std::printf("[Player] CoreCLR host initialization failed\n");
-            coreClrHostPtr = nullptr; // Prevent dangling pointer
-        }
-    } else {
-        std::printf("[Player] Skipping CoreCLR (--noscripts)\n");
-    }
-
-    // NativeScript Host (C/C++ plugin scripting) - always enabled unless explicitly disabled
+    // NativeScript host: game scripts (Scripts/*.cpp, unless --noscripts) and
+    // C/C++ plugins (unless --no-native-scripts). Created before the scene
+    // loads because scene persistence restores the standalone-script list
+    // into its runtime.
     bool noNativeScripts = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--no-native-scripts") {
@@ -766,26 +749,34 @@ int main(int argc, char* argv[]) {
             break;
         }
     }
-    
-    NativeScript::NativeScriptHost* nativeScriptHostPtr = nullptr;
-    if (!noNativeScripts) {
-        std::printf("[Player] Initializing NativeScript host...\n");
+
+    auto nativeScriptHost = std::make_unique<NativeScript::NativeScriptHost>();
+    NativeScript::NativeScriptHost* nativeScriptHostPtr = nativeScriptHost.get();
+    nativeScriptHost->SetScriptHotReload(opts.hotReload);
+    if (!opts.noScripts) {
+        std::printf("[Player] Building and loading game scripts...\n");
         fflush(stdout);
-        auto nativeScriptHost = std::make_unique<NativeScript::NativeScriptHost>();
-        nativeScriptHostPtr = nativeScriptHost.get();
-        nativeScriptHost->SetEngine(&engine);
-        if (nativeScriptHost->Initialize(info.path)) {
-            engine.AddEntity(std::move(nativeScriptHost));
-            std::printf("[Player] NativeScript host initialized successfully\n");
-            fflush(stdout);
-        } else {
-            std::printf("[Player] NativeScript host initialization failed\n");
-            fflush(stdout);
-        }
+        if (nativeScriptHost->InitializeScripts(info.path))
+            std::printf("[Player] Game scripts loaded\n");
+        else
+            std::printf("[Player] No game scripts loaded\n");
     } else {
-        std::printf("[Player] Skipping NativeScript (--no-native-scripts)\n");
+        std::printf("[Player] Skipping game scripts (--noscripts)\n");
+    }
+    if (!noNativeScripts) {
+        std::printf("[Player] Initializing native plugins...\n");
+        fflush(stdout);
+        nativeScriptHost->SetEngine(&engine);
+        if (nativeScriptHost->Initialize(info.path))
+            std::printf("[Player] Native plugins initialized successfully\n");
+        else
+            std::printf("[Player] Native plugin initialization failed\n");
+        fflush(stdout);
+    } else {
+        std::printf("[Player] Skipping native plugins (--no-native-scripts)\n");
         fflush(stdout);
     }
+    engine.AddEntity(std::move(nativeScriptHost));
 
     // Load scene
     textureManager::Init(info.path);
@@ -811,15 +802,14 @@ int main(int argc, char* argv[]) {
         charControllerPtr->EnsurePhysicsBody();
     }
 
-    // Bind world to script runtime
-    if (coreClrHostPtr && coreClrHostPtr->IsReady()) {
-        Camera3D& cam = engine.GetCamera();
-        coreClrHostPtr->BindWorld(rawObjectPtrs, sceneModels, cam, simRef, engine);
-        coreClrHostPtr->SyncStandaloneScripts();
+    // Bind world to script runtime, then start the runOnPlay scripts: the
+    // player starts physics directly instead of through the editor's play
+    // toggle, so the host has to be told play began.
+    nativeScriptHostPtr->BindWorld(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
+    if (nativeScriptHostPtr->ScriptsReady()) {
+        nativeScriptHostPtr->SyncStandaloneScripts();
+        nativeScriptHostPtr->SetPlayActive(true);
     }
-    
-    // NativeScript host uses CPluginAPI directly (no ScriptRuntime needed)
-    // FlyPluginAPI_SetEngine was already called during NativeScriptHost::Initialize
 
     // Initialize Technical Tools (console, profiler, inspector, physics debug, recorder, capture, memory tracker)
     TechTools::TechnicalToolsManager::Instance().Initialize(&engine);
@@ -910,9 +900,8 @@ int main(int argc, char* argv[]) {
         
         // Collect scene stats before update
         g_debugStats.scatteredObjects = (int)rawObjectPtrs.size();
-        g_debugStats.clrReady = coreClrHostPtr && coreClrHostPtr->IsReady();
-        g_debugStats.nativePlugins = nativeScriptHostPtr
-            ? (int)nativeScriptHostPtr->GetPlugins().size() : 0;
+        g_debugStats.scriptsReady = nativeScriptHostPtr->ScriptsReady();
+        g_debugStats.nativePlugins = (int)nativeScriptHostPtr->GetPlugins().size();
         
         // Terrain chunk count is exact -- Terrain::GetChunkCount() is just
         // gridWidth * gridDepth. The old code hardcoded 1 with a comment

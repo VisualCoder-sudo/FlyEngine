@@ -91,6 +91,36 @@ std::string ExecutablePath() {
 #endif
 }
 
+std::string FindOnPath(const std::vector<std::string>& names) {
+    const std::string envPath = EnvOrEmpty("PATH");
+    if (envPath.empty()) return {};
+#if defined(_WIN32)
+    const char sep = ';';
+    const std::vector<std::string> suffixes = {"", ".cmd", ".exe", ".bat"};
+#else
+    const char sep = ':';
+    const std::vector<std::string> suffixes = {""};
+#endif
+    size_t start = 0;
+    while (start <= envPath.size()) {
+        const size_t end = envPath.find(sep, start);
+        const std::string dir =
+            envPath.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!dir.empty()) {
+            for (const std::string& name : names) {
+                for (const std::string& suffix : suffixes) {
+                    std::error_code ec;
+                    const fs::path full = fs::path(dir) / (name + suffix);
+                    if (fs::is_regular_file(full, ec)) return full.string();
+                }
+            }
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
+
 std::string UserHomeDir() {
 #if defined(_WIN32)
     const char* profile = std::getenv("USERPROFILE");

@@ -83,10 +83,10 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      # The C ABI the C# side P/Invokes is resolved through the process's own
+      # Native plugins resolve the FlyNative_* C ABI through the process's own
       # exported symbols. Without ENABLE_EXPORTS the build and link succeed and
-      # every script call fails on the first tick, so check the exports rather
-      # than trusting the build.
+      # every plugin call fails at load, so check the exports rather than
+      # trusting the build.
       - name: Verify FlyNative_* exports
         run: |
           count=$(nm -D --defined-only build/Flyengine | grep -c 'FlyNative_' || true)

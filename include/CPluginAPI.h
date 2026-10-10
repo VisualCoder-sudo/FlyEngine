@@ -4,7 +4,7 @@
  * This is the stable C interface that all native plugins (nat/, lib/) must use.
  * Plugins include this header and implement the CP_PluginEntry structure.
  *
- * Version: 1.0.0
+ * Version: 1.1.0 (1.1: ui_set_accent_color)
  */
 
 #ifndef CPLUGIN_API_H
@@ -16,6 +16,7 @@
 #else
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #endif
 
 // ============================================================================
@@ -28,8 +29,8 @@ typedef struct {
     uint32_t patch;
 } CP_API_Version;
 
-#define CP_API_CURRENT_VERSION {1, 0, 0}
-#define CP_API_VERSION_STRING "1.0.0"
+#define CP_API_CURRENT_VERSION {1, 1, 0}
+#define CP_API_VERSION_STRING "1.1.0"
 
 // Version comparison helpers
 static inline int CP_API_VersionCompare(CP_API_Version a, CP_API_Version b) {
@@ -384,6 +385,13 @@ struct CP_EngineAPI {
     // --------------------------------------------------------
     const char* (*get_project_path)(void);
     const char* (*get_project_name)(void);
+
+    // --------------------------------------------------------
+    // Editor theme (added in 1.1; check engine_api->version before calling)
+    // --------------------------------------------------------
+    // Sets the editor's accent colour (r,g,b in 0..1; alpha ignored). Hover and
+    // pressed shades are derived. Editor only: has no effect in the player.
+    void (*ui_set_accent_color)(CP_Color color);
 };
 
 // ============================================================================

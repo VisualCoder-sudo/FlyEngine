@@ -13,7 +13,7 @@ Rectangle GetBounds();       // bar rect, used for UI hit-testing
 void Focus();
 void Blur();
 
-// Retained for API compatibility. C# commands reach the camera through the
+// Retained for API compatibility. Commands reach the camera through the
 // ScriptRuntime world binding, so this is a no-op.
 void AttachCamera(Camera3D& cam);
 

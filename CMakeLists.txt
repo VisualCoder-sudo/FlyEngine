@@ -70,11 +70,6 @@ if(UNIX)
 endif()
 
 # --- Feature switches ------------------------------------------------------
-# C# scripting (CoreCLR hosting) is implemented for Windows only. On other
-# platforms the host compiles to a graceful stub so a Linux build still runs
-# the editor; see src/Engine/Backend/CoreCLRHost.cpp.
-option(FLYENGINE_ENABLE_CSHARP "Build the C# scripting host (Windows only; no-op elsewhere)" ON)
-
 # Native C/C++ scripting (cross-platform, no external runtime)
 option(FLYENGINE_NATIVE_SCRIPTS "Enable native C/C++ plugin scripting" ON)
 
@@ -203,7 +198,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Scripts/ScriptRuntime.cpp
         src/Engine/Scripts/ScriptLauncher.cpp
         src/Engine/Scripts/ScriptCompiler.cpp
-        src/Engine/Backend/CoreCLRHost.cpp
+        src/Engine/Scripts/ScriptDiagnostics.cpp
         src/Engine/Backend/FlyScriptApi.cpp
         src/Engine/Scripts/NativeScriptHost.cpp
         src/Engine/Scripts/CPluginAPI.cpp
@@ -283,6 +278,8 @@ if(FLYENGINE_ENABLE_FLYCLOUD)
 endif()
 
 target_include_directories(FlyEngineCore PUBLIC include imgui extern/ufbx extern/miniz ${FLYCLOUD_INCLUDE_DIRS})
+# FlyScriptABI.h: the C ABI shared with compiled game scripts.
+target_include_directories(FlyEngineCore PUBLIC ScriptingSDK/include)
 target_link_libraries(FlyEngineCore PUBLIC
         FlyRLHeaders FlyImGui box3d::box3d
         FlySqlite FlyPluginCore
@@ -291,10 +288,6 @@ target_link_libraries(FlyEngineCore PUBLIC
 
 # libcurl is linked statically
 target_compile_definitions(FlyEngineCore PUBLIC ${FLYCLOUD_DEFINES})
-
-if(FLYENGINE_ENABLE_CSHARP)
-    target_compile_definitions(FlyEngineCore PUBLIC FLYENGINE_ENABLE_CSHARP)
-endif()
 
 if(FLYENGINE_NATIVE_SCRIPTS)
     target_compile_definitions(FlyEngineCore PUBLIC FLYENGINE_NATIVE_SCRIPTS)
@@ -405,6 +398,11 @@ endif()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/"
         DESTINATION "${FLYENGINE_INSTALL_DATA_DIR}/assets"
         PATTERN "*.ico" EXCLUDE)
+# The C++ script SDK: the editor compiles projects' Scripts/*.cpp against it.
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/ScriptingSDK/include"
+                  "${CMAKE_SOURCE_DIR}/ScriptingSDK/src"
+                  "${CMAKE_SOURCE_DIR}/ScriptingSDK/samples"
+        DESTINATION "${FLYENGINE_INSTALL_DATA_DIR}/ScriptingSDK")
 
 if(UNIX AND NOT APPLE)
     install(FILES packaging/flyengine.desktop

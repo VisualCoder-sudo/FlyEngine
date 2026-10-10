@@ -218,8 +218,8 @@ void Simulation::ApplyImpulseToBody(ScatteredObject* object, Vector3 impulse, bo
 
 void Simulation::Update(float dt) {
     if (ui::ConsumePlayToggle()) {
-        // Legacy script-safety gate removed: scripts are compiled C# classes
-        // in FlyScript.dll with no editor sandbox warning pass.
+        // Legacy script-safety gate removed: scripts are compiled C++ classes
+        // with no editor sandbox warning pass.
         playing = !playing;
         ui::SetPlayActive(playing);
         if (playing) {
@@ -227,7 +227,7 @@ void Simulation::Update(float dt) {
         } else {
             StopPlay();
         }
-        // Notify the active C# script host so runOnPlay scripts start/stop.
+        // Notify the active script host so runOnPlay scripts start/stop.
         if (PlayStateHook hook = GetPlayStateHook()) hook(playing);
     }
     if (!playing) return;

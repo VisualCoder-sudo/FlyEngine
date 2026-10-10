@@ -12,17 +12,12 @@
 #include <string>
 #include <vector>
 
-// Export/import decoration for the FlyNative_* C ABI (FlyScriptApi.cpp).
-// On Windows the managed side resolves these through
-// NativeLibrary.GetMainProgramHandle(); on Linux that is dlopen(NULL), which
-// only sees symbols the executable exported (see ENABLE_EXPORTS in
-// CMakeLists.txt).
+// Export decoration for the FlyNative_* C ABI (FlyScriptApi.cpp). Game
+// scripts reach these through the FlyApi function table, not by symbol; they
+// are exported from the executable for native plugins (on Linux that also
+// needs ENABLE_EXPORTS in CMakeLists.txt).
 #if defined(_WIN32)
-    #if defined(FLYENGINE_CSHARP_EXPORTS)
-        #define FLY_API __declspec(dllexport)
-    #else
-        #define FLY_API __declspec(dllimport)
-    #endif
+    #define FLY_API __declspec(dllexport)
 #else
     #define FLY_API __attribute__((visibility("default")))
 #endif
@@ -133,7 +128,7 @@ struct ProcessResult {
 
 // Runs `exe` with `args` (argv[0] is supplied for you) and captures its
 // combined output. Returns after the process exits or `timeoutMs` elapses.
-// BLOCKING -- fine for one-shot work like `dotnet build`, not for dialogs.
+// BLOCKING -- fine for one-shot work like a compiler run, not for dialogs.
 ProcessResult RunProcessCapture(const std::string& exe,
                                 const std::vector<std::string>& args,
                                 int timeoutMs);
@@ -147,6 +142,10 @@ bool LaunchDetached(const std::string& exe, const std::vector<std::string>& args
 // --- Well-known locations -------------------------------------------------
 
 std::string ExecutablePath();   // GetModuleFileNameW / readlink(/proc/self/exe)
+
+// Searches PATH for the first of `names` that resolves to a file. On Windows
+// the .cmd/.exe/.bat suffixes are tried too. Returns the full path or "".
+std::string FindOnPath(const std::vector<std::string>& names);
 std::string UserHomeDir();      // %USERPROFILE% / $HOME
 std::string ConfigDir();        // %APPDATA%    / $XDG_CONFIG_HOME or ~/.config
 std::string DocumentsDir();     // %USERPROFILE%\Documents / xdg-user-dir DOCUMENTS

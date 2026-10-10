@@ -87,6 +87,18 @@ private:
     void RestoreFromSnapshot(const std::string& bytes, const std::vector<std::string>& selNames);
     void SelectObjectsByName(const std::vector<std::string>& names);
 
+    // Playtest isolation: whatever scripts, the console or physics do during
+    // Play is temporary. The objects are snapshotted when Play starts and, if
+    // the scene differs when it stops, put back exactly as they were (objects
+    // created during play disappear). Cities are not part of it: nothing at
+    // play time can change them, and rebuilding them is slow.
+    void CapturePlaySnapshot();
+    void RestorePlaySnapshot();
+    std::string playSnapshotBytes;
+    std::vector<std::string> playSnapshotSel;
+    bool playSnapshotValid = false;
+    bool wasPlaying = false;
+
     UndoSystem undo;
     std::string pendingUndoBytes;
     std::vector<std::string> pendingUndoSel;

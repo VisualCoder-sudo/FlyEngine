@@ -8,6 +8,7 @@
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
@@ -148,10 +149,12 @@ constexpr Color BG_ROW_HOVER     = Color{ 44, 47, 56, 255 };
 constexpr Color BORDER           = Color{ 72, 77, 88, 255 };
 constexpr Color BORDER_STRONG    = Color{ 104, 110, 122, 255 };
 constexpr Color DIVIDER          = Color{ 56, 60, 70, 255 };
-constexpr Color ACCENT           = Color{ 0, 190, 200, 255 };
-constexpr Color ACCENT_HOVER     = Color{ 40, 210, 220, 255 };
-constexpr Color ACCENT_PRESSED   = Color{ 0, 148, 158, 255 };
-constexpr Color ACCENT_SOFT      = Color{ 0, 190, 200, 42 };
+// The accent family is mutable so a plugin can re-skin the editor; see
+// ui::SetAccentColor. Everything else here is fixed.
+inline Color ACCENT              = Color{ 0, 190, 200, 255 };
+inline Color ACCENT_HOVER        = Color{ 40, 210, 220, 255 };
+inline Color ACCENT_PRESSED      = Color{ 0, 148, 158, 255 };
+inline Color ACCENT_SOFT         = Color{ 0, 190, 200, 42 };
 constexpr Color TEXT             = Color{ 232, 232, 238, 255 };
 constexpr Color TEXT_MUTED       = Color{ 156, 161, 172, 255 };
 constexpr Color TEXT_DIM         = Color{ 122, 128, 140, 255 };
@@ -160,7 +163,34 @@ constexpr Color DANGER_HOVER     = Color{ 236, 112, 112, 255 };
 constexpr Color SUCCESS          = Color{ 74, 176, 104, 255 };
 constexpr Color SHADOW           = Color{ 0, 0, 0, 92 };
 
+// The accent as ImGui types, with an optional alpha (0..1 / 0..255).
+inline ImVec4 AccentVec(float alpha = 1.0f) {
+    return ImVec4(ACCENT.r / 255.0f, ACCENT.g / 255.0f, ACCENT.b / 255.0f, alpha);
+}
+inline ImU32 AccentU32(int alpha = 255) {
+    return IM_COL32(ACCENT.r, ACCENT.g, ACCENT.b, alpha);
+}
+
 } // namespace theme
+
+// Points every accent-coloured ImGui style entry at theme::ACCENT. No-op until
+// the ImGui context exists; ApplyImGuiTheme calls it again when it is created.
+static void ApplyAccentToImGuiStyle() {
+    if (!ImGui::GetCurrentContext()) return;
+    ImVec4* c = ImGui::GetStyle().Colors;
+    const ImVec4 hover(theme::ACCENT_HOVER.r / 255.0f, theme::ACCENT_HOVER.g / 255.0f,
+                       theme::ACCENT_HOVER.b / 255.0f, 1.0f);
+    c[ImGuiCol_TextSelectedBg]     = theme::AccentVec(64 / 255.0f);
+    c[ImGuiCol_CheckMark]          = theme::AccentVec();
+    c[ImGuiCol_SliderGrab]         = theme::AccentVec();
+    c[ImGuiCol_SliderGrabActive]   = hover;
+    c[ImGuiCol_SeparatorActive]    = theme::AccentVec();
+    c[ImGuiCol_TabHovered]         = theme::AccentVec(100 / 255.0f);
+    c[ImGuiCol_TabActive]          = theme::AccentVec(55 / 255.0f);
+    c[ImGuiCol_TabUnfocusedActive] = theme::AccentVec(35 / 255.0f);
+    c[ImGuiCol_PlotLines]          = theme::AccentVec();
+    c[ImGuiCol_PlotHistogram]      = theme::AccentVec();
+}
 
 // ---------------------------------------------------------------------------
 // Anonymous namespace: internal linkage definitions
@@ -531,6 +561,42 @@ static void LogImpl(LogSeverity severity, const char* fmt, va_list args) {
     if (g_logCount < kLogCapacity) g_logCount++;
 }
 
+namespace {
+// Script build status panel (see ui.hpp). Written by SetScriptBuildState,
+// read by DrawScriptErrorPanel / IsMouseOverUI.
+ScriptBuildState g_scriptBuildState = ScriptBuildState::Idle;
+std::vector<ScriptDiagnostic> g_scriptDiagnostics;
+double g_scriptBuildStarted = 0.0;
+bool g_scriptPanelDismissed = false;
+int g_scriptPanelScroll = 0; // first visible row
+} // namespace
+
+void SetScriptBuildState(ScriptBuildState state, std::vector<ScriptDiagnostic> diagnostics) {
+    if (state == ScriptBuildState::Building && g_scriptBuildState != ScriptBuildState::Building)
+        g_scriptBuildStarted = GetTime();
+    // New results re-open a panel the user closed, and start at the top.
+    if (state == ScriptBuildState::Failed) {
+        g_scriptPanelDismissed = false;
+        g_scriptPanelScroll = 0;
+    }
+    g_scriptBuildState = state;
+    if (state != ScriptBuildState::Building) g_scriptDiagnostics = std::move(diagnostics);
+}
+
+void SetAccentColor(Color accent) {
+    accent.a = 255;
+    auto lighten = [](unsigned char v, float t) {
+        return static_cast<unsigned char>(v + (255 - v) * t);
+    };
+    theme::ACCENT = accent;
+    theme::ACCENT_HOVER = Color{ lighten(accent.r, 0.18f), lighten(accent.g, 0.18f), lighten(accent.b, 0.18f), 255 };
+    theme::ACCENT_PRESSED = Color{ static_cast<unsigned char>(accent.r * 0.78f),
+                                   static_cast<unsigned char>(accent.g * 0.78f),
+                                   static_cast<unsigned char>(accent.b * 0.78f), 255 };
+    theme::ACCENT_SOFT = Color{ accent.r, accent.g, accent.b, 42 };
+    ApplyAccentToImGuiStyle();
+}
+
 void Log(const char* fmt, ...) {
     if (!g_playActive) return;
 
@@ -811,7 +877,7 @@ void BlurAllInput() {
             if (g_scriptRenameIndex >= 0 && g_scriptRenameIndex < static_cast<int>(scripts.size())) {
                 auto& s = scripts[g_scriptRenameIndex];
                 // Keep an auto-derived class name in sync with the display name so
-                // the materialized .cs (and the class it defines) still matches.
+                // the materialized .cpp (and the class it defines) still matches.
                 std::string oldClass = scriptLauncher::MakeClassName(s.typeName.empty() ? s.name : s.typeName);
                 s.name = g_scriptNameBuffer;
                 if (s.typeName == oldClass)
@@ -1067,6 +1133,32 @@ static Rectangle GetOutputPanelBounds() {
     return Rectangle{ area.x, assetBar.y - h - 8.0f, area.width, h };
 }
 
+// Script build panel: a strip over the top of the viewport. While compiling it
+// is a one-line status (shown only once a build has taken a moment, so quick
+// rebuilds don't flash it); after a failure it lists the compiler messages.
+constexpr float kScriptPanelHeaderH = 26.0f;
+constexpr float kScriptPanelRowH = 19.0f;
+constexpr int kScriptPanelMaxRows = 7;
+
+static bool ScriptPanelVisible() {
+    if (g_scriptBuildState == ScriptBuildState::Failed) return !g_scriptPanelDismissed;
+    if (g_scriptBuildState == ScriptBuildState::Building)
+        return GetTime() - g_scriptBuildStarted > 0.5;
+    return false;
+}
+
+static Rectangle GetScriptPanelBounds() {
+    if (!ScriptPanelVisible()) return Rectangle{ 0.0f, 0.0f, 0.0f, 0.0f };
+    Rectangle area = GetConsoleBarArea();
+    const float top = GetTopBarBounds().height + 8.0f;
+    float h = kScriptPanelHeaderH + 4.0f;
+    if (g_scriptBuildState == ScriptBuildState::Failed) {
+        const int rows = std::min<int>(kScriptPanelMaxRows, static_cast<int>(g_scriptDiagnostics.size()));
+        h += static_cast<float>(rows) * kScriptPanelRowH;
+    }
+    return Rectangle{ area.x + 8.0f, top, area.width - 16.0f, h };
+}
+
 // Terrain tool panel (defined near ui::Draw; needs bounds checks here)
 static Rectangle GetTerrainPanelBounds();
 
@@ -1092,6 +1184,9 @@ bool IsMouseOverUI() {
 
     Rectangle outRec = GetOutputPanelBounds();
     if (outRec.width > 0.0f && CheckCollisionPointRec(mouse, outRec)) return true;
+
+    Rectangle scriptRec = GetScriptPanelBounds();
+    if (scriptRec.width > 0.0f && CheckCollisionPointRec(mouse, scriptRec)) return true;
 
     // g_showColorPickerWindow
     if (g_showColorPickerWindow) {
@@ -1502,8 +1597,8 @@ MenuAction ProcessContextMenu() {
 // border that is grey at rest and bright cyan when active (hovered, selected, or open).
 static void DrawDropdownBox(const Rectangle& r, bool active, float alpha = 1.0f) {
     const Color rest   = Color{ 58, 58, 58, 255 };
-    const Color lit    = Color{ 42, 212, 226, 255 };
-    const Color fill   = Color{ 14, 60, 64, 255 };
+    const Color lit    = theme::ACCENT_HOVER;
+    const Color fill   = Mix(Color{ 14, 20, 24, 255 }, theme::ACCENT, 0.27f);
     DrawRectangleRounded(r, 0.2f, 4, Fade(active ? lit : rest, alpha));
     Rectangle inner = { r.x + 2.0f, r.y + 2.0f, r.width - 4.0f, r.height - 4.0f };
     DrawRectangleRounded(inner, 0.2f, 4, Fade(fill, alpha));
@@ -1813,7 +1908,7 @@ static void DrawImGuiTopBar() {
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p1(p0.x + pillSize.x, p0.y + pillSize.y);
-        ImU32 bg = selected ? IM_COL32(0, 190, 200, 180)
+        ImU32 bg = selected ? theme::AccentU32(180)
                  : hov      ? IM_COL32(63, 67, 78, 255)
                             : IM_COL32(48, 51, 60, 255);
         dl->AddRectFilled(p0, p1, bg, 10.0f);
@@ -1930,7 +2025,7 @@ static void DrawImGuiExplorer() {
         ImGuiWindowFlags_NoSavedSettings;
     ImGui::Begin("##Explorer", nullptr, flags);
 
-    ImGui::TextColored(ImVec4(0 / 255.0f, 190 / 255.0f, 200 / 255.0f, 1.0f), "EXPLORER");
+    ImGui::TextColored(theme::AccentVec(), "EXPLORER");
     ImGui::Separator();
 
     bool rightClickHandled = false;
@@ -3983,6 +4078,132 @@ static void DrawOutputPanel() {
     }
 }
 
+// Cuts `text` to fit `maxWidth`, ending in "..." when it had to be shortened.
+static std::string FitTextToWidth(const std::string& text, float fontSize, float maxWidth) {
+    if (MeasureTextArial(text.c_str(), fontSize) <= maxWidth) return text;
+    std::string out = text;
+    while (!out.empty() && MeasureTextArial((out + "...").c_str(), fontSize) > maxWidth) out.pop_back();
+    return out + "...";
+}
+
+static std::string BaseName(const std::string& path) {
+    const size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? path : path.substr(cut + 1);
+}
+
+static void DrawScriptErrorPanel() {
+    Rectangle panel = GetScriptPanelBounds();
+    if (panel.width <= 0.0f) return;
+
+    constexpr float textSize = 12.0f;
+    const Vector2 mouse = GetMousePosition();
+    const bool failed = g_scriptBuildState == ScriptBuildState::Failed;
+
+    int errors = 0, warnings = 0;
+    for (const auto& d : g_scriptDiagnostics) {
+        if (d.severity == ScriptDiagnostic::Severity::Error) ++errors;
+        else if (d.severity == ScriptDiagnostic::Severity::Warning) ++warnings;
+    }
+
+    DrawRectangleRec({ panel.x + 3.0f, panel.y + 3.0f, panel.width, panel.height }, theme::SHADOW);
+    DrawRectangleRec(panel, Color{ 20, 21, 26, 240 });
+    DrawRectangleLinesEx(panel, 1.0f, failed ? theme::DANGER : theme::BORDER_STRONG);
+
+    // --- header -----------------------------------------------------------
+    std::string title;
+    if (!failed) {
+        title = "COMPILING SCRIPTS...";
+    } else {
+        title = "SCRIPT BUILD FAILED - " + std::to_string(errors) + (errors == 1 ? " error" : " errors");
+        if (warnings > 0) title += ", " + std::to_string(warnings) + (warnings == 1 ? " warning" : " warnings");
+    }
+    DrawTextArial(title.c_str(), panel.x + 10.0f, panel.y + 6.0f, 13.0f, failed ? theme::DANGER : theme::ACCENT);
+
+    if (failed) {
+        // [Rebuild] and [X] on the right
+        Rectangle closeBtn = { panel.x + panel.width - 24.0f, panel.y + 4.0f, 18.0f, 18.0f };
+        Rectangle rebuildBtn = { closeBtn.x - 70.0f, panel.y + 4.0f, 64.0f, 18.0f };
+
+        const bool rebuildHover = CheckCollisionPointRec(mouse, rebuildBtn);
+        const float rebuildT = HoverProgress(9700, rebuildHover);
+        DrawRectangleRounded(rebuildBtn, 0.2f, 4, Mix(theme::BG_WIDGET, theme::ACCENT_PRESSED, rebuildT));
+        DrawRectangleLinesEx(rebuildBtn, 1.0f, Mix(theme::BORDER, theme::ACCENT, rebuildT));
+        DrawCenteredTextArial("Rebuild", rebuildBtn, 12.0f, rebuildHover ? theme::TEXT : theme::TEXT_MUTED);
+        if (rebuildHover) MarkHand();
+        if (rebuildHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (ScriptRuntime* rt = GetActiveRuntime())
+                if (auto* host = rt->GetHost()) host->RequestScriptRebuild();
+        }
+
+        const bool closeHover = CheckCollisionPointRec(mouse, closeBtn);
+        const float closeT = HoverProgress(9701, closeHover);
+        DrawRectangleRounded(closeBtn, 0.2f, 4, Mix(theme::BG_WIDGET, theme::DANGER, closeT));
+        DrawRectangleLinesEx(closeBtn, 1.0f, Mix(theme::BORDER, theme::DANGER_HOVER, closeT));
+        DrawCenteredTextArial("X", closeBtn, 12.0f, closeHover ? theme::TEXT : theme::TEXT_MUTED);
+        if (closeHover) MarkHand();
+        if (closeHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) g_scriptPanelDismissed = true;
+    }
+    DrawLine(static_cast<int>(panel.x + 6.0f), static_cast<int>(panel.y + kScriptPanelHeaderH),
+             static_cast<int>(panel.x + panel.width - 6.0f), static_cast<int>(panel.y + kScriptPanelHeaderH), theme::DIVIDER);
+    if (!failed) return;
+
+    // --- rows -------------------------------------------------------------
+    const int total = static_cast<int>(g_scriptDiagnostics.size());
+    const int visible = std::min(kScriptPanelMaxRows, total);
+    const int maxScroll = std::max(0, total - visible);
+    const bool overPanel = CheckCollisionPointRec(mouse, panel);
+    const float wheel = GetMouseWheelMove();
+    if (wheel != 0.0f && overPanel) g_scriptPanelScroll -= static_cast<int>(wheel * 2.0f);
+    g_scriptPanelScroll = std::clamp(g_scriptPanelScroll, 0, maxScroll);
+
+    const float rowsTop = panel.y + kScriptPanelHeaderH + 2.0f;
+    const float textRight = panel.x + panel.width - (maxScroll > 0 ? 16.0f : 10.0f);
+
+    for (int i = 0; i < visible; ++i) {
+        const ScriptDiagnostic& d = g_scriptDiagnostics[static_cast<size_t>(g_scriptPanelScroll + i)];
+        const Rectangle row = { panel.x + 4.0f, rowsTop + static_cast<float>(i) * kScriptPanelRowH,
+                                panel.width - 8.0f, kScriptPanelRowH };
+        const bool clickable = !d.file.empty();
+        const bool hover = clickable && CheckCollisionPointRec(mouse, row);
+        if (hover) {
+            DrawRectangleRec(row, theme::BG_ROW_HOVER);
+            MarkHand();
+        }
+
+        Color sevColor = theme::TEXT_MUTED;
+        const char* sev = "note";
+        if (d.severity == ScriptDiagnostic::Severity::Error) { sevColor = theme::DANGER; sev = "error"; }
+        else if (d.severity == ScriptDiagnostic::Severity::Warning) { sevColor = Color{ 226, 178, 70, 255 }; sev = "warning"; }
+        const bool isNote = d.severity == ScriptDiagnostic::Severity::Note;
+        const float ty = row.y + (row.height - textSize) * 0.5f;
+
+        float x = row.x + 6.0f + (isNote ? 14.0f : 0.0f);
+        DrawTextArial(sev, x, ty, textSize, sevColor);
+        x += 52.0f;
+
+        if (clickable) {
+            std::string where = BaseName(d.file);
+            if (d.line > 0) where += ":" + std::to_string(d.line);
+            DrawTextArial(where.c_str(), x, ty, textSize, theme::ACCENT);
+            x += MeasureTextArial(where.c_str(), textSize) + 10.0f;
+        }
+        const std::string msg = FitTextToWidth(d.message, textSize, textRight - x);
+        DrawTextArial(msg.c_str(), x, ty, textSize, isNote ? theme::TEXT_DIM : theme::TEXT);
+
+        if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            scriptLauncher::RequestOpenAt(d.file, d.line, d.column);
+    }
+
+    if (maxScroll > 0) {
+        const float sbX = panel.x + panel.width - 10.0f;
+        const float sbH = static_cast<float>(visible) * kScriptPanelRowH;
+        DrawRectangle(static_cast<int>(sbX), static_cast<int>(rowsTop), 4, static_cast<int>(sbH), Color{ 255, 255, 255, 18 });
+        float thumbH = std::max(12.0f, sbH * static_cast<float>(visible) / static_cast<float>(total));
+        const float thumbY = rowsTop + (sbH - thumbH) * (static_cast<float>(g_scriptPanelScroll) / static_cast<float>(maxScroll));
+        DrawRectangle(static_cast<int>(sbX), static_cast<int>(thumbY), 4, static_cast<int>(thumbH), theme::BORDER);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terrain tool panel (Cities Skylines 2 / Unity style)
 // Top half: terrain tools (raise/lower/smooth/flatten + brush sliders), or
@@ -5013,6 +5234,7 @@ void Draw() {
     // Docked console + output panel
     console::Draw();
     DrawOutputPanel();
+    DrawScriptErrorPanel();
 
     // Terrain editor UI
     DrawTerrainEditorUI();
@@ -6033,6 +6255,8 @@ static void ApplyImGuiTheme() {
     c[ImGuiCol_PlotLines]            = rgba(0, 190, 200);
     c[ImGuiCol_PlotHistogram]        = rgba(0, 190, 200);
     c[ImGuiCol_ModalWindowDimBg]     = rgba(0, 0, 0, 110);
+
+    ApplyAccentToImGuiStyle();
 }
 
 // ---- Preferences panel ----
@@ -6042,7 +6266,7 @@ static void ApplyImGuiTheme() {
 
 static void DrawPrefsSidebarButton(const char* label, int index, bool enabled = true) {
     bool selected = (g_prefsCategory == index);
-    ImVec4 selColor    = ImVec4(0.0f, 190 / 255.0f, 200 / 255.0f, 1.0f); // theme::ACCENT
+    ImVec4 selColor    = theme::AccentVec();
     ImVec4 plainColor  = ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
     ImVec4 plainHover  = ImVec4(0.62f, 0.62f, 0.66f, 1.0f);
     ImVec4 bg = selected ? selColor : plainColor;
@@ -6067,7 +6291,7 @@ static void DrawPrefsSettingRowBegin(const char* label) {
     float rowHeight = 30.0f;
     ImGui::GetWindowDrawList()->AddRectFilled(
         rowPos, ImVec2(rowPos.x + avail.x, rowPos.y + rowHeight),
-        IM_COL32(0, 190, 200, 255));
+        theme::AccentU32());
     ImGui::SetCursorScreenPos(ImVec2(rowPos.x + 8.0f, rowPos.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f));
     ImGui::TextUnformatted(label);
     ImGui::SameLine(avail.x - 150.0f);
@@ -6107,7 +6331,7 @@ void DrawImGuiPreferencesWindow() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 190 / 255.0f, 200 / 255.0f, 0.35f));
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::AccentVec(0.35f));
     if (!ImGui::Begin("##Preferences", nullptr, flags)) {
         ImGui::End();
         ImGui::PopStyleColor();
@@ -6192,7 +6416,7 @@ static void DrawImGuiLightingPanel() {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
     ImGui::Begin("##LightingProps", nullptr, flags);
-    ImGui::TextColored(ImVec4(0 / 255.0f, 190 / 255.0f, 200 / 255.0f, 1.0f), "LIGHTING");
+    ImGui::TextColored(theme::AccentVec(), "LIGHTING");
     gfx::LightingSettings& L = gfx::Lighting();
     switch (g_lightingSel) {
     case 1: {
