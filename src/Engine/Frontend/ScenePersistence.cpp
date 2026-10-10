@@ -1,4 +1,5 @@
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
+#include "../../../include/Engine/LoadingScreen.hpp"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Backend/ModelImport.hpp"
@@ -263,7 +264,15 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
+    // The loading screen (src/Engine/LoadingScreen.cpp): objects are the first 55 % of the scene, then each
+    // sidecar section (terrain, city, water, lighting) moves it on.
+    loading::Log("Reading the scene: %zu object(s)", count);
     for (size_t i = 0; i < count; ++i) {
+        if ((i & 15u) == 0) {
+            char stage[64];
+            std::snprintf(stage, sizeof stage, "Loading objects (%zu / %zu)", i, count);
+            loading::Progress(0.55f * (float)i / (float)std::max<size_t>(count, 1), stage);
+        }
         int shapeValue, red, green, blue, alpha;
         std::string name;
         Vector3 pos, size, rotation;
@@ -494,6 +503,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
 
     // v14: terrain. v16+: all terrains live in one terrain.terrain file next to
     // the scene/project and are restored through the TerrainRegistry.
+    loading::Progress(0.55f, "Loading terrain");
     if (version >= 14) {
         if (version >= 16) {
             int terrainCount = 0;
@@ -565,6 +575,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     }
 
     // v17: cities (one city.city sidecar next to the scene/project).
+    loading::Progress(0.70f, "Loading city");
     if (version >= 17) {
         int cityCount = 0;
         if (!(file >> cityCount)) return false;
@@ -585,9 +596,11 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     }
 
     // v15: water bodies
+    loading::Progress(0.85f, "Loading water");
     if (version >= 15) {
         size_t waterCount = 0;
         if (!(file >> waterCount)) return false;
+        if (waterCount > 0) loading::Log("Loading %zu water body(ies)", waterCount);
         for (size_t i = 0; i < waterCount; ++i) {
             std::string wname;
             Vector3 pos{}, wsize{};
@@ -662,6 +675,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     }
 
     // v19: scene-wide lighting.
+    loading::Progress(0.95f, "Setting up the sky and lighting");
     if (version >= 19) {
         std::string tag;
         float tod = 12.0f, len = 0.0f;

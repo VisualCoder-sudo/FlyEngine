@@ -344,6 +344,25 @@ receive the sun's shadow map (it never did).
 
 ---
 
+## Loading screens
+
+Opening a project shows a loading screen in both programs (`src/Engine/LoadingScreen.cpp`),
+driven by the real loading steps (script build, textures, scene objects, terrain, city, water,
+lighting, plugins):
+
+- the **editor** shows a percentage, what it is doing now, and the log lines the load writes
+  (script build output, `[terrain] loaded ...`, `[city] loaded ...`);
+- the **player** shows a percentage (the stage and log lines can be turned on).
+
+**Preferences > Loading** switches each one on or off and restyles it: percentage, progress bar,
+stage text, log lines (and how many), title (`{name}` is the project's name), background and accent
+colour, with a live preview. The choices are kept per machine in `<config dir>/loading.cfg`. For a
+game, *Use this look for this project only* writes the player's look into `<project>/loading.cfg`,
+which then wins over the machine's for that project's player. Player flags: `--noloading`,
+`--loading`, `--loadinglogs`.
+
+---
+
 ## City maker
 
 `City` menu -> *New regular city* / *New organic city*, then open the *City Editor* panel.

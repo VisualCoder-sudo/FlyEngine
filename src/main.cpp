@@ -6,6 +6,7 @@
 #include "../include/Engine/Frontend/ProjectManager.hpp"
 #include "../include/Engine/Frontend/ui.hpp"
 #include "../include/Engine/PostFX.hpp"
+#include "../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Backend/CrashReporter.hpp"
 #include "../include/Engine/Backend/TextureManager.hpp"
 #include "../include/Terrain/Terrain.hpp"
@@ -113,6 +114,12 @@ void RunEditor(const project::Info& info) {
     engine.SetClearColor(Color{ 36, 38, 44, 255 });
     gfx::LoadQualitySettings();     // Preferences > Rendering
 
+    // The loading screen (Preferences > Loading): a percentage, what is being done, and the log lines.
+    loading::Load();
+    loading::Begin(loading::Target::Editor, info.name);
+    loading::Log("Opening project '%s'", info.name.c_str());
+    loading::Progress(0.02f, "Starting the editor");
+
     const ScopedUI uiScope;
     project::ApplyWindowIcon();
 
@@ -140,28 +147,26 @@ void RunEditor(const project::Info& info) {
     // build fails it falls back to the last successful build.
     auto nativeHost = std::make_unique<NativeScript::NativeScriptHost>();
     NativeScript::NativeScriptHost* nativeHostPtr = nativeHost.get();
+    loading::Range(0.04f, 0.38f);
+    loading::Progress(0.0f, "Building the project's scripts");
     nativeHost->InitializeScripts(info.path);
+    loading::Progress(1.0f);
 
     project::Info loaded = info;
 
-    // Draw a loading screen so the user sees progress during heavy load
-    {
-        BeginDrawing();
-        ClearBackground(Color{36, 38, 44, 255});
-        const char* label = TextFormat("Attempting to open project: %s ...", info.name.c_str());
-        int tw = MeasureText(label, 20);
-        DrawText(label, GetScreenWidth()/2 - tw/2, GetScreenHeight()/2 - 10, 20, LIGHTGRAY);
-        EndDrawing();
-    }
-
     // Initialize texture manager BEFORE scene load so GetGPUTexture works
     // during SetTexturePath calls inside OpenProjectFile.
+    loading::Range(0.38f, 0.42f);
+    loading::Progress(0.0f, "Preparing textures");
     textureManager::Init(info.path);
 
+    loading::Range(0.42f, 0.92f);
     terrain::Terrain* loadedTerrain = nullptr;
     if (!project::OpenProjectFile(info.path, engine, rawObjectPtrs, sceneModels, loaded, &simRef, &loadedTerrain)) {
         ui::LogAlways("Failed to open project '%s'. Starting empty.", info.path.c_str());
     }
+    loading::Range(0.92f, 0.96f);
+    loading::Progress(0.0f, "Binding the scene to the scripts");
 
     // Bind the loaded world into the script runtime so FlyNative_* and standalone
     // scripts can read/mutate it. Safe even when the scripts failed to build:
@@ -185,9 +190,13 @@ void RunEditor(const project::Info& info) {
     // Native plugins: SetEngine must come before Initialize, which loads
     // plugins/nat/*/build/*.so and calls on_load. The engine owns the host
     // and ticks it each frame (scripts, plugins, and their hot-reload).
+    loading::Range(0.96f, 1.0f);
+    loading::Progress(0.0f, "Loading plugins");
     nativeHost->SetEngine(&engine);
     nativeHost->Initialize(info.path);
     engine.AddEntity(std::move(nativeHost));
+    loading::Log("Project ready");
+    loading::End();
 
     engine.Run();
 
