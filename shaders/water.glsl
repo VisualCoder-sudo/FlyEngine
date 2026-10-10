@@ -14,9 +14,9 @@ layout(binding=0) uniform vs_params {
     vec4 waterBodyNoiseParams1;
     vec4 waterBodyNoiseParams2;
     vec4 rippleParams;              // xy=window origin (world XZ), z=1/window size, w=enabled
-    vec4 sceneA;                    // scene lighting, handed to the fragment stage: xyz = unit vector towards the sun, w = ambient light (1 = noon default)
-    vec4 sceneB;                    // xyz = sun colour x intensity x day/night (about 1,1,1 at noon), w = fog density per metre
-    vec4 sceneC;                    // xyz = the sky colour the water reflects (distant water fogs towards it)
+    vec4 sceneA;                    // scene lighting, handed to the fragment stage: xyz = unit vector towards the sun, w = ambient light from the sky (linear)
+    vec4 sceneB;                    // xyz = linear sunlight on a surface that faces it
+    vec4 sceneC;                    // xyz = the sky's linear light, which the water reflects
     vec3 cameraPos;
     float _pad0;
     vec2 waterBodyNoiseDirection;
@@ -260,6 +260,7 @@ void main() {
 
 @fs fs
 @include_block fly_rt_uv
+@include_block fly_color
 layout(binding=1) uniform fs_params {
     vec4 waterBodyBaseColor;
     vec4 waterBodyNoiseParams1;
@@ -398,7 +399,7 @@ void main() {
     float NdotV = max(dot(N, V), 0.0);
     float NdotH = max(dot(microN, H), 0.0);
 
-    vec3 baseColor = waterBodyBaseColor.rgb;
+    vec3 baseColor = fly_srgb_to_linear(waterBodyBaseColor.rgb);
     float alpha = waterBodyBaseColor.a;
 
     float totalFoam = 0.0;
@@ -479,9 +480,9 @@ void main() {
 
     totalFoam = clamp(totalFoam, 0.0, 1.0);
 
-    // Lighting
-    vec3 diffuse = vec3(0.4 * vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * 0.6 * vsSceneB.xyz;
-    float spec = pow(NdotH, 48.0) * 0.8;
+    // Lighting (linear light; the sun's glints are far brighter than the water, and bloom)
+    vec3 diffuse = vec3(vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * vsSceneB.xyz;
+    float spec = pow(NdotH, 160.0) * 9.0 + pow(NdotH, 48.0) * 0.5;
 
     // Fresnel-Schlick: water gets more reflective (and visually more opaque)
     // at grazing angles instead of always showing the flat base color.
@@ -497,9 +498,8 @@ void main() {
     vec3 reflTerm = mix(skyColor, reflectionColor, reflEnabled);
 
     vec3 color = mix(baseColor * diffuse, reflTerm, reflMix);
-    color += waterBodyFoamColor * totalFoam;
+    color += fly_srgb_to_linear(waterBodyFoamColor) * totalFoam * (vsSceneA.w + vsSceneB.xyz);
     color += vsSceneB.xyz * spec;
-    color = mix(color, vsSceneC.xyz, clamp(1.0 - exp(-vsSceneB.w * fragDist), 0.0, 1.0));
 
     float edgeAlpha = mix(alpha, 1.0, fresnel * 0.5);
 

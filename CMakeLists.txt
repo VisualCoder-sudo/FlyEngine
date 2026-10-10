@@ -191,6 +191,8 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ObjectInteractionManager.cpp
         src/Engine/Frontend/ScenePersistence.cpp
         src/Engine/Graphics.cpp
+        src/Engine/PostFX.cpp
+        src/Engine/Atmosphere.cpp
         src/Engine/Scripts/CommandConsole.cpp
         src/Engine/Backend/fcloudint.cpp
         src/Engine/PhysicsSimulation.cpp

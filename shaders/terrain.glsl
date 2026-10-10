@@ -1,5 +1,5 @@
 // Chunked-terrain shader (terrain::Terrain): 4-layer splatmap blending with
-// normal/roughness maps, optional triplanar mapping, simple GGX lighting and fog.
+// normal/roughness maps, optional triplanar mapping and simple GGX lighting.
 //
 // Differences from the GLSL 330 original, forced by sokol-shdc:
 //   * sampler arrays (albedoTex[4], ...) become numbered textures; the engine's
@@ -45,16 +45,15 @@ void main() {
 @end
 
 @fs fs
+@include_block fly_color
 layout(binding=1) uniform fs_params {
     vec4 tileSize;
     vec3 lightDir;
     int layerCount;
-    vec3 lightColor;
-    float fogDensity;
-    vec3 ambientColor;
+    vec3 lightColor;        // linear sunlight on a surface that faces it, times pi
+    float _pad1;
+    vec3 ambientColor;      // linear light from the sky
     int useTriplanar;
-    vec3 fogColor;
-    float _pad0;
     vec3 cameraPos;
 };
 layout(binding=0) uniform texture2D albedoTex0;
@@ -144,6 +143,7 @@ void main() {
     if (2 < layerCount && weights[2] > 0.0) BlendLayer(albedoTex2, normalTex2, roughnessTex2, tileSize.z, weights[2], albedo, normal, roughness);
     if (3 < layerCount && weights[3] > 0.0) BlendLayer(albedoTex3, normalTex3, roughnessTex3, tileSize.w, weights[3], albedo, normal, roughness);
 
+    albedo = fly_srgb_to_linear(albedo);
     vec3 N = normalize(normal);
     vec3 V = normalize(viewDir);
     vec3 L = normalize(-lightDir);
@@ -161,12 +161,8 @@ void main() {
     vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
     vec3 specular = D * G * F * lightColor * NdotL;
     vec3 diffuse = albedo / PI * lightColor * NdotL;
+    // Linear light; fog and the sRGB encoding come later, in the post passes.
     vec3 color = diffuse + specular + albedo * ambientColor;
-
-    float dist = length(worldPos - cameraPos);
-    float fog = clamp(1.0 - exp(-fogDensity * dist), 0.0, 1.0);
-    color = mix(color, fogColor, fog);
-    color = pow(color, vec3(1.0 / 2.2));
     fragColor = vec4(color, 1.0);
 }
 @end

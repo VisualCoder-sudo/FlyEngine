@@ -545,11 +545,11 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
     // The scene's lighting (Explorer > Lighting, time of day, weather): the sun, the ambient light, the sky and the fog.
     {
         const Vector3 toSun = Vector3Negate(gfx::SunDirection());
-        const Vector3 sun = gfx::SunLightScale();
-        const Vector3 a3 = gfx::AmbientScale();
+        const Vector3 sun = gfx::SunRadiance();
+        const Vector3 a3 = gfx::AmbientSky();
         const Vector3 sky = gfx::WaterSky();
-        const Vector4 sceneA = { toSun.x, toSun.y, toSun.z, (a3.x + a3.y + a3.z) / 3.0f };
-        const Vector4 sceneB = { sun.x, sun.y, sun.z, gfx::FogDensity() };
+        const Vector4 sceneA = { toSun.x, toSun.y, toSun.z, 0.2126f * a3.x + 0.7152f * a3.y + 0.0722f * a3.z };
+        const Vector4 sceneB = { sun.x, sun.y, sun.z, 0.0f };
         const Vector4 sceneC = { sky.x, sky.y, sky.z, 0.0f };
         if (sceneALoc >= 0) SetShaderValue(shader, sceneALoc, &sceneA, SHADER_UNIFORM_VEC4);
         if (sceneBLoc >= 0) SetShaderValue(shader, sceneBLoc, &sceneB, SHADER_UNIFORM_VEC4);

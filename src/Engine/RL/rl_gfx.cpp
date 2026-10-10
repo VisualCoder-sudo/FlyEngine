@@ -62,8 +62,32 @@ unsigned int AllocTargetSlot() {
     return (unsigned int)g.targets.size() - 1;
 }
 
+// raylib pixel format -> the sokol format a render target of it uses.
+sg_pixel_format TargetFormat(int format) {
+    sg_pixel_format f = SG_PIXELFORMAT_RGBA8;
+    switch (format) {
+        case PIXELFORMAT_UNCOMPRESSED_R16G16B16A16: f = SG_PIXELFORMAT_RGBA16F; break;
+        case PIXELFORMAT_UNCOMPRESSED_R32G32B32A32: f = SG_PIXELFORMAT_RGBA32F; break;
+        case PIXELFORMAT_UNCOMPRESSED_R16: f = SG_PIXELFORMAT_R16F; break;
+        case PIXELFORMAT_UNCOMPRESSED_R32: f = SG_PIXELFORMAT_R32F; break;
+        case PIXELFORMAT_UNCOMPRESSED_GRAYSCALE: f = SG_PIXELFORMAT_R8; break;
+        default: break;
+    }
+    // Every desktop backend renders to these; the check is for the odd driver that does not.
+    if (!sg_query_pixelformat(f).render) {
+        TraceLog(LOG_WARNING, "RL: render target format %i is not renderable here, using RGBA8", format);
+        f = SG_PIXELFORMAT_RGBA8;
+    }
+    return f;
+}
+
+bool IsFloatFormat(sg_pixel_format f) {
+    return f == SG_PIXELFORMAT_RGBA16F || f == SG_PIXELFORMAT_RGBA32F || f == SG_PIXELFORMAT_R16F || f == SG_PIXELFORMAT_R32F;
+}
+
 // Creates color/depth images and attachment views for a render target slot.
-void BuildTarget(RenderTargetRec& t, int width, int height, bool color, bool depth, const char* label) {
+void BuildTarget(RenderTargetRec& t, int width, int height, bool color, bool depth, const char* label,
+                 int format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) {
     t = RenderTargetRec{};
     t.width = width;
     t.height = height;
@@ -72,9 +96,11 @@ void BuildTarget(RenderTargetRec& t, int width, int height, bool color, bool dep
         d.usage.color_attachment = true;
         d.width = width;
         d.height = height;
-        d.pixel_format = SG_PIXELFORMAT_RGBA8;
+        d.pixel_format = TargetFormat(format);
         d.label = label;
-        t.colorTex = CreateTexture(d, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false, true);
+        t.colorFormat = d.pixel_format;
+        t.linear = IsFloatFormat(d.pixel_format);
+        t.colorTex = CreateTexture(d, t.colorFormat == SG_PIXELFORMAT_RGBA8 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : format, false, true);
         sg_view_desc vd{};
         vd.color_attachment.image = GetTexture(t.colorTex)->image;
         t.colorAtt = sg_make_view(&vd);
@@ -185,6 +211,20 @@ void GfxInit(int width, int height) {
         BuildTarget(g.targets[g_dummyDepthTarget], 1, 1, false, true, "fly-dummy-depth");
         g.dummyDepthTexture = g.targets[g_dummyDepthTarget].depthTex;
         g_dummyDepthCleared = false;
+    }
+    // 1x1x1 white volume, for texture3D slots with nothing bound.
+    {
+        const uint32_t white = 0xFFFFFFFFu;
+        sg_image_desc id{};
+        id.type = SG_IMAGETYPE_3D;
+        id.width = 1;
+        id.height = 1;
+        id.num_slices = 1;
+        id.pixel_format = SG_PIXELFORMAT_RGBA8;
+        id.data.mip_levels[0] = { &white, sizeof(white) };
+        id.label = "fly-white-3d";
+        g.dummyVolumeTexture = CreateTexture(id, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false, false);
+        g.textures[g.dummyVolumeTexture].volume = true;
     }
 
     sg_buffer_desc bd{};
@@ -487,9 +527,11 @@ void EnsurePass() {
     sg_begin_pass(&pass);
     t.clearColorPending = false;
     t.clearDepthPending = false;
+    if (TextureRec* c = GetTexture(t.colorTex)) c->rendered = true;
+    if (TextureRec* d = GetTexture(t.depthTex)) d->rendered = true;
 
     g.passActive = true;
-    g.passFormat.color = t.colorAtt.id ? SG_PIXELFORMAT_RGBA8 : SG_PIXELFORMAT_NONE;
+    g.passFormat.color = t.colorAtt.id ? t.colorFormat : SG_PIXELFORMAT_NONE;
     g.passFormat.colorCount = t.colorAtt.id ? 1 : 0;
     g.passFormat.depth = t.depthAtt.id ? SG_PIXELFORMAT_DEPTH : SG_PIXELFORMAT_NONE;
     ApplyScissor();
@@ -635,6 +677,20 @@ RenderTexture2D LoadRenderTexture(int width, int height) {
     return rt;
 }
 
+RenderTexture2D LoadRenderTextureEx(int width, int height, int format, bool depth) {
+    RenderTexture2D rt{};
+    if (!Gfx().initialized || width <= 0 || height <= 0) return rt;
+    const unsigned int id = AllocTargetSlot();
+    BuildTarget(Gfx().targets[id], width, height, true, depth, "fly-render-texture-ex", format);
+    const RenderTargetRec& t = Gfx().targets[id];
+    rt.id = id;
+    rt.texture = { t.colorTex, width, height, 1, GetTexture(t.colorTex)->format };
+    rt.depth = { t.depthTex, width, height, 1, 0 };
+    GetTexture(t.colorTex)->filter = TEXTURE_FILTER_BILINEAR;
+    GetTexture(t.colorTex)->wrap = TEXTURE_WRAP_CLAMP;
+    return rt;
+}
+
 RenderTexture2D LoadRenderTextureDepth(int width, int height) {
     RenderTexture2D rt{};
     if (!Gfx().initialized || width <= 0 || height <= 0) return rt;
@@ -658,6 +714,64 @@ void UnloadRenderTexture(RenderTexture2D target) {
     if (g.currentTarget == target.id) EndTextureMode();
     DestroyTarget(g.targets[target.id]);
     g.freeTargets.push_back(target.id);
+}
+
+// One triangle that covers the current target, drawn with `shader` (its vertex
+// stage is the fly_fullscreen_vs block). No depth test or write.
+void DrawFullscreen(Shader shader, int blendMode) {
+    GfxState& g = Gfx();
+    ShaderRec* sh = GetShader(shader.id);
+    if (!g.initialized || !sh || !sh->shader.id) return;
+    BatchFlush();
+    EnsurePass();
+    if (!g.passActive) return;
+
+    PipelineKey key{};
+    key.shader = sh->shader.id;
+    key.layout = 0xFFFFFFFFu;   // no vertex input
+    key.primitive = SG_PRIMITIVETYPE_TRIANGLES;
+    key.indexType = SG_INDEXTYPE_NONE;
+    key.blend = blendMode < 0 ? 0 : (uint8_t)(blendMode + 1);
+    key.format = g.passFormat;
+    sg_pipeline_desc pd{};
+    pd.shader = sh->shader;
+    sg_apply_pipeline(GetPipeline(key, pd));
+
+    SetLinearTargetUniform(*sh);
+    sg_bindings bind{};
+    ResolveShaderTextures(*sh, nullptr, bind);
+    sg_apply_bindings(&bind);
+    ApplyShaderUniforms(*sh);
+    sg_draw(0, 3, 1);
+}
+
+Texture2D LoadTexture3D(const void* data, int width, int height, int depth, int format) {
+    Texture2D tex{};
+    GfxState& g = Gfx();
+    if (!g.initialized || !data || width <= 0 || height <= 0 || depth <= 0) return tex;
+    const bool gray = format == PIXELFORMAT_UNCOMPRESSED_GRAYSCALE;
+    if (!gray && format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) {
+        TraceLog(LOG_WARNING, "TEXTURE: LoadTexture3D() takes GRAYSCALE or R8G8B8A8 data");
+        return tex;
+    }
+    sg_image_desc d{};
+    d.type = SG_IMAGETYPE_3D;
+    d.width = width;
+    d.height = height;
+    d.num_slices = depth;
+    d.pixel_format = gray ? SG_PIXELFORMAT_R8 : SG_PIXELFORMAT_RGBA8;
+    d.data.mip_levels[0] = { data, (size_t)width * (size_t)height * (size_t)depth * (gray ? 1u : 4u) };
+    d.label = "fly-texture-3d";
+    tex.id = CreateTexture(d, format, false, false);
+    TextureRec& t = g.textures[tex.id];
+    t.volume = true;
+    t.filter = TEXTURE_FILTER_BILINEAR;
+    t.wrap = TEXTURE_WRAP_REPEAT;
+    tex.width = width;
+    tex.height = height;
+    tex.mipmaps = 1;
+    tex.format = format;
+    return tex;
 }
 
 bool IsRenderOriginTopLeft(void) { return Gfx().originTopLeft; }

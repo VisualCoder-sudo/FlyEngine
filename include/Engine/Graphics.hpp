@@ -96,6 +96,18 @@ struct LightingSettings {
     float overcast = 0.0f;            // 0..1 cloud cover: dimmer, softer sun, grey sky, a little haze
     float rain = 0.0f;                // 0..1 rain: falling rain, wet ground, more cloud and haze
     float wetGround = 0.0f;           // 0..1 wet roads without rain (rain wets them too)
+
+    // The Picture item: how the lit scene becomes the image on screen (shaders/post.glsl).
+    bool hasPicture = false;
+    int toneCurve = 1;                // 0 = none (clip), 1 = neutral (colours stay as given), 2 = ACES filmic, 3 = AgX
+    float exposure = 0.0f;            // stops, -4..4
+    bool autoExposure = true;         // the eye adapts to the brightness of the view (only with an atmosphere sky)
+    float bloom = 0.4f;               // 0..1: glow around the sun, lamps, lit windows
+    float vignette = 0.0f;            // 0..1: darker corners
+    float contrast = 1.0f;            // 0.5..1.5
+    float saturation = 1.0f;          // 0..2
+    float temperature = 0.0f;         // -1 cool .. 1 warm
+    float filmGrain = 0.0f;           // 0..1
 };
 LightingSettings& Lighting();
 void ResetLighting();                 // back to noon, no running cycle (a new scene starts like this)
@@ -113,14 +125,19 @@ Color SkyColor(Color dayColor);  // the clear colour at the current time of day
 void SetEngineClearColor(Color c);   // the engine's own background colour (used as the sky until a Sky item is inserted)
 Color CurrentSky();              // the sky colour now: the Sky item (or the engine colour) darkened for the time of day
 
-// What the scene's lighting currently is, for shaders that do not go through the lit shader (terrain).
+// What the scene's lighting currently is, for shaders that do not go through the lit shader (terrain, water).
+// The scene is lit in linear light: a white surface in full noon sun comes to about 1.
 Vector3 SunDirection();          // unit vector the sunlight travels along
-Vector3 SunLightScale();         // multiply a shader's own sun colour by this (colour x intensity x day/night)
-Vector3 AmbientScale();          // multiply a shader's own ambient colour by this (1 = the default noon ambient)
+Vector3 SunRadiance();           // linear light on a surface that faces the sun (colour x intensity x day/night x cloud)
+Vector3 AmbientSky();            // linear light from the sky on a surface that faces up
+Vector3 AmbientGround();         // linear light bounced off the ground on a surface that faces down
+Vector3 SkyRadiance();           // the sky's own linear light, for reflections (water, puddles)
+Vector3 SunLightScale();         // the sun's colour and strength relative to the plain noon sun (about 1,1,1 at noon)
+Vector3 AmbientScale();          // the sky's light relative to the default noon ambient
 float FogDensity();
 Color FogColorNow();
 float GetAmbientIntensity();
-Vector3 WaterSky();              // the sky colour the water shader reflects when the reflection is off or far (day, dusk, night, cloud)
+Vector3 WaterSky();              // the sky's linear light the water shader reflects when the reflection is off or far (day, dusk, night, cloud)
 float SunElevationNow();         // degrees above the horizon of the sun along its path (negative = below, at night)
 float WetnessNow();              // 0..1: how wet the ground is (rain or the Weather item's wet ground)
 float RainNow();                 // 0..1 rain amount
@@ -229,8 +246,10 @@ void ResetFrameStats();
 struct FrameTimings {
     double shadowMs = 0.0;
     double reflectionMs = 0.0;
+    double skyMs = 0.0;            // sky, atmosphere tables, cloud and fog passes
     double opaqueMs = 0.0;
     double transparentMs = 0.0;
+    double postMs = 0.0;           // everything between the lit scene and the picture
     double twoDMs = 0.0;
 };
 void SetFrameTimings(const FrameTimings& timings);

@@ -168,9 +168,12 @@ unsigned int LoadProgram(const char* name) {
                 if (pair.view_slot == u.viewSlot) {
                     u.samplerSlot = pair.sampler_slot;
                     u.compare = desc->samplers[pair.sampler_slot].sampler_type == SG_SAMPLERTYPE_COMPARISON;
+                    u.nonfiltering = desc->samplers[pair.sampler_slot].sampler_type == SG_SAMPLERTYPE_NONFILTERING;
                     break;
                 }
             }
+            if (u.viewSlot >= 0 && u.viewSlot < SG_MAX_VIEW_BINDSLOTS)
+                u.volume = desc->views[u.viewSlot].texture.image_type == SG_IMAGETYPE_3D;
         }
         if (u.name == "texture1") u.unit = 1;
         if (u.name == "texture2") u.unit = 2;
@@ -203,6 +206,7 @@ unsigned int LoadProgram(const char* name) {
     sh.locs[SHADER_LOC_MAP_DIFFUSE] = uni("texture0");
     sh.locs[SHADER_LOC_MAP_SPECULAR] = uni("texture1");
     sh.locs[SHADER_LOC_MAP_NORMAL] = uni("texture2");
+    sh.locLinearTarget = uni("flyLinearTarget");
 
     // Uniform blocks start zeroed; colDiffuse defaults to white like GL's
     // "uniform not set" path would leave it after raylib's first draw.
@@ -258,13 +262,26 @@ void ResolveShaderTextures(const ShaderRec& sh, const unsigned int* drawUnits, s
         if (!id && drawUnits) id = drawUnits[u.unit];
         if (!id) id = g.units[u.unit];
         TextureRec* t = GetTextureForBinding(id);
-        if (!t || t->depth != u.compare || IsBoundAsAttachment(id)) {
-            t = GetTextureForBinding(u.compare ? g.dummyDepthTexture : g.whiteTexture);
+        // A depth texture is read through a comparison sampler (shadow maps) or,
+        // for its raw values, a nearest one (@sampler_type nonfiltering).
+        bool usable = t && !IsBoundAsAttachment(id) && t->volume == u.volume && (!t->attachment || t->rendered);
+        if (usable) usable = u.compare ? t->depth : (!t->depth || u.nonfiltering);
+        if (!usable) {
+            t = GetTextureForBinding(u.volume ? g.dummyVolumeTexture : u.compare ? g.dummyDepthTexture : g.whiteTexture);
         }
         if (!t) continue;
         bind.views[u.viewSlot] = t->view;
-        bind.samplers[u.samplerSlot] = GetSamplerFor(*t, u.compare);
+        bind.samplers[u.samplerSlot] = u.nonfiltering
+            ? GetSampler(TEXTURE_FILTER_POINT, t->depth ? TEXTURE_WRAP_CLAMP : t->wrap, false, false)
+            : GetSamplerFor(*t, u.compare);
     }
+}
+
+void SetLinearTargetUniform(ShaderRec& sh) {
+    if (sh.locLinearTarget < 0) return;
+    const GfxState& g = Gfx();
+    const float linear = (g.currentTarget < g.targets.size() && g.targets[g.currentTarget].linear) ? 1.0f : 0.0f;
+    SetUniformValue(sh, sh.locLinearTarget, &linear, SHADER_UNIFORM_FLOAT, 1);
 }
 
 void ApplyShaderUniforms(const ShaderRec& sh) {

@@ -974,11 +974,10 @@ void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
     // The scene's sun, ambient light and fog (Explorer > Lighting), applied to this shader's own base colours.
     Vector3 lightDir = gfx::SunDirection();
     SetShaderValue(terrainShader, shaderLocs[LocLightDir], &lightDir, SHADER_UNIFORM_VEC3);
-    const Vector3 sunScale = gfx::SunLightScale();
-    Vector3 lightColor = { 1.0f * sunScale.x, 0.95f * sunScale.y, 0.8f * sunScale.z };
+    // Linear light (the shader divides the diffuse term by pi, so the sun is handed over times pi).
+    Vector3 lightColor = Vector3Scale(gfx::SunRadiance(), PI);
     SetShaderValue(terrainShader, shaderLocs[LocLightColor], &lightColor, SHADER_UNIFORM_VEC3);
-    const Vector3 ambScale = gfx::AmbientScale();
-    Vector3 ambient = { 0.2f * ambScale.x, 0.2f * ambScale.y, 0.25f * ambScale.z };
+    Vector3 ambient = gfx::AmbientSky();
     SetShaderValue(terrainShader, shaderLocs[LocAmbientColor], &ambient, SHADER_UNIFORM_VEC3);
     {
         const float fogD = gfx::FogDensity();

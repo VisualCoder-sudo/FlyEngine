@@ -1,5 +1,5 @@
 // BasicTerrain splat-painting shader: four albedo layers blended by an RGBA
-// splatmap, simple directional lighting, gamma-encoded output.
+// splatmap, sunlight plus sky and ground ambient, in linear light.
 @module terrain_paint
 @include fly_common.glsl
 
@@ -26,12 +26,15 @@ void main() {
 @end
 
 @fs fs
+@include_block fly_color
 layout(binding=1) uniform fs_params {
     vec3 lightDir;
     int layerCount;
-    vec3 lightColor;
+    vec3 lightColor;        // linear sunlight on a surface that faces it
     float textureTiling;
-    vec3 ambientColor;
+    vec3 ambientColor;      // linear light from the sky (on what faces up)
+    float _pad0;
+    vec3 ambientGround;     // linear light bounced off the ground (on what faces down)
 };
 layout(binding=0) uniform texture2D splatmap;
 layout(binding=0) uniform sampler splatmap_smp;
@@ -63,8 +66,8 @@ void main() {
     vec3 N = normalize(worldNormal);
     vec3 L = normalize(-lightDir);
     float NdotL = max(dot(N, L), 0.0);
-    vec3 color = albedo * (ambientColor + lightColor * NdotL);
-    color = pow(color, vec3(1.0 / 2.2));
+    vec3 amb = mix(ambientGround, ambientColor, N.y * 0.5 + 0.5);
+    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * NdotL);
     fragColor = vec4(color, 1.0);
 }
 @end
