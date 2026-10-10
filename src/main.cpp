@@ -5,6 +5,7 @@
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
 #include "../include/Engine/Frontend/ui.hpp"
+#include "../include/Engine/PostFX.hpp"
 #include "../include/Engine/Backend/CrashReporter.hpp"
 #include "../include/Engine/Backend/TextureManager.hpp"
 #include "../include/Terrain/Terrain.hpp"
@@ -110,6 +111,7 @@ void ShowSplashWindow(float displaySeconds) {
 void RunEditor(const project::Info& info) {
     Engine engine(1280, 720, "Flyengine Editor / " + info.name);
     engine.SetClearColor(Color{ 36, 38, 44, 255 });
+    gfx::LoadQualitySettings();     // Preferences > Rendering
 
     const ScopedUI uiScope;
     project::ApplyWindowIcon();

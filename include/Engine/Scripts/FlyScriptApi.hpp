@@ -94,6 +94,12 @@ FLY_API void  FlyNative_SetWireframe(short on);
 FLY_API float FlyNative_GetFov(float* fov);
 FLY_API void  FlyNative_SetFov(float fov);
 
+// Environment (game.Environment.*): the scene's time, weather, sky and picture. `what` is one of
+// the FLY_ENV_* numbers of ScriptingSDK/include/FlyScriptABI.h. Setting a value inserts the Lighting
+// item it belongs to.
+FLY_API float FlyNative_GetEnvironment(int what);
+FLY_API void  FlyNative_SetEnvironment(int what, float value);
+
 // Physics (game.Physics.* - routed to the simulation).
 FLY_API float FlyNative_GetGravity(void);
 FLY_API void  FlyNative_SetGravity(float g);

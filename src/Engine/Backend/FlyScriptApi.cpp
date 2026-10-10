@@ -267,6 +267,44 @@ int   FlyNative_GetShadowQuality_Impl(void) { return gfx::GetShadowQuality(); }
 void  FlyNative_SetShadowQuality_Impl(int q) { if (q < 5) q = 5; if (q > 100) q = 100; gfx::SetShadowQuality(q); }
 float FlyNative_GetAmbient_Impl(float* intensity) { *intensity = gfx::GetAmbientIntensity(); return *intensity; }
 void  FlyNative_SetAmbient_Impl(float a) { if (a < 0.0f) a = 0.0f; if (a > 2.0f) a = 2.0f; gfx::SetAmbientIntensity(a); }
+float FlyNative_GetEnvironment_Impl(int what) {
+    const gfx::LightingSettings& L = gfx::Lighting();
+    switch (what) {
+        case FLY_ENV_TIME_OF_DAY:    return L.timeOfDay;
+        case FLY_ENV_DAY_LENGTH:     return L.dayLengthMinutes;
+        case FLY_ENV_OVERCAST:       return L.hasWeather ? L.overcast : 0.0f;
+        case FLY_ENV_RAIN:           return L.hasWeather ? L.rain : 0.0f;
+        case FLY_ENV_WET_GROUND:     return L.hasWeather ? L.wetGround : 0.0f;
+        case FLY_ENV_FOG:            return L.hasFog ? L.fogDensity : 0.0f;
+        case FLY_ENV_CLOUD_COVER:    return L.hasClouds ? L.cloudCoverage : 0.0f;
+        case FLY_ENV_WIND_SPEED:     return L.windSpeed;
+        case FLY_ENV_WIND_DIRECTION: return L.windDirection;
+        case FLY_ENV_EXPOSURE:       return L.exposure;
+        case FLY_ENV_SUN_INTENSITY:  return L.sunIntensity;
+        case FLY_ENV_BLOOM:          return L.bloom;
+        default:                     return 0.0f;
+    }
+}
+void FlyNative_SetEnvironment_Impl(int what, float v) {
+    if (!(v == v)) return;      // not a number
+    gfx::LightingSettings& L = gfx::Lighting();
+    const auto clampf = [](float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); };
+    switch (what) {
+        case FLY_ENV_TIME_OF_DAY:    gfx::SetTimeOfDay(v); break;
+        case FLY_ENV_DAY_LENGTH:     L.dayLengthMinutes = clampf(v, 0.0f, 1440.0f); break;
+        case FLY_ENV_OVERCAST:       L.hasWeather = true; L.overcast = clampf(v, 0.0f, 1.0f); break;
+        case FLY_ENV_RAIN:           L.hasWeather = true; L.rain = clampf(v, 0.0f, 1.0f); break;
+        case FLY_ENV_WET_GROUND:     L.hasWeather = true; L.wetGround = clampf(v, 0.0f, 1.0f); break;
+        case FLY_ENV_FOG:            L.hasFog = true; L.fogDensity = clampf(v, 0.0f, 0.2f); break;
+        case FLY_ENV_CLOUD_COVER:    L.hasClouds = true; L.cloudCoverage = clampf(v, 0.0f, 1.0f); break;
+        case FLY_ENV_WIND_SPEED:     L.windSpeed = clampf(v, 0.0f, 80.0f); break;
+        case FLY_ENV_WIND_DIRECTION: L.windDirection = v; break;
+        case FLY_ENV_EXPOSURE:       L.hasPicture = true; L.exposure = clampf(v, -4.0f, 4.0f); break;
+        case FLY_ENV_SUN_INTENSITY:  L.hasSun = true; L.sunIntensity = clampf(v, 0.0f, 3.0f); break;
+        case FLY_ENV_BLOOM:          L.hasPicture = true; L.bloom = clampf(v, 0.0f, 1.0f); break;
+        default: break;
+    }
+}
 short FlyNative_GetGridVisible_Impl(void) { return gfx::IsGridVisible() ? 1 : 0; }
 void  FlyNative_SetGridVisible_Impl(short on) { gfx::SetGridVisible(on != 0); }
 short FlyNative_GetWireframe_Impl(void) { return gfx::IsWireframe() ? 1 : 0; }
@@ -452,6 +490,8 @@ FLY_API int   FlyNative_GetShadowQuality(void) { FLY_TRY { return impl::FlyNativ
 FLY_API void  FlyNative_SetShadowQuality(int q) { FLY_TRY { impl::FlyNative_SetShadowQuality_Impl(q); } FLY_CATCH() }
 FLY_API float FlyNative_GetAmbient(float* intensity) { FLY_TRY { return impl::FlyNative_GetAmbient_Impl(intensity); } FLY_CATCH(return 0.0f;) }
 FLY_API void  FlyNative_SetAmbient(float a) { FLY_TRY { impl::FlyNative_SetAmbient_Impl(a); } FLY_CATCH() }
+FLY_API float FlyNative_GetEnvironment(int what) { FLY_TRY { return impl::FlyNative_GetEnvironment_Impl(what); } FLY_CATCH(return 0.0f;) }
+FLY_API void  FlyNative_SetEnvironment(int what, float value) { FLY_TRY { impl::FlyNative_SetEnvironment_Impl(what, value); } FLY_CATCH() }
 FLY_API short FlyNative_GetGridVisible(void) { FLY_TRY { return impl::FlyNative_GetGridVisible_Impl(); } FLY_CATCH(return 0;) }
 FLY_API void  FlyNative_SetGridVisible(short on) { FLY_TRY { impl::FlyNative_SetGridVisible_Impl(on); } FLY_CATCH() }
 FLY_API short FlyNative_GetWireframe(void) { FLY_TRY { return impl::FlyNative_GetWireframe_Impl(); } FLY_CATCH(return 0;) }

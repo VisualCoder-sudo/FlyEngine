@@ -230,8 +230,14 @@ existing objects are undone. Cities are not snapshotted, since nothing at play
 time changes them. `FlyPlayer` starts the scripts marked "run on play" as soon
 as the scene loads; the player's body is the object named `PlayerCharacter`.
 
+Scripts change the time, weather, sky and picture through `fly::Game::Environment`
+(`SetTimeOfDay`, `SetDayLength`, `SetRain`, `SetOvercast`, `SetWetGround`, `SetFog`,
+`SetCloudCover`, `SetWindSpeed`, `SetWindDirection`, `SetExposure`, `SetSunIntensity`,
+`SetBloom`, and the matching getters). Setting something inserts the Lighting item it
+belongs to; a playtest puts the whole Lighting section back when it stops.
+
 The editor console (`` ` ``) takes commands such as `Cube.Position = (0, 5, 0)`,
-`Physics.Gravity`, `run Spinner`, `scripts` and `rebuild`; type `help`.
+`Physics.Gravity`, `Environment.Rain = 0.6`, `run Spinner`, `scripts` and `rebuild`; type `help`.
 
 ### Fonts
 
@@ -279,6 +285,65 @@ The old `shaders/*.vert` / `*.frag` files are no longer used.
 
 ---
 
+## Sky, light and the picture
+
+The scene is lit in linear light into a float render target and turned into the
+picture by a chain of full-screen passes (`src/Engine/PostFX.cpp`,
+`shaders/post.glsl`). What a scene looks like is set in the Explorer's
+**Lighting** section and saved with the scene; how much of the machine it may
+use is set in **Preferences > Rendering** and kept per machine.
+
+- **Sky** (`src/Engine/Atmosphere.cpp`, `shaders/sky.glsl`): one colour, or an
+  *Atmosphere*: air round a planet that scatters the sun's light (after
+  Hillaire, 2020). Blue overhead, pale horizon, red sunsets and the blue of dusk
+  come out of a few numbers (what the air scatters, how thick it is, haze,
+  ozone), and the sunlight and the sky's light on the scene take their colour
+  from the same tables. The presets (*Earth, Clear, Hazy, Dusty, Green, Violet,
+  Thin*) only set those numbers. The sky has a sun disc, a moon with phases
+  opposite the sun, and stars that turn with the time.
+- **Clouds** (`src/Engine/Clouds.cpp`, `shaders/clouds.glsl`): a layer of
+  volumetric cloud in the atmosphere sky that can be flown through and above.
+  Cover, thickness, base height, size and wind are settings; the Weather item's
+  cloud cover and rain add to it. The clouds' shadow drifts over the ground and
+  shows as rays in haze. The noise they are shaped from is built on worker
+  threads the first time clouds are wanted (about 3 s; clouds appear when it is done).
+- **Fog**: density and a height it thins over. Under an atmosphere the sun lights
+  it and the sun's shadow map cuts shafts through it; distance fades into the
+  air's own colour whether or not there is fog.
+- **Picture**: tone curve (*Neutral* keeps colours as given, *ACES*, *AgX*),
+  exposure with an eye that adapts to the view (atmosphere sky only), bloom,
+  contrast, saturation, temperature, vignette and film grain.
+- **Shadows** reach further through cascades: up to three wider shadow maps
+  beyond the one round the camera, redrawn every few frames.
+
+Scenes saved before these existed load as they were: a sky of one colour and
+the neutral picture.
+
+**Preferences > Rendering** has four tiers (*Low* to *Ultra*) and the parts they
+set: render scale, anti-aliasing (off, FXAA, temporal), bloom, ambient
+occlusion, cloud and fog quality, shadow cascades. The player takes
+`--quality low|medium|high|ultra`. F2 in the viewport shows what each pass
+costs on the CPU side.
+
+Cost of a 70 x 70 city (20,000 buildings, with traffic) at 2560 x 1440 on an
+RTX 4060, Release build, in ms per frame (`build/tests/city_lod_test 70 <tier>
+sky 2560 1440`, the mean of its three views; runs vary by a few tenths):
+
+| | Sky of one colour | Atmosphere + clouds |
+|---|---|---|
+| before these passes existed | 2.0 | |
+| Low | 1.9 | 2.7 |
+| Medium | | 3.9 |
+| High (default) | 3.1 | 4.5 |
+| Ultra | | 5.1 |
+
+Known limits: temporal anti-aliasing (bicubic history, variance clipping, 16 jitter samples) reprojects by the camera's motion only, so
+fast-moving things can leave a faint trail; the chunked `terrain::Terrain` and
+the water take an averaged cloud shadow, not the drifting one; terrain does not
+receive the sun's shadow map (it never did).
+
+---
+
 ## City maker
 
 `City` menu -> *New regular city* / *New organic city*, then open the *City Editor* panel.
@@ -323,10 +388,11 @@ tags, so older files keep loading). Code lives in `src/CityGen/` and `include/Ci
   its *Height*), the node stays exactly where you put it and its neighbours follow, so the hill
   spreads out gradually instead of ramping up sharply. 0 turns it off. Saved with the city.
 - **Lighting:** besides *Time*, the Explorer's Lighting **+** menu inserts *Sun* (direction,
-  height, intensity, colour), *Ambient*, *Sky*, *Fog* and *Weather*. The terrain and the water
+  height, intensity, colour), *Ambient*, *Sky*, *Clouds*, *Fog*, *Weather* and *Picture* (see
+  "Sky, light and the picture" above). The terrain and the water
   follow them too. The sun follows the time of day (rises at 6:00, peaks at the Sun item's
   height at noon, sets at 18:00, orange near the horizon, shadows move with it; untick *Follow
-  the time of day* to pin it). *Weather* has cloud cover (dimmer, softer sun, grey sky, haze),
+  the time of day* to pin it); at night the moon lights the scene. *Weather* has cloud cover (dimmer, softer sun, grey sky, haze),
   rain (falling streaks, wet dark roads with puddles that mirror the sky, pedestrians with
   umbrellas) and wet ground; *Clear / Overcast / Rain / Storm* are one-click presets.
 - **People:** pedestrians walk to destinations, wait for the walk signal, queue at bus stops,
@@ -370,6 +436,7 @@ block/outline geometry headlessly.
 cmake -S . -B build -G Ninja -DFLYENGINE_BUILD_TESTS=ON && cmake --build build
 ctest --test-dir build                 # headless: math, projection depth, memory tracker, texture hash, script diagnostics
 build/tests/rl_smoke_test              # needs a display + GPU: textures, mesh churn, instancing
+build/tests/sky_test                   # needs a display + GPU: a day of sky, clouds, cascades, anti-aliasing (sky_*.png)
 build/Flyengine --testscene [frames]   # terrain tools + city + shapes; run from a Debug build
 build/Flyengine --testwater [objects] [frames]
 ```
@@ -430,6 +497,10 @@ Notable differences from raylib:
 - everything draws into an offscreen target that is copied to the window once
   per frame, which lets the engine interleave screen and render-texture
   drawing on every backend;
+- a few additions raylib has no word for: float render targets
+  (`LoadRenderTextureEx`), full-screen passes (`DrawFullscreen`), 3D textures
+  (`LoadTexture3D`), a sub-pixel shift of the projection (`SetProjectionJitter`),
+  and depth textures read as plain values through a `nonfiltering` sampler;
 - `GenTextureMipmaps` builds mipmaps on the CPU, before the texture's first use;
 - wireframe draws mesh edges as lines (no polygon-mode support in sokol);
 - gamepads are not supported (sokol_app has no gamepad API).

@@ -146,6 +146,7 @@ void BatchFlush() {
         SetUniformMatrix(*sh, g_batch.locMvp, mvp);
         const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
         SetUniformValue(*sh, g_batch.locColDiffuse, white, SHADER_UNIFORM_VEC4, 1);
+        SetLinearTargetUniform(*sh);
         const sg_pipeline_desc tmpl = BatchPipelineTemplate(*sh);
 
         for (const Command& c : g_batch.commands) {

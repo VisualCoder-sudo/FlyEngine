@@ -4,7 +4,9 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
+#include "Engine/Clouds.hpp"
 #include "Engine/Graphics.hpp"
+#include "Engine/PostFX.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <chrono>
@@ -40,9 +42,22 @@ static double Measure(Engine& engine, const View& v, int n, gfx::FrameTimings* f
 
 int main(int argc, char** argv) {
     const int grid = argc > 1 ? std::max(10, atoi(argv[1])) : 70;
-    Engine engine(1000, 640, "city_lod_test", 1000);
+    // What the picture costs: city_lod_test <grid> <tier 0..3> [sky|flat] [width height]. "sky" turns on the atmosphere
+    // sky with clouds (without it the scene has the plain sky of one colour, and the tier only decides anti-aliasing,
+    // occlusion and cascades). At the default size the frame limiter (1000 a second) hides most of it; a large window shows it.
+    const int winW = argc > 5 ? std::max(320, atoi(argv[4])) : 1000, winH = argc > 5 ? std::max(200, atoi(argv[5])) : 640;
+    Engine engine(winW, winH, "city_lod_test", 1000);
     engine.SetPlayerBuild(true);
     gfx::SetTimeOfDay(12.0f);
+    if (argc > 2) gfx::SetQualityTier(atoi(argv[2]));
+    std::printf("window %d x %d\n", GetScreenWidth(), GetScreenHeight());
+    if (argc > 3 && std::string(argv[3]) == "sky") {
+        gfx::Lighting().hasSky = true; gfx::Lighting().skyMode = 1;
+        gfx::Lighting().hasClouds = true;
+        const double w0 = NowMs();
+        while (!gfx::CloudsActive() && NowMs() - w0 < 30000.0) engine.StepFrame(1.0f / 60.0f);
+    }
+    std::printf("quality tier %d, %s\n", gfx::Quality().tier, gfx::AtmosphereActive() ? "atmosphere sky with clouds" : "sky of one colour");
     gfx::SetShadowReuseEnabled(false);       // measure the worst case: shadows redrawn every frame
     auto owner = std::make_unique<City>();
     City& c = *owner;
@@ -71,7 +86,7 @@ int main(int argc, char** argv) {
     for (const View& v : views) {
         gfx::FrameTimings ft; int draws = 0, tris = 0;
         const double ms = Measure(engine, v, 20, &ft, &draws, &tris);
-        std::printf("%-9s %7.2f ms/frame   (shadow %.2f, opaque %.2f)  %5d draws  %8d triangles\n", v.name, ms, ft.shadowMs, ft.opaqueMs, draws, tris);
+        std::printf("%-9s %7.2f ms/frame   (shadow %.2f, sky %.2f, opaque %.2f, post %.2f)  %5d draws  %8d triangles\n", v.name, ms, ft.shadowMs, ft.skyMs, ft.opaqueMs, ft.postMs, draws, tris);
         frameMs.push_back(ms);
         TakeScreenshot(TextFormat("city_lod_%s.png", v.name));
     }

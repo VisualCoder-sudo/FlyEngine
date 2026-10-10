@@ -22,8 +22,10 @@ void main() {
 @end
 
 @fs fs
+@include_block fly_color
 layout(binding=1) uniform fs_params {
     vec4 colDiffuse;
+    float flyLinearTarget;   // 1 while drawing into a float scene target: the sRGB colour is linearized
 };
 layout(binding=0) uniform texture2D texture0;
 layout(binding=0) uniform sampler texture0_smp;
@@ -32,6 +34,7 @@ in vec4 fragColor;
 out vec4 finalColor;
 void main() {
     finalColor = texture(sampler2D(texture0, texture0_smp), fragTexCoord) * colDiffuse * fragColor;
+    if (flyLinearTarget > 0.5) finalColor.rgb = fly_srgb_to_linear(finalColor.rgb);
 }
 @end
 

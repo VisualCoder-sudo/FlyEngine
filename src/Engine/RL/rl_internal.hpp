@@ -114,7 +114,11 @@ struct TextureRec {
     int filter = TEXTURE_FILTER_POINT;
     int wrap = TEXTURE_WRAP_REPEAT;
     bool depth = false;
+    bool volume = false;       // 3D texture (LoadTexture3D)
     bool attachment = false;   // owned by a render target
+    // A render target's image cannot be sampled before a pass has drawn into it
+    // (the Vulkan backend has no image layout for it yet).
+    bool rendered = false;
     bool alive = false;
     // Textures loaded from images are created lazily, on first use: until then
     // the pixels stay on the CPU, so GenTextureMipmaps() (which sokol cannot do on
@@ -131,6 +135,10 @@ struct RenderTargetRec {
     unsigned int depthTex = 0;
     sg_view colorAtt{};
     sg_view depthAtt{};
+    sg_pixel_format colorFormat = SG_PIXELFORMAT_RGBA8;
+    // Float targets hold scene-linear light: sRGB colours drawn into them by the
+    // default shader are linearized first (see flyLinearTarget in rl_default.glsl).
+    bool linear = false;
     int width = 0;
     int height = 0;
     bool alive = false;
@@ -174,6 +182,7 @@ struct GfxState {
 
     unsigned int whiteTexture = 0;             // 1x1 white, rlGetTextureIdDefault()
     unsigned int dummyDepthTexture = 0;        // bound to comparison samplers with no texture
+    unsigned int dummyVolumeTexture = 0;       // bound to 3D samplers with no texture
 
     // Main target: offscreen copy of the window, blitted to the swapchain.
     unsigned int mainTarget = 0;               // index into targets
@@ -197,6 +206,8 @@ struct GfxState {
     int currentHeight = 0;
     double cullNear = 0.05;
     double cullFar = 4000.0;
+    // Sub-pixel shift (in clip-space units) BeginMode3D() adds to the projection: temporal anti-aliasing.
+    float jitterX = 0.0f, jitterY = 0.0f;
 
     DrawState state;
 
@@ -306,6 +317,8 @@ struct ShaderUniform {
     int viewSlot = -1;
     int samplerSlot = -1;
     bool compare = false;
+    bool nonfiltering = false;       // nearest-only sampler: the one way to read a depth texture's values
+    bool volume = false;             // texture3D
     int unit = 0;                    // GL texture unit this sampler reads
     unsigned int explicitTexture = 0;  // SetShaderValueTexture()
 };
@@ -317,6 +330,7 @@ struct ShaderRec {
     std::vector<uint8_t> ubData[SG_MAX_UNIFORMBLOCK_BINDSLOTS];
     uint32_t attrMask = 0;           // bit s set: shader consumes semantic s
     int attrSlot[ATTR_COUNT];        // semantic -> shader attribute slot, -1 if unused
+    int locLinearTarget = -1;        // "flyLinearTarget": 1 while drawing into a float (scene-linear) target
     int* locs = nullptr;
     bool alive = false;
 };
@@ -332,6 +346,8 @@ void SetUniformValue(ShaderRec& sh, int loc, const void* value, int type, int co
 // `drawUnits` holds textures bound for this draw only (material maps).
 void ResolveShaderTextures(const ShaderRec& sh, const unsigned int* drawUnits, sg_bindings& bind);
 void ApplyShaderUniforms(const ShaderRec& sh);
+// Tells a shader that declares flyLinearTarget whether the current target is scene-linear.
+void SetLinearTargetUniform(ShaderRec& sh);
 
 // ---------------------------------------------------------------------------
 // Models (rl_models.cpp)

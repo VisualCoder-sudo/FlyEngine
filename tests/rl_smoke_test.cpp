@@ -90,11 +90,12 @@ int main() {
         Material im = LoadMaterialDefault();
         im.shader = sh;
         im.maps[MATERIAL_MAP_DIFFUSE].color = Color{ 255, 0, 0, 255 };
-        const float one[3] = { 1, 1, 1 }, down[3] = { 0, -1, 0 };
-        const float off = 0.0f, deep = -1000.0f;
-        SetShaderValue(sh, GetShaderLocation(sh, "ambient"), one, SHADER_UNIFORM_VEC3);
-        SetShaderValue(sh, GetShaderLocation(sh, "lightDir"), down, SHADER_UNIFORM_VEC3);
-        SetShaderValue(sh, GetShaderLocation(sh, "shadowsEnabled"), &off, SHADER_UNIFORM_FLOAT);
+        // Full ambient light from every side, a sun straight down with no shadow cascades (w = 0).
+        const float one[4] = { 1, 1, 1, 1 }, down[4] = { 0, -1, 0, 0 };
+        const float deep = -1000.0f;
+        SetShaderValue(sh, GetShaderLocation(sh, "ambientSky"), one, SHADER_UNIFORM_VEC4);
+        SetShaderValue(sh, GetShaderLocation(sh, "ambientGround"), one, SHADER_UNIFORM_VEC4);
+        SetShaderValue(sh, GetShaderLocation(sh, "sunDir"), down, SHADER_UNIFORM_VEC4);
         SetShaderValue(sh, GetShaderLocation(sh, "waterSurfaceY"), &deep, SHADER_UNIFORM_FLOAT);
         Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
         Matrix xf[3] = {

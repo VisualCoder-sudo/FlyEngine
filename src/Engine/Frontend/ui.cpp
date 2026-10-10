@@ -7,6 +7,7 @@
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/PostFX.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
@@ -71,7 +72,7 @@ static ScatteredObject* g_lastExplorerClick = nullptr;
 static ModelGroup* g_lastExplorerModelClick = nullptr;
 static double g_lastExplorerClickTime = 0.0;
 static WaterBody* g_selectedWater = nullptr;
-static int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather
+static int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather, 7 Clouds, 8 Picture
 static BasicTerrain* g_selectedTerrain = nullptr;
 static char g_nameBuffer[64] = "";
 static float g_colorPickerAnchorY = -1.0f;
@@ -2428,9 +2429,14 @@ static void DrawImGuiExplorer() {
             bool any = false;
             if (!L.hasSun && ImGui::MenuItem("Sun")) { L.hasSun = true; g_lightingSel = 2; any = true; }
             if (!L.hasAmbient && ImGui::MenuItem("Ambient")) { L.hasAmbient = true; g_lightingSel = 3; any = true; }
-            if (!L.hasSky && ImGui::MenuItem("Sky")) { L.hasSky = true; g_lightingSel = 4; any = true; }
-            if (!L.hasFog && ImGui::MenuItem("Fog")) { L.hasFog = true; L.fogDensity = std::max(L.fogDensity, 0.004f); g_lightingSel = 5; any = true; }
+            // A new Sky is the atmosphere (it can be switched to one colour in its settings).
+            if (!L.hasSky && ImGui::MenuItem("Sky")) { L.hasSky = true; L.skyMode = 1; g_lightingSel = 4; any = true; }
+            // Under an atmosphere fog lies near the ground, so the sky stays visible above it.
+            if (!L.hasFog && ImGui::MenuItem("Fog")) { L.hasFog = true; L.fogDensity = std::max(L.fogDensity, 0.004f); if (L.hasSky && L.skyMode == 1) L.fogHeight = 120.0f; g_lightingSel = 5; any = true; }
             if (!L.hasWeather && ImGui::MenuItem("Weather")) { L.hasWeather = true; L.overcast = 0.6f; L.rain = 0.5f; L.wetGround = 0.0f; g_lightingSel = 6; any = true; }
+            // Clouds live in the atmosphere sky, so inserting them brings it along.
+            if (!L.hasClouds && ImGui::MenuItem("Clouds")) { L.hasClouds = true; L.hasSky = true; L.skyMode = 1; g_lightingSel = 7; any = true; }
+            if (!L.hasPicture && ImGui::MenuItem("Picture")) { L.hasPicture = true; g_lightingSel = 8; any = true; }
             if (any) {
                 SetSelection({}, nullptr);
                 if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
@@ -2438,12 +2444,13 @@ static void DrawImGuiExplorer() {
                 BasicTerrain::SetActive(nullptr);
                 terrain::GetTerrainEditorState().selectedTerrainLegacy = nullptr;
             }
-            if (L.hasSun && L.hasAmbient && L.hasSky && L.hasFog && L.hasWeather) ImGui::TextDisabled("Everything is inserted.");
+            if (L.hasSun && L.hasAmbient && L.hasSky && L.hasFog && L.hasWeather && L.hasClouds && L.hasPicture) ImGui::TextDisabled("Everything is inserted.");
             ImGui::EndPopup();
         }
         struct Row { int id; const char* name; bool present; bool removable; };
         const Row rows[] = { { 1, "Time", true, false }, { 2, "Sun", L.hasSun, true }, { 3, "Ambient", L.hasAmbient, true },
-                             { 4, "Sky", L.hasSky, true }, { 5, "Fog", L.hasFog, true }, { 6, "Weather", L.hasWeather, true } };
+                             { 4, "Sky", L.hasSky, true }, { 7, "Clouds", L.hasClouds, true }, { 5, "Fog", L.hasFog, true },
+                             { 6, "Weather", L.hasWeather, true }, { 8, "Picture", L.hasPicture, true } };
         static int s_removeId = 0;
         for (const Row& r : rows) {
             if (!r.present) continue;
@@ -2471,9 +2478,16 @@ static void DrawImGuiExplorer() {
                     case 2: L.hasSun = false; L.sunFollowsTime = def.sunFollowsTime; L.sunAzimuth = def.sunAzimuth; L.sunElevation = def.sunElevation; L.sunIntensity = def.sunIntensity;
                             for (int i = 0; i < 3; i++) L.sunColor[i] = def.sunColor[i]; break;
                     case 3: L.hasAmbient = false; L.ambient = def.ambient; break;
-                    case 4: L.hasSky = false; for (int i = 0; i < 3; i++) L.skyColor[i] = def.skyColor[i]; break;
-                    case 5: L.hasFog = false; L.fogDensity = 0.0f; break;
+                    case 4: L.hasSky = false; L.skyMode = def.skyMode; for (int i = 0; i < 3; i++) { L.skyColor[i] = def.skyColor[i]; L.airColor[i] = def.airColor[i]; L.hazeColor[i] = def.hazeColor[i]; L.groundColor[i] = def.groundColor[i]; }
+                            L.airDensity = def.airDensity; L.haze = def.haze; L.ozone = def.ozone; L.sunSize = def.sunSize; L.moonSize = def.moonSize;
+                            L.moonPhase = def.moonPhase; L.moonLight = def.moonLight; L.stars = def.stars;
+                            L.hasClouds = false; break;     // no atmosphere, no clouds in it
+                    case 5: L.hasFog = false; L.fogDensity = 0.0f; L.fogHeight = def.fogHeight; break;
                     case 6: L.hasWeather = false; L.overcast = 0.0f; L.rain = 0.0f; L.wetGround = 0.0f; break;
+                    case 7: L.hasClouds = false; L.cloudCoverage = def.cloudCoverage; L.cloudDensity = def.cloudDensity; L.cloudBase = def.cloudBase;
+                            L.cloudThickness = def.cloudThickness; L.cloudScale = def.cloudScale; L.windSpeed = def.windSpeed; L.windDirection = def.windDirection; break;
+                    case 8: L.hasPicture = false; L.toneCurve = def.toneCurve; L.exposure = def.exposure; L.autoExposure = def.autoExposure; L.bloom = def.bloom;
+                            L.vignette = def.vignette; L.contrast = def.contrast; L.saturation = def.saturation; L.temperature = def.temperature; L.filmGrain = def.filmGrain; break;
                     default: break;
                 }
                 if (g_lightingSel == s_removeId) g_lightingSel = 1;
@@ -6308,6 +6322,62 @@ static void DrawPreferencesGeneralTab() {
     ImGui::PopStyleColor(4);
 }
 
+// How much of the machine the picture may use (gfx::RenderQuality). Kept per machine, not per scene.
+static void DrawPreferencesRenderingTab() {
+    gfx::RenderQuality& q = gfx::Quality();
+    bool changed = false;
+    const auto combo = [&](const char* label, const char* id, int* value, const char* const* items, int count) {
+        DrawPrefsSettingRowBegin(label);
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::Combo(id, value, items, count)) changed = true;
+    };
+
+    {
+        DrawPrefsSettingRowBegin("Quality");
+        ImGui::SetNextItemWidth(140.0f);
+        const char* tiers[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+        int tier = (q.tier >= 0 && q.tier <= 3) ? q.tier : 4;
+        if (ImGui::Combo("##quality", &tier, tiers, 5) && tier <= 3) {
+            gfx::SetQualityTier(tier);
+            gfx::SaveQualitySettings();
+        }
+    }
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+
+    DrawPrefsSettingRowBegin("Render scale");
+    ImGui::SetNextItemWidth(140.0f);
+    float scale = q.renderScale * 100.0f;
+    if (ImGui::SliderFloat("##renderscale", &scale, 50.0f, 100.0f, "%.0f%%")) { q.renderScale = scale / 100.0f; changed = true; }
+
+    const char* aa[] = { "Off", "FXAA", "Temporal" };
+    combo("Anti-aliasing", "##aa", &q.antiAliasing, aa, 3);
+
+    DrawPrefsSettingRowBegin("Bloom");
+    if (ImGui::Checkbox("##bloom", &q.bloom)) changed = true;
+    DrawPrefsSettingRowBegin("Ambient occlusion");
+    if (ImGui::Checkbox("##ao", &q.ambientOcclusion)) changed = true;
+
+    const char* clouds[] = { "Low", "Medium", "High", "Ultra" };
+    combo("Clouds", "##clouds", &q.clouds, clouds, 4);
+    const char* fog[] = { "Plain", "Light shafts", "Fine light shafts" };
+    combo("Air and fog", "##volumetrics", &q.volumetrics, fog, 3);
+
+    DrawPrefsSettingRowBegin("Shadow distance steps");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderInt("##cascades", &q.shadowCascades, 1, 4)) changed = true;
+
+    if (changed) {
+        q.tier = -1;        // no longer one of the presets
+        gfx::SaveQualitySettings();
+    }
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    ImGui::Indent(8.0f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 16.0f);
+    ImGui::TextDisabled("These are kept for this machine, not saved with a scene. What a scene looks like (its sky, clouds, fog and picture) is in the Explorer's Lighting section. Press F2 in the viewport to see what each pass costs.");
+    ImGui::PopTextWrapPos();
+    ImGui::Unindent(8.0f);
+}
+
 void DrawImGuiPreferencesWindow() {
     if (!g_showPreferences) return;
 
@@ -6398,6 +6468,7 @@ void DrawImGuiPreferencesWindow() {
     ImGui::Dummy(ImVec2(0.0f, 16.0f));
     switch (g_prefsCategory) {
         case 0: DrawPreferencesGeneralTab(); break;
+        case 4: DrawPreferencesRenderingTab(); break;
         default: ImGui::TextDisabled("Nothing to configure here yet."); break;
     }
     ImGui::EndChild();
@@ -6468,22 +6539,160 @@ static void DrawImGuiLightingPanel() {
         ImGui::Spacing();
         ImGui::TextWrapped("The light that reaches everything, shadows included. Lower it for a moodier scene.");
         break;
-    case 4:
+    case 4: {
         ImGui::TextDisabled("Sky");
         ImGui::Separator();
-        ImGui::ColorEdit3("Daytime sky", L.skyColor, ImGuiColorEditFlags_NoInputs);
+        if (ImGui::RadioButton("Atmosphere", L.skyMode == 1)) L.skyMode = 1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("One colour", L.skyMode != 1)) L.skyMode = 0;
         ImGui::Spacing();
-        ImGui::TextWrapped("The background colour. It darkens towards night, and the fog uses it.");
+        if (L.skyMode != 1) {
+            ImGui::ColorEdit3("Daytime sky", L.skyColor, ImGuiColorEditFlags_NoInputs);
+            ImGui::Spacing();
+            ImGui::TextWrapped("The background colour. It darkens towards night, and the fog uses it.");
+            break;
+        }
+        // The same air with different numbers: each preset only sets the sliders below.
+        struct SkyPreset { const char* name; float air[3]; float density, haze; float hazeColor[3]; float ozone; };
+        static const SkyPreset presets[] = {
+            { "Earth",       { 0.175f, 0.410f, 1.0f }, 1.0f, 2.0f, { 1.0f, 1.0f, 1.0f }, 1.0f },
+            { "Clear",       { 0.175f, 0.410f, 1.0f }, 1.0f, 0.6f, { 1.0f, 1.0f, 1.0f }, 1.0f },
+            { "Hazy",        { 0.175f, 0.410f, 1.0f }, 1.1f, 7.0f, { 1.0f, 0.97f, 0.92f }, 1.0f },
+            { "Dusty",       { 1.0f, 0.55f, 0.25f },   0.7f, 6.0f, { 1.0f, 0.70f, 0.45f }, 0.0f },
+            { "Green",       { 0.25f, 1.0f, 0.45f },   1.0f, 1.5f, { 1.0f, 1.0f, 1.0f }, 0.3f },
+            { "Violet",      { 0.62f, 0.30f, 1.0f },   1.2f, 2.0f, { 1.0f, 0.9f, 1.0f }, 0.0f },
+            { "Thin",        { 0.175f, 0.410f, 1.0f }, 0.2f, 0.3f, { 1.0f, 1.0f, 1.0f }, 1.0f },
+        };
+        int col = 0;
+        for (const SkyPreset& p : presets) {
+            if (col++ % 4 != 0) ImGui::SameLine();
+            if (ImGui::Button(p.name)) {
+                for (int i = 0; i < 3; i++) { L.airColor[i] = p.air[i]; L.hazeColor[i] = p.hazeColor[i]; }
+                L.airDensity = p.density; L.haze = p.haze; L.ozone = p.ozone;
+            }
+        }
+        ImGui::Spacing();
+        ImGui::ColorEdit3("What the air scatters", L.airColor, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+        ImGui::TextDisabled("Air (thin .. thick)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##airdensity", &L.airDensity, 0.0f, 4.0f, "%.2f");
+        ImGui::TextDisabled("Haze");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##haze", &L.haze, 0.0f, 12.0f, "%.2f");
+        ImGui::ColorEdit3("Haze colour", L.hazeColor, ImGuiColorEditFlags_NoInputs);
+        ImGui::TextDisabled("Ozone (blue at dusk)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##ozone", &L.ozone, 0.0f, 3.0f, "%.2f");
+        ImGui::ColorEdit3("Far ground", L.groundColor, ImGuiColorEditFlags_NoInputs);
+        ImGui::Spacing();
+        ImGui::TextDisabled("Sun size");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##sunsize", &L.sunSize, 0.3f, 6.0f, "%.2f");
+        ImGui::TextDisabled("Moon size");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##moonsize", &L.moonSize, 0.3f, 6.0f, "%.2f");
+        ImGui::TextDisabled("Moon phase (new .. full .. new)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##moonphase", &L.moonPhase, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Moonlight");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##moonlight", &L.moonLight, 0.0f, 4.0f, "%.2f");
+        ImGui::TextDisabled("Stars");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##stars", &L.stars, 0.0f, 4.0f, "%.2f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Air round a planet, lit by the sun: blue overhead, pale at the horizon, red at sunset, and the sunlight on the scene takes its colour from it. The Sun item sets where the sun is and how strong; the moon is opposite it.");
         break;
+    }
     case 5:
         ImGui::TextDisabled("Fog");
         ImGui::Separator();
         ImGui::TextDisabled("Density");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##fog", &L.fogDensity, 0.0f, 0.03f, "%.4f");
+        ImGui::TextDisabled("Height it thins over (m)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##fogheight", &L.fogHeight, 0.0f, 1500.0f, L.fogHeight > 0.0f ? "%.0f" : "the same at every height");
         ImGui::Spacing();
-        ImGui::TextWrapped("Distant things fade into the sky colour. About 0.004 is a light haze, 0.02 is thick.");
+        ImGui::TextWrapped("Distant things fade into the fog. About 0.004 is a light haze, 0.02 is thick. With a height the fog lies on the ground and the sky shows above it; under an atmosphere sky the sun lights it, and shadows cut shafts through it.");
         break;
+    case 7:
+        ImGui::TextDisabled("Clouds");
+        ImGui::Separator();
+        if (ImGui::Button("Few")) { L.cloudCoverage = 0.22f; L.cloudDensity = 1.0f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Scattered")) { L.cloudCoverage = 0.45f; L.cloudDensity = 1.0f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Broken")) { L.cloudCoverage = 0.68f; L.cloudDensity = 1.2f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Overcast")) { L.cloudCoverage = 1.0f; L.cloudDensity = 1.5f; }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Cover");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##cloudcover", &L.cloudCoverage, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Thickness of the cloud itself");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##clouddensity", &L.cloudDensity, 0.2f, 3.0f, "%.2f");
+        ImGui::TextDisabled("Base height (m)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##cloudbase", &L.cloudBase, 200.0f, 8000.0f, "%.0f");
+        ImGui::TextDisabled("Tallest clouds (m)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##cloudthick", &L.cloudThickness, 300.0f, 5000.0f, "%.0f");
+        ImGui::TextDisabled("Size");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##cloudscale", &L.cloudScale, 0.3f, 3.0f, "%.2f");
+        ImGui::TextDisabled("Wind (m/s)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##windspeed", &L.windSpeed, 0.0f, 60.0f, "%.0f");
+        ImGui::TextDisabled("Wind blows towards (compass, degrees)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##winddir", &L.windDirection, 0.0f, 360.0f, "%.0f");
+        ImGui::Spacing();
+        if (!(L.hasSky && L.skyMode == 1)) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Clouds need the Sky item set to Atmosphere.");
+        ImGui::TextWrapped("A layer of cloud you can fly through and above. The sun and the sky light it, its shadow drifts over the ground, and the Weather item's cloud cover and rain add to it.");
+        break;
+    case 8: {
+        ImGui::TextDisabled("Picture");
+        ImGui::Separator();
+        if (ImGui::Button("Neutral")) { L.toneCurve = 1; L.contrast = 1.0f; L.saturation = 1.0f; L.temperature = 0.0f; L.vignette = 0.0f; L.filmGrain = 0.0f; L.bloom = 0.4f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Filmic")) { L.toneCurve = 2; L.contrast = 1.04f; L.saturation = 1.05f; L.temperature = 0.05f; L.vignette = 0.25f; L.filmGrain = 0.08f; L.bloom = 0.5f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Soft")) { L.toneCurve = 3; L.contrast = 1.0f; L.saturation = 1.08f; L.temperature = 0.0f; L.vignette = 0.15f; L.filmGrain = 0.0f; L.bloom = 0.6f; }
+        ImGui::SameLine();
+        if (ImGui::Button("Vivid")) { L.toneCurve = 1; L.contrast = 1.1f; L.saturation = 1.25f; L.temperature = 0.0f; L.vignette = 0.1f; L.filmGrain = 0.0f; L.bloom = 0.5f; }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Tone curve");
+        ImGui::SetNextItemWidth(-1.0f);
+        const char* curves[] = { "None (clips)", "Neutral (colours as given)", "ACES filmic", "AgX" };
+        ImGui::Combo("##tonecurve", &L.toneCurve, curves, 4);
+        ImGui::TextDisabled("Exposure (stops)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##exposure", &L.exposure, -4.0f, 4.0f, "%+.2f");
+        ImGui::Checkbox("The eye adapts to the light", &L.autoExposure);
+        ImGui::TextDisabled("Bloom");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##bloom", &L.bloom, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Contrast");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##contrast", &L.contrast, 0.5f, 1.5f, "%.2f");
+        ImGui::TextDisabled("Saturation");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##saturation", &L.saturation, 0.0f, 2.0f, "%.2f");
+        ImGui::TextDisabled("Temperature (cool .. warm)");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##temperature", &L.temperature, -1.0f, 1.0f, "%+.2f");
+        ImGui::TextDisabled("Vignette");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##vignette", &L.vignette, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("Film grain");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##grain", &L.filmGrain, 0.0f, 1.0f, "%.2f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("How the lit scene becomes the picture. The scene is lit in real light levels (the sun's disc and lamps are far brighter than white paper); the tone curve brings that onto the screen and bloom spreads what is very bright. The eye only adapts under an atmosphere sky. How much the machine spends on all this is in Preferences > Rendering.");
+        break;
+    }
     case 6:
         ImGui::TextDisabled("Weather");
         ImGui::Separator();
@@ -6510,6 +6719,12 @@ static void DrawImGuiLightingPanel() {
     default: break;
     }
     ImGui::End();
+}
+
+void SelectLightingItem(int id) { g_lightingSel = id; }
+void ShowPreferences(bool show, int category) {
+    g_showPreferences = show;
+    if (show) g_prefsCategory = category;
 }
 
 void DrawImGuiFrame(const Camera3D& camera) {
@@ -6558,8 +6773,8 @@ void DrawImGuiFrame(const Camera3D& camera) {
         ImGui::Separator();
         {
             const gfx::FrameTimings t = gfx::GetFrameTimings();
-            const double total = t.shadowMs + t.reflectionMs + t.opaqueMs +
-                                 t.transparentMs + t.twoDMs;
+            const double total = t.shadowMs + t.reflectionMs + t.skyMs + t.opaqueMs +
+                                 t.transparentMs + t.postMs + t.twoDMs;
             // Show each pass as a share of the frame so the expensive one is
             // obvious without doing arithmetic against a frame budget.
             auto pass = [](const char* label, double ms, double total) {
@@ -6568,8 +6783,10 @@ void DrawImGuiFrame(const Camera3D& camera) {
             };
             pass("Shadow", t.shadowMs, total);
             pass("Reflection", t.reflectionMs, total);
+            pass("Sky", t.skyMs, total);
             pass("Opaque", t.opaqueMs, total);
             pass("Transparent", t.transparentMs, total);
+            pass("Post", t.postMs, total);
             pass("2D/UI", t.twoDMs, total);
             ImGui::Text("%-12s %7.3f", "TOTAL", total);
         }

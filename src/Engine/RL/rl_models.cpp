@@ -305,6 +305,7 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     if (locs[SHADER_LOC_MATRIX_PROJECTION] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_PROJECTION], matProjection);
     if (locs[SHADER_LOC_MATRIX_MODEL] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_MODEL], matModel);
     if (locs[SHADER_LOC_MATRIX_NORMAL] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_NORMAL], MatrixTranspose(MatrixInvert(matModel)));
+    SetLinearTargetUniform(*sh);
     if (material.maps) {
         if (locs[SHADER_LOC_COLOR_DIFFUSE] >= 0) {
             const Vector4 c = ColorVec(material.maps[MATERIAL_MAP_DIFFUSE].color);

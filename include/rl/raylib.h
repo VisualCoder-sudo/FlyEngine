@@ -1747,6 +1747,11 @@ RLAPI void DetachAudioMixedProcessor(AudioCallback processor); // Detach audio s
 //------------------------------------------------------------------------------------
 RLAPI Shader LoadShaderProgram(const char *programName);              // Load a shader compiled into the binary (shaders/*.glsl)
 RLAPI RenderTexture2D LoadRenderTextureDepth(int width, int height);  // Depth-only render target; .depth is sampled with a comparison sampler
+RLAPI RenderTexture2D LoadRenderTextureEx(int width, int height, int format, bool depth); // Render target of a given colour format: R8G8B8A8, R16G16B16A16 (RGBA16F), R16 (R16F), R32 (R32F), GRAYSCALE (R8). Float targets hold scene-linear light
+RLAPI void DrawFullscreen(Shader shader, int blendMode);              // One triangle covering the current target (vertex stage: fly_fullscreen_vs); blendMode < 0 = no blending
+RLAPI void SetProjectionJitter(float x, float y);                     // Shifts the picture of every following BeginMode3D() by this much (clip-space units: 2 / width is one pixel); 0, 0 = off
+RLAPI Vector2 GetRenderTargetSize(void);                             // Size in pixels of the target being drawn into (the window, or the BeginTextureMode() target)
+RLAPI Texture2D LoadTexture3D(const void *data, int width, int height, int depth, int format); // Volume texture (GRAYSCALE or R8G8B8A8), bilinear, repeating
 RLAPI void DrawMeshInstancedBuffer(Mesh mesh, Material material, unsigned int instanceBuffer, int instances); // Instanced draw from a persistent rlLoadVertexBuffer() of column-major float16 transforms
 RLAPI bool IsRenderOriginTopLeft(void);                               // True when render targets are stored top-down (Vulkan/D3D11)
 RLAPI const char *GetGraphicsBackendName(void);                       // "OpenGL", "Vulkan", "D3D11"

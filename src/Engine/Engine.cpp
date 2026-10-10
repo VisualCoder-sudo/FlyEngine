@@ -1,5 +1,6 @@
 #include "../../include/Engine.hpp"
 #include "../../include/Engine/Graphics.hpp"
+#include "../../include/Engine/PostFX.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
@@ -118,12 +119,15 @@ void Engine::Draw() {
 
     double p0 = GetTime();
     // 0. Shadow map pass: render occluders from the light's point of view.
-    gfx::BeginShadowPass();
-    for (auto& entity : entities) {
-        if (isPlayerBuild && entity->IsEditorOnly()) continue;
-        entity->Draw();
+    // (Once per shadow cascade; the further cascades only ask for it every few frames.)
+    for (int cascade = 0; cascade < gfx::ShadowCascadeCount(); cascade++) {
+        if (!gfx::BeginShadowCascade(cascade)) continue;
+        for (auto& entity : entities) {
+            if (isPlayerBuild && entity->IsEditorOnly()) continue;
+            entity->Draw();
+        }
+        gfx::EndShadowCascade();
     }
-    gfx::EndShadowPass();
     double p1 = GetTime();
 
     gfx::UpdateLighting(camera);
@@ -175,7 +179,11 @@ void Engine::Draw() {
     // Reset debug counters at start of frame
     gfx::ResetFrameStats();
     
-    double pOpaque = GetTime();
+    // The scene is lit into a float target; gfx::EndScene() turns it into the picture
+    // (fog, clouds, bloom, exposure, tone curve) and writes that to the screen target.
+    gfx::BeginScene(camera);
+    double pSky = GetTime();
+    double pOpaque = pSky;
     BeginMode3D(camera);
         gfx::DrawGround();
         gfx::IncrementDrawCallCount(1); // ground plane
@@ -206,10 +214,13 @@ void Engine::Draw() {
     EndMode3D();
     double p3 = GetTime();
 
-    // Custom 3D overlay callback (debug stats, etc.)
+    // Custom 3D overlay callback (debug stats, etc.). Still inside the scene target, so it is
+    // depth-tested against the scene.
     if (onDrawOverlay3D) {
         onDrawOverlay3D();
     }
+    gfx::EndScene();
+    double pPost = GetTime();
 
     // 2. 2D Pass
     if (!isPlayerBuild) ui::Draw();
@@ -239,9 +250,11 @@ void Engine::Draw() {
     gfx::FrameTimings t;
     t.shadowMs      = (p1 - p0) * 1000.0;
     t.reflectionMs  = (p2 - p1) * 1000.0;
-    t.opaqueMs      = (pOpaque - p2) * 1000.0;
+    t.skyMs         = (pSky - p2) * 1000.0;
+    t.opaqueMs      = (pOpaque - pSky) * 1000.0;
     t.transparentMs = (p3 - pOpaque) * 1000.0;
-    t.twoDMs        = (p4 - p3) * 1000.0;
+    t.postMs        = (pPost - p3) * 1000.0;
+    t.twoDMs        = (p4 - pPost) * 1000.0;
     gfx::SetFrameTimings(t);
 
     // Kept as public members for the stress harness, which still gates on

@@ -4,6 +4,7 @@
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine.hpp"
+#include "../../../include/Engine/Graphics.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/PhysicsCollision.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
@@ -302,8 +303,13 @@ void ScriptRuntime::RollbackCreatedObjects()
     playCreatedObjects.clear();
 }
 
+// The scene's Lighting section as it was when play started: a script may change the time, the
+// weather, the sky (Game::Environment), and stopping puts the scene back as it was authored.
+static gfx::LightingSettings g_savedLighting;
+
 void ScriptRuntime::CaptureWorldSettings()
 {
+    g_savedLighting = gfx::Lighting();
     savedWorld.valid = true;
     savedWorld.shadows = FlyNative_GetShadowsEnabled();
     savedWorld.shadowQuality = FlyNative_GetShadowQuality();
@@ -323,6 +329,7 @@ void ScriptRuntime::RestoreWorldSettings()
 {
     if (!savedWorld.valid) return;
     savedWorld.valid = false;
+    gfx::Lighting() = g_savedLighting;      // (before the ambient below, which is one of its fields)
     FlyNative_SetShadowsEnabled(savedWorld.shadows);
     FlyNative_SetShadowQuality(savedWorld.shadowQuality);
     FlyNative_SetGridVisible(savedWorld.grid);
