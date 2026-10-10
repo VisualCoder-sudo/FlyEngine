@@ -14,6 +14,7 @@
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Graphics.hpp"
 #include "Engine/PostFX.hpp"
+#include "Engine/LoadingScreen.hpp"
 #include "Terrain/Terrain.hpp"
 #include "Terrain/Water/WaterBody.hpp"
 #include "CityGen/City.hpp"
@@ -561,6 +562,8 @@ struct PlayerOptions {
     bool hotReload = true;
     size_t maxMemoryBytes = 0; // 0 = unlimited
     int quality = -1;          // --quality: 0 low .. 3 ultra; -1 = what Preferences > Rendering saved
+    int loading = -1;          // --loading / --noloading: 1 / 0; -1 = the loading screen's own settings
+    bool loadingLogs = false;  // --loadinglogs
 };
 
 static void PrintUsage(const char* exeName) {
@@ -577,6 +580,9 @@ static void PrintUsage(const char* exeName) {
         "  --nohotreload        Disable script hot-reload\n"
         "  --maxmem4G           Budget texture/mesh memory at 4GB (reported, not enforced)\n"
         "  --quality LEVEL      Picture quality: low, medium, high or ultra\n"
+        "  --noloading          No loading screen\n"
+        "  --loading            Show the loading screen (even if it is switched off in the settings)\n"
+        "  --loadinglogs        Show the log lines on the loading screen\n"
         "\n"
         "Example:\n"
         "  %s -play MyProject --capfps60 --fullscreen\n",
@@ -618,6 +624,12 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             opts.hotReload = false;
         } else if (arg == "--maxmem4G") {
             opts.maxMemoryBytes = 4ull * 1024 * 1024 * 1024;
+        } else if (arg == "--noloading") {
+            opts.loading = 0;
+        } else if (arg == "--loading") {
+            opts.loading = 1;
+        } else if (arg == "--loadinglogs") {
+            opts.loadingLogs = true;
         } else if (arg == "--quality") {
             if (i + 1 < argc) {
                 const std::string level = argv[++i];
@@ -725,6 +737,15 @@ int main(int argc, char* argv[]) {
     gfx::LoadQualitySettings();
     if (opts.quality >= 0) gfx::SetQualityTier(opts.quality);
 
+    // The loading screen: this machine's choice (Preferences > Loading in the editor), then the project's own
+    // look if it has one, then the command line.
+    loading::Load(info.path);
+    if (opts.loading == 0) loading::GetSettings().player.enabled = false;
+    if (opts.loading == 1) loading::GetSettings().player.enabled = true;
+    if (opts.loadingLogs) loading::GetSettings().player.showLogs = true;
+    loading::Begin(loading::Target::Player, info.name);
+    loading::Progress(0.02f, "Starting");
+
     // Configure window
     if (opts.fullscreen) {
         int monitor = GetCurrentMonitor();
@@ -764,24 +785,28 @@ int main(int argc, char* argv[]) {
     auto nativeScriptHost = std::make_unique<NativeScript::NativeScriptHost>();
     NativeScript::NativeScriptHost* nativeScriptHostPtr = nativeScriptHost.get();
     nativeScriptHost->SetScriptHotReload(opts.hotReload);
+    loading::Range(0.05f, 0.30f);
     if (!opts.noScripts) {
-        std::printf("[Player] Building and loading game scripts...\n");
+        loading::Progress(0.0f, "Loading game scripts");
+        loading::Log("[Player] Building and loading game scripts...");
         fflush(stdout);
         if (nativeScriptHost->InitializeScripts(info.path))
-            std::printf("[Player] Game scripts loaded\n");
+            loading::Log("[Player] Game scripts loaded");
         else
-            std::printf("[Player] No game scripts loaded\n");
+            loading::Log("[Player] No game scripts loaded");
     } else {
         std::printf("[Player] Skipping game scripts (--noscripts)\n");
     }
+    loading::Range(0.30f, 0.40f);
     if (!noNativeScripts) {
-        std::printf("[Player] Initializing native plugins...\n");
+        loading::Progress(0.0f, "Loading plugins");
+        loading::Log("[Player] Initializing native plugins...");
         fflush(stdout);
         nativeScriptHost->SetEngine(&engine);
         if (nativeScriptHost->Initialize(info.path))
-            std::printf("[Player] Native plugins initialized successfully\n");
+            loading::Log("[Player] Native plugins initialized successfully");
         else
-            std::printf("[Player] Native plugin initialization failed\n");
+            loading::Log("[Player] Native plugin initialization failed");
         fflush(stdout);
     } else {
         std::printf("[Player] Skipping native plugins (--no-native-scripts)\n");
@@ -790,7 +815,10 @@ int main(int argc, char* argv[]) {
     engine.AddEntity(std::move(nativeScriptHost));
 
     // Load scene
+    loading::Range(0.40f, 0.44f);
+    loading::Progress(0.0f, "Preparing textures");
     textureManager::Init(info.path);
+    loading::Range(0.44f, 0.94f);
     terrain::Terrain* loadedTerrain = nullptr;
     project::Info loaded = info;
     if (isSpecificFlyproj) {
@@ -805,6 +833,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    loading::Range(0.94f, 0.98f);
+    loading::Progress(0.0f, "Starting the simulation");
     // Auto-start physics simulation (no editor Play button in player)
     simRef.StartPlay();
 
@@ -823,7 +853,10 @@ int main(int argc, char* argv[]) {
     }
 
     // Initialize Technical Tools (console, profiler, inspector, physics debug, recorder, capture, memory tracker)
+    loading::Range(0.98f, 1.0f);
+    loading::Progress(0.0f, "Starting the tools");
     TechTools::TechnicalToolsManager::Instance().Initialize(&engine);
+    loading::End();
     std::printf("[Player] Technical Tools ready. F1=Inspector, F2=Physics Debug, F3=Record, F4=Playback, F5=Screenshot, F6=Video, F9=Memory Tracker, F12=Console\n");
 
     // Apply the --maxmem4G budget. This is a reported limit, not an enforced

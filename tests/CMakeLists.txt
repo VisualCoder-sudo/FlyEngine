@@ -145,6 +145,11 @@ target_link_libraries(sky_test PRIVATE FlyEngineCore FlyRL)
 add_executable(new_project_test new_project_test.cpp)
 target_link_libraries(new_project_test PRIVATE FlyEngineCore FlyRL)
 
+# The loading screens (editor and player): settings, progress and pictures. Opens a window:
+# build/tests/loading_test
+add_executable(loading_test loading_test.cpp)
+target_link_libraries(loading_test PRIVATE FlyEngineCore FlyRL)
+
 # Holes in the city surface (ground plane hidden, magenta sky). Opens a window: build/tests/city_hole_audit
 add_executable(city_hole_audit city_hole_audit.cpp)
 target_link_libraries(city_hole_audit PRIVATE FlyEngineCore FlyRL)
