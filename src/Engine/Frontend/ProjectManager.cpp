@@ -16,6 +16,7 @@
 #undef PlaySound
 #endif
 
+#include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/Graphics.hpp"
@@ -673,6 +674,10 @@ bool OpenProjectFile(const std::string& projectFolder, Engine& engine,
 bool SaveProjectFile(const std::string& projectFolder, const std::vector<ScatteredObject*>& objects,
                      const std::vector<std::unique_ptr<ModelGroup>>& models,
                      terrain::Terrain* terrain) {
+    // Saving makes imports permanent: dedupe textures into assets/shared and
+    // drop unused imported folders *before* the scene records their paths.
+    textureManager::CommitAssets(objects);
+
     HeaderFields fields;
     // Write back to the file this project already lives in. Falling back to the
     // canonical name only matters for a folder we can't find one in, and picking

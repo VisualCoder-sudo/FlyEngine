@@ -1,4 +1,5 @@
 #pragma once
+#include <cstring>
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -42,8 +43,25 @@ struct Frustum {
     }
 
     // Extract frustum from the currently bound rlgl matrices.
+    // Every object asks for this once per draw, but the matrices only change
+    // between passes (main view, each shadow cascade), so the planes are
+    // recomputed only when view or projection actually differ from last call.
     static Frustum ExtractCurrent() {
-        return ExtractFromViewProj(rlGetMatrixModelview(), rlGetMatrixProjection());
+        thread_local Matrix lastView{}, lastProj{};
+        thread_local Frustum cached;
+        thread_local bool haveCache = false;
+
+        const Matrix view = rlGetMatrixModelview();
+        const Matrix proj = rlGetMatrixProjection();
+        if (haveCache && std::memcmp(&view, &lastView, sizeof(Matrix)) == 0 &&
+                         std::memcmp(&proj, &lastProj, sizeof(Matrix)) == 0) {
+            return cached;
+        }
+        lastView = view;
+        lastProj = proj;
+        cached = ExtractFromViewProj(view, proj);
+        haveCache = true;
+        return cached;
     }
 
     // Test if an axis-aligned bounding box intersects the frustum.

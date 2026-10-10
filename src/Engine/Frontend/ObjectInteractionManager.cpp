@@ -1,3 +1,4 @@
+#include <unordered_set>
 #include "../../../include/Engine/Frontend/ObjectInteractionManager.hpp"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Backend/CameraController.hpp"
@@ -450,10 +451,8 @@ void ObjectInteractionManager::RemoveObjectFromScene(ScatteredObject* target) {
         textureManager::UnregisterTexture(texturePath);
     }
 
-    // Delete the model's folder when no remaining object still references it.
-    if (!modelPath.empty()) {
-        textureManager::RemoveModelDirectory(modelPath, objects);
-    }
+    // The model folder is not deleted here: undo may bring the object back, and
+    // unused imported folders are collected on the next save (CommitAssets).
 }
 
 bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<std::string>& sel) const {
@@ -926,6 +925,13 @@ void ObjectInteractionManager::Update(float dt) {
     // before any object picking below.
     const bool cityConsumedClick = city::UpdateCityEditor(engine, camera);
 
+    {
+        std::string spawnPath;
+        Vector3 spawnAt;
+        if (ui::ConsumeModelSpawnRequest(spawnPath, spawnAt)) SpawnModelAt(spawnPath, spawnAt);
+    }
+    PumpPendingSpawns();
+
     if (ui::ConsumeImportRequest()) {
         ImportMesh();
         return;
@@ -1070,7 +1076,6 @@ void ObjectInteractionManager::Update(float dt) {
         const project::Info& current = project::GetCurrentProject();
         if (!current.path.empty()) {
             if (project::SaveProjectFile(current.path, objects, models)) {
-                ClearPendingImports();
                 ui::LogAlways("Saved project '%s'", current.name.c_str());
             } else {
                 ui::LogAlways("Failed to save project: %s", current.path.c_str());
@@ -1897,11 +1902,53 @@ void ObjectInteractionManager::ImportMesh() {
                                   current.path, MeshFilters());
 }
 
+// Binds the texture that shipped with a model (e.g. an FBX's base colour map)
+// through TextureManager, so it is deduplicated and shows in the inspector.
+static void ApplyModelDiffuse(ScatteredObject& obj, const std::string& projectDir) {
+    if (obj.GetModelDiffuseFile().empty() || !obj.GetTexturePath().empty()) return;
+    const std::string rel = textureManager::RegisterTexture(obj.GetModelDiffuseFile(), obj.GetModelPath());
+    if (!rel.empty()) obj.SetTexturePath(rel, projectDir);
+}
+
+// Path of an already-placed model whose file is byte-identical to `source`
+// (same size first, then SHA-256), or empty. Lets re-importing the same file
+// reuse the existing copy instead of storing it again.
+static std::string FindIdenticalPlacedModel(const std::string& source,
+                                            const std::vector<ScatteredObject*>& objects) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const uintmax_t size = fs::file_size(fs::u8path(source), ec);
+    if (ec) return std::string();
+
+    std::string sourceHash;
+    std::unordered_set<std::string> seen;
+    for (const ScatteredObject* obj : objects) {
+        if (!obj || !obj->HasModel()) continue;
+        const std::string& candidate = obj->GetModelPath();
+        if (!seen.insert(candidate).second) continue;
+        if (fs::file_size(fs::u8path(candidate), ec) != size || ec) { ec.clear(); continue; }
+        if (sourceHash.empty()) sourceHash = textureManager::ComputeSHA256(source);
+        if (!sourceHash.empty() && textureManager::ComputeSHA256(candidate) == sourceHash) return candidate;
+    }
+    return std::string();
+}
+
 void ObjectInteractionManager::FinishMeshImport(const std::string& modelPath) {
     if (modelPath.empty()) return;   // cancelled
 
     const project::Info& current = project::GetCurrentProject();
     const std::string projectDir = current.path.empty() ? "" : current.path;
+
+    // Same file imported before? Place another instance of that model instead.
+    const std::string existing = FindIdenticalPlacedModel(modelPath, objects);
+    if (!existing.empty()) {
+        Vector3 at = camera.target;
+        at.y = 0.0f;
+        ui::LogAlways("'%s' is already in the project; reusing the existing copy.",
+                      std::filesystem::path(modelPath).filename().string().c_str());
+        SpawnModelAt(existing, at);
+        return;
+    }
 
     ImportResult result = ImportModel(modelPath, projectDir, current.name);
     if (!result.ok) {
@@ -1909,37 +1956,69 @@ void ObjectInteractionManager::FinishMeshImport(const std::string& modelPath) {
         return;
     }
 
-    // Spawn object at camera center
-    Vector3 spawnPos = camera.target;
-    spawnPos.y = 0.5f;
+    // Stamp the imported folder as temporary until the next save.
+    textureManager::MarkPendingImport(result.targetDir);
 
+    // Spawn at the camera centre once the mesh has been parsed.
+    Vector3 spawnPos = camera.target;
+    spawnPos.y = 0.0f;
+    SpawnModelAt(ResolveStoredAssetPath(result.storedPath, projectDir), spawnPos);
+}
+
+// Parsing a big model blocks for a noticeable time, so it runs on a worker
+// thread; the object is created by PumpPendingSpawns() on the frame it is ready.
+void ObjectInteractionManager::SpawnModelAt(const std::string& absModelPath, Vector3 pos) {
+    ScatteredObject::PrefetchModel(absModelPath);
+    pendingSpawns.push_back({ absModelPath, pos });
+    ui::LogAlways("Loading %s...", std::filesystem::path(absModelPath).filename().string().c_str());
+}
+
+void ObjectInteractionManager::PumpPendingSpawns() {
+    for (size_t i = 0; i < pendingSpawns.size();) {
+        if (!ScatteredObject::IsModelReady(pendingSpawns[i].path)) { ++i; continue; }
+        const PendingSpawn spawn = pendingSpawns[i];
+        pendingSpawns.erase(pendingSpawns.begin() + (long)i);
+        CompleteSpawn(spawn.path, spawn.pos);
+    }
+}
+
+void ObjectInteractionManager::CompleteSpawn(const std::string& absModelPath, Vector3 pos) {
+    pos.y += 0.5f;
     PushUndoNow();
-    auto newObj = std::make_unique<ScatteredObject>(spawnPos, Vector3{ 1.5f, 1.5f, 1.5f }, WHITE, ShapeType::Cube);
-    newObj->SetName(std::filesystem::path(result.storedPath).stem().string());
-    // Resolve the project-relative stored path to an absolute file path so
-    // LoadModel() can find it regardless of the process working directory.
-    std::string absModel = ResolveStoredAssetPath(result.storedPath, projectDir);
-    if (!newObj->SetModel(absModel)) {
-        ui::LogAlways("Could not load imported mesh: %s", result.storedPath.c_str());
+    auto newObj = std::make_unique<ScatteredObject>(pos, Vector3{ 1.5f, 1.5f, 1.5f }, WHITE, ShapeType::Cube);
+    newObj->SetName(std::filesystem::path(absModelPath).stem().string());
+    if (!newObj->SetModel(absModelPath)) {
+        ui::LogAlways("Could not load model: %s", absModelPath.c_str());
         return;
     }
-    newObj->NormalizeModelToUnitBox();
+    // Keep the mesh's true proportions (a flat board must stay flat), scaled so
+    // its longest side is a fixed, editable size regardless of source units.
+    newObj->SetSizeFromModel();
+    {
+        Vector3* sz = newObj->GetSizePtr();
+        const float longest = fmaxf(sz->x, fmaxf(sz->y, sz->z));
+        if (longest > 1e-6f) *sz = Vector3Scale(*sz, 3.0f / longest);
+    }
     objects.push_back(newObj.get());
     engine.AddEntity(std::move(newObj));
     ui::SetSelection({ objects.back() }, objects.back());
     BasicTerrain::SetActive(nullptr);
-    ClearPendingImports();
-    pendingImportDirs.push_back(result.targetDir);
+    ScatteredObject& placed = *objects.back();
+    const std::string& projectDir = project::GetCurrentProject().path;
+    ApplyModelDiffuse(placed, projectDir);
+    // Placing a model that is already in the scene: inherit the texture its
+    // siblings use (it may have been moved to assets/shared, so it can't be
+    // re-derived from the model folder).
+    if (placed.GetTexturePath().empty()) {
+        for (const ScatteredObject* other : objects) {
+            if (other == &placed || other->GetModelPath() != absModelPath || other->GetTexturePath().empty()) continue;
+            placed.SetTexturePath(other->GetTexturePath(), projectDir);
+            break;
+        }
+    }
 }
 
 void ObjectInteractionManager::CleanupPendingImports() {
-    // Called on project open/save/new - unregister any pending import directories
-    for (const auto& dir : pendingImportDirs) {
-        textureManager::RemoveModelDirectory(dir, objects);
-    }
-    pendingImportDirs.clear();
-}
-
-void ObjectInteractionManager::ClearPendingImports() {
-    pendingImportDirs.clear();
+    // Imports are temporary until saved: anything not committed is discarded.
+    textureManager::DiscardPendingImports();
 }

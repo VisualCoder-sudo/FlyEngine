@@ -4,6 +4,7 @@
 #include "../../include/Engine/TechnicalTools.hpp"
 #include "raylib.h"
 #include "raymath.h"
+#include <future>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -204,6 +205,53 @@ Texture2D GetGPUTexture(const std::string& relPath) {
     return tex;
 }
 
+// Asynchronous load: the image is decoded on a worker thread (no GL involved),
+// and only the final upload happens here on the calling (render) thread.
+constexpr int kMaxTextureSize = 2048;   // longest side kept for async-loaded textures
+static std::unordered_map<std::string, std::future<Image>> g_asyncLoads;
+static std::unordered_set<std::string> g_failedLoads;
+
+Texture2D GetGPUTextureAsync(const std::string& relPath, bool& pending) {
+    pending = false;
+    auto cached = g_gpuTextures.find(relPath);
+    if (cached != g_gpuTextures.end()) return cached->second;
+    if (g_projectDir.empty() || g_failedLoads.count(relPath)) return Texture2D{0};
+
+    auto job = g_asyncLoads.find(relPath);
+    if (job == g_asyncLoads.end()) {
+        const std::string absPath = (fs::path(g_projectDir) / relPath).generic_string();
+        g_asyncLoads.emplace(relPath, std::async(std::launch::async, [absPath]() {
+            Image img = LoadImage(absPath.c_str());
+            // Oversized textures (4k+ photos) are shrunk on the worker: a quarter
+            // of the GPU memory and upload time for a barely visible difference.
+            const int longest = img.width > img.height ? img.width : img.height;
+            if (img.data && longest > kMaxTextureSize) {
+                const float scale = (float)kMaxTextureSize / (float)longest;
+                ImageResize(&img, (int)(img.width * scale + 0.5f), (int)(img.height * scale + 0.5f));
+            }
+            return img;
+        }));
+        pending = true;
+        return Texture2D{0};
+    }
+    if (job->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        pending = true;
+        return Texture2D{0};
+    }
+
+    Image img = job->second.get();
+    g_asyncLoads.erase(job);
+    if (img.data == nullptr) { g_failedLoads.insert(relPath); return Texture2D{0}; }
+    Texture2D tex = LoadTextureFromImage(img);
+    UnloadImage(img);
+    if (tex.id == 0) { g_failedLoads.insert(relPath); return tex; }
+    GenTextureMipmaps(&tex);
+    SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR);
+    g_gpuTextures[relPath] = tex;
+    TechTools::MemoryTracker::Instance().TrackTexture(tex, relPath);
+    return tex;
+}
+
 void LoadTextureCache() {
     if (g_cacheLoaded || g_projectDir.empty()) return;
     // v2: the SHA-256 implementation was fixed (the old one did not hash the file
@@ -369,6 +417,9 @@ void Init(const std::string& projectDir) {
     g_projectDir = projectDir;
     g_refCount.clear();
     g_hashToPath.clear();
+    g_failedLoads.clear();
+    for (auto& [path, job] : g_asyncLoads) UnloadImage(job.get());   // wait + free
+    g_asyncLoads.clear();
 
     for (auto& [path, tex] : g_gpuTextures) {
         TechTools::MemoryTracker::Instance().UntrackTexture(tex);
@@ -381,6 +432,8 @@ void Init(const std::string& projectDir) {
 
 void Shutdown() {
     SaveGPUCache();
+    for (auto& [path, job] : g_asyncLoads) UnloadImage(job.get());
+    g_asyncLoads.clear();
     
     for (auto& [path, tex] : g_gpuTextures) {
         TechTools::MemoryTracker::Instance().UntrackTexture(tex);
@@ -453,9 +506,8 @@ std::string ComputeSHA256(const std::string& filePath) {
 }
 
 static void IncrementRef(const std::string& relPath) {
-    if (g_refCount[relPath] == 0) {
-        GetGPUTexture(relPath);
-    }
+    // No GPU load here: decoding a 4k texture in the middle of a click handler
+    // froze the editor. Objects load it lazily (and asynchronously) on draw.
     g_refCount[relPath]++;
 }
 
@@ -534,6 +586,15 @@ std::string RegisterTexture(const std::string& sourcePath, const std::string& mo
     try {
         fs::path srcPath(sourcePath);
         std::string dstAbs = (fs::path(targetDir) / srcPath.filename()).generic_string();
+
+        // A file that already lives inside the project (e.g. the texture that
+        // shipped with an imported FBX) is adopted in place, not copied again.
+        const std::string inProject = GetRelativePath(sourcePath, g_projectDir);
+        if (!inProject.empty() && inProject.rfind("..", 0) != 0 && !fs::path(inProject).is_absolute()) {
+            g_hashToPath[hash] = inProject;
+            IncrementRef(inProject);
+            return inProject;
+        }
 
         if (!CopyFileTo(sourcePath, dstAbs)) return "";
 
@@ -691,6 +752,174 @@ void VerifyAndRebuild(const std::vector<ScatteredObject*>& objects) {
             }
         }
     }
+}
+
+// --- Temporary imports ------------------------------------------------------
+// Imported model folders are scratch space until the project is saved. Each is
+// stamped with a marker file (so only folders we created are ever garbage
+// collected) and journaled, so a crash or quit without saving doesn't leave
+// them behind: they are deleted on the next open.
+
+static const char* kImportMarker = ".flyimport";
+static std::unordered_set<std::string> g_pendingDirs;   // absolute, normalized
+
+static std::string JournalPath() {
+    return g_projectDir.empty() ? std::string() : (fs::path(g_projectDir) / ".pending_imports").generic_string();
+}
+
+static void WriteJournal() {
+    const std::string jp = JournalPath();
+    if (jp.empty()) return;
+    std::error_code ec;
+    if (g_pendingDirs.empty()) { fs::remove(jp, ec); return; }
+    std::ofstream out(jp, std::ios::trunc);
+    for (const std::string& d : g_pendingDirs) out << d << '\n';
+}
+
+static bool IsInsideAssets3D(const fs::path& dir) {
+    if (g_projectDir.empty()) return false;
+    std::error_code ec;
+    fs::path root = fs::weakly_canonical(fs::path(g_projectDir) / "assets" / "3D", ec);
+    fs::path d = fs::weakly_canonical(dir, ec);
+    if (ec) return false;
+    auto rel = d.lexically_relative(root);
+    return !rel.empty() && *rel.begin() != "..";
+}
+
+void MarkPendingImport(const std::string& absDir) {
+    if (absDir.empty() || g_projectDir.empty()) return;
+    std::error_code ec;
+    fs::path dir = fs::weakly_canonical(fs::path(absDir), ec);
+    if (!IsInsideAssets3D(dir)) return;
+    { std::ofstream marker(dir / kImportMarker); }
+    g_pendingDirs.insert(dir.generic_string());
+    WriteJournal();
+}
+
+void DiscardPendingImports() {
+    // Journal may hold entries from a previous session that never saved.
+    const std::string jp = JournalPath();
+    if (!jp.empty()) {
+        std::ifstream in(jp);
+        std::string line;
+        while (std::getline(in, line)) if (!line.empty()) g_pendingDirs.insert(line);
+    }
+    for (const std::string& d : g_pendingDirs) {
+        if (!IsInsideAssets3D(d)) continue;   // never delete outside assets/3D
+        std::error_code ec;
+        fs::remove_all(d, ec);
+    }
+    g_pendingDirs.clear();
+    WriteJournal();
+}
+
+static bool IsManagedFile(const fs::path& absFile) {
+    std::error_code ec;
+    const fs::path parent = absFile.parent_path();
+    if (fs::exists(parent / kImportMarker, ec)) return true;
+    fs::path shared = fs::weakly_canonical(GetSharedTextureDir(), ec);
+    return !ec && fs::weakly_canonical(parent, ec) == shared;
+}
+
+void CommitAssets(const std::vector<ScatteredObject*>& objects) {
+    if (g_projectDir.empty()) return;
+    std::error_code ec;
+
+    // 1. Group the textures in use by content.
+    struct Use { ScatteredObject* obj; std::string rel; };
+    std::unordered_map<std::string, std::vector<Use>> byHash;
+    for (auto* obj : objects) {
+        if (!obj) continue;
+        const std::string tp = obj->GetTexturePath();
+        if (tp.empty() || IsPresetTexture(tp)) continue;
+        const std::string abs = (fs::path(g_projectDir) / tp).generic_string();
+        if (!fs::exists(abs, ec)) continue;
+        const std::string hash = ComputeFileSHA256Cached(abs, tp);
+        if (hash.empty()) continue;
+        byHash[hash].push_back({ obj, tp });
+    }
+
+    // 2. Used by 2+ distinct models -> one copy in assets/shared. Otherwise it
+    //    belongs next to its single model.
+    std::vector<std::string> oldPaths;
+    for (auto& [hash, uses] : byHash) {
+        std::unordered_set<std::string> models;
+        for (const Use& u : uses) models.insert(u.obj->GetModelPath());
+
+        std::string target = uses.front().rel;
+        const fs::path firstAbs = fs::path(g_projectDir) / uses.front().rel;
+        if (models.size() >= 2) {
+            fs::path dstAbs = fs::path(GetSharedTextureDir()) / firstAbs.filename();
+            if (fs::exists(dstAbs, ec) && ComputeFileSHA256(dstAbs.generic_string()) != hash) {
+                dstAbs = dstAbs.parent_path() / (dstAbs.stem().string() + "_" + hash.substr(0, 8) + dstAbs.extension().string());
+            }
+            if (!fs::exists(dstAbs, ec) && !CopyFileTo(firstAbs.generic_string(), dstAbs.generic_string())) continue;
+            target = GetRelativePath(dstAbs.generic_string(), g_projectDir);
+        } else if (uses.front().rel.rfind("assets/shared/", 0) == 0 && !uses.front().obj->GetModelPath().empty()) {
+            fs::path dstAbs = fs::path(GetModelTextureDir(uses.front().obj->GetModelPath())) / firstAbs.filename();
+            if (!fs::exists(dstAbs, ec) && !CopyFileTo(firstAbs.generic_string(), dstAbs.generic_string())) continue;
+            target = GetRelativePath(dstAbs.generic_string(), g_projectDir);
+        }
+
+        for (const Use& u : uses) {
+            if (u.rel == target) continue;
+            u.obj->SetTexturePath(target, g_projectDir);
+            oldPaths.push_back(u.rel);
+        }
+        g_hashToPath[hash] = target;
+    }
+
+    // 3. Drop the superseded copies (only ones we manage), and their GPU data.
+    std::unordered_set<std::string> stillUsed;
+    for (auto* obj : objects) if (obj && !obj->GetTexturePath().empty()) stillUsed.insert(obj->GetTexturePath());
+    for (const std::string& old : oldPaths) {
+        if (stillUsed.count(old)) continue;
+        UnloadGPUTexture(old);
+        g_refCount.erase(old);
+        const fs::path abs = fs::path(g_projectDir) / old;
+        if (IsManagedFile(abs)) fs::remove(abs, ec);
+    }
+
+    // 4. Garbage-collect model folders nothing uses any more.
+    const fs::path root = fs::path(g_projectDir) / "assets" / "3D";
+    if (fs::is_directory(root, ec)) {
+        std::vector<fs::path> dirs;
+        for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            if (it->is_directory(ec) && fs::exists(it->path() / kImportMarker, ec)) dirs.push_back(it->path());
+        }
+        static const std::unordered_set<std::string> imgExts = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp" };
+        for (const fs::path& d : dirs) {
+            if (!FolderIsUsed(d.generic_string(), objects)) { fs::remove_all(d, ec); continue; }
+            // Unreferenced image that duplicates a texture in use (an FBX's own
+            // extracted copy, say): the shared/canonical file replaces it.
+            std::vector<fs::path> dupes;
+            for (auto it = fs::directory_iterator(d, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file(ec) || !imgExts.count(it->path().extension().string())) continue;
+                const std::string rel = GetRelativePath(it->path().generic_string(), g_projectDir);
+                if (stillUsed.count(rel)) continue;
+                if (byHash.count(ComputeFileSHA256Cached(it->path().generic_string(), rel))) dupes.push_back(it->path());
+            }
+            for (const fs::path& f : dupes) fs::remove(f, ec);
+        }
+    }
+
+    // 5. ...and shared textures nothing references.
+    const fs::path shared = GetSharedTextureDir();
+    if (fs::is_directory(shared, ec)) {
+        std::vector<fs::path> files;
+        for (auto it = fs::directory_iterator(shared, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            if (it->is_regular_file(ec)) files.push_back(it->path());
+        }
+        for (const fs::path& f : files) {
+            if (!stillUsed.count(GetRelativePath(f.generic_string(), g_projectDir))) fs::remove(f, ec);
+        }
+        if (fs::is_empty(shared, ec)) fs::remove(shared, ec);
+    }
+
+    // 6. Everything that survived is now saved content, not scratch.
+    g_pendingDirs.clear();
+    WriteJournal();
+    SaveTextureCache();
 }
 
 std::vector<std::string> GetPresetTextures(const std::string& projectDir) {

@@ -109,13 +109,19 @@ private:
     // on a later frame with the chosen path, or an empty path if cancelled.
     void ImportMesh();
     void FinishMeshImport(const std::string& modelPath);
+    // Spawns an already-in-project model file at a world position. The mesh is
+    // parsed on a worker thread; the object appears a few frames later.
+    void SpawnModelAt(const std::string& absModelPath, Vector3 pos);
+    void PumpPendingSpawns();
+    void CompleteSpawn(const std::string& absModelPath, Vector3 pos);
+    struct PendingSpawn { std::string path; Vector3 pos; };
+    std::vector<PendingSpawn> pendingSpawns;
 
     // Delivers results from the non-blocking file pickers (scene open/save,
     // mesh import). Called first thing in Update() so a result is never
     // starved behind one of Update()'s early returns.
     void PumpDialogs();
     void CleanupPendingImports();
-    void ClearPendingImports();
     int PickHandle(Vector2 mouse) const;
     ScatteredObject* PickObject(Ray ray) const;
     ModelGroup* PickModel(Ray ray) const;
@@ -135,5 +141,4 @@ private:
 
     // Directories created by ImportMesh that haven't been saved yet.
     // Cleaned up on OpenScene and editor exit; cleared on Save.
-    std::vector<std::string> pendingImportDirs;
 };

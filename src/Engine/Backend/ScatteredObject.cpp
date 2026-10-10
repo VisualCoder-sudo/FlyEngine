@@ -1,3 +1,7 @@
+#include <chrono>
+#include <future>
+#include <unordered_map>
+#include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
@@ -57,6 +61,46 @@ Vector3 NormalizeMeshVertices(Model& model, BoundingBox bounds) {
         UpdateMeshBuffer(mesh, 0, mesh.vertices, (int)(mesh.vertexCount * 3 * sizeof(float)), 0);
     }
     return extent;
+}
+
+// One loaded+normalized copy of each model file, shared by every object that
+// uses it (duplicates, copy/paste, repeated placements). Meshes and their GPU
+// buffers live here once; each object only owns a private materials array so a
+// per-object texture assignment doesn't leak onto its siblings.
+struct SharedModelEntry {
+    Model model{};
+    Vector3 extent{ 1.0f, 1.0f, 1.0f };   // pre-normalization size of the mesh
+    std::string diffuseFile;               // base-colour texture found beside the model
+    std::unordered_map<int, std::shared_ptr<const pcoll::Collider>> colliders;   // by accuracy
+    int refs = 0;
+};
+std::unordered_map<std::string, SharedModelEntry> g_sharedModels;
+
+// FBX files parsed ahead of time on a worker thread (see PrefetchModel).
+struct PrefetchResult {
+    bool ok = false;
+    FbxCpuData data;
+};
+std::unordered_map<std::string, std::shared_future<PrefetchResult>> g_prefetched;
+
+std::string SharedModelKey(const std::string& path) {
+    return std::filesystem::u8path(path).lexically_normal().generic_string();
+}
+
+BoundingBox ModelBounds(const Model& model) {
+    BoundingBox box{};
+    if (model.meshes == nullptr || model.meshCount <= 0) return box;
+    box = GetMeshBoundingBox(model.meshes[0]);
+    for (int i = 1; i < model.meshCount; ++i) {
+        BoundingBox m = GetMeshBoundingBox(model.meshes[i]);
+        box.min.x = fminf(box.min.x, m.min.x);
+        box.min.y = fminf(box.min.y, m.min.y);
+        box.min.z = fminf(box.min.z, m.min.z);
+        box.max.x = fmaxf(box.max.x, m.max.x);
+        box.max.y = fmaxf(box.max.y, m.max.y);
+        box.max.z = fmaxf(box.max.z, m.max.z);
+    }
+    return box;
 }
 
 // Draws one shared shape model at an arbitrary position/size/rotation.
@@ -138,12 +182,7 @@ ScatteredObject::ScatteredObject(Vector3 pos, Vector3 size, Color color, ShapeTy
     : pos(pos), size(size), color(color), shape(shape) {}
 
 ScatteredObject::~ScatteredObject() {
-    if (hasOwnModel) {
-        // Untrack before unloading: the tracker keys the model on its meshes
-        // array, which UnloadModel is about to free.
-        TechTools::MemoryTracker::Instance().UntrackModel(model);
-        UnloadModel(model);
-    }
+    ReleaseModel();
     // Texture is managed by TextureManager via refcount
     if (!texturePath.empty()) {
         textureManager::UnregisterTexture(texturePath);
@@ -230,60 +269,128 @@ Texture2D ScatteredObject::GetTexture() const {
     return gfx::GetDefaultTexture();
 }
 
+void ScatteredObject::ReleaseModel() {
+    if (!hasOwnModel) return;
+    // Private materials array only; meshes belong to the shared entry.
+    if (model.materials != nullptr) {
+        for (int i = 0; i < model.materialCount; ++i) MemFree(model.materials[i].maps);
+        MemFree(model.materials);
+    }
+    auto it = g_sharedModels.find(sharedModelKey);
+    if (it != g_sharedModels.end() && --it->second.refs <= 0) {
+        // Untrack before unloading: the tracker keys the model on its meshes
+        // array, which UnloadModel is about to free.
+        TechTools::MemoryTracker::Instance().UntrackModel(it->second.model);
+        UnloadModel(it->second.model);
+        g_sharedModels.erase(it);
+    }
+    model = Model{};
+    sharedModelKey.clear();
+    hasOwnModel = false;
+}
+
+void ScatteredObject::PrefetchModel(const std::string& path) {
+    if (!IsFBXPath(path)) return;
+    const std::string key = SharedModelKey(path);
+    if (g_sharedModels.count(key) || g_prefetched.count(key)) return;
+    g_prefetched.emplace(key, std::async(std::launch::async, [path]() {
+        PrefetchResult r;
+        r.ok = LoadFBXCpu(path, r.data);
+        return r;
+    }).share());
+}
+
+bool ScatteredObject::IsModelReady(const std::string& path) {
+    const std::string key = SharedModelKey(path);
+    auto it = g_prefetched.find(key);
+    if (it == g_prefetched.end()) return true;   // cached, not FBX, or nothing started
+    return it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
 bool ScatteredObject::SetModel(const std::string& path) {
-    Model loaded = { 0 };
-    // FBX is not supported by raylib's built-in loaders, so route it through
-    // the ufbx-backed loader. All other formats use raylib's LoadModel().
-    if (IsFBXPath(path)) {
-        if (!LoadFBXIntoModel(path, loaded)) {
-            TraceLog(LOG_WARNING, "COLLISION: Could not load FBX mesh: %s", path.c_str());
+    const std::string key = SharedModelKey(path);
+    auto it = g_sharedModels.find(key);
+    if (it == g_sharedModels.end()) {
+        Model loaded = { 0 };
+        std::string diffuseFile;
+        // FBX is not supported by raylib's built-in loaders, so route it through
+        // the ufbx-backed loader. All other formats use raylib's LoadModel().
+        if (IsFBXPath(path)) {
+            bool ok = false;
+            auto pre = g_prefetched.find(key);
+            if (pre != g_prefetched.end()) {
+                // Parsed on a worker thread already (blocks only if it isn't done).
+                PrefetchResult r = pre->second.get();
+                g_prefetched.erase(pre);
+                if (r.ok) {
+                    diffuseFile = r.data.diffuseFile;
+                    ok = UploadFBXCpu(r.data, loaded);
+                }
+                FreeFbxCpu(r.data);
+            } else {
+                ok = LoadFBXIntoModel(path, loaded, &diffuseFile);
+            }
+            if (!ok) {
+                TraceLog(LOG_WARNING, "COLLISION: Could not load FBX mesh: %s", path.c_str());
+                return false;
+            }
+        } else {
+            loaded = LoadModel(path.c_str());
+        }
+
+        if (loaded.meshCount == 0 || loaded.meshes == nullptr) {
+            if (loaded.meshes != nullptr) UnloadModel(loaded); // malformed but allocated
             return false;
         }
-    } else {
-        loaded = LoadModel(path.c_str());
+
+        // Loaders normally always produce materials; guard the degenerate case.
+        if (loaded.materials == nullptr || loaded.materialCount == 0) {
+            loaded.materialCount = 1;
+            loaded.materials = (Material*)MemAlloc(sizeof(Material));
+            loaded.materials[0] = LoadMaterialDefault();
+        }
+
+        // Give every material the editor's lit shader so imported meshes receive
+        // the same lighting and shadows as the primitive shapes.
+        for (int i = 0; i < loaded.materialCount; ++i) {
+            loaded.materials[i].shader = gfx::GetLitShader();
+        }
+
+        // Normalize once, here: every user sees the same [-0.5, 0.5] mesh and
+        // scales it through its own `size`.
+        SharedModelEntry entry;
+        entry.extent = NormalizeMeshVertices(loaded, ModelBounds(loaded));
+        entry.model = loaded;
+        entry.diffuseFile = diffuseFile;
+
+        // Tagged with the model path so a leak report names the asset that is
+        // holding the memory, not just "model, 2 MB".
+        TechTools::MemoryTracker::Instance().TrackModel(entry.model, path);
+        it = g_sharedModels.emplace(key, std::move(entry)).first;
     }
 
-    if (loaded.meshCount == 0 || loaded.meshes == nullptr) {
-        if (loaded.meshes != nullptr) UnloadModel(loaded); // malformed but allocated
-        return false;
-    }
+    ReleaseModel();   // drop the previous model only once the new one is ready
 
-    // Loaders normally always produce materials; guard the degenerate case.
-    if (loaded.materials == nullptr || loaded.materialCount == 0) {
-        loaded.materialCount = 1;
-        loaded.materials = (Material*)MemAlloc(sizeof(Material));
-        loaded.materials[0] = LoadMaterialDefault();
-    }
+    SharedModelEntry& shared = it->second;
+    shared.refs++;
+    sharedModelKey = key;
+    modelExtent = shared.extent;
+    modelDiffuseFile = shared.diffuseFile;
 
-    // Give every material the editor's lit shader so imported meshes receive
-    // the same lighting and shadows as the primitive shapes.
-    for (int i = 0; i < loaded.materialCount; ++i) {
-        loaded.materials[i].shader = gfx::GetLitShader();
+    model = shared.model;   // aliases shared meshes / meshMaterial
+    model.materials = (Material*)MemAlloc((unsigned int)shared.model.materialCount * sizeof(Material));
+    for (int i = 0; i < shared.model.materialCount; ++i) {
+        model.materials[i] = shared.model.materials[i];
+        model.materials[i].maps = (MaterialMap*)MemAlloc(kMaxMaterialMaps * sizeof(MaterialMap));
+        memcpy(model.materials[i].maps, shared.model.materials[i].maps, kMaxMaterialMaps * sizeof(MaterialMap));
     }
-
-    if (hasOwnModel) {
-        TechTools::MemoryTracker::Instance().UntrackModel(model);
-        UnloadModel(model);
-    }
-    model = loaded;
     modelPath = path;
     hasOwnModel = true;
     geometryVersion++;
 
-    // Tagged with the model path so a leak report names the asset that is
-    // holding the memory, not just "model, 2 MB".
-    TechTools::MemoryTracker::Instance().TrackModel(model, path);
-
-    if (!texturePath.empty()) {
-        Texture2D gpuTex = textureManager::GetGPUTexture(texturePath);
-        if (gpuTex.id != 0 && model.materials != nullptr) {
-            for (int i = 0; i < model.materialCount; ++i) {
-                if (model.materials[i].maps != nullptr) {
-                    model.materials[i].maps[MATERIAL_MAP_DIFFUSE].texture = textureManager::GetGPUTexture(texturePath);
-                }
-            }
-        }
-    }
+    // The materials are fresh copies, so re-bind the object's texture. Draw()
+    // does this lazily and asynchronously instead of decoding it here.
+    if (!texturePath.empty()) textureNeedsBind = true;
     return true;
 }
 
@@ -292,39 +399,24 @@ const std::string& ScatteredObject::GetModelPath() const { return modelPath; }
 bool ScatteredObject::HasModel() const { return hasOwnModel; }
 
 BoundingBox ScatteredObject::GetModelBounds() const {
-    BoundingBox box{};
-    if (!hasOwnModel || model.meshes == nullptr) return box;
-    box = GetMeshBoundingBox(model.meshes[0]);
-    for (int i = 1; i < model.meshCount; ++i) {
-        BoundingBox m = GetMeshBoundingBox(model.meshes[i]);
-        box.min.x = fminf(box.min.x, m.min.x);
-        box.min.y = fminf(box.min.y, m.min.y);
-        box.min.z = fminf(box.min.z, m.min.z);
-        box.max.x = fmaxf(box.max.x, m.max.x);
-        box.max.y = fmaxf(box.max.y, m.max.y);
-        box.max.z = fmaxf(box.max.z, m.max.z);
-    }
-    return box;
+    if (!hasOwnModel) return BoundingBox{};
+    return ModelBounds(model);
 }
 
 void ScatteredObject::SetSizeFromModel() {
     if (!hasOwnModel || model.meshes == nullptr) return;
 
-    // Normalizing sets the mesh's own extent as the object's size, so it
-    // renders inside GetBoundingBox() (pos +/- size/2), exactly like a
-    // primitive. Used at import time, when there is no saved size yet.
-    size = NormalizeMeshVertices(model, GetModelBounds());
+    // The mesh is normalized to [-0.5, 0.5] when loaded, so its original
+    // extent becomes the object's size and it renders inside GetBoundingBox()
+    // (pos +/- size/2), exactly like a primitive. Used at import time, when
+    // there is no saved size yet.
+    size = modelExtent;
     geometryVersion++;
 }
 
 void ScatteredObject::NormalizeModelToUnitBox() {
-    if (!hasOwnModel || model.meshes == nullptr) return;
-
-    // Same normalization as SetSizeFromModel(), but `size` is left untouched:
-    // used when reloading a scene, where size was already read from the save
-    // file and must be preserved rather than re-derived from the mesh.
-    NormalizeMeshVertices(model, GetModelBounds());
-    geometryVersion++;
+    // Kept for callers that reload scenes: SetModel() already normalizes the
+    // shared mesh once, and `size` stays whatever the save file said.
 }
 
 std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
@@ -354,11 +446,10 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
         }
     }
     
-    // The clone owns its own loaded model (same file, fresh GPU resources);
-    // a shared model handle would double-free when either object is destroyed.
+    // The clone shares the source's mesh data (one copy in memory and on the
+    // GPU); only its materials are private.
     if (hasOwnModel && !modelPath.empty()) {
         copy->SetModel(modelPath);
-        copy->SetSizeFromModel(); // re-normalizes to the same unit box as the source
         *copy->GetSizePtr() = size;
     }
     copy->collisionAccuracy = collisionAccuracy;
@@ -380,7 +471,9 @@ void ScatteredObject::UpdateLOD() {
 
     // For own-model objects, rebind the LOD texture to material slots.
     // Primitives get the right texture from GetTexture() each frame.
-    if (hasOwnModel && model.materials != nullptr) {
+    // Only when a texture is assigned: otherwise GetTexture() is the default
+    // white texture and would wipe the model's own embedded textures.
+    if (hasOwnModel && !texturePath.empty() && model.materials != nullptr) {
         Texture2D tex = GetTexture();
         if (tex.id != 0) {
             for (int i = 0; i < model.materialCount; ++i) {
@@ -402,9 +495,22 @@ void ScatteredObject::Draw() {
     // UpdateLOD, which is not free either.
     if (gfx::IsInShadowPass() && gfx::IsShadowPassReused()) return;
 
+    // Small, distant objects cast shadows too tiny to see: leave them out of the
+    // shadow pass (they are still drawn normally in the main pass).
+    if (gfx::IsInShadowPass()) {
+        constexpr float kShadowSkipMinDistance = 50.0f;   // never skip anything closer than this (m)
+        constexpr float kShadowSkipMinAngular = 0.03f;    // skip when radius / distance falls below this
+        const float dist = Vector3Distance(s_lodCameraPos, pos);
+        if (dist > kShadowSkipMinDistance) {
+            const float radius = 0.5f * Vector3Length(size);
+            if (radius / dist < kShadowSkipMinAngular) return;
+        }
+    }
+
     // Lazy texture bind: was deferred from SetTexturePath to avoid blocking
     if (textureNeedsBind && hasOwnModel && !texturePath.empty() && model.materials != nullptr) {
-        Texture2D gpuTex = textureManager::GetGPUTexture(texturePath);
+        bool pending = false;
+        Texture2D gpuTex = textureManager::GetGPUTextureAsync(texturePath, pending);
         if (gpuTex.id != 0) {
             for (int i = 0; i < model.materialCount; ++i) {
                 if (model.materials[i].maps != nullptr) {
@@ -412,7 +518,8 @@ void ScatteredObject::Draw() {
                 }
             }
         }
-        textureNeedsBind = false;
+        // Keep trying while the worker thread is still decoding.
+        if (!pending) textureNeedsBind = false;
     }
 
     // Update LOD before drawing
@@ -630,20 +737,34 @@ void ScatteredObject::SetCollisionAccuracy(pcoll::CollisionAccuracy accuracy) {
 }
 
 const pcoll::Collider& ScatteredObject::GetCollider() const {
-    int key = (int)GetCollisionAccuracy() * 100003 + (int)geometryVersion;
-    if (colliderCacheKey == key) return colliderCache;
+    const int accuracy = (int)GetCollisionAccuracy();
+    int key = accuracy * 100003 + (int)geometryVersion;
+    if (colliderCacheKey == key && colliderCache) return *colliderCache;
 
-    std::vector<pcoll::Triangle> tris;
-    if (hasOwnModel) {
-        for (int i = 0; i < model.meshCount; ++i) ExtractMeshTriangles(model.meshes[i], tris);
+    // One collider per (mesh or primitive, accuracy), shared by every object
+    // using it: duplicates of a model don't each rebuild or store their own.
+    static std::unordered_map<int, std::shared_ptr<const pcoll::Collider>> primitiveColliders;
+    std::shared_ptr<const pcoll::Collider>* slot = nullptr;
+    auto sharedIt = hasOwnModel ? g_sharedModels.find(sharedModelKey) : g_sharedModels.end();
+    if (sharedIt != g_sharedModels.end()) slot = &sharedIt->second.colliders[accuracy];
+    else if (!hasOwnModel) slot = &primitiveColliders[(int)shape * 1000 + accuracy];
+
+    if (slot && *slot) {
+        colliderCache = *slot;
     } else {
-        Model& m = gfx::GetShapeModel(shape);
-        for (int i = 0; i < m.meshCount; ++i) ExtractMeshTriangles(m.meshes[i], tris);
+        std::vector<pcoll::Triangle> tris;
+        if (hasOwnModel) {
+            for (int i = 0; i < model.meshCount; ++i) ExtractMeshTriangles(model.meshes[i], tris);
+        } else {
+            Model& m = gfx::GetShapeModel(shape);
+            for (int i = 0; i < m.meshCount; ++i) ExtractMeshTriangles(m.meshes[i], tris);
+        }
+        colliderCache = std::make_shared<const pcoll::Collider>(
+            pcoll::BuildCollider(GetCollisionAccuracy(), tris));
+        if (slot) *slot = colliderCache;
     }
-
     colliderCacheKey = key;
-    colliderCache = pcoll::BuildCollider(GetCollisionAccuracy(), tris);
-    return colliderCache;
+    return *colliderCache;
 }
 
 bool ScatteredObject::IsVisible(const Frustum& frustum) const {

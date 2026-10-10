@@ -825,6 +825,17 @@ bool ConsumePlayToggle() {
     return toggle;
 }
 
+static bool g_spawnRequested = false;
+static std::string g_spawnPath;
+static Vector3 g_spawnPos{0, 0, 0};
+bool ConsumeModelSpawnRequest(std::string& outPath, Vector3& outPos) {
+    if (!g_spawnRequested) return false;
+    g_spawnRequested = false;
+    outPath = g_spawnPath;
+    outPos = g_spawnPos;
+    return true;
+}
+
 bool ConsumeImportRequest() {
     bool requested = g_importRequested;
     g_importRequested = false;
@@ -1515,6 +1526,8 @@ MenuAction ProcessContextMenu() {
 
 // Shared look for every hand-drawn dropdown header/row: dark-teal fill inside a
 // border that is grey at rest and bright cyan when active (hovered, selected, or open).
+static std::string FitTextToWidth(const std::string& text, float fontSize, float maxWidth);
+
 static void DrawDropdownBox(const Rectangle& r, bool active, float alpha = 1.0f) {
     const Color rest   = Color{ 58, 58, 58, 255 };
     const Color lit    = theme::ACCENT_HOVER;
@@ -3098,6 +3111,7 @@ static float PropertiesContentHeight() {
     h += group(true, 7.0f);               // General (color + anchored + can collide + boat + collision + transparency + mass)
     if (g_selectedObject && g_selectedObject->HasModel()) h += rowHeight; // mesh info line
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
+    if (g_selectedObject && g_selectedObject->HasModel() && !g_playActive) h += rowHeight; // browse / clear row
     h += group(g_positionOpen, 3.0f);     // Position
     h += group(g_sizeOpen, 3.0f);         // Size
     if (g_rotation) h += group(g_rotationOpen, 3.0f);
@@ -3539,16 +3553,7 @@ if (g_selection.size() > 1) {
             size_t slash = meshName.find_last_of("/\\");
             if (slash != std::string::npos) meshName = meshName.substr(slash + 1);
             DrawTextArial("Mesh:", labelX, y + 6.0f, 14.0f, theme::TEXT_MUTED);
-            float avail = inputX + inputWidth - labelX - 70.0f;
-            const char* text = meshName.c_str();
-            float textW = MeasureTextArial(text, 13.0f);
-            if (textW > avail && avail > 10.0f) {
-                float maxChars = avail / (textW / static_cast<float>(meshName.size()));
-                std::string clipped = meshName.substr(0, static_cast<size_t>(maxChars) - 1) + "...";
-                DrawTextArial(clipped.c_str(), inputX, y + 6.0f, 13.0f, theme::TEXT);
-            } else {
-                DrawTextArial(text, inputX, y + 6.0f, 13.0f, theme::TEXT);
-            }
+            DrawTextArial(FitTextToWidth(meshName, 13.0f, inputWidth).c_str(), inputX, y + 6.0f, 13.0f, theme::TEXT);
         }
 
         // --- Texture (for both primitives and imported meshes) ---
@@ -3565,18 +3570,8 @@ if (g_selection.size() > 1) {
             texColor = theme::TEXT;
         }
 
-        // Display texture name
-        float texTextX = inputX;
-        float texAvailW = inputX + inputWidth - texTextX - 50.0f;
-        const char* texText = texName.c_str();
-        float texTextW = MeasureTextArial(texText, 13.0f);
-        if (texTextW > texAvailW && texAvailW > 10.0f) {
-            float maxChars = texAvailW / (texTextW / static_cast<float>(texName.size()));
-            std::string clipped = texName.substr(0, static_cast<size_t>(maxChars) - 1) + "...";
-            DrawTextArial(clipped.c_str(), texTextX, y + 3.0f, 13.0f, texColor);
-        } else {
-            DrawTextArial(texText, texTextX, y + 3.0f, 13.0f, texColor);
-        }
+        // Texture file name, using the whole value column (the buttons have their own row).
+        DrawTextArial(FitTextToWidth(texName, 13.0f, inputWidth).c_str(), inputX, y + 3.0f, 13.0f, texColor);
 
         // Preset Texture Dropdown (shown for primitives AND meshes if presets exist)
         const auto& currentProject = ::project::GetCurrentProject();
@@ -3612,8 +3607,10 @@ if (g_selection.size() > 1) {
         bool showPresetDropdown = (hasPrimitive || hasMesh) && !presets.empty();
         bool showPresetError = (hasPrimitive || hasMesh) && presets.empty() && !projectDirForPresets.empty();
 
-        // Save texture row y for folder/clear button placement
-        float texRowY = y;
+        // Browse / clear buttons get their own row under the file name.
+        const bool showTexButtons = hasMesh && !g_playActive;
+        float texBtnRowY = y;
+        if (showTexButtons) y += rowHeight;
 
         if (showPresetDropdown) {
             // Advance y for dropdown row
@@ -3625,12 +3622,10 @@ if (g_selection.size() > 1) {
                 items.push_back(name);
             }
 
-            // Dropdown rect (leave space for refresh button on right)
-            const float refreshBtnSize = 24.0f;
-            Rectangle dropdownRect = { inputX, y, inputWidth - refreshBtnSize - 2.0f, inputHeight };
-            Rectangle refreshBtnRect = { dropdownRect.x + dropdownRect.width + 2.0f, y, refreshBtnSize, refreshBtnSize };
+            // The list rescans itself every couple of seconds while open, so no
+            // manual refresh button is needed.
+            Rectangle dropdownRect = { inputX, y, inputWidth, inputHeight };
             bool dropdownHovered = CheckCollisionPointRec(mouse, dropdownRect);
-            bool refreshBtnHovered = CheckCollisionPointRec(mouse, refreshBtnRect);
 
             // Draw dropdown background
             DrawDropdownBox(dropdownRect, dropdownHovered || g_presetDropdownOpen);
@@ -3655,12 +3650,14 @@ if (g_selection.size() > 1) {
             }
 
             // Draw current selection text
-            std::string currentText = (g_presetDropdownSelected >= 0 && g_presetDropdownSelected < (int)items.size())
-                ? items[g_presetDropdownSelected]
-                : "Select preset texture...";
+            const bool presetActive = g_presetDropdownSelected >= 0 && g_presetDropdownSelected < (int)items.size();
+            // A custom texture isn't one of the presets; say so instead of a stale prompt.
+            std::string currentText = presetActive ? items[g_presetDropdownSelected]
+                : (g_selectedObject && !g_selectedObject->GetTexturePath().empty() ? "Custom texture" : "Presets...");
             float textX = dropdownRect.x + 8.0f;
             float textY = dropdownRect.y + (dropdownRect.height - 13.0f) * 0.5f;
-            DrawTextArial(currentText.c_str(), textX, textY, 13.0f, theme::TEXT);
+            DrawTextArial(FitTextToWidth(currentText, 13.0f, dropdownRect.width - 34.0f).c_str(), textX, textY, 13.0f,
+                          presetActive ? theme::TEXT : theme::TEXT_DIM);
 
             // Draw dropdown arrow
             float arrowX = dropdownRect.x + dropdownRect.width - 20.0f;
@@ -3671,43 +3668,6 @@ if (g_selection.size() > 1) {
                 { arrowX, arrowY + 3.0f },
                 theme::TEXT
             );
-
-            // Draw refresh button [↻]
-            float refreshT = HoverProgress(301, refreshBtnHovered);
-            Color refreshBg = Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, refreshT);
-            DrawRectangleRounded(refreshBtnRect, 0.2f, 4, refreshBg);
-            DrawRectangleLinesEx(refreshBtnRect, refreshBtnHovered ? 2.0f : 1.0f,
-                refreshBtnHovered ? theme::ACCENT : theme::BORDER);
-            if (refreshBtnHovered) MarkHand();
-            // Draw circular arrow (refresh symbol)
-            float cx = refreshBtnRect.x + refreshBtnRect.width * 0.5f;
-            float cy = refreshBtnRect.y + refreshBtnRect.height * 0.5f;
-            float r = 6.0f;
-            // Draw arc for refresh symbol
-            for (int seg = 0; seg < 12; ++seg) {
-                float a1 = seg * 30.0f * DEG2RAD;
-                float a2 = (seg + 1) * 30.0f * DEG2RAD;
-                if (seg >= 9) continue; // Leave gap for arrowhead
-                DrawLineEx(
-                    { cx + r * cosf(a1), cy + r * sinf(a1) },
-                    { cx + r * cosf(a2), cy + r * sinf(a2) },
-                    2.0f, theme::TEXT
-                );
-            }
-            // Draw arrowhead
-            float arrowA = 9 * 30.0f * DEG2RAD;
-            float arrowLen = 8.0f;
-            Vector2 arrowTip = { cx + arrowLen * cosf(arrowA), cy + arrowLen * sinf(arrowA) };
-            Vector2 arrowBase1 = { cx + r * cosf(arrowA - 0.5f), cy + r * sinf(arrowA - 0.5f) };
-            Vector2 arrowBase2 = { cx + r * cosf(arrowA + 0.5f), cy + r * sinf(arrowA + 0.5f) };
-            DrawTriangle(arrowTip, arrowBase1, arrowBase2, theme::TEXT);
-
-            // Handle refresh button click
-            if (refreshBtnHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                // Force cache refresh
-                g_presetDropdownItemsCached = false;
-                g_presetDropdownLastRefresh = 0.0;
-            }
 
             // Handle click to open/close
             if (dropdownHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -3759,21 +3719,21 @@ if (g_selection.size() > 1) {
         // the dropdown.
         y += rowHeight;
 
-        // Folder + Clear buttons (only for imported meshes)
-        if (hasMesh && !g_playActive) {
-            // Folder button [📁]
-            Rectangle folderBtn = { inputX + inputWidth - 44.0f, texRowY, 22.0f, 22.0f };
-            bool folderHovered = CheckCollisionPointRec(mouse, folderBtn);
-            float folderT = HoverProgress(200, folderHovered);
-            Color folderBg = Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, folderT);
-            DrawRectangleRounded(folderBtn, 0.2f, 4, folderBg);
-            DrawRectangleLinesEx(folderBtn, folderHovered ? 2.0f : 1.0f,
-                folderHovered ? theme::ACCENT : theme::BORDER);
-            if (folderHovered) MarkHand();
-            DrawTextArial("[F]", folderBtn.x + 4.0f, folderBtn.y + 3.0f, 12.0f, theme::TEXT);
+        // Browse + clear buttons (only for imported meshes)
+        if (showTexButtons) {
+            const float clearW = 24.0f, gap = 4.0f;
+            Rectangle browseBtn = { inputX, texBtnRowY, inputWidth - clearW - gap, 22.0f };
+            Rectangle clearBtn = { inputX + inputWidth - clearW, texBtnRowY, clearW, 22.0f };
 
-            // Clear button [🗑️]
-            Rectangle clearBtn = { inputX + inputWidth - 22.0f, texRowY, 22.0f, 22.0f };
+            bool browseHovered = CheckCollisionPointRec(mouse, browseBtn);
+            float browseT = HoverProgress(200, browseHovered);
+            DrawRectangleRounded(browseBtn, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, browseT));
+            DrawRectangleLinesEx(browseBtn, browseHovered ? 2.0f : 1.0f, browseHovered ? theme::ACCENT : theme::BORDER);
+            if (browseHovered) MarkHand();
+            const char* browseLabel = "Browse...";
+            const float browseLabelW = MeasureTextArial(browseLabel, 12.0f);
+            DrawTextArial(browseLabel, browseBtn.x + (browseBtn.width - browseLabelW) * 0.5f, browseBtn.y + 4.0f, 12.0f, theme::TEXT);
+
             bool anySelectedHasTexture = false;
             for (auto* obj : g_selection) {
                 if (obj && !obj->GetTexturePath().empty()) { anySelectedHasTexture = true; break; }
@@ -3785,30 +3745,20 @@ if (g_selection.size() > 1) {
             DrawRectangleLinesEx(clearBtn, clearHovered ? 2.0f : 1.0f,
                 clearHovered ? theme::DANGER : theme::BORDER);
             if (clearHovered) MarkHand();
+            const Color clearTint = anySelectedHasTexture ? theme::TEXT : theme::TEXT_DIM;
             if (g_deleteIcon.id != 0) {
                 DrawTexturePro(g_deleteIcon,
                     { 0, 0, (float)g_deleteIcon.width, (float)g_deleteIcon.height },
-                    { clearBtn.x + 3.0f, clearBtn.y + 3.0f, clearBtn.width - 6.0f, clearBtn.height - 6.0f },
-                    { 0, 0 }, 0.0f, theme::TEXT);
+                    { clearBtn.x + 4.0f, clearBtn.y + 3.0f, clearBtn.width - 8.0f, clearBtn.height - 6.0f },
+                    { 0, 0 }, 0.0f, clearTint);
             } else {
-                DrawTextArial("X", clearBtn.x + 6.0f, clearBtn.y + 3.0f, 12.0f, theme::TEXT);
+                DrawTextArial("X", clearBtn.x + 8.0f, clearBtn.y + 4.0f, 12.0f, clearTint);
             }
 
-            // Handle folder/clear clicks (meshes only)
-            if (folderHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (browseHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                // Non-blocking: the result is delivered by PumpAssetBrowserDialogs()
+                // on a later frame, not here.
                 BeginChooseTexturePath(currentProject.path);
-                std::string texPath;
-                if (platform::PollDialogResult({platform::DialogPurpose::ImportTexture}, texPath)
-                    && !texPath.empty() && !currentProject.path.empty()) {
-                    for (auto* obj : g_selection) {
-                        if (obj && obj->HasModel()) {
-                            obj->SetTexturePath(
-                                textureManager::RegisterTexture(texPath, obj->GetModelPath()),
-                                currentProject.path
-                            );
-                        }
-                    }
-                }
             }
             if (clearHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !currentProject.path.empty()) {
                 for (auto* obj : g_selection) {
@@ -5702,6 +5652,21 @@ void PumpAssetBrowserDialogs() {
         && !picked.empty()) {
         ImportModelIntoCurrentFolder(picked);
     }
+
+    // Texture picked from the inspector's [F] button -> apply to selected meshes.
+    if (platform::PollDialogResult({platform::DialogPurpose::ImportTexture}, picked)
+        && !picked.empty()) {
+        const std::string& projectDir = ::project::GetCurrentProject().path;
+        if (!projectDir.empty()) {
+            for (auto* obj : g_selection) {
+                if (obj && obj->HasModel()) {
+                    obj->SetTexturePath(
+                        textureManager::RegisterTexture(picked, obj->GetModelPath()),
+                        projectDir);
+                }
+            }
+        }
+    }
 }
 
 static void DrawAssetBrowserGrid() {
@@ -5939,14 +5904,11 @@ static bool RaycastGroundPlane(Vector2 mousePos, const Camera3D& camera, Vector3
     return true;
 }
 
-// TODO: not wired up yet -- I don't have visibility into whatever already
-// turns an imported mesh path into a ScatteredObject in the scene (the code
-// behind the top-bar Import button's ConsumeImportRequest() flow does this
-// somewhere, but that file wasn't shared). Once that's available this should
-// call it with modelPath + worldPos instead of just logging.
 static void SpawnImportedModelAt(const std::string& modelPath, Vector3 worldPos) {
-    LogAlways("[assets] drop received for \"%s\" at (%.2f, %.2f, %.2f) -- spawning isn't wired up yet",
-             std::filesystem::path(modelPath).filename().string().c_str(), worldPos.x, worldPos.y, worldPos.z);
+    if (!IsMeshFilePath(modelPath)) return;
+    g_spawnPath = modelPath;
+    g_spawnPos = worldPos;
+    g_spawnRequested = true;
 }
 
 // Fires when a browser drag (see BeginDragDropSource in DrawAssetGridItem) is

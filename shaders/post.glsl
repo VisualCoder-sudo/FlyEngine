@@ -221,6 +221,17 @@ void main() {
     vec3 dn = ViewPos(uv - vec2(0.0, t.y)), up = ViewPos(uv + vec2(0.0, t.y));
     vec3 dx = abs(r.z - P.z) < abs(l.z - P.z) ? r - P : P - l;
     vec3 dy = abs(up.z - P.z) < abs(dn.z - P.z) ? up - P : P - dn;
+    // One pixel is too short a baseline to trust: depth is stored in steps, so on a gently tilted
+    // surface (a flat floor seen from low down) the one-sided difference is zero on most rows and a
+    // whole step on the odd one, and the odd row's tilted normal darkens it into a thin line. Where
+    // the pixels three away on both sides lie on the same plane as this one, use those instead.
+    {
+        vec3 l3 = ViewPos(uv - vec2(3.0 * t.x, 0.0)), r3 = ViewPos(uv + vec2(3.0 * t.x, 0.0));
+        vec3 d3 = ViewPos(uv - vec2(0.0, 3.0 * t.y)), u3 = ViewPos(uv + vec2(0.0, 3.0 * t.y));
+        float tol = 0.004 * z;
+        if (abs(r3.z + l3.z - 2.0 * P.z) < 0.1 * abs(r3.z - l3.z) + tol) dx = (r3 - l3) / 6.0;
+        if (abs(u3.z + d3.z - 2.0 * P.z) < 0.1 * abs(u3.z - d3.z) + tol) dy = (u3 - d3) / 6.0;
+    }
     vec3 N = normalize(cross(dx, dy));
     if (dot(N, P) > 0.0) N = -N;        // towards the camera
 

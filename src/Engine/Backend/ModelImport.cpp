@@ -1,3 +1,4 @@
+#include <unordered_set>
 #include "../../../include/Engine/Backend/ModelImport.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "ufbx.h"
@@ -242,9 +243,23 @@ void CopyFbxWithDeps(const fs::path& src, const fs::path& targetDir,
     ufbx_error error;
     ufbx_scene* scene = ufbx_load_file(src.string().c_str(), &opts, &error);
     if (scene) {
+        // Only the base-colour map is used by the renderer, so only that is
+        // brought into the project (normal/roughness/metal/alpha maps can be
+        // many megabytes each and nothing reads them yet).
+        std::unordered_set<const ufbx_texture*> wanted;
+        for (size_t i = 0; i < scene->materials.count; ++i) {
+            const ufbx_material* mat = scene->materials.data[i];
+            if (!mat) continue;
+            const ufbx_texture* base = mat->pbr.base_color.texture;
+            if (!base) base = mat->fbx.diffuse_color.texture;
+            if (!base) continue;
+            wanted.insert(base);
+            // Layered/shader textures wrap one or more plain file textures.
+            for (size_t f = 0; f < base->file_textures.count; ++f) wanted.insert(base->file_textures.data[f]);
+        }
         for (size_t i = 0; i < scene->textures.count; ++i) {
             const ufbx_texture* tex = scene->textures.data[i];
-            if (!tex) continue;
+            if (!tex || !wanted.count(tex)) continue;
             if (tex->content.size > 0) {
                 // Embedded texture: write raw bytes to a file in targetDir.
                 std::string ext = ".png";
@@ -301,7 +316,7 @@ const std::vector<platform::FileFilter>& ModelFilters() {
 
 const std::vector<platform::FileFilter>& TextureFilters() {
     static const std::vector<platform::FileFilter> filters = {
-        {"Images", "*.png;*.jpg;*.bmp;*.tga;*.webp"},
+        {"Images", "*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp"},
         {"All Files", "*"},
     };
     return filters;

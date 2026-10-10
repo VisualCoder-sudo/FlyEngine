@@ -251,7 +251,7 @@ bool LaunchDetached(const std::string& exe, const std::vector<std::string>& args
     mutableExe.push_back('\0');
     std::vector<char> mutableParams(params.begin(), params.end());
     mutableParams.push_back('\0');
-    const HINSTANCE r = ShellExecuteA(nullptr, L"open",
+    const HINSTANCE r = ShellExecuteA(nullptr, "open",
                                       mutableExe.data(),
                                       mutableParams.empty() ? nullptr : mutableParams.data(),
                                       nullptr, SW_SHOWNORMAL);

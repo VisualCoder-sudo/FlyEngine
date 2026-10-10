@@ -85,7 +85,14 @@ public:
     // shape. raylib loads the file's textures automatically. Returns false
     // (keeping any previous geometry) when the file can't be loaded.
     bool SetModel(const std::string& path);
+    // Starts parsing an FBX on a worker thread so a later SetModel() on the same
+    // path doesn't stall the frame. No-op for other formats / already-loaded files.
+    static void PrefetchModel(const std::string& path);
+    // True once SetModel(path) will not block (prefetch finished, or none pending).
+    static bool IsModelReady(const std::string& path);
     const std::string& GetModelPath() const;
+    // Absolute path of the texture that came with the model file (empty if none).
+    const std::string& GetModelDiffuseFile() const { return modelDiffuseFile; }
     bool HasModel() const;
     // The loaded mesh model (empty/zeroed when there is no own model). Read-only
     // access for building colliders, bounds, etc. from the actual geometry.
@@ -192,9 +199,15 @@ private:
     Model model{};
     std::string modelPath;
     bool hasOwnModel = false;
+    std::string sharedModelKey;     // key into the shared mesh cache
+    Vector3 modelExtent{ 1.0f, 1.0f, 1.0f };
+    std::string modelDiffuseFile;   // base-colour texture shipped with the model (abs path)
+    void ReleaseModel();
 
     pcoll::CollisionAccuracy collisionAccuracy = pcoll::CollisionAccuracy::Default;
-    mutable pcoll::Collider colliderCache;
+    // Colliders live in unit space, so every object using the same mesh (or
+    // primitive) and accuracy shares one instance.
+    mutable std::shared_ptr<const pcoll::Collider> colliderCache;
     mutable int colliderCacheKey = -1;
     // Bumped whenever the mesh geometry changes so the collider cache reloads.
     unsigned int geometryVersion = 0;

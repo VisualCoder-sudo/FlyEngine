@@ -159,6 +159,7 @@ void RunEditor(const project::Info& info) {
     loading::Range(0.38f, 0.42f);
     loading::Progress(0.0f, "Preparing textures");
     textureManager::Init(info.path);
+    textureManager::DiscardPendingImports();   // imports left over from a session that never saved
 
     loading::Range(0.42f, 0.92f);
     terrain::Terrain* loadedTerrain = nullptr;
@@ -205,6 +206,9 @@ void RunEditor(const project::Info& info) {
     // step that reads every texture file for SHA256 hashing.
     // We skip it entirely; ref counting works fine without it.
 
+    // Imports that were never saved are scratch: delete them now, while the
+    // project directory is still known (Shutdown forgets it).
+    textureManager::DiscardPendingImports();
     textureManager::Shutdown();
 }
 

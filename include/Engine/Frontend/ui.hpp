@@ -110,6 +110,8 @@ void ShowPreferences(bool show, int category);
 // The top-bar Import button requests a mesh import; the interaction manager
 // consumes the request once per frame it was set (never while play is active).
 bool ConsumeImportRequest();
+// Asset-browser drag released over the viewport: model path + ground position.
+bool ConsumeModelSpawnRequest(std::string& outPath, Vector3& outPos);
 
 // Commits/blurs any active text field (properties number input or rename box),
 // used when the command console takes focus.

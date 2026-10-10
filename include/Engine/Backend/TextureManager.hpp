@@ -29,6 +29,16 @@ void VerifyAndRebuild(const std::vector<ScatteredObject*>& objects);
 // still in use or when modelPath is empty.
 void RemoveModelDirectory(const std::string& modelPath, const std::vector<ScatteredObject*>& objects);
 
+// Imported model folders are temporary until the project is saved.
+// MarkPendingImport stamps + journals a freshly imported folder (under
+// assets/3D). CommitAssets (called by every save) moves textures used by 2+
+// models into assets/shared, deletes managed folders/textures no object uses,
+// and makes whatever is left permanent. DiscardPendingImports deletes imports
+// that were never committed (editor close, opening another scene, next launch).
+void MarkPendingImport(const std::string& absDir);
+void CommitAssets(const std::vector<ScatteredObject*>& objects);
+void DiscardPendingImports();
+
 // Utility: get the model-specific texture directory (assets/3D/[ModelName]/)
 std::string GetModelTextureDir(const std::string& modelPath);
 
@@ -51,6 +61,11 @@ std::string EnsurePresetTextureInProject(const std::string& presetPath, const st
 // Get GPU texture handle for a registered texture path.
 // Returns invalid texture (id=0) if not found.
 Texture2D GetGPUTexture(const std::string& relPath);
+
+// Non-blocking variant: decodes on a worker thread. Returns id=0 with
+// `pending` = true until the texture is ready (call again next frame);
+// id=0 with `pending` = false means it failed to load.
+Texture2D GetGPUTextureAsync(const std::string& relPath, bool& pending);
 
 // LOD (Level of Detail) texture system.
 // Checks if a texture path is a preset texture (assets/PresetTextures/*).

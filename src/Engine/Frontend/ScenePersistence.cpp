@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../../../include/Engine.hpp"
@@ -241,6 +242,7 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
                      const std::vector<std::unique_ptr<ModelGroup>>& models,
                      const std::string& path,
                      terrain::Terrain* terrain) {
+    textureManager::CommitAssets(objects);   // see SaveProjectFile
     std::ofstream file(path, std::ios::trunc);
     if (!file) return false;
     std::error_code ec;
@@ -248,6 +250,28 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
     if (ec || baseDir.empty()) baseDir.clear();
     return SaveSceneToStream(file, objects, models, baseDir, terrain);
 }
+
+namespace {
+// Meshes are parsed on worker threads while the rest of the scene is read, then
+// attached once every record is in, so a scene full of models loads in parallel
+// instead of one model at a time.
+struct DeferredModel {
+    ScatteredObject* object = nullptr;
+    std::string path;
+    bool hasAccuracy = false;       // collision accuracy is only settable once a mesh exists
+    int accuracy = 0;
+};
+
+void AttachDeferredModels(std::vector<DeferredModel>& deferred) {
+    for (DeferredModel& d : deferred) {
+        if (!d.object->SetModel(d.path)) {
+            ui::LogAlways("Could not load mesh for '%s': %s", d.object->GetName().c_str(), d.path.c_str());
+        }
+        if (d.hasAccuracy) d.object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(d.accuracy));
+    }
+    deferred.clear();
+}
+} // namespace
 
 bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<ScatteredObject*>& objects,
                          std::vector<std::unique_ptr<ModelGroup>>& models,
@@ -264,6 +288,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
+    std::vector<DeferredModel> deferredModels;
     // The loading screen (src/Engine/LoadingScreen.cpp): objects are the first 55 % of the scene, then each
     // sidecar section (terrain, city, water, lighting) moves it on.
     loading::Log("Reading the scene: %zu object(s)", count);
@@ -339,15 +364,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (!(file >> std::quoted(storedModel))) return false;
             if (!storedModel.empty()) {
                 std::string resolved = ResolveStoredAssetPath(storedModel, baseDir);
-                if (!object->SetModel(resolved)) {
-                    ui::LogAlways("Could not load mesh for '%s': %s", object->GetName().c_str(), resolved.c_str());
-                } else {
-                    // Mesh vertices are raw at this point (real-world scale).
-                    // Draw() scales by the saved `size`, so the mesh must be
-                    // normalized into the unit box first, same as at import
-                    // time, or it gets scaled twice and comes out stretched.
-                    object->NormalizeModelToUnitBox();
-                }
+                ScatteredObject::PrefetchModel(resolved);
+                deferredModels.push_back({ object.get(), resolved, false, 0 });
             }
         }
 
@@ -360,7 +378,12 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (accuracy < static_cast<int>(pcoll::CollisionAccuracy::Box) ||
                 accuracy > static_cast<int>(pcoll::CollisionAccuracy::Precise)) return false;
             object->canCollide = (canCollide != 0);
-            object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
+            if (!deferredModels.empty() && deferredModels.back().object == object.get()) {
+                deferredModels.back().hasAccuracy = true;   // applied after the mesh is attached
+                deferredModels.back().accuracy = accuracy;
+            } else {
+                object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
+            }
         }
 
         // v10 added transparency (0 = visible, 1 = invisible). Default 0 for older scenes.
@@ -771,6 +794,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         }
     }
 
+    AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {
         objects.push_back(object.get());
         engine.AddEntity(std::move(object));
@@ -858,6 +882,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
+    std::vector<DeferredModel> deferredModels;
     for (size_t i = 0; i < count; ++i) {
         int shapeValue, red, green, blue, alpha;
         std::string name;
@@ -919,11 +944,8 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
             if (!(file >> std::quoted(storedModel))) return false;
             if (!storedModel.empty()) {
                 std::string resolved = ResolveStoredAssetPath(storedModel, baseDir);
-                if (!object->SetModel(resolved)) {
-                    ui::LogAlways("Could not load mesh for '%s': %s", object->GetName().c_str(), resolved.c_str());
-                } else {
-                    object->NormalizeModelToUnitBox();
-                }
+                ScatteredObject::PrefetchModel(resolved);
+                deferredModels.push_back({ object.get(), resolved, false, 0 });
             }
         }
 
@@ -934,7 +956,12 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
             if (accuracy < static_cast<int>(pcoll::CollisionAccuracy::Box) ||
                 accuracy > static_cast<int>(pcoll::CollisionAccuracy::Precise)) return false;
             object->canCollide = (canCollide != 0);
-            object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
+            if (!deferredModels.empty() && deferredModels.back().object == object.get()) {
+                deferredModels.back().hasAccuracy = true;   // applied after the mesh is attached
+                deferredModels.back().accuracy = accuracy;
+            } else {
+                object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
+            }
         }
 
         if (version >= 10) {
@@ -980,6 +1007,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
         }
     }
 
+    AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {
         objects.push_back(object.get());
         engine.AddEntity(std::move(object));
