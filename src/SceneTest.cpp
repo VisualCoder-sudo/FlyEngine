@@ -307,9 +307,13 @@ int Run(int argc, char** argv) {
             if (step >= 1 && step <= 8) { ui::ShowPreferences(false, 0); ui::SelectLightingItem(step); }
             else if (step == 9) { ui::SelectLightingItem(0); ui::ShowPreferences(true, 4); }
             else if (step == 10) ui::ShowPreferences(false, 0);
+            // The bottom panel: the Output tab, back to Assets, and then a new line while Assets is showing (the red dot).
+            else if (step == 11) ui::SelectBottomTab(1);
+            else if (step == 12) ui::SelectBottomTab(0);
+            else if (step == 13 && f % 12 == 0) ui::LogAlways("[test] something happened while the Assets tab was open");
         }
         engine.StepFrame(1.0f / 60.0f);
-        if (skyMode && f % 12 == 10 && f / 12 >= 1 && f / 12 <= 9) {
+        if (skyMode && f % 12 == 10 && f / 12 >= 1 && f / 12 <= 14) {
             char name[64];
             std::snprintf(name, sizeof(name), "sky_panel_%d.png", f / 12);
             TakeScreenshot(name);
