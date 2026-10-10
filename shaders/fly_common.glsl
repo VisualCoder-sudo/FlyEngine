@@ -32,6 +32,17 @@ vec2 fly_rt_uv(vec2 ndc) {
 }
 @end
 
+// The other way: the clip-space position of a render target's UV.
+@block fly_uv_ndc
+vec2 fly_uv_ndc(vec2 rtUv) {
+#if SOKOL_GLSL
+    return rtUv * 2.0 - 1.0;
+#else
+    return vec2(rtUv.x * 2.0 - 1.0, 1.0 - rtUv.y * 2.0);
+#endif
+}
+@end
+
 // The scene is lit in linear light and stored in float render targets; colours
 // that people pick (vertex colours, tints, textures) are sRGB. These convert.
 @block fly_color

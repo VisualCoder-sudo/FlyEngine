@@ -47,7 +47,11 @@ struct PostState {
     int fgLightVPLoc = -1, fgDepthLoc = -1, fgShadowLoc = -1, fgExposureLoc = -1, fgCloudShadowLoc = -1, fgCloudShadowTexLoc = -1;
     Shader compositeShader{};
     int cpCamDepthLoc = -1, cpTexelLoc = -1, cpParamsLoc = -1, cpSceneLoc = -1, cpDepthLoc = -1, cpFogLoc = -1;
-    int cpCloudTexelLoc = -1, cpCloudLoc = -1;
+    int cpCloudTexelLoc = -1, cpCloudLoc = -1, cpOcclusionLoc = -1;
+    RenderTexture2D ao{}, aoBlur{};     // half size (the fog target's size: the composite reads both the same way)
+    Shader aoShader{}, aoBlurShader{};
+    int aoCamProjLoc = -1, aoCamDepthLoc = -1, aoParamsLoc = -1, aoParams2Loc = -1, aoDepthLoc = -1;
+    int abCamDepthLoc = -1, abParamsLoc = -1, abDepthLoc = -1, abAoLoc = -1;
     Shader bloomDownShader{}, bloomUpShader{};
     int bdParamsLoc = -1, bdSrcLoc = -1, buParamsLoc = -1, buSrcLoc = -1;
     Shader fxaaShader{};
@@ -137,6 +141,8 @@ void UnloadTargets() {
     Unload(ps.scene);
     Unload(ps.hdr);
     Unload(ps.fog);
+    Unload(ps.ao);
+    Unload(ps.aoBlur);
     Unload(ps.ldr);
     for (RenderTexture2D& b : ps.bloom) Unload(b);
     ps.bloom.clear();
@@ -150,6 +156,8 @@ void EnsureTargets(int width, int height) {
     ps.scene = LoadRenderTextureEx(width, height, hdrFormat, true);
     ps.hdr = LoadRenderTextureEx(width, height, hdrFormat, false);
     ps.fog = LoadRenderTextureEx((width + 1) / 2, (height + 1) / 2, hdrFormat, false);
+    ps.ao = LoadRenderTextureEx((width + 1) / 2, (height + 1) / 2, PIXELFORMAT_UNCOMPRESSED_GRAYSCALE, false);
+    ps.aoBlur = LoadRenderTextureEx((width + 1) / 2, (height + 1) / 2, PIXELFORMAT_UNCOMPRESSED_GRAYSCALE, false);
     ps.ldr = LoadRenderTextureEx(width, height, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false);
     // Bloom: halve until the short side is a handful of pixels.
     int bw = width / 2, bh = height / 2;
@@ -221,6 +229,23 @@ void RenderFog() {
     SetVec4(ps.fogShader, ps.fgCloudShadowLoc, GetCloudShadowParams());
     SetShaderValueTexture(ps.fogShader, ps.fgCloudShadowTexLoc, GetCloudShadowTexture());
     Pass(ps.fog, ps.fogShader);
+}
+
+// How much of the sky's light each pixel is cut off from by what is near it (fs_ao), then smoothed.
+void RenderAO() {
+    const ViewInfo& v = ps.view;
+    const float tw = 1.0f / (float)ps.ao.texture.width, th = 1.0f / (float)ps.ao.texture.height;
+    SetVec4(ps.aoShader, ps.aoCamProjLoc, v.proj);
+    SetVec4(ps.aoShader, ps.aoCamDepthLoc, v.depth);
+    SetVec4(ps.aoShader, ps.aoParamsLoc, { tw, th, 1.7f, 0.0f });
+    SetVec4(ps.aoShader, ps.aoParams2Loc, { 1.0f, 0.0f, 0.0f, 0.0f });
+    SetShaderValueTexture(ps.aoShader, ps.aoDepthLoc, ps.scene.depth);
+    Pass(ps.ao, ps.aoShader);
+    SetVec4(ps.aoBlurShader, ps.abCamDepthLoc, v.depth);
+    SetVec4(ps.aoBlurShader, ps.abParamsLoc, { tw, th, 0.0f, 0.0f });
+    SetShaderValueTexture(ps.aoBlurShader, ps.abDepthLoc, ps.scene.depth);
+    SetShaderValueTexture(ps.aoBlurShader, ps.abAoLoc, ps.ao.texture);
+    Pass(ps.aoBlur, ps.aoBlurShader);
 }
 
 void RenderBloom(Texture2D src) {
@@ -367,6 +392,19 @@ void InitPostFX() {
     ps.cpFogLoc = GetShaderLocation(ps.compositeShader, "fogTex");
     ps.cpCloudTexelLoc = GetShaderLocation(ps.compositeShader, "cpCloudTexel");
     ps.cpCloudLoc = GetShaderLocation(ps.compositeShader, "cloudTex");
+    ps.cpOcclusionLoc = GetShaderLocation(ps.compositeShader, "occlusionTex");
+
+    ps.aoShader = LoadShaderProgram("post_ao");
+    ps.aoCamProjLoc = GetShaderLocation(ps.aoShader, "camProj");
+    ps.aoCamDepthLoc = GetShaderLocation(ps.aoShader, "camDepth");
+    ps.aoParamsLoc = GetShaderLocation(ps.aoShader, "aoParams");
+    ps.aoParams2Loc = GetShaderLocation(ps.aoShader, "aoParams2");
+    ps.aoDepthLoc = GetShaderLocation(ps.aoShader, "aoDepthTex");
+    ps.aoBlurShader = LoadShaderProgram("post_ao_blur");
+    ps.abCamDepthLoc = GetShaderLocation(ps.aoBlurShader, "camDepth");
+    ps.abParamsLoc = GetShaderLocation(ps.aoBlurShader, "abParams");
+    ps.abDepthLoc = GetShaderLocation(ps.aoBlurShader, "aoDepthTex");
+    ps.abAoLoc = GetShaderLocation(ps.aoBlurShader, "aoTex");
 
     ps.bloomDownShader = LoadShaderProgram("post_bloom_down");
     ps.bdParamsLoc = GetShaderLocation(ps.bloomDownShader, "bdParams");
@@ -397,7 +435,7 @@ void ShutdownPostFX() {
     for (RenderTexture2D& e : ps.exposure) if (e.id > 0) UnloadRenderTexture(e);
     if (ps.luma.id > 0) UnloadRenderTexture(ps.luma);
     for (Shader* s : { &ps.exposureShader, &ps.lumaShader, &ps.tonemapShader, &ps.fogShader, &ps.compositeShader,
-                       &ps.bloomDownShader, &ps.bloomUpShader, &ps.fxaaShader })
+                       &ps.bloomDownShader, &ps.bloomUpShader, &ps.fxaaShader, &ps.aoShader, &ps.aoBlurShader })
         UnloadShader(*s);
     ps = PostState{};
 }
@@ -432,12 +470,15 @@ void EndScene() {
     const Texture2D clouds = RenderClouds(ps.view, ps.scene.depth, ps.width, ps.height, ps.frame);
     const bool fog = !ps.view.ortho && (AtmosphereActive() || FogDensity() > 0.0f);
     if (fog) RenderFog();
-    if (fog || clouds.id != 0) {
+    const bool ao = quality.ambientOcclusion && !ps.view.ortho;
+    if (ao) RenderAO();
+    if (fog || ao || clouds.id != 0) {
         SetVec4(ps.compositeShader, ps.cpCamDepthLoc, ps.view.depth);
         SetVec4(ps.compositeShader, ps.cpTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height,
                                                     1.0f / (float)ps.fog.texture.width, 1.0f / (float)ps.fog.texture.height });
         SetVec4(ps.compositeShader, ps.cpCloudTexelLoc, { clouds.id != 0 ? 1.0f / (float)clouds.width : 1.0f, clouds.id != 0 ? 1.0f / (float)clouds.height : 1.0f, 0.0f, 0.0f });
-        SetVec4(ps.compositeShader, ps.cpParamsLoc, { fog ? 1.0f : 0.0f, clouds.id != 0 ? 1.0f : 0.0f, 0.0f, 0.0f });
+        SetVec4(ps.compositeShader, ps.cpParamsLoc, { fog ? 1.0f : 0.0f, clouds.id != 0 ? 1.0f : 0.0f, ao ? 0.85f : 0.0f, 0.0f });
+        SetShaderValueTexture(ps.compositeShader, ps.cpOcclusionLoc, ao ? ps.aoBlur.texture : Texture2D{});
         SetShaderValueTexture(ps.compositeShader, ps.cpSceneLoc, src);
         SetShaderValueTexture(ps.compositeShader, ps.cpDepthLoc, ps.scene.depth);
         SetShaderValueTexture(ps.compositeShader, ps.cpFogLoc, ps.fog.texture);

@@ -179,6 +179,111 @@ void main() {
 @program post_fog vs_fullscreen fs_fog
 
 // ---------------------------------------------------------------------------
+// Ambient occlusion, at half resolution: how much of the sky's light a point is
+// cut off from by what is near it (the corner where a wall meets the ground, the
+// gap between two buildings). Found from the depth buffer alone: each pixel's
+// position and surface direction are rebuilt from depth, and a ring of nearby
+// pixels is asked how far each one rises above that surface (McGuire's Scalable
+// Ambient Obscurance). r = 1 in the open, less where it is hemmed in.
+// ---------------------------------------------------------------------------
+@fs fs_ao
+@include_block fly_camera
+@include_block fly_uv_ndc
+layout(binding=0) uniform fs_ao_params {
+    vec4 camProj;
+    vec4 camDepth;
+    vec4 aoParams;      // xy = 1 / target size, z = radius (m), w = noise offset
+    vec4 aoParams2;     // x = strength
+};
+layout(binding=0) uniform texture2D aoDepthTex;
+layout(binding=0) uniform sampler aoDepthTex_smp;
+@image_sample_type aoDepthTex unfilterable_float
+@sampler_type aoDepthTex_smp nonfiltering
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+
+vec3 ViewPos(vec2 p) {
+    float d = textureLod(sampler2D(aoDepthTex, aoDepthTex_smp), p, 0.0).r;
+    return fly_view_pos(fly_uv_ndc(p), fly_view_depth(d, camDepth), camProj, camDepth);
+}
+
+void main() {
+    float depth = textureLod(sampler2D(aoDepthTex, aoDepthTex_smp), uv, 0.0).r;
+    if (depth >= 0.999999) { fragColor = vec4(1.0); return; }
+    vec3 P = fly_view_pos(ndc, fly_view_depth(depth, camDepth), camProj, camDepth);
+    float z = -P.z;
+
+    // The surface's direction, from whichever neighbour on each side lies nearer in depth
+    // (the other may be across an edge, on a different surface).
+    vec2 t = aoParams.xy;
+    vec3 l = ViewPos(uv - vec2(t.x, 0.0)), r = ViewPos(uv + vec2(t.x, 0.0));
+    vec3 dn = ViewPos(uv - vec2(0.0, t.y)), up = ViewPos(uv + vec2(0.0, t.y));
+    vec3 dx = abs(r.z - P.z) < abs(l.z - P.z) ? r - P : P - l;
+    vec3 dy = abs(up.z - P.z) < abs(dn.z - P.z) ? up - P : P - dn;
+    vec3 N = normalize(cross(dx, dy));
+    if (dot(N, P) > 0.0) N = -N;        // towards the camera
+
+    float radius = aoParams.z;
+    // The radius on screen (in UV), kept from growing without limit close to the camera.
+    vec2 uvRadius = min(vec2(radius) / (vec2(camProj.x, camProj.y) * 2.0 * z), vec2(0.12));
+    float noise = fract(52.9829189 * fract(dot(gl_FragCoord.xy + aoParams.w, vec2(0.06711056, 0.00583715))));
+    const int K = 10;
+    float sum = 0.0;
+    float r2 = radius * radius;
+    // A surface seen edge-on changes depth a lot from one pixel to the next, and what is rebuilt from
+    // depth there is too coarse to trust: the steeper it is, the more a sample must rise above it to count.
+    float bias = 0.01 + 0.012 * z + 1.5 * (abs(dx.z) + abs(dy.z));
+    for (int i = 0; i < K; ++i) {
+        float a = (float(i) + noise) * 2.399963 + noise * 6.2831853;
+        float rr = (float(i) + 0.5) / float(K);
+        vec3 Q = ViewPos(uv + vec2(cos(a), sin(a)) * rr * uvRadius);
+        vec3 v = Q - P;
+        float vv = dot(v, v);
+        float vn = dot(v, N);
+        float f = max(r2 - vv, 0.0);
+        sum += f * f * f * max((vn - bias) / (0.01 + vv), 0.0);
+    }
+    float ao = max(0.0, 1.0 - sum * aoParams2.x * 5.0 / (r2 * r2 * r2 * float(K)));
+    fragColor = vec4(ao, ao, ao, 1.0);
+}
+@end
+@program post_ao vs_fullscreen fs_ao
+
+// Smooths the pass above (its ring of samples is turned by noise from pixel to
+// pixel), without smearing it across edges in depth.
+@fs fs_ao_blur
+@include_block fly_camera
+layout(binding=0) uniform fs_ao_blur_params {
+    vec4 camDepth;
+    vec4 abParams;      // xy = 1 / target size
+};
+layout(binding=0) uniform texture2D aoDepthTex;
+layout(binding=0) uniform sampler aoDepthTex_smp;
+layout(binding=1) uniform texture2D aoTex;
+layout(binding=1) uniform sampler aoTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+void main() {
+    float d = fly_view_depth(textureLod(sampler2D(aoDepthTex, aoDepthTex_smp), uv, 0.0).r, camDepth);
+    float sum = 0.0, wsum = 0.0;
+    for (int j = -2; j <= 2; ++j) {
+        for (int i = -2; i <= 2; ++i) {
+            vec2 p = uv + vec2(float(i), float(j)) * abParams.xy;
+            float dS = fly_view_depth(textureLod(sampler2D(aoDepthTex, aoDepthTex_smp), p, 0.0).r, camDepth);
+            float w = 1.0 / (0.02 + abs(dS - d) / max(d, 0.01) * 30.0);
+            sum += textureLod(sampler2D(aoTex, aoTex_smp), p, 0.0).r * w;
+            wsum += w;
+        }
+    }
+    float ao = sum / max(wsum, 1e-5);
+    fragColor = vec4(ao, ao, ao, 1.0);
+}
+@end
+@program post_ao_blur vs_fullscreen fs_ao_blur
+
+// ---------------------------------------------------------------------------
 // Composite: the lit scene with the air and fog laid over it. The fog was made
 // at half resolution; each pixel takes it from the half-size pixels at its own
 // depth, so fog does not smear across the edges of things.
@@ -189,7 +294,7 @@ layout(binding=0) uniform fs_composite_params {
     vec4 camDepth;
     vec4 cpTexel;       // xy = 1 / scene size, zw = 1 / fog size
     vec4 cpCloudTexel;  // xy = 1 / cloud target size
-    vec4 cpParams;      // x = 1: fog, y = 1: clouds
+    vec4 cpParams;      // x = 1: fog, y = 1: clouds, z = how strongly ambient occlusion darkens (0 = off)
 };
 layout(binding=0) uniform texture2D sceneTex;
 layout(binding=0) uniform sampler sceneTex_smp;
@@ -202,6 +307,9 @@ layout(binding=2) uniform texture2D fogTex;
 layout(binding=2) uniform sampler fogTex_smp;
 layout(binding=3) uniform texture2D cloudTex;
 layout(binding=3) uniform sampler cloudTex_smp;
+layout(binding=4) uniform texture2D occlusionTex;
+layout(binding=4) uniform sampler occlusionTex_smp;
+@include_block fly_color
 in vec2 uv;
 in vec2 ndc;
 out vec4 fragColor;
@@ -229,7 +337,14 @@ vec4 AtDepth(texture2D tex, vec2 texel, float d) {
 
 void main() {
     vec3 c = textureLod(sampler2D(sceneTex, sceneTex_smp), uv, 0.0).rgb;
-    float d = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), uv, 0.0).r, camDepth);
+    float rawDepth = textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), uv, 0.0).r;
+    float d = fly_view_depth(rawDepth, camDepth);
+    if (cpParams.z > 0.0 && rawDepth < 0.999999) {
+        // Occlusion cuts off the sky's light, not the sun's: what the sun lights brightly is darkened less.
+        float ao = AtDepth(occlusionTex, cpTexel.zw, d).r;
+        float lit = clamp(fly_luma(c) * 0.7, 0.0, 0.75);
+        c *= mix(1.0, ao, cpParams.z * (1.0 - lit));
+    }
     if (cpParams.y > 0.5) {
         vec4 cloud = AtDepth(cloudTex, cpCloudTexel.xy, d);
         c = c * cloud.a + cloud.rgb;
