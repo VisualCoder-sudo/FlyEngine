@@ -74,7 +74,8 @@ build\Flyengine.exe        # Windows
 
 The editor starts `FlyPlayer` from its own directory for Play, so rebuild both
 (`cmake --build build` does) - an old `FlyPlayer` next to a new `Flyengine`
-will not show newer features such as the sky.
+will not show newer features such as the sky. The `Flyengine` target depends
+on `FlyPlayer`, so building the editor alone from an IDE rebuilds both.
 
 For Visual Studio, open the folder in the IDE and build - `CMakeSettings.json`
 is configured for it.
@@ -350,6 +351,29 @@ receive the sun's shadow map (it never did).
 
 ---
 
+## Terrain collision
+
+*Basic Terrain* is solid in Play and in the Player. Starting play builds a Box3D
+height-field collider from each terrain's current heightmap (aligned with the drawn
+mesh, including its position), so objects land and rest on it and raycasts, including
+script raycasts, hit it. The big y = 0 floor slab stays as a safety net but sits at or
+below the lowest terrain point, so valleys below y = 0 are not blocked. Sculpting during
+Play does not update the collider; stop and play again. The chunked `terrain::Terrain` has
+no collider yet.
+
+The player (`CharacterController`, kinematic mode) is a capsule moved with Box3D's
+character mover, so it collides with terrain, the city and other bodies alike:
+
+- walks up and down slopes and stays on the ground over bumps, and does not slide while
+  standing or walking on anything up to 75 degrees; steeper faces act as walls and are
+  slid down;
+- steps onto ledges up to 0.4 m without jumping;
+- spawns above a terrain that covers the origin.
+
+The limits are the constants at the top of `src/Engine/Backend/CharacterController.cpp`
+(`WALKABLE_NORMAL_Y`, `STEP_HEIGHT`). `build/tests/terrain_collision_test` checks the
+collider against the mesh and the behaviour above.
+
 ## Loading screens
 
 Opening a project shows a loading screen in both programs (`src/Engine/LoadingScreen.cpp`),
@@ -478,6 +502,8 @@ build/tests/rl_smoke_test              # needs a display + GPU: textures, mesh c
 build/tests/sky_test                   # needs a display + GPU: a day of sky, clouds, cascades, anti-aliasing (sky_*.png)
 build/tests/new_project_test           # needs a display + GPU: a new project starts with sky, clouds, weather and picture, in editor and player
 build/tests/loading_test               # needs a display + GPU: loading screen settings, progress, pictures (loading_*.png)
+build/tests/terrain_collision_test     # needs a display + GPU: terrain collider alignment, player on slopes/steps/walls, bodies resting on terrain
+build/tests/character_jump_test        # needs a display + GPU: one jump press after landing from any height gives a full jump
 build/Flyengine --testscene [frames] sky   # walks the lighting panels, Preferences and the bottom tabs, saving a picture of each
 build/Flyengine --testscene [frames]   # terrain tools + city + shapes; run from a Debug build
 build/Flyengine --testwater [objects] [frames]
@@ -516,6 +542,7 @@ include/Engine/Platform/  the cross-platform shim (see below)
 src/Engine/Platform/      its implementation
 shaders/                  sokol-shdc GLSL, compiled into the binary at build time
 src/CityGen/              the procedural city maker (include/CityGen/)
+src/Terrain/              terrain, sculpting, persistence; TerrainCollider.cpp builds the Box3D height field
 src/Engine/PostFX.cpp     HDR scene target, tone mapping, bloom, AO, fog, anti-aliasing, quality tiers
 src/Engine/Atmosphere.cpp physical sky, sun, moon and stars (shaders/sky.glsl)
 src/Engine/Clouds.cpp     volumetric clouds and their shadow
