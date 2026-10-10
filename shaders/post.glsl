@@ -62,6 +62,229 @@ vec3 Tonemap(vec3 c, float op) {
 @end
 
 // ---------------------------------------------------------------------------
+// Air and fog between the camera and what it sees, at half resolution: a march
+// along each pixel's view ray that adds the light the air scatters towards the
+// eye (distant things turn pale and blue) and the fog's (the Fog item, and the
+// haze of bad weather). Where the sun's shadow map reaches, each step asks it
+// whether the sun gets there, which is what draws shafts of light in fog.
+// rgb = light added, a = how much of the scene behind still shows.
+// ---------------------------------------------------------------------------
+@fs fs_fog
+@include_block fly_camera
+@include_block fly_rt_uv
+layout(binding=0) uniform fs_fog_params {
+    vec4 camProj;
+    vec4 camDepth;
+    mat4 camInvView;    // camera to world
+    vec4 fgAirR;        // rgb = Rayleigh scattering per metre at the surface, a = 1 / scale height (per metre)
+    vec4 fgAirM;        // rgb = Mie scattering per metre at the surface, a = 1 / scale height
+    vec4 fgAirExt;      // rgb = Mie absorption per metre, a = g
+    vec4 fgLight;       // rgb = the sun's (or moon's) light after the air above, a = 1 when its shadow map can be asked
+    vec4 fgLightDir;    // xyz = direction towards it, w = how far (m) from the camera the shadow map is asked
+    vec4 fgMulti;       // rgb = light scattered more than once, per unit of scattering
+    vec4 fgFog;         // x = density per metre at height z, y = 1 / the height it thins over (0 = the same at every height), z = base height, w = g
+    vec4 fgFogSun;      // rgb = sunlight the fog scatters
+    vec4 fgFogAmb;      // rgb = the fog's own light: the sky's, or (a = 1) the flat sky colour before exposure
+    vec4 fgParams;      // x = steps, y = noise offset, z = 1: the sky's pixels are fogged too, w = how far (m) for those
+    mat4 lightVP;
+};
+layout(binding=0) uniform texture2D depthTex;
+layout(binding=0) uniform sampler depthTex_smp;
+@image_sample_type depthTex unfilterable_float
+@sampler_type depthTex_smp nonfiltering
+layout(binding=1) uniform texture2D shadowMap;
+layout(binding=1) uniform sampler shadowMap_smp;
+@image_sample_type shadowMap depth
+@sampler_type shadowMap_smp comparison
+layout(binding=2) uniform texture2D exposureTex;
+layout(binding=2) uniform sampler exposureTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+
+float PhaseHG(float c, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
+}
+
+// 1 where the sun reaches p, 0 in shadow.
+float SunVisible(vec3 p) {
+    vec4 lp = lightVP * vec4(p, 1.0);
+    vec3 l = lp.xyz / lp.w;
+    if (abs(l.x) >= 1.0 || abs(l.y) >= 1.0 || l.z >= 1.0) return 1.0;
+    return texture(sampler2DShadow(shadowMap, shadowMap_smp), vec3(fly_rt_uv(l.xy), l.z * 0.5 + 0.5 - 0.0015));
+}
+
+void main() {
+    float depth = textureLod(sampler2D(depthTex, depthTex_smp), uv, 0.0).r;
+    bool sky = depth >= 0.999999;
+    // An orthographic view has no distance to fade over.
+    if (camDepth.z > 0.5 || (sky && fgParams.z < 0.5)) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+
+    vec3 vp = fly_view_pos(ndc, 1.0, camProj, camDepth);
+    float tMax = sky ? fgParams.w : fly_view_depth(depth, camDepth) * length(vp);
+    vec3 rd = mat3(camInvView) * normalize(vp);
+    vec3 ro = camInvView[3].xyz;
+
+    float cosL = dot(rd, fgLightDir.xyz);
+    float phR = 3.0 / (16.0 * 3.14159265) * (1.0 + cosL * cosL);
+    float phM = PhaseHG(cosL, fgAirExt.a);
+    float phF = PhaseHG(cosL, fgFog.w);
+    // The sky behind already holds the air's light all the way out; only fog is added in front of it.
+    float air = sky ? 0.0 : 1.0;
+    vec3 fogAmb = fgFogAmb.rgb;
+    if (fgFogAmb.a > 0.5) fogAmb /= max(textureLod(sampler2D(exposureTex, exposureTex_smp), vec2(0.5), 0.0).r, 1e-4);
+
+    // Each pixel starts its steps at a different point, so the steps do not show as bands.
+    float noise = fract(52.9829189 * fract(dot(gl_FragCoord.xy + fgParams.y, vec2(0.06711056, 0.00583715))));
+    int steps = int(fgParams.x);
+    float inv = 1.0 / float(steps);
+    vec3 L = vec3(0.0);
+    vec3 trans = vec3(1.0);
+    for (int i = 0; i < 48; ++i) {
+        if (i >= steps) break;
+        float a0 = float(i) * inv, a1 = float(i + 1) * inv;
+        float t0 = a0 * a0 * tMax, t1 = a1 * a1 * tMax;
+        float dt = t1 - t0;
+        float t = mix(t0, t1, noise);
+        vec3 p = ro + rd * t;
+        float h = max(p.y, 0.0);
+        vec3 sR = fgAirR.rgb * (exp(-h * fgAirR.a) * air);
+        float dM = exp(-h * fgAirM.a) * air;
+        vec3 sM = fgAirM.rgb * dM;
+        float fd = fgFog.x * exp(-max(h - fgFog.z, 0.0) * fgFog.y);
+        vec3 ext = sR + sM + fgAirExt.rgb * dM + vec3(fd);
+        float vis = 1.0;
+        if (fgLight.a > 0.5 && t < fgLightDir.w) vis = SunVisible(p);
+        vec3 S = fgLight.rgb * vis * (sR * phR + sM * phM) + fgMulti.rgb * (sR + sM)
+               + fd * (fgFogSun.rgb * (vis * phF) + fogAmb);
+        vec3 stepT = exp(-ext * dt);
+        L += trans * (S - S * stepT) / max(ext, vec3(1e-9));
+        trans *= stepT;
+    }
+    fragColor = vec4(L, dot(trans, vec3(1.0 / 3.0)));
+}
+@end
+@program post_fog vs_fullscreen fs_fog
+
+// ---------------------------------------------------------------------------
+// Composite: the lit scene with the air and fog laid over it. The fog was made
+// at half resolution; each pixel takes it from the half-size pixels at its own
+// depth, so fog does not smear across the edges of things.
+// ---------------------------------------------------------------------------
+@fs fs_composite
+@include_block fly_camera
+layout(binding=0) uniform fs_composite_params {
+    vec4 camDepth;
+    vec4 cpTexel;       // xy = 1 / scene size, zw = 1 / fog size
+    vec4 cpParams;      // x = 1: fog
+};
+layout(binding=0) uniform texture2D sceneTex;
+layout(binding=0) uniform sampler sceneTex_smp;
+// (A texture name means one binding slot in the whole file, hence not "depthTex" again.)
+layout(binding=1) uniform texture2D cpDepthTex;
+layout(binding=1) uniform sampler cpDepthTex_smp;
+@image_sample_type cpDepthTex unfilterable_float
+@sampler_type cpDepthTex_smp nonfiltering
+layout(binding=2) uniform texture2D fogTex;
+layout(binding=2) uniform sampler fogTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+
+void main() {
+    vec3 c = textureLod(sampler2D(sceneTex, sceneTex_smp), uv, 0.0).rgb;
+    if (cpParams.x > 0.5) {
+        float d = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), uv, 0.0).r, camDepth);
+        vec2 fpos = uv / cpTexel.zw - 0.5;
+        vec2 base = floor(fpos);
+        vec2 f = fpos - base;
+        vec4 fog = vec4(0.0);
+        float wsum = 0.0;
+        for (int j = 0; j < 2; ++j) {
+            for (int i = 0; i < 2; ++i) {
+                vec2 tuv = (base + vec2(float(i), float(j)) + 0.5) * cpTexel.zw;
+                float dS = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), tuv, 0.0).r, camDepth);
+                float w = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
+                w = (w + 0.02) / (0.02 + abs(dS - d) / max(d, 0.01) * 24.0);
+                fog += textureLod(sampler2D(fogTex, fogTex_smp), tuv, 0.0) * w;
+                wsum += w;
+            }
+        }
+        fog /= max(wsum, 1e-5);
+        c = c * fog.a + fog.rgb;
+    }
+    fragColor = vec4(c, 1.0);
+}
+@end
+@program post_composite vs_fullscreen fs_composite
+
+// ---------------------------------------------------------------------------
+// Bloom: the picture is halved again and again, each step a wide soft blur, and
+// then added back up from the smallest; what is very bright spreads its light
+// over its surroundings, as it does in an eye or a lens.
+// ---------------------------------------------------------------------------
+@fs fs_bloom_down
+@include_block fly_color
+layout(binding=0) uniform fs_bloom_down_params {
+    vec4 bdParams;      // xy = 1 / source size, z = 1 on the first step (tames single very bright pixels), w = brightest value let in
+};
+layout(binding=0) uniform texture2D srcTex;
+layout(binding=0) uniform sampler srcTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+
+vec3 Tap(vec2 o) {
+    return min(textureLod(sampler2D(srcTex, srcTex_smp), uv + o * bdParams.xy, 0.0).rgb, vec3(bdParams.w));
+}
+// A group's weight falls with its brightness, so one sparkling pixel does not flicker across the whole blur.
+vec4 Group(vec3 a, vec3 b, vec3 c, vec3 d) {
+    vec3 s = (a + b + c + d) * 0.25;
+    float w = 1.0 / (1.0 + fly_luma(s));
+    return vec4(s * w, w);
+}
+
+void main() {
+    vec3 a = Tap(vec2(-2.0, 2.0)), b = Tap(vec2(0.0, 2.0)), c = Tap(vec2(2.0, 2.0));
+    vec3 d = Tap(vec2(-2.0, 0.0)), e = Tap(vec2(0.0, 0.0)), f = Tap(vec2(2.0, 0.0));
+    vec3 g = Tap(vec2(-2.0, -2.0)), h = Tap(vec2(0.0, -2.0)), i = Tap(vec2(2.0, -2.0));
+    vec3 j = Tap(vec2(-1.0, 1.0)), k = Tap(vec2(1.0, 1.0)), l = Tap(vec2(-1.0, -1.0)), m = Tap(vec2(1.0, -1.0));
+    vec3 r;
+    if (bdParams.z > 0.5) {
+        vec4 s = Group(j, k, l, m) * 0.5 + (Group(a, b, d, e) + Group(b, c, e, f) + Group(d, e, g, h) + Group(e, f, h, i)) * 0.125;
+        r = s.rgb / max(s.a, 1e-5);
+    } else {
+        r = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+    }
+    fragColor = vec4(max(r, vec3(0.0)), 1.0);
+}
+@end
+@program post_bloom_down vs_fullscreen fs_bloom_down
+
+// Blended (by its alpha) over the next larger step.
+@fs fs_bloom_up
+layout(binding=0) uniform fs_bloom_up_params {
+    vec4 buParams;      // xy = 1 / source size, z = how much of the smaller step goes into the larger
+};
+layout(binding=0) uniform texture2D srcTex;
+layout(binding=0) uniform sampler srcTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+void main() {
+    vec2 t = buParams.xy;
+    vec3 r = textureLod(sampler2D(srcTex, srcTex_smp), uv, 0.0).rgb * 4.0;
+    r += (textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(-t.x, 0.0), 0.0).rgb + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(t.x, 0.0), 0.0).rgb
+        + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(0.0, -t.y), 0.0).rgb + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(0.0, t.y), 0.0).rgb) * 2.0;
+    r += textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(-t.x, -t.y), 0.0).rgb + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(t.x, -t.y), 0.0).rgb
+       + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(-t.x, t.y), 0.0).rgb + textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(t.x, t.y), 0.0).rgb;
+    fragColor = vec4(r / 16.0, buParams.z);
+}
+@end
+@program post_bloom_up vs_fullscreen fs_bloom_up
+
+// ---------------------------------------------------------------------------
 // Exposure: a 1x1 target holding the multiplier applied before the tone curve.
 // With eye adaptation it follows the picture's average brightness (from a small
 // log-luminance image of the previous frame); otherwise it is the manual value.
@@ -69,7 +292,7 @@ vec3 Tonemap(vec3 c, float op) {
 @fs fs_exposure
 layout(binding=0) uniform fs_exposure_params {
     vec4 expParams;     // x = manual multiplier, y = adaptation on (1) / off (0), z = blend towards the target this frame (0..1), w = 1: start over
-    vec4 expRange;      // x = lowest, y = highest automatic multiplier, z = key (the brightness the average is brought to)
+    vec4 expRange;      // x = lowest, y = highest automatic multiplier, z = key (the brightness the average is brought towards), w = how far it is brought there (0 = not at all, 1 = fully)
 };
 layout(binding=0) uniform texture2D lumaTex;        // log2 luminance of the previous frame
 layout(binding=0) uniform sampler lumaTex_smp;
@@ -94,7 +317,8 @@ void main() {
         }
     }
     float avg = exp2(sum / wsum);
-    float target = clamp(expRange.z / max(avg, 1e-4), expRange.x, expRange.y) * manual;
+    // The eye only partly makes up for a dark or a bright view: night stays darker than day.
+    float target = clamp(pow(expRange.z / max(avg, 1e-4), expRange.w), expRange.x, expRange.y) * manual;
     float prev = textureLod(sampler2D(prevExposureTex, prevExposureTex_smp), vec2(0.5), 0.0).r;
     if (expParams.w > 0.5 || !(prev > 0.0) || prev > 1e4) prev = target;
     // Adapt in stops, so brightening and darkening feel alike.
@@ -172,3 +396,45 @@ void main() {
 }
 @end
 @program post_tonemap vs_fullscreen fs_tonemap
+
+// ---------------------------------------------------------------------------
+// FXAA (after Timothy Lottes): smooths stair-stepped edges in the finished
+// picture by blending along the edge it finds from the brightness of each
+// pixel's neighbours.
+// ---------------------------------------------------------------------------
+@fs fs_fxaa
+layout(binding=0) uniform fs_fxaa_params {
+    vec4 fxTexel;       // xy = 1 / picture size
+};
+layout(binding=0) uniform texture2D srcTex;
+layout(binding=0) uniform sampler srcTex_smp;
+in vec2 uv;
+in vec2 ndc;
+out vec4 fragColor;
+void main() {
+    const vec3 lumaW = vec3(0.299, 0.587, 0.114);
+    vec2 t = fxTexel.xy;
+    vec3 rgbM = textureLod(sampler2D(srcTex, srcTex_smp), uv, 0.0).rgb;
+    float lumaNW = dot(textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(-1.0, -1.0) * t, 0.0).rgb, lumaW);
+    float lumaNE = dot(textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(1.0, -1.0) * t, 0.0).rgb, lumaW);
+    float lumaSW = dot(textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(-1.0, 1.0) * t, 0.0).rgb, lumaW);
+    float lumaSE = dot(textureLod(sampler2D(srcTex, srcTex_smp), uv + vec2(1.0, 1.0) * t, 0.0).rgb, lumaW);
+    float lumaM = dot(rgbM, lumaW);
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    // Flat areas are left alone.
+    if (lumaMax - lumaMin < max(0.03, lumaMax * 0.1)) { fragColor = vec4(rgbM, 1.0); return; }
+
+    vec2 dir = vec2(-((lumaNW + lumaNE) - (lumaSW + lumaSE)), (lumaNW + lumaSW) - (lumaNE + lumaSE));
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 / 8.0), 1.0 / 128.0);
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    dir = clamp(dir * rcpDirMin, vec2(-8.0), vec2(8.0)) * t;
+    vec3 rgbA = 0.5 * (textureLod(sampler2D(srcTex, srcTex_smp), uv + dir * (1.0 / 3.0 - 0.5), 0.0).rgb
+                     + textureLod(sampler2D(srcTex, srcTex_smp), uv + dir * (2.0 / 3.0 - 0.5), 0.0).rgb);
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (textureLod(sampler2D(srcTex, srcTex_smp), uv - dir * 0.5, 0.0).rgb
+                                   + textureLod(sampler2D(srcTex, srcTex_smp), uv + dir * 0.5, 0.0).rgb);
+    float lumaB = dot(rgbB, lumaW);
+    fragColor = vec4((lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB, 1.0);
+}
+@end
+@program post_fxaa vs_fullscreen fs_fxaa

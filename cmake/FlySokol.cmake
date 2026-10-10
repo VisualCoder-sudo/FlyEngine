@@ -15,7 +15,9 @@ set(FLY_SHADERS
     ${CMAKE_SOURCE_DIR}/shaders/water.glsl
     ${CMAKE_SOURCE_DIR}/shaders/sky.glsl
     ${CMAKE_SOURCE_DIR}/shaders/post.glsl)
-set(FLY_SHADER_INCLUDES ${CMAKE_SOURCE_DIR}/shaders/fly_common.glsl)
+set(FLY_SHADER_INCLUDES
+    ${CMAKE_SOURCE_DIR}/shaders/fly_common.glsl
+    ${CMAKE_SOURCE_DIR}/shaders/fly_atmosphere.glsl)
 
 # --- Backend selection ------------------------------------------------------
 string(TOUPPER "${FLYENGINE_GRAPHICS_BACKEND}" FLY_BACKEND)

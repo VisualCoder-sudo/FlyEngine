@@ -1179,6 +1179,10 @@ bool IsInShadowPass() {
     return inShadowPass;
 }
 
+Texture2D GetShadowMapTexture() { return (shadowsEnabled && shadowHaveRendered) ? shadowMap.depth : Texture2D{}; }
+Matrix GetLightViewProj() { return lightViewProj; }
+float GetShadowRange() { return (shadowStableHalf > 0.0f ? shadowStableHalf : kShadowMinHalf) * 1.3f; }
+
 void SetReflectionsEnabled(bool enabled) { reflectionEnabled = enabled; }
 
 bool IsReflectionsEnabled() { return reflectionEnabled; }
@@ -1265,7 +1269,7 @@ const Vector3 kNightAmbient = { 0.018f, 0.026f, 0.076f };
 Vector3 SunTint();
 Vector3 FlatSunRadiance() {
     const float over = OvercastAmount();
-    const Vector3 sun = Vector3Scale(SrgbToLinear(SunTint()), 0.9f * powf(1.0f - 0.78f * over, 1.3f));
+    const Vector3 sun = Vector3Scale(SrgbToLinear(SunTint()), 0.9f * powf(1.0f - 0.78f * over, 1.3f) * (1.0f - 0.25f * RainAmount()));
     const Vector3 moon = Vector3Scale(kMoonRadiance, 1.0f - 0.6f * over);
     const KeyLight k = Key();
     Vector3 r;
@@ -1275,7 +1279,8 @@ Vector3 FlatSunRadiance() {
 }
 Vector3 FlatAmbientSky() {
     const float a = fmaxf(lightingSettings.ambient, 0.0f);
-    const float day = powf(kAmbient.x * a * (1.0f + 0.30f * OvercastAmount()), 2.2f);
+    // Cloud spreads the light about (more of it reaches the shade); rain cloud is thick enough to dim it again.
+    const float day = powf(kAmbient.x * a * (1.0f + 0.30f * OvercastAmount()), 2.2f) * (1.0f - 0.25f * RainAmount());
     return Vector3Lerp(Vector3Scale(kNightAmbient, powf(fminf(a, 1.5f), 2.2f)), Vector3{ day, day, day }, DayAmount());
 }
 // The sun is white-yellow high up, orange near the horizon (sunrise and sunset), and whiter under cloud.
@@ -1294,10 +1299,17 @@ float WetnessNow() { return WetAmount(); }
 float RainNow() { return RainAmount(); }
 float OvercastNow() { return OvercastAmount(); }
 Vector3 SunDirection() { return SunDir(); }
-Vector3 SunRadiance() { return FlatSunRadiance(); }
-Vector3 AmbientSky() { return FlatAmbientSky(); }
-Vector3 AmbientGround() { return Vector3Scale(FlatAmbientSky(), 0.72f); }
-Vector3 SkyRadiance() { return SrgbToLinear(CurrentSky()); }
+Vector3 SunPosition() { return Vector3Negate(DirFromAngles(SunAzimuthNow(), RawSunElevation())); }
+Vector3 MoonPosition() { return Vector3Negate(DirFromAngles(MoonAzimuth(), MoonElevation())); }
+bool KeyLightIsMoon() { return Key().moon; }
+float KeyLightStrength() { return Key().strength; }
+float DayAmountNow() { return DayAmount(); }
+// With an atmosphere the light comes out of it (src/Engine/Atmosphere.cpp); under a sky of one colour it is the
+// plain sun and ambient above.
+Vector3 SunRadiance() { return AtmosphereActive() ? AtmosphereLight().sunRadiance : FlatSunRadiance(); }
+Vector3 AmbientSky() { return AtmosphereActive() ? AtmosphereLight().ambientSky : FlatAmbientSky(); }
+Vector3 AmbientGround() { return AtmosphereActive() ? AtmosphereLight().ambientGround : Vector3Scale(FlatAmbientSky(), 0.72f); }
+Vector3 SkyRadiance() { return AtmosphereActive() ? AtmosphereLight().skyRadiance : SrgbToLinear(CurrentSky()); }
 Vector3 SunLightScale() { return Vector3Scale(SunRadiance(), 1.0f / 0.9f); }
 Vector3 AmbientScale() {
     const float noon = powf(kAmbient.x, 2.2f);
@@ -1309,6 +1321,11 @@ float FogDensity() {
 }
 void SetEngineClearColor(Color c) { engineClear = c; }
 Color CurrentSky() {
+    if (AtmosphereActive()) {
+        // About the colour the horizon has on screen (for what still wants one colour: rain streaks, the clear colour).
+        const Vector3 c = LinearToSrgb(TonemapApply(std::clamp(lightingSettings.toneCurve, 0, 3), AtmosphereLight().horizon));
+        return Color{ (unsigned char)lroundf(c.x * 255.0f), (unsigned char)lroundf(c.y * 255.0f), (unsigned char)lroundf(c.z * 255.0f), 255 };
+    }
     const Color day = lightingSettings.hasSky
         ? Color{ (unsigned char)lroundf(lightingSettings.skyColor[0] * 255.0f), (unsigned char)lroundf(lightingSettings.skyColor[1] * 255.0f),
                  (unsigned char)lroundf(lightingSettings.skyColor[2] * 255.0f), 255 }
@@ -1364,7 +1381,7 @@ void DrawWeather(const Camera3D& camera) {
     const float speed = 15.0f + 6.0f * rain;
     const Color sky = CurrentSky();
     const Color col = { (unsigned char)(sky.r + (255 - sky.r) * 0.55f), (unsigned char)(sky.g + (255 - sky.g) * 0.55f),
-                        (unsigned char)(sky.b + (255 - sky.b) * 0.55f), (unsigned char)(70.0f + 60.0f * rain) };
+                        (unsigned char)(sky.b + (255 - sky.b) * 0.55f), (unsigned char)(46.0f + 40.0f * rain) };   // (blended in linear light, where a pale streak counts for more)
     const Vector3 slant = { 0.10f, -0.9f, 0.04f };
     for (int i = 0; i < count; i++) {
         const uint32_t h = RainHash((uint32_t)i * 2654435761U + 17U);
@@ -1448,6 +1465,7 @@ Color SkyColor(Color dayColor) {
     return Color{ mix(night.r, r), mix(night.g, g), mix(night.b, b), dayColor.a };
 }
 Vector3 WaterSky() {
+    if (AtmosphereActive()) return AtmosphereLight().skyRadiance;
     Vector3 base = { 0.65f, 0.78f, 0.88f };
     if (lightingSettings.hasSky) base = Vector3Lerp(base, Vector3{ lightingSettings.skyColor[0], lightingSettings.skyColor[1], lightingSettings.skyColor[2] }, 0.6f);
     return SrgbToLinear(SkyColor(Color{ (unsigned char)lroundf(base.x * 255.0f), (unsigned char)lroundf(base.y * 255.0f), (unsigned char)lroundf(base.z * 255.0f), 255 }));
@@ -1463,6 +1481,7 @@ void UpdateLighting(const Camera3D& camera) {
         ApplyNearPlane(fmin(fmax(h * 0.03, 0.05), 2.0));
     }
 
+    UpdateAtmosphere(camera);
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
 

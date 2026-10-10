@@ -60,6 +60,11 @@ void BeginShadowPass();
 void EndShadowPass();
 bool IsInShadowPass(); // true while BeginShadowPass()/EndShadowPass() is active
 
+// The sun's shadow map, for passes outside the lit shaders (the shafts of light in fog).
+Texture2D GetShadowMapTexture();     // depth; read through a comparison sampler. id 0 when shadows are off
+Matrix GetLightViewProj();
+float GetShadowRange();              // how far from the camera (m) the map reaches
+
 // Shadow map quality on a 5..100 scale (5 = lowest, 100 = highest).
 // Higher values re-create the shadow map at a higher resolution.
 void SetShadowQuality(int quality);
@@ -91,11 +96,27 @@ struct LightingSettings {
     float ambient = 1.0f;             // 0..2: scales the ambient light
     float skyColor[3] = { 0.14f, 0.15f, 0.17f };   // the daytime sky (the editor's own clear colour is used until a Sky item is inserted)
     float fogDensity = 0.0f;          // per metre; the fog takes the sky colour
+    float fogHeight = 0.0f;           // metres over which the fog thins out with height; 0 = the same at every height
     bool sunFollowsTime = true;       // the sun rises in the east, peaks at sunElevation at noon and sets in the west
     bool hasWeather = false;          // the Weather item
     float overcast = 0.0f;            // 0..1 cloud cover: dimmer, softer sun, grey sky, a little haze
     float rain = 0.0f;                // 0..1 rain: falling rain, wet ground, more cloud and haze
     float wetGround = 0.0f;           // 0..1 wet roads without rain (rain wets them too)
+
+    // The Sky item can be one colour (skyColor, above) or a physical atmosphere: air that scatters the sun's light,
+    // with a sun, a moon and stars in it (shaders/sky.glsl, src/Engine/Atmosphere.cpp).
+    int skyMode = 0;                  // 0 = one colour, 1 = atmosphere
+    float airColor[3] = { 0.175f, 0.410f, 1.0f };   // what the air scatters most: Earth's is blue
+    float airDensity = 1.0f;          // 0..4: thin air is dark overhead, thick air is pale with deep red sunsets
+    float haze = 1.0f;                // 0..12: dust and moisture, the white glow near the horizon and round the sun
+    float hazeColor[3] = { 1.0f, 1.0f, 1.0f };
+    float ozone = 1.0f;               // 0..3: keeps the zenith blue at dusk
+    float groundColor[3] = { 0.40f, 0.42f, 0.35f }; // the land below the horizon, seen from high up (it also colours the light bounced up off the ground)
+    float sunSize = 1.0f;             // 1 = a little larger than the real sun's half a degree, as films and games show it
+    float moonSize = 1.0f;
+    float moonPhase = 0.5f;           // 0 = new, 0.5 = full, 1 = new again
+    float moonLight = 1.0f;           // 0..4: how bright moonlit nights are
+    float stars = 1.0f;               // 0..4
 
     // The Picture item: how the lit scene becomes the image on screen (shaders/post.glsl).
     bool hasPicture = false;
@@ -139,6 +160,11 @@ Color FogColorNow();
 float GetAmbientIntensity();
 Vector3 WaterSky();              // the sky's linear light the water shader reflects when the reflection is off or far (day, dusk, night, cloud)
 float SunElevationNow();         // degrees above the horizon of the sun along its path (negative = below, at night)
+Vector3 SunPosition();           // unit vector towards the sun in the sky (it points down when the sun is below the horizon)
+Vector3 MoonPosition();          // unit vector towards the moon
+bool KeyLightIsMoon();           // the scene is lit, and its shadows cast, by the moon now (SunDirection() is then the moon's)
+float KeyLightStrength();        // 0..1: how much of that light arrives (it fades out round sunrise and sunset)
+float DayAmountNow();            // 1 in daylight, 0 at night
 float WetnessNow();              // 0..1: how wet the ground is (rain or the Weather item's wet ground)
 float RainNow();                 // 0..1 rain amount
 float OvercastNow();             // 0..1 cloud cover (rain adds to it)

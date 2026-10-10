@@ -287,10 +287,10 @@ void main() {
         vec3 n = normalize(fragNormal);
         float puddle = smoothstep(0.32, 0.62, rnoise(fragWorldPos.xz * 0.30) * 0.65 + rnoise(fragWorldPos.xz * 1.3) * 0.35);
         float wet = weather.x * mix(0.6, 1.0, puddle);
-        lit *= 1.0 - 0.34 * wet;
+        lit *= 1.0 - 0.45 * wet;
         vec3 V = normalize(camPos.xyz - fragWorldPos);
-        float fres = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 3.0);
-        float sheen = wet * (0.04 + puddle * (0.10 + 0.55 * fres));
+        float fres = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 4.0);
+        float sheen = wet * (0.015 + puddle * (0.025 + 0.5 * fres));
         lit += skyColor.rgb * sheen;
         vec3 R = reflect(sunDir.xyz, n);
         // The sun's glint in a puddle is far brighter than the road around it (the bloom picks it up).
@@ -428,7 +428,8 @@ void main() {
                     vec3 sc = pick < 0.2 ? vec3(1.0, 0.22, 0.25) : pick < 0.4 ? vec3(0.2, 0.85, 1.0) : pick < 0.6 ? vec3(1.0, 0.28, 0.8)
                             : pick < 0.8 ? vec3(1.0, 0.72, 0.22) : vec3(0.3, 1.0, 0.5);
                     base = sc * 0.62;
-                    emit = fly_srgb_to_linear(sc) * nightAmount * 5.0;
+                    // Not much over 1: a brighter sign would lose its colour to the tone curve. The bloom gives it its glow.
+                    emit = fly_srgb_to_linear(sc) * nightAmount * 1.25;
                     isSign = true;
                 }
             }
@@ -439,7 +440,7 @@ void main() {
                 if (r > mix(1.001, 0.42, clamp(nightAmount * 1.6, 0.0, 1.0))) {
                     glass = vec3(0.95, 0.82, 0.48) * 0.9;
                     // Rooms are lit to different levels.
-                    emit = fly_srgb_to_linear(glass) * nightAmount * (1.6 + 2.6 * fract(r * 13.7));
+                    emit = fly_srgb_to_linear(glass) * nightAmount * (0.9 + 1.7 * fract(r * 13.7));
                 }
                 base = glass;
             } else {

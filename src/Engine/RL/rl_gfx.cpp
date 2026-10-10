@@ -745,6 +745,10 @@ void DrawFullscreen(Shader shader, int blendMode) {
     sg_draw(0, 3, 1);
 }
 
+Vector2 GetRenderTargetSize(void) {
+    return { (float)Gfx().currentWidth, (float)Gfx().currentHeight };
+}
+
 Texture2D LoadTexture3D(const void* data, int width, int height, int depth, int format) {
     Texture2D tex{};
     GfxState& g = Gfx();

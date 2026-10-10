@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace gfx {
 
@@ -23,12 +24,29 @@ struct PostState {
     bool exposureReset = true;
     RenderTexture2D luma{};             // log luminance of the last frame, for eye adaptation
 
+    RenderTexture2D hdr{};              // the scene with air and fog laid over it
+    RenderTexture2D fog{};              // half size: light added by air and fog, and what they let through
+    std::vector<RenderTexture2D> bloom; // half size, then halved again and again
+    RenderTexture2D ldr{};              // the finished picture before anti-aliasing
+    ViewInfo view{};                    // the camera of this frame
+
     Shader exposureShader{};
     int expParamsLoc = -1, expRangeLoc = -1, expLumaLoc = -1, expPrevLoc = -1;
     Shader lumaShader{};
     int lumaSrcLoc = -1;
     Shader tonemapShader{};
     int tmParamsLoc = -1, tmGradeLoc = -1, tmTexelLoc = -1, tmSceneLoc = -1, tmBloomLoc = -1, tmExposureLoc = -1;
+    Shader fogShader{};
+    int fgCamProjLoc = -1, fgCamDepthLoc = -1, fgCamInvViewLoc = -1, fgAirRLoc = -1, fgAirMLoc = -1, fgAirExtLoc = -1;
+    int fgLightLoc = -1, fgLightDirLoc = -1, fgMultiLoc = -1, fgFogLoc = -1, fgFogSunLoc = -1, fgFogAmbLoc = -1, fgParamsLoc = -1;
+    int fgLightVPLoc = -1, fgDepthLoc = -1, fgShadowLoc = -1, fgExposureLoc = -1;
+    Shader compositeShader{};
+    int cpCamDepthLoc = -1, cpTexelLoc = -1, cpParamsLoc = -1, cpSceneLoc = -1, cpDepthLoc = -1, cpFogLoc = -1;
+    Shader bloomDownShader{}, bloomUpShader{};
+    int bdParamsLoc = -1, bdSrcLoc = -1, buParamsLoc = -1, buSrcLoc = -1;
+    Shader fxaaShader{};
+    int fxTexelLoc = -1, fxSrcLoc = -1;
+    int frame = 0;
 };
 PostState ps;
 RenderQuality quality;
@@ -104,18 +122,109 @@ float LinearToSrgb1(float c) {
     return c < 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
 }
 
+void Unload(RenderTexture2D& rt) {
+    if (rt.id > 0) UnloadRenderTexture(rt);
+    rt = {};
+}
+
 void UnloadTargets() {
-    if (ps.scene.id > 0) UnloadRenderTexture(ps.scene);
-    ps.scene = {};
+    Unload(ps.scene);
+    Unload(ps.hdr);
+    Unload(ps.fog);
+    Unload(ps.ldr);
+    for (RenderTexture2D& b : ps.bloom) Unload(b);
+    ps.bloom.clear();
     ps.width = ps.height = 0;
 }
 
 void EnsureTargets(int width, int height) {
     if (ps.scene.id > 0 && ps.width == width && ps.height == height) return;
     UnloadTargets();
-    ps.scene = LoadRenderTextureEx(width, height, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
+    const int hdrFormat = PIXELFORMAT_UNCOMPRESSED_R16G16B16A16;
+    ps.scene = LoadRenderTextureEx(width, height, hdrFormat, true);
+    ps.hdr = LoadRenderTextureEx(width, height, hdrFormat, false);
+    ps.fog = LoadRenderTextureEx((width + 1) / 2, (height + 1) / 2, hdrFormat, false);
+    ps.ldr = LoadRenderTextureEx(width, height, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false);
+    // Bloom: halve until the short side is a handful of pixels.
+    int bw = width / 2, bh = height / 2;
+    while (ps.bloom.size() < 7 && bw >= 8 && bh >= 8) {
+        ps.bloom.push_back(LoadRenderTextureEx(bw, bh, hdrFormat, false));
+        bw /= 2;
+        bh /= 2;
+    }
     ps.width = width;
     ps.height = height;
+}
+
+void SetVec4(Shader sh, int loc, const Vector4& v) {
+    if (loc >= 0) SetShaderValue(sh, loc, &v, SHADER_UNIFORM_VEC4);
+}
+
+void Pass(RenderTexture2D target, Shader shader, int blend = -1) {
+    BeginTextureMode(target);
+    DrawFullscreen(shader, blend);
+    EndTextureMode();
+}
+
+// Air and fog along every view ray, at half size (fs_fog).
+void RenderFog() {
+    const LightingSettings& L = Lighting();
+    const ViewInfo& v = ps.view;
+    const AerialParams air = GetAerialParams();
+    const bool atmosphere = AtmosphereActive();
+    const Texture2D shadow = GetShadowMapTexture();
+    const int steps = quality.volumetrics >= 2 ? 32 : (quality.volumetrics == 1 ? 20 : 10);
+    const bool shafts = quality.volumetrics >= 1 && shadow.id != 0;
+
+    SetVec4(ps.fogShader, ps.fgCamProjLoc, v.proj);
+    SetVec4(ps.fogShader, ps.fgCamDepthLoc, v.depth);
+    SetShaderValueMatrix(ps.fogShader, ps.fgCamInvViewLoc, v.invView);
+    SetVec4(ps.fogShader, ps.fgAirRLoc, air.airR);
+    SetVec4(ps.fogShader, ps.fgAirMLoc, air.airM);
+    SetVec4(ps.fogShader, ps.fgAirExtLoc, air.airExt);
+    SetVec4(ps.fogShader, ps.fgLightLoc, { air.light.x, air.light.y, air.light.z, shafts ? 1.0f : 0.0f });
+    SetVec4(ps.fogShader, ps.fgLightDirLoc, { air.lightDir.x, air.lightDir.y, air.lightDir.z, GetShadowRange() });
+    SetVec4(ps.fogShader, ps.fgMultiLoc, air.multi);
+
+    // The Fog item (and the haze of bad weather). Under an atmosphere it is lit by the sun and the sky;
+    // under a sky of one colour it is that colour, so distance fades into the background.
+    const float density = FogDensity();
+    const float height = std::max(L.fogHeight, 0.0f);
+    SetVec4(ps.fogShader, ps.fgFogLoc, { density, height > 0.0f ? 1.0f / height : 0.0f, 0.0f, 0.6f });
+    if (atmosphere) {
+        const Vector3 sun = Vector3Scale(SunRadiance(), PI);
+        const Vector3 amb = Vector3Scale(Vector3Add(AmbientSky(), AmbientGround()), 0.5f);
+        SetVec4(ps.fogShader, ps.fgFogSunLoc, { sun.x, sun.y, sun.z, 0.0f });
+        SetVec4(ps.fogShader, ps.fgFogAmbLoc, { amb.x, amb.y, amb.z, 0.0f });
+    } else {
+        const Vector3 sky = DisplayColorToScene(FogColorNow());
+        SetVec4(ps.fogShader, ps.fgFogSunLoc, { 0.0f, 0.0f, 0.0f, 0.0f });
+        SetVec4(ps.fogShader, ps.fgFogAmbLoc, { sky.x, sky.y, sky.z, 1.0f });
+    }
+    // With an atmosphere the fog is drawn over the sky too (out to twice the far plane); a flat sky is
+    // already the fog's colour.
+    SetVec4(ps.fogShader, ps.fgParamsLoc, { (float)steps, (float)(ps.frame % 8) * 3.7f, atmosphere && density > 0.0f ? 1.0f : 0.0f, v.depth.w * 2.0f });
+    SetShaderValueMatrix(ps.fogShader, ps.fgLightVPLoc, GetLightViewProj());
+    SetShaderValueTexture(ps.fogShader, ps.fgDepthLoc, ps.scene.depth);
+    SetShaderValueTexture(ps.fogShader, ps.fgShadowLoc, shadow);
+    SetShaderValueTexture(ps.fogShader, ps.fgExposureLoc, GetExposureTexture());
+    Pass(ps.fog, ps.fogShader);
+}
+
+void RenderBloom(Texture2D src) {
+    const int levels = (int)ps.bloom.size();
+    for (int i = 0; i < levels; i++) {
+        const Texture2D in = i == 0 ? src : ps.bloom[(size_t)i - 1].texture;
+        SetVec4(ps.bloomDownShader, ps.bdParamsLoc, { 1.0f / (float)in.width, 1.0f / (float)in.height, i == 0 ? 1.0f : 0.0f, 600.0f });
+        SetShaderValueTexture(ps.bloomDownShader, ps.bdSrcLoc, in);
+        Pass(ps.bloom[(size_t)i], ps.bloomDownShader);
+    }
+    for (int i = levels - 2; i >= 0; i--) {
+        const Texture2D in = ps.bloom[(size_t)i + 1].texture;
+        SetVec4(ps.bloomUpShader, ps.buParamsLoc, { 1.0f / (float)in.width, 1.0f / (float)in.height, 0.62f, 0.0f });
+        SetShaderValueTexture(ps.bloomUpShader, ps.buSrcLoc, in);
+        Pass(ps.bloom[(size_t)i], ps.bloomUpShader, BLEND_ALPHA);
+    }
 }
 
 // The exposure of this frame, into a 1x1 target every pass can read.
@@ -126,7 +235,7 @@ void UpdateExposure() {
     const float dt = std::clamp(GetFrameTime(), 0.0f, 0.25f);
     const Vector4 params = { std::pow(2.0f, std::clamp(L.exposure, -8.0f, 8.0f)), adapt ? 1.0f : 0.0f,
                              1.0f - std::exp(-dt * 1.6f), ps.exposureReset ? 1.0f : 0.0f };
-    const Vector4 range = { 0.35f, 10.0f, 0.26f, 0.0f };
+    const Vector4 range = { 0.5f, 3.2f, 0.31f, 0.72f };
     SetShaderValue(ps.exposureShader, ps.expParamsLoc, &params, SHADER_UNIFORM_VEC4);
     SetShaderValue(ps.exposureShader, ps.expRangeLoc, &range, SHADER_UNIFORM_VEC4);
     SetShaderValueTexture(ps.exposureShader, ps.expLumaLoc, ps.luma.texture);
@@ -173,6 +282,44 @@ void InitPostFX() {
     ps.tmBloomLoc = GetShaderLocation(ps.tonemapShader, "bloomTex");
     ps.tmExposureLoc = GetShaderLocation(ps.tonemapShader, "exposureTex");
 
+    ps.fogShader = LoadShaderProgram("post_fog");
+    ps.fgCamProjLoc = GetShaderLocation(ps.fogShader, "camProj");
+    ps.fgCamDepthLoc = GetShaderLocation(ps.fogShader, "camDepth");
+    ps.fgCamInvViewLoc = GetShaderLocation(ps.fogShader, "camInvView");
+    ps.fgAirRLoc = GetShaderLocation(ps.fogShader, "fgAirR");
+    ps.fgAirMLoc = GetShaderLocation(ps.fogShader, "fgAirM");
+    ps.fgAirExtLoc = GetShaderLocation(ps.fogShader, "fgAirExt");
+    ps.fgLightLoc = GetShaderLocation(ps.fogShader, "fgLight");
+    ps.fgLightDirLoc = GetShaderLocation(ps.fogShader, "fgLightDir");
+    ps.fgMultiLoc = GetShaderLocation(ps.fogShader, "fgMulti");
+    ps.fgFogLoc = GetShaderLocation(ps.fogShader, "fgFog");
+    ps.fgFogSunLoc = GetShaderLocation(ps.fogShader, "fgFogSun");
+    ps.fgFogAmbLoc = GetShaderLocation(ps.fogShader, "fgFogAmb");
+    ps.fgParamsLoc = GetShaderLocation(ps.fogShader, "fgParams");
+    ps.fgLightVPLoc = GetShaderLocation(ps.fogShader, "lightVP");
+    ps.fgDepthLoc = GetShaderLocation(ps.fogShader, "depthTex");
+    ps.fgShadowLoc = GetShaderLocation(ps.fogShader, "shadowMap");
+    ps.fgExposureLoc = GetShaderLocation(ps.fogShader, "exposureTex");
+
+    ps.compositeShader = LoadShaderProgram("post_composite");
+    ps.cpCamDepthLoc = GetShaderLocation(ps.compositeShader, "camDepth");
+    ps.cpTexelLoc = GetShaderLocation(ps.compositeShader, "cpTexel");
+    ps.cpParamsLoc = GetShaderLocation(ps.compositeShader, "cpParams");
+    ps.cpSceneLoc = GetShaderLocation(ps.compositeShader, "sceneTex");
+    ps.cpDepthLoc = GetShaderLocation(ps.compositeShader, "cpDepthTex");
+    ps.cpFogLoc = GetShaderLocation(ps.compositeShader, "fogTex");
+
+    ps.bloomDownShader = LoadShaderProgram("post_bloom_down");
+    ps.bdParamsLoc = GetShaderLocation(ps.bloomDownShader, "bdParams");
+    ps.bdSrcLoc = GetShaderLocation(ps.bloomDownShader, "srcTex");
+    ps.bloomUpShader = LoadShaderProgram("post_bloom_up");
+    ps.buParamsLoc = GetShaderLocation(ps.bloomUpShader, "buParams");
+    ps.buSrcLoc = GetShaderLocation(ps.bloomUpShader, "srcTex");
+
+    ps.fxaaShader = LoadShaderProgram("post_fxaa");
+    ps.fxTexelLoc = GetShaderLocation(ps.fxaaShader, "fxTexel");
+    ps.fxSrcLoc = GetShaderLocation(ps.fxaaShader, "srcTex");
+
     for (RenderTexture2D& e : ps.exposure) {
         e = LoadRenderTextureEx(1, 1, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, false);
         SetTextureFilter(e.texture, TEXTURE_FILTER_POINT);
@@ -189,9 +336,9 @@ void ShutdownPostFX() {
     UnloadTargets();
     for (RenderTexture2D& e : ps.exposure) if (e.id > 0) UnloadRenderTexture(e);
     if (ps.luma.id > 0) UnloadRenderTexture(ps.luma);
-    UnloadShader(ps.exposureShader);
-    UnloadShader(ps.lumaShader);
-    UnloadShader(ps.tonemapShader);
+    for (Shader* s : { &ps.exposureShader, &ps.lumaShader, &ps.tonemapShader, &ps.fogShader, &ps.compositeShader,
+                       &ps.bloomDownShader, &ps.bloomUpShader, &ps.fxaaShader })
+        UnloadShader(*s);
     ps = PostState{};
 }
 
@@ -205,6 +352,8 @@ void BeginScene(const Camera3D& camera) {
     const int h = std::max(1, (int)std::lround((float)GetScreenHeight() * scale));
     EnsureTargets(w, h);
     UpdateExposure();
+    ps.view = MakeViewInfo(camera, w, h);
+    ps.frame++;
 
     BeginTextureMode(ps.scene);
     ClearBackground(BLACK);
@@ -217,25 +366,46 @@ void EndScene() {
     EndTextureMode();
     ps.sceneActive = false;
     const LightingSettings& L = Lighting();
-    const Texture2D src = ps.scene.texture;
+    Texture2D src = ps.scene.texture;
 
-    // The picture's brightness, for the next frame's exposure.
-    SetShaderValueTexture(ps.lumaShader, ps.lumaSrcLoc, src);
-    BeginTextureMode(ps.luma);
-    DrawFullscreen(ps.lumaShader, -1);
-    EndTextureMode();
+    // Air and fog over the scene.
+    const bool fog = !ps.view.ortho && (AtmosphereActive() || FogDensity() > 0.0f);
+    if (fog) {
+        RenderFog();
+        SetVec4(ps.compositeShader, ps.cpCamDepthLoc, ps.view.depth);
+        SetVec4(ps.compositeShader, ps.cpTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height,
+                                                    1.0f / (float)ps.fog.texture.width, 1.0f / (float)ps.fog.texture.height });
+        SetVec4(ps.compositeShader, ps.cpParamsLoc, { 1.0f, 0.0f, 0.0f, 0.0f });
+        SetShaderValueTexture(ps.compositeShader, ps.cpSceneLoc, src);
+        SetShaderValueTexture(ps.compositeShader, ps.cpDepthLoc, ps.scene.depth);
+        SetShaderValueTexture(ps.compositeShader, ps.cpFogLoc, ps.fog.texture);
+        Pass(ps.hdr, ps.compositeShader);
+        src = ps.hdr.texture;
+    }
 
-    // Exposure, tone curve, grading: into the screen target.
-    const Vector4 params = { (float)std::clamp(L.toneCurve, 0, 3), 0.0f, Clamp01(L.vignette), Clamp01(L.filmGrain) };
-    const Vector4 grade = { std::clamp(L.contrast, 0.0f, 2.0f), std::clamp(L.saturation, 0.0f, 2.0f),
-                            std::clamp(L.temperature, -1.0f, 1.0f), (float)GetTime() };
-    const Vector4 texel = { 1.0f / (float)ps.width, 1.0f / (float)ps.height, 0.0f, 0.0f };
-    SetShaderValue(ps.tonemapShader, ps.tmParamsLoc, &params, SHADER_UNIFORM_VEC4);
-    SetShaderValue(ps.tonemapShader, ps.tmGradeLoc, &grade, SHADER_UNIFORM_VEC4);
-    SetShaderValue(ps.tonemapShader, ps.tmTexelLoc, &texel, SHADER_UNIFORM_VEC4);
+    // Bloom, and from one of its small steps the picture's brightness for the next frame's exposure.
+    const bool bloom = quality.bloom && L.bloom > 0.001f && !ps.bloom.empty();
+    if (bloom) RenderBloom(src);
+    SetShaderValueTexture(ps.lumaShader, ps.lumaSrcLoc, bloom ? ps.bloom[std::min<size_t>(2, ps.bloom.size() - 1)].texture : src);
+    Pass(ps.luma, ps.lumaShader);
+
+    // Exposure, tone curve, grading. Straight to the screen target, or by way of the anti-aliasing pass.
+    SetVec4(ps.tonemapShader, ps.tmParamsLoc, { (float)std::clamp(L.toneCurve, 0, 3), bloom ? Clamp01(L.bloom) * 0.11f : 0.0f,
+                                               Clamp01(L.vignette), Clamp01(L.filmGrain) });
+    SetVec4(ps.tonemapShader, ps.tmGradeLoc, { std::clamp(L.contrast, 0.0f, 2.0f), std::clamp(L.saturation, 0.0f, 2.0f),
+                                              std::clamp(L.temperature, -1.0f, 1.0f), (float)GetTime() });
+    SetVec4(ps.tonemapShader, ps.tmTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height, 0.0f, 0.0f });
     SetShaderValueTexture(ps.tonemapShader, ps.tmSceneLoc, src);
+    if (bloom) SetShaderValueTexture(ps.tonemapShader, ps.tmBloomLoc, ps.bloom[0].texture);
     SetShaderValueTexture(ps.tonemapShader, ps.tmExposureLoc, GetExposureTexture());
-    DrawFullscreen(ps.tonemapShader, -1);
+    if (quality.antiAliasing == 1) {
+        Pass(ps.ldr, ps.tonemapShader);
+        SetVec4(ps.fxaaShader, ps.fxTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height, 0.0f, 0.0f });
+        SetShaderValueTexture(ps.fxaaShader, ps.fxSrcLoc, ps.ldr.texture);
+        DrawFullscreen(ps.fxaaShader, -1);
+    } else {
+        DrawFullscreen(ps.tonemapShader, -1);
+    }
 }
 
 Vector3 TonemapApply(int curve, Vector3 c) {
