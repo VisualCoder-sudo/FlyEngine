@@ -6,8 +6,10 @@
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/TechnicalTools.hpp"
 #include "../../include/CityGen/CityPhysics.hpp"
+#include "../../include/Terrain/BasicTerrain.hpp"
 #include "raymath.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <map>
 
@@ -143,6 +145,12 @@ static ScatteredObject* FindObjectByBody(const std::vector<std::pair<b3BodyId, S
 }
 
 Simulation::Simulation(std::vector<ScatteredObject*>& objects) : objects(objects) {}
+
+Simulation::~Simulation() {
+    // Height fields are referenced by shapes in the world, so the world goes first.
+    world.reset();
+    for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);
+}
 
 b3WorldId Simulation::GetWorldId() const {
     return world && world->IsValid() ? world->GetId() : b3WorldId{};
@@ -290,7 +298,24 @@ void Simulation::StartPlay() {
     def.maximumLinearSpeed = 60.0f;
     world = std::make_unique<b3wrap::World>(def);
 
-    b3BodyId groundBody = b3wrap::CreateBody(world->GetId(), Vector3{ 0.0f, -1.0f, 0.0f }, QuaternionIdentity(), b3_staticBody);
+    // Terrain is solid: one height-field collider per BasicTerrain, built from
+    // the heightmap as it stands now.
+    for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);   // left over from an earlier session
+    terrainColliders.clear();
+    float floorTop = 0.0f;
+    for (BasicTerrain* t : BasicTerrain::GetInstances()) {
+        if (!t) continue;
+        terrain::TerrainCollider collider;
+        if (!terrain::CreateTerrainCollider(world->GetId(), *t, friction, restitutionBase, collider)) continue;
+        floorTop = std::min(floorTop, t->position.y + collider.heightField->minHeight);
+        terrainColliders.push_back(collider);
+    }
+
+    // The big slab at y = 0 stays as a safety floor so nothing falls into the
+    // void (off the edge of a terrain, or in a scene without one). Terrain
+    // that dips below y = 0 would otherwise be blocked by an invisible wall at
+    // the slab's top, so the slab sits at or below the lowest terrain point.
+    b3BodyId groundBody = b3wrap::CreateBody(world->GetId(), Vector3{ 0.0f, floorTop - 1.0f, 0.0f }, QuaternionIdentity(), b3_staticBody);
     b3wrap::AddBoxShape(groundBody, Vector3{ 1000.0f, 1.0f, 1000.0f }, 0.0f, friction, restitutionBase);
     city::AttachPhysicsWorld(world->GetId(), friction, restitutionBase);
 
@@ -549,6 +574,9 @@ void Simulation::StopPlay() {
     contactHitEvents.clear();
     city::DetachPhysicsWorld();
     world.reset();
+    // The height fields are referenced by their shapes, so they go after the world.
+    for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);
+    terrainColliders.clear();
 
     ui::LogAlways("Playtest Session ended, %.2f s", GetTime() - playStartTime);
 }
@@ -867,7 +895,9 @@ RaycastHit Simulation::RayCast(Vector3 origin, Vector3 direction, float maxDista
     if (r.hit && b3Shape_IsValid(r.shapeId)) {
         b3BodyId bodyId = b3Shape_GetBody(r.shapeId);
         result.object = FindObjectByBody(bodyToObject, bodyId);
-        if (result.object == ignore) {
+        // Bodies with no object (the ground slab, terrain) have a null object: that must not count as "the
+        // ignored object" when the caller ignores nothing, or those hits would be silently dropped.
+        if (ignore && result.object == ignore) {
             result.hit = false;
         }
     }
@@ -931,6 +961,134 @@ void Simulation::GetJointSegments(std::vector<std::pair<Vector3, Vector3>>& out)
         if (!b3Body_IsValid(bA) || !b3Body_IsValid(bB)) continue;
         out.emplace_back(b3wrap::GetBodyPosition(bA), b3wrap::GetBodyPosition(bB));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kinematic character queries (capsule "mover")
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kMaxMoverPlanes = 64;
+constexpr int kMoverIterations = 5;
+// How far below the capsule the ground probe looks for a surface to stand on.
+constexpr float kGroundProbeDepth = 0.03f;
+
+struct MoverQuery {
+    b3BodyId self{};
+    bool hasSelf = false;
+    b3CollisionPlane planes[kMaxMoverPlanes];
+    int count = 0;
+    float flattenBelowNormalY = 0.0f;   // see Simulation::MoveCapsule
+};
+
+bool IsIgnoredMoverShape(const MoverQuery& q, b3ShapeId shape) {
+    if (b3Shape_IsSensor(shape)) return true;
+    if (!q.hasSelf) return false;
+    const b3BodyId body = b3Shape_GetBody(shape);
+    return B3_ID_EQUALS(body, q.self);
+}
+
+bool CollectMoverPlanes(b3ShapeId shape, const b3PlaneResult* results, int n, void* context) {
+    MoverQuery* q = static_cast<MoverQuery*>(context);
+    if (IsIgnoredMoverShape(*q, shape)) return true;
+    for (int i = 0; i < n; ++i) {
+        if (q->count == kMaxMoverPlanes) return false;
+        b3Plane plane = results[i].plane;
+        if (plane.normal.y >= 0.0f && plane.normal.y < q->flattenBelowNormalY) {
+            const float h = std::sqrt(plane.normal.x * plane.normal.x + plane.normal.z * plane.normal.z);
+            if (h > 1e-4f) plane.normal = b3Vec3{ plane.normal.x / h, 0.0f, plane.normal.z / h };
+        }
+        // Every surface is rigid to the character: it stops against dynamic bodies too (it does not push them).
+        q->planes[q->count++] = b3CollisionPlane{ plane, FLT_MAX, 0.0f, true };
+    }
+    return true;
+}
+
+bool AcceptMoverShape(b3ShapeId shape, void* context) {
+    return !IsIgnoredMoverShape(*static_cast<MoverQuery*>(context), shape);
+}
+
+b3Capsule MakeMover(float radius, float halfSegment) {
+    return b3Capsule{ b3Vec3{ 0.0f, -halfSegment, 0.0f }, b3Vec3{ 0.0f, halfSegment, 0.0f }, radius };
+}
+
+} // namespace
+
+bool Simulation::FindBodyId(ScatteredObject* obj, b3BodyId& out) const {
+    if (!obj) return false;
+    auto it = bodyMap.find(obj);
+    if (it == bodyMap.end() || !b3Body_IsValid(it->second.bodyId)) return false;
+    out = it->second.bodyId;
+    return true;
+}
+
+Simulation::MoverResult Simulation::MoveCapsule(ScatteredObject* self, Vector3 position, Vector3 delta,
+                                                float radius, float halfSegment, float flattenBelowNormalY) {
+    MoverResult result;
+    if (!world || !world->IsValid()) {
+        // No world to collide with (not playing): free movement.
+        result.position = Vector3Add(position, delta);
+        result.moved = delta;
+        return result;
+    }
+
+    MoverQuery q;
+    q.hasSelf = FindBodyId(self, q.self);
+    q.flattenBelowNormalY = flattenBelowNormalY;
+
+    const b3WorldId wid = world->GetId();
+    const b3Capsule mover = MakeMover(radius, halfSegment);
+    const b3QueryFilter filter = b3DefaultQueryFilter();
+    const Vector3 target = Vector3Add(position, delta);
+
+    // Gather the surfaces touching the capsule, solve for the position that
+    // satisfies all of them as close to the target as possible, then sweep
+    // there so nothing is skipped over. Repeating lets it settle into corners.
+    Vector3 p = position;
+    for (int i = 0; i < kMoverIterations; ++i) {
+        q.count = 0;
+        b3World_CollideMover(wid, b3wrap::ToB3(p), &mover, filter, CollectMoverPlanes, &q);
+        const b3Vec3 want = b3wrap::ToB3(Vector3Subtract(target, p));
+        const b3PlaneSolverResult solved = b3SolvePlanes(want, q.planes, q.count);
+        const float fraction = b3World_CastMover(wid, b3wrap::ToB3(p), &mover, solved.delta, filter, AcceptMoverShape, &q);
+        const Vector3 step = Vector3Scale(b3wrap::ToRL(solved.delta), fraction);
+        p = Vector3Add(p, step);
+        if (Vector3LengthSqr(step) < 1e-8f) break;
+    }
+
+    result.position = p;
+    result.moved = Vector3Subtract(p, position);
+    return result;
+}
+
+float Simulation::CastCapsule(ScatteredObject* self, Vector3 position, Vector3 delta, float radius, float halfSegment) {
+    if (!world || !world->IsValid()) return 1.0f;
+    MoverQuery q;
+    q.hasSelf = FindBodyId(self, q.self);
+    const b3Capsule mover = MakeMover(radius, halfSegment);
+    return b3World_CastMover(world->GetId(), b3wrap::ToB3(position), &mover, b3wrap::ToB3(delta),
+                             b3DefaultQueryFilter(), AcceptMoverShape, &q);
+}
+
+bool Simulation::GetCapsuleGround(ScatteredObject* self, Vector3 position, float radius, float halfSegment,
+                                  float minNormalY, Vector3& outNormal) {
+    if (!world || !world->IsValid()) return false;
+    MoverQuery q;
+    q.hasSelf = FindBodyId(self, q.self);
+    const b3Capsule mover = MakeMover(radius, halfSegment);
+    const Vector3 probe = { position.x, position.y - kGroundProbeDepth, position.z };
+    b3World_CollideMover(world->GetId(), b3wrap::ToB3(probe), &mover, b3DefaultQueryFilter(), CollectMoverPlanes, &q);
+
+    float best = -2.0f;
+    for (int i = 0; i < q.count; ++i) {
+        const b3Vec3 n = q.planes[i].plane.normal;
+        if (n.y > best) {
+            best = n.y;
+            outNormal = { n.x, n.y, n.z };
+        }
+    }
+    return best >= minNormalY;
 }
 
 } // namespace phys
