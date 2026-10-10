@@ -1464,6 +1464,15 @@ void SetTimeOfDay(float hours) {
 float GetTimeOfDay() { return lightingSettings.timeOfDay; }
 LightingSettings& Lighting() { return lightingSettings; }
 void ResetLighting() { lightingSettings = LightingSettings{}; }
+LightingSettings NewSceneLighting() {
+    LightingSettings L;
+    L.hasSky = true; L.skyMode = 1;
+    L.hasClouds = true; L.cloudCoverage = 0.35f;
+    L.hasWeather = true;                // clear: all zero, but the item is there to turn up
+    L.hasPicture = true;
+    L.timeOfDay = 15.0f;                // afternoon light shows the sky and shadows well
+    return L;
+}
 void TickLighting(float dt) {
     if (lightingSettings.dayLengthMinutes > 0.0f)
         lightingSettings.timeOfDay = fmodf(lightingSettings.timeOfDay + dt * 24.0f / (lightingSettings.dayLengthMinutes * 60.0f), 24.0f);

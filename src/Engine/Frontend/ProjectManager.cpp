@@ -18,6 +18,7 @@
 
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
+#include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine.hpp"
 #include "raylib.h"
@@ -1093,7 +1094,12 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
     // away goes through the same path as any other project.
     const std::vector<ScatteredObject*> empty;
     const std::vector<std::unique_ptr<ModelGroup>> models;
-    if (!SaveSceneToStream(out, empty, models, detail::BaseDirOf(projectFile))) return false;
+    // (The scene is written with the new-project lighting; the lighting of whatever is open now is kept.)
+    const gfx::LightingSettings openLighting = gfx::Lighting();
+    gfx::Lighting() = gfx::NewSceneLighting();
+    const bool saved = SaveSceneToStream(out, empty, models, detail::BaseDirOf(projectFile));
+    gfx::Lighting() = openLighting;
+    if (!saved) return false;
     out.close();
 
     // Add to recent projects (PushRecent persists the list)

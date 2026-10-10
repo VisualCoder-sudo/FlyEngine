@@ -155,7 +155,10 @@ struct LightingSettings {
     float filmGrain = 0.0f;           // 0..1
 };
 LightingSettings& Lighting();
-void ResetLighting();                 // back to noon, no running cycle (a new scene starts like this)
+void ResetLighting();                 // back to noon, no running cycle (a scene that stores no lighting loads like this)
+// What a new project starts with: the atmosphere sky with a few clouds, a clear Weather item and the Picture
+// item, so the sky, weather and picture settings are all there to change (and visible) from the first frame.
+LightingSettings NewSceneLighting();
 void TickLighting(float dt);          // advances the time of day when a day length is set
 
 // Time of day in hours (0..24, 12 = noon, the default and the unchanged look). Dims the sun and ambient
