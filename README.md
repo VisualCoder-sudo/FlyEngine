@@ -337,7 +337,7 @@ sky 2560 1440`, the mean of its three views; runs vary by a few tenths):
 | High (default) | 3.1 | 4.5 |
 | Ultra | | 5.1 |
 
-Known limits: temporal anti-aliasing reprojects by the camera's motion only, so
+Known limits: temporal anti-aliasing (bicubic history, variance clipping, 16 jitter samples) reprojects by the camera's motion only, so
 fast-moving things can leave a faint trail; the chunked `terrain::Terrain` and
 the water take an averaged cloud shadow, not the drifting one; terrain does not
 receive the sun's shadow map (it never did).

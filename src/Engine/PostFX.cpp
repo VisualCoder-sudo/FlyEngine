@@ -509,9 +509,11 @@ void BeginScene(const Camera3D& camera) {
     ps.taa = quality.antiAliasing == 2 && !ps.view.ortho;
     ps.jitter = { 0.0f, 0.0f };
     if (ps.taa) {
-        static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
-        static const float kHalton3[8] = { 0.3333f, 0.6667f, 0.1111f, 0.4444f, 0.7778f, 0.2222f, 0.5556f, 0.8889f };
-        ps.jitter = { (kHalton2[ps.frame % 8] - 0.5f) * 2.0f / (float)w, (kHalton3[ps.frame % 8] - 0.5f) * 2.0f / (float)h };
+        static const float kHalton2[16] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f,
+                                            0.5625f, 0.3125f, 0.8125f, 0.1875f, 0.6875f, 0.4375f, 0.9375f, 0.03125f };
+        static const float kHalton3[16] = { 1.0f / 3, 2.0f / 3, 1.0f / 9, 4.0f / 9, 7.0f / 9, 2.0f / 9, 5.0f / 9, 8.0f / 9,
+                                            1.0f / 27, 10.0f / 27, 19.0f / 27, 4.0f / 27, 13.0f / 27, 22.0f / 27, 7.0f / 27, 16.0f / 27 };
+        ps.jitter = { (kHalton2[ps.frame % 16] - 0.5f) * 2.0f / (float)w, (kHalton3[ps.frame % 16] - 0.5f) * 2.0f / (float)h };
         // The passes that rebuild positions from depth must know about the shift.
         ps.view.proj.z -= ps.jitter.x;
         ps.view.proj.w -= ps.jitter.y;

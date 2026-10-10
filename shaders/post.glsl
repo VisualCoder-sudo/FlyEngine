@@ -402,15 +402,20 @@ void main() {
     if (taParams.w < 0.5) { fragColor = vec4(cur, 1.0); return; }
 
     vec3 c = Squeeze(cur);
-    vec3 lo = c, hi = c;
+    // The colours round this pixel now: their range, and their mean and spread (for variance clipping).
+    vec3 lo = c, hi = c, m1 = c, m2 = c * c;
     for (int j = -1; j <= 1; ++j) {
         for (int i = -1; i <= 1; ++i) {
             if (i == 0 && j == 0) continue;
             vec3 s = Squeeze(max(textureLod(sampler2D(taCurTex, taCurTex_smp), uv + vec2(float(i), float(j)) * t, 0.0).rgb, vec3(0.0)));
             lo = min(lo, s);
             hi = max(hi, s);
+            m1 += s;
+            m2 += s * s;
         }
     }
+    m1 /= 9.0;
+    vec3 sigma = sqrt(max(m2 / 9.0 - m1 * m1, vec3(0.0)));
 
     // The nearest of this pixel and its neighbours decides the motion, so the edge of a near thing moves with it.
     float dBest = textureLod(sampler2D(taDepthTex, taDepthTex_smp), uv, 0.0).r;
@@ -427,9 +432,42 @@ void main() {
     vec2 histNdc = ndc - ((ndcB - taJitter.xy) - prevClip.xy / max(prevClip.w, 1e-5));
     if (prevClip.w <= 0.0 || abs(histNdc.x) >= 1.0 || abs(histNdc.y) >= 1.0) { fragColor = vec4(cur, 1.0); return; }
 
-    vec3 hist = Squeeze(max(textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), fly_rt_uv(histNdc), 0.0).rgb, vec3(0.0)));
-    hist = clamp(hist, lo, hi);
-    fragColor = vec4(Unsqueeze(mix(hist, c, taParams.z)), 1.0);
+    // The earlier picture, read with a bicubic (Catmull-Rom) filter: a plain bilinear read blurs it a little
+    // more every frame, which is what makes temporal anti-aliasing look soft.
+    vec2 huv = fly_rt_uv(histNdc);
+    vec2 pos = huv / t;
+    vec2 cc = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - cc;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t12 = (cc + w2 / w12) * t, t0 = (cc - 1.0) * t, t3 = (cc + 2.0) * t;
+    vec3 h = textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), vec2(t12.x, t0.y), 0.0).rgb * (w12.x * w0.y)
+           + textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), vec2(t0.x, t12.y), 0.0).rgb * (w0.x * w12.y)
+           + textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), vec2(t12.x, t12.y), 0.0).rgb * (w12.x * w12.y)
+           + textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), vec2(t3.x, t12.y), 0.0).rgb * (w3.x * w12.y)
+           + textureLod(sampler2D(taHistoryTex, taHistoryTex_smp), vec2(t12.x, t3.y), 0.0).rgb * (w12.x * w3.y);
+    h /= (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y);
+    vec3 hist = Squeeze(max(h, vec3(0.0)));
+
+    // Variance clipping: the earlier colour is pulled along the line to the mean of the neighbourhood until it is
+    // inside the box that neighbourhood spans (mean +- 1.25 spreads, and never beyond its own range). This lets
+    // through a change that is plausible and rejects one that is not (something uncovered, something that moved),
+    // with far less ghosting than clamping each channel.
+    vec3 bmin = max(m1 - 1.25 * sigma, lo), bmax = min(m1 + 1.25 * sigma, hi);
+    vec3 centre = 0.5 * (bmin + bmax), ext = max(0.5 * (bmax - bmin), vec3(1e-4));
+    vec3 off = hist - centre;
+    float clip = max(max(abs(off.x) / ext.x, abs(off.y) / ext.y), abs(off.z) / ext.z);
+    float clipped = clip > 1.0 ? 1.0 : 0.0;
+    if (clip > 1.0) hist = centre + off / clip;
+
+    // How much the new frame counts: a tenth when nothing moved, more where the picture is moving (the earlier
+    // one is then a worse match) or had to be clipped hard (it was wrong here).
+    float motionPx = length((histNdc - ndc) / (2.0 * t));
+    float alpha = clamp(taParams.z + 0.25 * clamp(motionPx * 0.5, 0.0, 1.0) + 0.2 * clipped, 0.0, 0.6);
+    fragColor = vec4(Unsqueeze(mix(hist, c, alpha)), 1.0);
 }
 @end
 @program post_taa vs_fullscreen fs_taa
