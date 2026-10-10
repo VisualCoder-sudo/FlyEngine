@@ -72,6 +72,10 @@ cmake --build build
 build\Flyengine.exe        # Windows
 ```
 
+The editor starts `FlyPlayer` from its own directory for Play, so rebuild both
+(`cmake --build build` does) - an old `FlyPlayer` next to a new `Flyengine`
+will not show newer features such as the sky.
+
 For Visual Studio, open the folder in the IDE and build - `CMakeSettings.json`
 is configured for it.
 
@@ -291,7 +295,9 @@ The scene is lit in linear light into a float render target and turned into the
 picture by a chain of full-screen passes (`src/Engine/PostFX.cpp`,
 `shaders/post.glsl`). What a scene looks like is set in the Explorer's
 **Lighting** section and saved with the scene; how much of the machine it may
-use is set in **Preferences > Rendering** and kept per machine.
+use is set in **Preferences > Rendering** and kept per machine. A new project
+starts with the atmosphere sky, clouds, a clear Weather item and the Picture item
+already in its Lighting section.
 
 - **Sky** (`src/Engine/Atmosphere.cpp`, `shaders/sky.glsl`): one colour, or an
   *Atmosphere*: air round a planet that scatters the sun's light (after
@@ -360,6 +366,20 @@ colour, with a live preview. The choices are kept per machine in `<config dir>/l
 game, *Use this look for this project only* writes the player's look into `<project>/loading.cfg`,
 which then wins over the machine's for that project's player. Player flags: `--noloading`,
 `--loading`, `--loadinglogs`.
+
+---
+
+## Editor bottom panel
+
+The bottom of the editor is one panel, docked flush between the explorer and the properties
+panel and above the command console, with two tabs:
+
+- **Assets** - the asset browser.
+- **Output** - the log (script builds, physics, project loading), coloured by severity and kept
+  at the newest line unless you scroll up. **Clear** empties it.
+
+When something is written to the log while the Assets tab is showing, a small red dot appears at
+the top right of the **Output** tab's label; opening the tab clears it.
 
 ---
 
@@ -456,6 +476,9 @@ cmake -S . -B build -G Ninja -DFLYENGINE_BUILD_TESTS=ON && cmake --build build
 ctest --test-dir build                 # headless: math, projection depth, memory tracker, texture hash, script diagnostics
 build/tests/rl_smoke_test              # needs a display + GPU: textures, mesh churn, instancing
 build/tests/sky_test                   # needs a display + GPU: a day of sky, clouds, cascades, anti-aliasing (sky_*.png)
+build/tests/new_project_test           # needs a display + GPU: a new project starts with sky, clouds, weather and picture, in editor and player
+build/tests/loading_test               # needs a display + GPU: loading screen settings, progress, pictures (loading_*.png)
+build/Flyengine --testscene [frames] sky   # walks the lighting panels, Preferences and the bottom tabs, saving a picture of each
 build/Flyengine --testscene [frames]   # terrain tools + city + shapes; run from a Debug build
 build/Flyengine --testwater [objects] [frames]
 ```
@@ -493,6 +516,10 @@ include/Engine/Platform/  the cross-platform shim (see below)
 src/Engine/Platform/      its implementation
 shaders/                  sokol-shdc GLSL, compiled into the binary at build time
 src/CityGen/              the procedural city maker (include/CityGen/)
+src/Engine/PostFX.cpp     HDR scene target, tone mapping, bloom, AO, fog, anti-aliasing, quality tiers
+src/Engine/Atmosphere.cpp physical sky, sun, moon and stars (shaders/sky.glsl)
+src/Engine/Clouds.cpp     volumetric clouds and their shadow
+src/Engine/LoadingScreen.cpp  the editor's and the player's loading screens
 src/Engine/RL/            raylib-compatible API implemented on sokol (see below)
 include/rl/               its public headers (raylib.h, raymath.h, rlgl.h subset)
 sokol/                    vendored sokol headers (sokol_app.h carries one marked patch)
