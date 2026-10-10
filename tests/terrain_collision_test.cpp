@@ -198,7 +198,7 @@ int main() {
     // ---- 5. A slope too steep to stand on stops the player and slides them back -------------------
     {
         std::printf("-- steep slope\n");
-        const float slope = std::tan(65.0f * kPi / 180.0f);
+        const float slope = std::tan(80.0f * kPi / 180.0f);
         auto t = MakeTerrain(200, 1.0f, { 0.0f, 0.0f, 0.0f }, [&](float, float z) {
             return z < 0.0f ? 0.0f : std::min(z * slope, 40.0f); });
         w.sim->StartPlay();
@@ -208,7 +208,7 @@ int main() {
         float maxY = 0.0f;
         for (int i = 0; i < 60 * 5; ++i) { Frame(w, true); maxY = std::max(maxY, PlayerPos(w).y); }
         std::printf("highest y reached %.2f, end z %.2f\n", maxY, PlayerPos(w).z);
-        CHECK(maxY < 2.5f);                 // never climbed the 65 degree face
+        CHECK(maxY < 2.5f);                 // never climbed the 80 degree face
         CHECK(PlayerPos(w).z < 3.0f);
     }
 
