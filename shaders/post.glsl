@@ -604,8 +604,10 @@ void main() {
     c *= 1.0 - tmParams.z * smoothstep(0.35, 1.9, r2);
     c = fly_linear_to_srgb(clamp(c, 0.0, 1.0));
     // Half a step of noise hides banding in smooth gradients (sky, fog); grain adds more on purpose.
+    // Only the grain moves: without it a still view is the same picture every frame.
     vec2 px = uv / tmTexel.xy;
-    float n = Hash12(px + fract(tmGrade.w) * 61.0) + Hash12(px * 1.37 + 17.0 + fract(tmGrade.w * 1.7) * 43.0) - 1.0;
+    float t = tmParams.w > 0.0 ? tmGrade.w : 0.0;
+    float n = Hash12(px + fract(t) * 61.0) + Hash12(px * 1.37 + 17.0 + fract(t * 1.7) * 43.0) - 1.0;
     c += n * (0.5 / 255.0 + tmParams.w * 0.04);
     fragColor = vec4(c, 1.0);
 }

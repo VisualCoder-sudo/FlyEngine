@@ -1541,6 +1541,7 @@ void SetNightLights(const Vector4* lights, int count) {
 
 namespace {
 Vector3 lightingCamPos{};   // the camera UpdateLighting() last saw
+bool cityEnvironmentStale = true;   // the instanced city shader has not been given this frame's light yet
 
 // The scene's light for one of the lit programs (see the uniform list in shaders/lit.glsl).
 void UploadLitEnvironment(Shader& sh, const LitLocs& l) {
@@ -1619,6 +1620,7 @@ void UpdateLighting(const Camera3D& camera) {
     UpdateCloudShadow(camera);
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
+    cityEnvironmentStale = true;
 
     if (shadowsEnabled && shadowMap.depth.id > 0) {
         rlActiveTextureSlot(SHADOW_TEXTURE_SLOT);
@@ -1626,12 +1628,17 @@ void UpdateLighting(const Camera3D& camera) {
     }
 }
 
+// Called before every instanced city draw (there are hundreds a frame). The scene's light is the same
+// for all of them, and a shader keeps the uniforms it was given, so it is handed over once a frame.
 void SetupInstancedLighting() {
     if (!cityInstancedReady) return;
-    UploadLitEnvironment(cityInstancedShader, cityLocs);
-    if (cityLocs.night != -1) {
-        const float night = GetNightAmount();
-        SetShaderValue(cityInstancedShader, cityLocs.night, &night, SHADER_UNIFORM_FLOAT);
+    if (cityEnvironmentStale) {
+        cityEnvironmentStale = false;
+        UploadLitEnvironment(cityInstancedShader, cityLocs);
+        if (cityLocs.night != -1) {
+            const float night = GetNightAmount();
+            SetShaderValue(cityInstancedShader, cityLocs.night, &night, SHADER_UNIFORM_FLOAT);
+        }
     }
 
     if (shadowsEnabled && shadowMap.depth.id > 0) {
