@@ -1,5 +1,6 @@
 #include "../../include/Engine/PostFX.hpp"
 #include "../../include/Engine/Atmosphere.hpp"
+#include "../../include/Engine/Clouds.hpp"
 #include "../../include/Engine/Graphics.hpp"
 #include "raymath.h"
 
@@ -38,10 +39,11 @@ struct PostState {
     int tmParamsLoc = -1, tmGradeLoc = -1, tmTexelLoc = -1, tmSceneLoc = -1, tmBloomLoc = -1, tmExposureLoc = -1;
     Shader fogShader{};
     int fgCamProjLoc = -1, fgCamDepthLoc = -1, fgCamInvViewLoc = -1, fgAirRLoc = -1, fgAirMLoc = -1, fgAirExtLoc = -1;
-    int fgLightLoc = -1, fgLightDirLoc = -1, fgMultiLoc = -1, fgFogLoc = -1, fgFogSunLoc = -1, fgFogAmbLoc = -1, fgParamsLoc = -1;
-    int fgLightVPLoc = -1, fgDepthLoc = -1, fgShadowLoc = -1, fgExposureLoc = -1;
+    int fgLightLoc = -1, fgLightDirLoc = -1, fgMultiLoc = -1, fgFogLoc = -1, fgHazeLoc = -1, fgFogSunLoc = -1, fgFogAmbLoc = -1, fgParamsLoc = -1;
+    int fgLightVPLoc = -1, fgDepthLoc = -1, fgShadowLoc = -1, fgExposureLoc = -1, fgCloudShadowLoc = -1, fgCloudShadowTexLoc = -1;
     Shader compositeShader{};
     int cpCamDepthLoc = -1, cpTexelLoc = -1, cpParamsLoc = -1, cpSceneLoc = -1, cpDepthLoc = -1, cpFogLoc = -1;
+    int cpCloudTexelLoc = -1, cpCloudLoc = -1;
     Shader bloomDownShader{}, bloomUpShader{};
     int bdParamsLoc = -1, bdSrcLoc = -1, buParamsLoc = -1, buSrcLoc = -1;
     Shader fxaaShader{};
@@ -188,9 +190,13 @@ void RenderFog() {
 
     // The Fog item (and the haze of bad weather). Under an atmosphere it is lit by the sun and the sky;
     // under a sky of one colour it is that colour, so distance fades into the background.
-    const float density = FogDensity();
+    const float haze = WeatherHaze();
+    const float density = FogDensity() - haze;
     const float height = std::max(L.fogHeight, 0.0f);
     SetVec4(ps.fogShader, ps.fgFogLoc, { density, height > 0.0f ? 1.0f / height : 0.0f, 0.0f, 0.6f });
+    // Under an atmosphere the weather's haze hugs the ground (the clouds above are drawn as clouds); under a
+    // sky of one colour it is plain distance fog, as it always was.
+    SetVec4(ps.fogShader, ps.fgHazeLoc, { atmosphere ? haze * 0.5f : haze, atmosphere ? 1.0f / 320.0f : 0.0f, 0.0f, 0.0f });
     if (atmosphere) {
         const Vector3 sun = Vector3Scale(SunRadiance(), PI);
         const Vector3 amb = Vector3Scale(Vector3Add(AmbientSky(), AmbientGround()), 0.5f);
@@ -203,11 +209,13 @@ void RenderFog() {
     }
     // With an atmosphere the fog is drawn over the sky too (out to twice the far plane); a flat sky is
     // already the fog's colour.
-    SetVec4(ps.fogShader, ps.fgParamsLoc, { (float)steps, (float)(ps.frame % 8) * 3.7f, atmosphere && density > 0.0f ? 1.0f : 0.0f, v.depth.w * 2.0f });
+    SetVec4(ps.fogShader, ps.fgParamsLoc, { (float)steps, (float)(ps.frame % 8) * 3.7f, atmosphere && (density > 0.0f || haze > 0.0f) ? 1.0f : 0.0f, v.depth.w * 2.0f });
     SetShaderValueMatrix(ps.fogShader, ps.fgLightVPLoc, GetLightViewProj());
     SetShaderValueTexture(ps.fogShader, ps.fgDepthLoc, ps.scene.depth);
     SetShaderValueTexture(ps.fogShader, ps.fgShadowLoc, shadow);
     SetShaderValueTexture(ps.fogShader, ps.fgExposureLoc, GetExposureTexture());
+    SetVec4(ps.fogShader, ps.fgCloudShadowLoc, GetCloudShadowParams());
+    SetShaderValueTexture(ps.fogShader, ps.fgCloudShadowTexLoc, GetCloudShadowTexture());
     Pass(ps.fog, ps.fogShader);
 }
 
@@ -235,7 +243,7 @@ void UpdateExposure() {
     const float dt = std::clamp(GetFrameTime(), 0.0f, 0.25f);
     const Vector4 params = { std::pow(2.0f, std::clamp(L.exposure, -8.0f, 8.0f)), adapt ? 1.0f : 0.0f,
                              1.0f - std::exp(-dt * 1.6f), ps.exposureReset ? 1.0f : 0.0f };
-    const Vector4 range = { 0.5f, 3.2f, 0.31f, 0.72f };
+    const Vector4 range = { 0.5f, 3.0f, 0.31f, 0.6f };
     SetShaderValue(ps.exposureShader, ps.expParamsLoc, &params, SHADER_UNIFORM_VEC4);
     SetShaderValue(ps.exposureShader, ps.expRangeLoc, &range, SHADER_UNIFORM_VEC4);
     SetShaderValueTexture(ps.exposureShader, ps.expLumaLoc, ps.luma.texture);
@@ -293,6 +301,7 @@ void InitPostFX() {
     ps.fgLightDirLoc = GetShaderLocation(ps.fogShader, "fgLightDir");
     ps.fgMultiLoc = GetShaderLocation(ps.fogShader, "fgMulti");
     ps.fgFogLoc = GetShaderLocation(ps.fogShader, "fgFog");
+    ps.fgHazeLoc = GetShaderLocation(ps.fogShader, "fgHaze");
     ps.fgFogSunLoc = GetShaderLocation(ps.fogShader, "fgFogSun");
     ps.fgFogAmbLoc = GetShaderLocation(ps.fogShader, "fgFogAmb");
     ps.fgParamsLoc = GetShaderLocation(ps.fogShader, "fgParams");
@@ -300,6 +309,8 @@ void InitPostFX() {
     ps.fgDepthLoc = GetShaderLocation(ps.fogShader, "depthTex");
     ps.fgShadowLoc = GetShaderLocation(ps.fogShader, "shadowMap");
     ps.fgExposureLoc = GetShaderLocation(ps.fogShader, "exposureTex");
+    ps.fgCloudShadowLoc = GetShaderLocation(ps.fogShader, "fgCloudShadow");
+    ps.fgCloudShadowTexLoc = GetShaderLocation(ps.fogShader, "cloudShadowTex");
 
     ps.compositeShader = LoadShaderProgram("post_composite");
     ps.cpCamDepthLoc = GetShaderLocation(ps.compositeShader, "camDepth");
@@ -308,6 +319,8 @@ void InitPostFX() {
     ps.cpSceneLoc = GetShaderLocation(ps.compositeShader, "sceneTex");
     ps.cpDepthLoc = GetShaderLocation(ps.compositeShader, "cpDepthTex");
     ps.cpFogLoc = GetShaderLocation(ps.compositeShader, "fogTex");
+    ps.cpCloudTexelLoc = GetShaderLocation(ps.compositeShader, "cpCloudTexel");
+    ps.cpCloudLoc = GetShaderLocation(ps.compositeShader, "cloudTex");
 
     ps.bloomDownShader = LoadShaderProgram("post_bloom_down");
     ps.bdParamsLoc = GetShaderLocation(ps.bloomDownShader, "bdParams");
@@ -332,6 +345,7 @@ void InitPostFX() {
 
 void ShutdownPostFX() {
     if (!ps.initialized) return;
+    ShutdownClouds();
     ShutdownAtmosphere();
     UnloadTargets();
     for (RenderTexture2D& e : ps.exposure) if (e.id > 0) UnloadRenderTexture(e);
@@ -368,17 +382,20 @@ void EndScene() {
     const LightingSettings& L = Lighting();
     Texture2D src = ps.scene.texture;
 
-    // Air and fog over the scene.
+    // Clouds, then air and fog, over the scene.
+    const Texture2D clouds = RenderClouds(ps.view, ps.scene.depth, ps.width, ps.height, ps.frame);
     const bool fog = !ps.view.ortho && (AtmosphereActive() || FogDensity() > 0.0f);
-    if (fog) {
-        RenderFog();
+    if (fog) RenderFog();
+    if (fog || clouds.id != 0) {
         SetVec4(ps.compositeShader, ps.cpCamDepthLoc, ps.view.depth);
         SetVec4(ps.compositeShader, ps.cpTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height,
                                                     1.0f / (float)ps.fog.texture.width, 1.0f / (float)ps.fog.texture.height });
-        SetVec4(ps.compositeShader, ps.cpParamsLoc, { 1.0f, 0.0f, 0.0f, 0.0f });
+        SetVec4(ps.compositeShader, ps.cpCloudTexelLoc, { clouds.id != 0 ? 1.0f / (float)clouds.width : 1.0f, clouds.id != 0 ? 1.0f / (float)clouds.height : 1.0f, 0.0f, 0.0f });
+        SetVec4(ps.compositeShader, ps.cpParamsLoc, { fog ? 1.0f : 0.0f, clouds.id != 0 ? 1.0f : 0.0f, 0.0f, 0.0f });
         SetShaderValueTexture(ps.compositeShader, ps.cpSceneLoc, src);
         SetShaderValueTexture(ps.compositeShader, ps.cpDepthLoc, ps.scene.depth);
         SetShaderValueTexture(ps.compositeShader, ps.cpFogLoc, ps.fog.texture);
+        SetShaderValueTexture(ps.compositeShader, ps.cpCloudLoc, clouds);
         Pass(ps.hdr, ps.compositeShader);
         src = ps.hdr.texture;
     }

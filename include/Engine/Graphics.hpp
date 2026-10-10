@@ -108,7 +108,7 @@ struct LightingSettings {
     int skyMode = 0;                  // 0 = one colour, 1 = atmosphere
     float airColor[3] = { 0.175f, 0.410f, 1.0f };   // what the air scatters most: Earth's is blue
     float airDensity = 1.0f;          // 0..4: thin air is dark overhead, thick air is pale with deep red sunsets
-    float haze = 1.0f;                // 0..12: dust and moisture, the white glow near the horizon and round the sun
+    float haze = 2.0f;                // 0..12: dust and moisture, the white glow near the horizon and round the sun (1 = very clear air)
     float hazeColor[3] = { 1.0f, 1.0f, 1.0f };
     float ozone = 1.0f;               // 0..3: keeps the zenith blue at dusk
     float groundColor[3] = { 0.40f, 0.42f, 0.35f }; // the land below the horizon, seen from high up (it also colours the light bounced up off the ground)
@@ -117,6 +117,17 @@ struct LightingSettings {
     float moonPhase = 0.5f;           // 0 = new, 0.5 = full, 1 = new again
     float moonLight = 1.0f;           // 0..4: how bright moonlit nights are
     float stars = 1.0f;               // 0..4
+
+    // The Clouds item: a layer of volumetric cloud in the atmosphere sky (shaders/clouds.glsl). The Weather item's
+    // cloud cover and rain add cloud to it (or bring some of their own when there is no Clouds item).
+    bool hasClouds = false;
+    float cloudCoverage = 0.45f;      // 0..1: how much of the sky is cloud
+    float cloudDensity = 1.0f;        // 0.2..3: thin and bright, or thick and dark underneath
+    float cloudBase = 1300.0f;        // metres: the height of the cloud base
+    float cloudThickness = 1700.0f;   // metres: how tall the tallest clouds grow
+    float cloudScale = 1.0f;          // 0.3..3: the size of the clouds
+    float windSpeed = 14.0f;          // metres a second
+    float windDirection = 70.0f;      // degrees, the compass direction the wind blows towards
 
     // The Picture item: how the lit scene becomes the image on screen (shaders/post.glsl).
     bool hasPicture = false;
@@ -155,7 +166,8 @@ Vector3 AmbientGround();         // linear light bounced off the ground on a sur
 Vector3 SkyRadiance();           // the sky's own linear light, for reflections (water, puddles)
 Vector3 SunLightScale();         // the sun's colour and strength relative to the plain noon sun (about 1,1,1 at noon)
 Vector3 AmbientScale();          // the sky's light relative to the default noon ambient
-float FogDensity();
+float FogDensity();              // per metre: the Fog item's fog plus the weather's haze
+float WeatherHaze();             // per metre: the part of it that bad weather adds
 Color FogColorNow();
 float GetAmbientIntensity();
 Vector3 WaterSky();              // the sky's linear light the water shader reflects when the reflection is off or far (day, dusk, night, cloud)

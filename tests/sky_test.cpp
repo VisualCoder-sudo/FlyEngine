@@ -6,6 +6,7 @@
 #include "raymath.h"
 #include "Engine.hpp"
 #include "Engine/Atmosphere.hpp"
+#include "Engine/Clouds.hpp"
 #include "Engine/Graphics.hpp"
 #include "Engine/PostFX.hpp"
 #include "Engine/Backend/ScenePersistence.hpp"
@@ -167,6 +168,60 @@ int main() {
     cam.position = { 0.0f, 3000.0f, 800.0f };
     cam.target = { 0.0f, 2600.0f, -2000.0f };
     Shoot(engine, "high", 30);
+
+    // ---- Clouds.
+    {
+        L.hasClouds = true; L.cloudCoverage = 0.5f;
+        gfx::SetTimeOfDay(13.0f);
+        cam.position = { -60.0f, 14.0f, 110.0f };
+        cam.target = { 10.0f, 50.0f, -40.0f };
+        // The noise is made on other threads the first time clouds are wanted.
+        const double start = GetTime();
+        while (!gfx::CloudsActive() && GetTime() - start < 30.0) engine.StepFrame(1.0f / 60.0f);
+        std::printf("cloud noise ready after %.2f s\n", GetTime() - start);
+        CHECK(gfx::CloudsActive());
+        const Shot clouds = Shoot(engine, "clouds_noon", 30);
+        CHECK(clouds.bright + 0.0f >= 0.0f);
+        // Clouds are white and grey where the clear sky was blue: the top of the picture is less blue than it was.
+        CHECK(clouds.top.z - clouds.top.x < noon.top.z - noon.top.x - 6.0f);
+
+        cam.position = { -60.0f, 6.0f, 110.0f };
+        cam.target = { 10.0f, 8.0f, -40.0f };
+        Shoot(engine, "clouds_street", 20);
+
+        gfx::SetTimeOfDay(17.6f);
+        LookTowards(cam, gfx::SunPosition(), 0.22f);
+        Shoot(engine, "clouds_sunset", 40);
+
+        gfx::SetTimeOfDay(13.0f);
+        L.cloudCoverage = 0.2f;
+        cam.position = { -60.0f, 14.0f, 110.0f };
+        cam.target = { 10.0f, 40.0f, -40.0f };
+        Shoot(engine, "clouds_few", 30);
+
+        L.cloudCoverage = 0.5f;
+        L.hasWeather = true; L.overcast = 1.0f;
+        const Shot overcast = Shoot(engine, "clouds_overcast", 40);
+        CHECK(overcast.lum < clouds.lum);
+        {
+            const Vector3 skyLight = gfx::AmbientSky();
+            CHECK(std::fabs(skyLight.z - skyLight.x) < 0.5f * skyLight.z);    // grey light under cloud
+        }
+        L.rain = 0.8f;
+        Shoot(engine, "clouds_rain", 30);
+        L.hasWeather = false; L.overcast = 0.0f; L.rain = 0.0f;
+
+        // Above the clouds, looking down on them and across them.
+        cam.position = { 0.0f, 4200.0f, 800.0f };
+        cam.target = { 0.0f, 3300.0f, -3000.0f };
+        Shoot(engine, "clouds_above", 30);
+
+        gfx::SetTimeOfDay(23.5f);
+        cam.position = { -60.0f, 14.0f, 110.0f };
+        cam.target = { 10.0f, 60.0f, -40.0f };
+        Shoot(engine, "clouds_night", 50);
+        L.hasClouds = false;
+    }
 
     // ---- Other skies: the same air with different numbers.
     cam.position = { -60.0f, 14.0f, 110.0f };

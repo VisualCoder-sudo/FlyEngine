@@ -32,6 +32,8 @@ struct SkyLight {
     Vector3 ambientGround{};    // bounced off the ground on a surface facing down
     Vector3 skyRadiance{};      // the sky's own light well above the horizon (for reflections)
     Vector3 horizon{};          // the sky's light at the horizon (what distance fades into)
+    Vector3 keyLight{};         // the sun's (or the moon's) light arriving through the air, before any cloud
+    Vector3 clearSky{};         // the sky's light on an upward surface if there were no cloud (it lights the clouds' tops)
 };
 const SkyLight& AtmosphereLight();
 

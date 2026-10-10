@@ -1,4 +1,5 @@
 #include "../../include/Engine/Atmosphere.hpp"
+#include "../../include/Engine/Clouds.hpp"
 #include "../../include/Engine/Graphics.hpp"
 #include "../../include/Engine/PostFX.hpp"
 #include "raymath.h"
@@ -279,6 +280,7 @@ struct LightInputs {
     Vector3 toSun, toMoon, toKey;
     Vector3 sunLight, moonLight;
     float altitudeKm, ambient, overcast, keyStrength, keyIsMoon, night;
+    float clouds, cloudCover, rain;     // clouds = 1 when the cloud layer is drawn (it then shades the sun itself)
 };
 LightInputs lightInputs{};
 SkyLight skyLight{};
@@ -314,7 +316,8 @@ void ComputeSkyLight(const LightInputs& in) {
 
     // Direct light: what is left of the sun (or the moon) after the air, on a surface facing it.
     const Vector3 keyLight = in.keyIsMoon > 0.5f ? in.moonLight : in.sunLight;
-    s.sunRadiance = keyLight * Transmittance(r, in.toKey.y) * (in.keyStrength / kPi);
+    s.keyLight = keyLight * Transmittance(r, in.toKey.y) * in.keyStrength;
+    s.sunRadiance = s.keyLight * (1.0f / kPi);
 
     // The sky's light on a surface facing up: the sky's radiance over the hemisphere, weighted by the
     // cosine. With cosine-distributed directions that is just their mean.
@@ -340,20 +343,35 @@ void ComputeSkyLight(const LightInputs& in) {
     s.skyRadiance = high * (1.0f / (float)spokes) + glow;
     s.horizon = low * (1.0f / (float)spokes) + glow;
 
-    // Cloud cover (until the clouds themselves shade the scene): less sun, a greyer, flatter sky.
-    const float over = in.overcast;
-    auto grey = [&](Vector3 c, float k) {
-        const float l = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
-        return Vector3Lerp(c, Vector3{ l, l, l } * k, 0.7f * over);
-    };
-    s.sunRadiance = s.sunRadiance * std::pow(1.0f - 0.78f * over, 1.3f);
-    s.ambientSky = grey(s.ambientSky, 1.25f);
-    s.skyRadiance = grey(s.skyRadiance, 0.85f);
-    s.horizon = grey(s.horizon, 0.85f);
+    s.clearSky = s.ambientSky;
+    auto luma = [](Vector3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
+    if (in.clouds > 0.5f) {
+        // Under cloud the sky's light is the cloud's: a share of everything that falls on the layer,
+        // spread evenly and nearly white. (The sun itself is shaded per pixel, by the clouds' shadow.)
+        const float cover = std::pow(in.cloudCover, 1.5f);
+        const float above = luma(s.sunRadiance) * std::max(in.toKey.y, 0.0f) + luma(s.clearSky);
+        const float under = above * 0.24f * (1.0f - 0.4f * in.rain);
+        const Vector3 overcast = Vector3Lerp(Vector3{ under, under, under }, s.clearSky * (under / std::max(luma(s.clearSky), 1e-5f)), 0.15f);
+        s.ambientSky = Vector3Lerp(s.clearSky, overcast, cover);
+        s.skyRadiance = Vector3Lerp(s.skyRadiance, overcast, cover);
+        s.horizon = Vector3Lerp(s.horizon, overcast, cover * 0.8f);
+    } else {
+        // Cloud cover without the clouds to show it: less sun, a greyer, flatter sky.
+        const float over = in.overcast;
+        auto grey = [&](Vector3 c, float k) {
+            const float l = luma(c);
+            return Vector3Lerp(c, Vector3{ l, l, l } * k, 0.7f * over);
+        };
+        s.sunRadiance = s.sunRadiance * (std::pow(1.0f - 0.78f * over, 1.3f) * (1.0f - 0.25f * in.rain));
+        s.ambientSky = grey(s.ambientSky, 1.25f) * (1.0f - 0.25f * in.rain);
+        s.skyRadiance = grey(s.skyRadiance, 0.85f);
+        s.horizon = grey(s.horizon, 0.85f);
+    }
 
     s.ambientSky = s.ambientSky * in.ambient;
-    // Light off the ground, onto what faces down.
-    s.ambientGround = tb.air.ground * (s.sunRadiance * std::max(in.toKey.y, 0.0f) + s.ambientSky) * 0.8f;
+    // Light off the ground, onto what faces down (under cloud the ground gets only a share of the sun).
+    const float sunShare = in.clouds > 0.5f ? 0.06f + 0.94f * std::pow(1.0f - in.cloudCover, 1.6f) : 1.0f;
+    s.ambientGround = tb.air.ground * (s.sunRadiance * (std::max(in.toKey.y, 0.0f) * sunShare) + s.ambientSky) * 0.8f;
     skyLight = s;
 }
 
@@ -472,6 +490,9 @@ const SkyLight& AtmosphereLight() {
     in.keyStrength = KeyLightStrength();
     in.keyIsMoon = KeyLightIsMoon() ? 1.0f : 0.0f;
     in.night = 1.0f - DayAmountNow();
+    in.clouds = CloudsActive() ? 1.0f : 0.0f;
+    in.cloudCover = CloudCoverageNow();
+    in.rain = RainNow();
     if (!skyLightValid || std::memcmp(&in, &lightInputs, sizeof(LightInputs)) != 0) {
         lightInputs = in;
         ComputeSkyLight(in);
@@ -536,8 +557,9 @@ AerialParams GetAerialParams() {
     p.airR = { a.rayleigh.x * 1e-3f, a.rayleigh.y * 1e-3f, a.rayleigh.z * 1e-3f, 1.0f / (a.rayleighH * 1000.0f) };
     p.airM = { a.mie.x * 1e-3f, a.mie.y * 1e-3f, a.mie.z * 1e-3f, 1.0f / (a.mieH * 1000.0f) };
     p.airExt = { a.mieAbs.x * 1e-3f, a.mieAbs.y * 1e-3f, a.mieAbs.z * 1e-3f, a.g };
+    // (Cloud cover: the fog pass asks the clouds' shadow at each step when there are clouds; otherwise it is dimmed here.)
     const Vector3 key = (KeyLightIsMoon() ? MoonLightNow() : SunLightNow()) * Transmittance(r, toKey.y)
-                      * (KeyLightStrength() * std::pow(1.0f - 0.78f * OvercastNow(), 1.3f));
+                      * (KeyLightStrength() * (CloudsActive() ? 1.0f : std::pow(1.0f - 0.78f * OvercastNow(), 1.3f)));
     p.light = { key.x, key.y, key.z, 0.0f };
     const Vector3 multi = SunLightNow() * MultiScatter(frameAltitudeKm, SunPosition().y) + MoonLightNow() * MultiScatter(frameAltitudeKm, MoonPosition().y);
     p.multi = { multi.x, multi.y, multi.z, 0.0f };
@@ -588,7 +610,7 @@ void DrawSky(const Camera3D& camera) {
     SetVec4(as.atmoShader, as.skGroundLoc, tb.air.ground * (light.sunRadiance * std::max(toKey.y, 0.0f) + light.ambientSky), 0.0f);
 
     const float turn = Lighting().timeOfDay / 24.0f * 2.0f * kPi;
-    const Vector4 params = { std::clamp(L.stars, 0.0f, 4.0f) * 0.55f * night * night, (float)GetTime(), OvercastNow(), v.pixelAngle };
+    const Vector4 params = { std::clamp(L.stars, 0.0f, 4.0f) * 0.55f * night * night, (float)GetTime(), CloudsActive() ? 0.0f : OvercastNow(), v.pixelAngle };
     const Vector4 stars = { std::cos(turn), std::sin(turn), kNightGlow * night, 0.0f };
     SetShaderValue(as.atmoShader, as.skParamsLoc, &params, SHADER_UNIFORM_VEC4);
     SetShaderValue(as.atmoShader, as.skStarsLoc, &stars, SHADER_UNIFORM_VEC4);

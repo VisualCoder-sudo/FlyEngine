@@ -131,6 +131,8 @@ layout(binding=1) uniform texture2D shadowMap;
 layout(binding=1) uniform sampler shadowMap_smp;
 @image_sample_type shadowMap depth
 @sampler_type shadowMap_smp comparison
+layout(binding=2) uniform texture2D cloudShadowTex;
+layout(binding=2) uniform sampler cloudShadowTex_smp;
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -171,6 +173,17 @@ float ShadowCalculation(vec3 normal) {
     return shadow;
 }
 
+// How much of the sun the clouds let through to this point: the clouds' shadow is a texture over the
+// ground round the camera (fs_cloud_shadow in clouds.glsl), found by following the sun's direction
+// from here up to the height of the cloud base. cloudShadow: xy = the texture's corner (world xz),
+// z = 1 / its size, w = the height of the cloud base (0 = no clouds).
+float CloudLight() {
+    if (cloudShadow.w <= 0.0) return 1.0;
+    vec3 toSun = -sunDir.xyz;
+    vec2 q = fragWorldPos.xz + toSun.xz * (max(cloudShadow.w - fragWorldPos.y, 0.0) / max(toSun.y, 0.12));
+    return textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
+}
+
 // baseColor is the surface's sRGB colour; the result is linear light.
 vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     vec3 normal = normalize(fragNormal);
@@ -179,7 +192,7 @@ vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
 
     // Light from the sky on what faces up, light bounced off the ground on what faces down.
     vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, normal.y * 0.5 + 0.5);
-    vec3 lit = (amb + (1.0 - shadow) * diffuse * sunColor.rgb) * fly_srgb_to_linear(baseColor * colDiffuse.rgb);
+    vec3 lit = (amb + (1.0 - shadow) * diffuse * CloudLight() * sunColor.rgb) * fly_srgb_to_linear(baseColor * colDiffuse.rgb);
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;
     if (depthBelow > 0.0) {
@@ -204,6 +217,7 @@ vec3 ShadeLit(out float alpha) {
 //   sunColor       rgb = linear light on a surface that faces the sun
 //   ambientSky     rgb = linear light from the sky on a surface that faces up
 //   ambientGround  rgb = linear light bounced off the ground on a surface that faces down
+//   cloudShadow    where the clouds' shadow texture lies on the world (see CloudLight)
 @fs fs
 layout(binding=1) uniform fs_params {
     vec4 colDiffuse;
@@ -211,6 +225,7 @@ layout(binding=1) uniform fs_params {
     vec4 sunColor;
     vec4 ambientSky;
     vec4 ambientGround;
+    vec4 cloudShadow;
     float waterSurfaceY;
     mat4 lightVP;
 };
@@ -255,6 +270,7 @@ layout(binding=1) uniform fs_road_params {
     vec4 ambientSky;
     vec4 ambientGround;
     vec4 skyColor;      // rgb = the sky's linear light, mirrored by puddles
+    vec4 cloudShadow;
     float waterSurfaceY;
     float nightAmount;
     float lightCount;
@@ -294,7 +310,7 @@ void main() {
         lit += skyColor.rgb * sheen;
         vec3 R = reflect(sunDir.xyz, n);
         // The sun's glint in a puddle is far brighter than the road around it (the bloom picks it up).
-        lit += sunColor.rgb * pow(max(dot(R, V), 0.0), 90.0) * 5.0 * wet * puddle;
+        lit += sunColor.rgb * CloudLight() * pow(max(dot(R, V), 0.0), 90.0) * 5.0 * wet * puddle;
     }
     if (nightAmount > 0.02 && lightCount > 0.5)
         lit += NightGlow(texture(sampler2D(texture0, texture0_smp), fragTexCoord).rgb * fragColor.rgb, fragWorldPos, normalize(fragNormal));
@@ -326,6 +342,7 @@ layout(binding=1) uniform fs_building_params {
     vec4 sunColor;
     vec4 ambientSky;
     vec4 ambientGround;
+    vec4 cloudShadow;
     float waterSurfaceY;
     float nightAmount;      // 0 = day, 1 = night: scales the emissive window / lamp / car light glow
     float lightCount;

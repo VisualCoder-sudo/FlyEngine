@@ -82,10 +82,12 @@ layout(binding=0) uniform fs_fog_params {
     vec4 fgLight;       // rgb = the sun's (or moon's) light after the air above, a = 1 when its shadow map can be asked
     vec4 fgLightDir;    // xyz = direction towards it, w = how far (m) from the camera the shadow map is asked
     vec4 fgMulti;       // rgb = light scattered more than once, per unit of scattering
-    vec4 fgFog;         // x = density per metre at height z, y = 1 / the height it thins over (0 = the same at every height), z = base height, w = g
+    vec4 fgFog;         // the Fog item: x = density per metre at height z, y = 1 / the height it thins over (0 = the same at every height), z = base height, w = g
+    vec4 fgHaze;        // the haze of bad weather: x = density per metre at the ground, y = 1 / the height it thins over
     vec4 fgFogSun;      // rgb = sunlight the fog scatters
     vec4 fgFogAmb;      // rgb = the fog's own light: the sky's, or (a = 1) the flat sky colour before exposure
     vec4 fgParams;      // x = steps, y = noise offset, z = 1: the sky's pixels are fogged too, w = how far (m) for those
+    vec4 fgCloudShadow; // where the clouds' shadow texture lies on the world (see CloudLight in lit.glsl); w = 0: no clouds
     mat4 lightVP;
 };
 layout(binding=0) uniform texture2D depthTex;
@@ -98,9 +100,18 @@ layout(binding=1) uniform sampler shadowMap_smp;
 @sampler_type shadowMap_smp comparison
 layout(binding=2) uniform texture2D exposureTex;
 layout(binding=2) uniform sampler exposureTex_smp;
+layout(binding=4) uniform texture2D cloudShadowTex;
+layout(binding=4) uniform sampler cloudShadowTex_smp;
 in vec2 uv;
 in vec2 ndc;
 out vec4 fragColor;
+
+// How much of the sun the clouds let through to p: this is what puts the gaps between clouds into the haze as rays.
+float CloudLight(vec3 p) {
+    if (fgCloudShadow.w <= 0.0) return 1.0;
+    vec2 q = p.xz + fgLightDir.xz * (max(fgCloudShadow.w - p.y, 0.0) / max(fgLightDir.y, 0.12));
+    return textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - fgCloudShadow.xy) * fgCloudShadow.z, 0.0).r;
+}
 
 float PhaseHG(float c, float g) {
     float g2 = g * g;
@@ -152,10 +163,10 @@ void main() {
         vec3 sR = fgAirR.rgb * (exp(-h * fgAirR.a) * air);
         float dM = exp(-h * fgAirM.a) * air;
         vec3 sM = fgAirM.rgb * dM;
-        float fd = fgFog.x * exp(-max(h - fgFog.z, 0.0) * fgFog.y);
+        float fd = fgFog.x * exp(-max(h - fgFog.z, 0.0) * fgFog.y) + fgHaze.x * exp(-h * fgHaze.y);
         vec3 ext = sR + sM + fgAirExt.rgb * dM + vec3(fd);
-        float vis = 1.0;
-        if (fgLight.a > 0.5 && t < fgLightDir.w) vis = SunVisible(p);
+        float vis = CloudLight(p);
+        if (fgLight.a > 0.5 && t < fgLightDir.w) vis *= SunVisible(p);
         vec3 S = fgLight.rgb * vis * (sR * phR + sM * phM) + fgMulti.rgb * (sR + sM)
                + fd * (fgFogSun.rgb * (vis * phF) + fogAmb);
         vec3 stepT = exp(-ext * dt);
@@ -177,7 +188,8 @@ void main() {
 layout(binding=0) uniform fs_composite_params {
     vec4 camDepth;
     vec4 cpTexel;       // xy = 1 / scene size, zw = 1 / fog size
-    vec4 cpParams;      // x = 1: fog
+    vec4 cpCloudTexel;  // xy = 1 / cloud target size
+    vec4 cpParams;      // x = 1: fog, y = 1: clouds
 };
 layout(binding=0) uniform texture2D sceneTex;
 layout(binding=0) uniform sampler sceneTex_smp;
@@ -188,30 +200,42 @@ layout(binding=1) uniform sampler cpDepthTex_smp;
 @sampler_type cpDepthTex_smp nonfiltering
 layout(binding=2) uniform texture2D fogTex;
 layout(binding=2) uniform sampler fogTex_smp;
+layout(binding=3) uniform texture2D cloudTex;
+layout(binding=3) uniform sampler cloudTex_smp;
 in vec2 uv;
 in vec2 ndc;
 out vec4 fragColor;
 
+// A smaller target's value for this pixel, taken from those of its four nearest pixels that
+// are at this pixel's depth (texel = 1 / the smaller target's size).
+vec4 AtDepth(texture2D tex, vec2 texel, float d) {
+    vec2 fpos = uv / texel - 0.5;
+    vec2 base = floor(fpos);
+    vec2 f = fpos - base;
+    vec4 sum = vec4(0.0);
+    float wsum = 0.0;
+    for (int j = 0; j < 2; ++j) {
+        for (int i = 0; i < 2; ++i) {
+            vec2 tuv = (base + vec2(float(i), float(j)) + 0.5) * texel;
+            float dS = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), tuv, 0.0).r, camDepth);
+            float w = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
+            w = (w + 0.02) / (0.02 + abs(dS - d) / max(d, 0.01) * 24.0);
+            sum += textureLod(sampler2D(tex, fogTex_smp), tuv, 0.0) * w;
+            wsum += w;
+        }
+    }
+    return sum / max(wsum, 1e-5);
+}
+
 void main() {
     vec3 c = textureLod(sampler2D(sceneTex, sceneTex_smp), uv, 0.0).rgb;
+    float d = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), uv, 0.0).r, camDepth);
+    if (cpParams.y > 0.5) {
+        vec4 cloud = AtDepth(cloudTex, cpCloudTexel.xy, d);
+        c = c * cloud.a + cloud.rgb;
+    }
     if (cpParams.x > 0.5) {
-        float d = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), uv, 0.0).r, camDepth);
-        vec2 fpos = uv / cpTexel.zw - 0.5;
-        vec2 base = floor(fpos);
-        vec2 f = fpos - base;
-        vec4 fog = vec4(0.0);
-        float wsum = 0.0;
-        for (int j = 0; j < 2; ++j) {
-            for (int i = 0; i < 2; ++i) {
-                vec2 tuv = (base + vec2(float(i), float(j)) + 0.5) * cpTexel.zw;
-                float dS = fly_view_depth(textureLod(sampler2D(cpDepthTex, cpDepthTex_smp), tuv, 0.0).r, camDepth);
-                float w = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
-                w = (w + 0.02) / (0.02 + abs(dS - d) / max(d, 0.01) * 24.0);
-                fog += textureLod(sampler2D(fogTex, fogTex_smp), tuv, 0.0) * w;
-                wsum += w;
-            }
-        }
-        fog /= max(wsum, 1e-5);
+        vec4 fog = AtDepth(fogTex, cpTexel.zw, d);
         c = c * fog.a + fog.rgb;
     }
     fragColor = vec4(c, 1.0);

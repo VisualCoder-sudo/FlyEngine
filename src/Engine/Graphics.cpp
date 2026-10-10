@@ -1,5 +1,6 @@
 #include "../../include/Engine/Graphics.hpp"
 #include "../../include/Engine/Atmosphere.hpp"
+#include "../../include/Engine/Clouds.hpp"
 #include "../../include/Engine/PostFX.hpp"
 #include "../../include/Engine/TechnicalTools.hpp"
 #include "raymath.h"
@@ -21,6 +22,7 @@ namespace {
 int shadowMapResolution = 2048;
 int shadowQuality = 52;
 constexpr int SHADOW_TEXTURE_SLOT = 10;
+constexpr int CLOUD_SHADOW_TEXTURE_SLOT = 12;
 
 int reflectionResolution = 768;
 int reflectionQuality = 50;
@@ -200,6 +202,7 @@ struct LitLocs {
     int sunDir = -1, sunColor = -1, ambientSky = -1, ambientGround = -1, skyColor = -1;
     int lightVP = -1, shadowMap = -1, waterSurfaceY = -1;
     int night = -1, lightCount = -1, lights = -1, weather = -1, camPos = -1;
+    int cloudShadow = -1, cloudShadowTex = -1;
 };
 LitLocs litLocs, roadLocs, cityLocs;
 void FindLitLocs(Shader& sh, LitLocs& l) {
@@ -216,8 +219,13 @@ void FindLitLocs(Shader& sh, LitLocs& l) {
     l.lights = GetShaderLocation(sh, "nightLights");
     l.weather = GetShaderLocation(sh, "weather");
     l.camPos = GetShaderLocation(sh, "camPos");
+    l.cloudShadow = GetShaderLocation(sh, "cloudShadow");
+    l.cloudShadowTex = GetShaderLocation(sh, "cloudShadowTex");
     int shadowSlot = SHADOW_TEXTURE_SLOT;
     if (l.shadowMap != -1) SetShaderValue(sh, l.shadowMap, &shadowSlot, SHADER_UNIFORM_INT);
+    // A texture unit nothing else binds: with no clouds the sampler reads the default white texture.
+    int cloudSlot = CLOUD_SHADOW_TEXTURE_SLOT;
+    if (l.cloudShadowTex != -1) SetShaderValue(sh, l.cloudShadowTex, &cloudSlot, SHADER_UNIFORM_INT);
 }
 // Instanced-lit shader + material used for city buildings.
 Shader cityInstancedShader{};
@@ -1315,10 +1323,9 @@ Vector3 AmbientScale() {
     const float noon = powf(kAmbient.x, 2.2f);
     return Vector3Scale(AmbientSky(), 1.0f / noon);
 }
-float FogDensity() {
-    // Cloud and rain add a little haze to whatever fog the Fog item sets.
-    return (lightingSettings.hasFog ? lightingSettings.fogDensity : 0.0f) + 0.0014f * OvercastAmount() + 0.0045f * RainAmount();
-}
+// Cloud and rain add a little haze to whatever fog the Fog item sets.
+float WeatherHaze() { return 0.0014f * OvercastAmount() + 0.0045f * RainAmount(); }
+float FogDensity() { return (lightingSettings.hasFog ? lightingSettings.fogDensity : 0.0f) + WeatherHaze(); }
 void SetEngineClearColor(Color c) { engineClear = c; }
 Color CurrentSky() {
     if (AtmosphereActive()) {
@@ -1442,6 +1449,11 @@ void UploadLitEnvironment(Shader& sh, const LitLocs& l) {
         SetShaderValue(sh, l.camPos, &cp, SHADER_UNIFORM_VEC4);
     }
     if (l.lightVP != -1) SetShaderValueMatrix(sh, l.lightVP, lightViewProj);
+    if (l.cloudShadow != -1) {
+        const Vector4 cs = GetCloudShadowParams();
+        SetShaderValue(sh, l.cloudShadow, &cs, SHADER_UNIFORM_VEC4);
+        if (l.cloudShadowTex != -1) SetShaderValueTexture(sh, l.cloudShadowTex, GetCloudShadowTexture());
+    }
 }
 }
 
@@ -1482,6 +1494,8 @@ void UpdateLighting(const Camera3D& camera) {
     }
 
     UpdateAtmosphere(camera);
+    UpdateClouds(GetFrameTime());
+    UpdateCloudShadow(camera);
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
 
