@@ -35,6 +35,8 @@ layout(binding=1) uniform fs_params {
     vec3 ambientColor;      // linear light from the sky (on what faces up)
     float _pad0;
     vec3 ambientGround;     // linear light bounced off the ground (on what faces down)
+    float _pad1;
+    vec4 cloudShadow;       // where the clouds' shadow texture lies on the world (see CloudLight in lit.glsl); w = 0: no clouds
 };
 layout(binding=0) uniform texture2D splatmap;
 layout(binding=0) uniform sampler splatmap_smp;
@@ -46,6 +48,8 @@ layout(binding=3) uniform texture2D albedoTex2;
 layout(binding=3) uniform sampler albedoTex2_smp;
 layout(binding=4) uniform texture2D albedoTex3;
 layout(binding=4) uniform sampler albedoTex3_smp;
+layout(binding=5) uniform texture2D cloudShadowTex;
+layout(binding=5) uniform sampler cloudShadowTex_smp;
 in vec3 worldPos;
 in vec3 worldNormal;
 in vec2 texCoord;
@@ -67,7 +71,12 @@ void main() {
     vec3 L = normalize(-lightDir);
     float NdotL = max(dot(N, L), 0.0);
     vec3 amb = mix(ambientGround, ambientColor, N.y * 0.5 + 0.5);
-    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * NdotL);
+    float sun = NdotL;
+    if (cloudShadow.w > 0.0) {
+        vec2 q = worldPos.xz + L.xz * (max(cloudShadow.w - worldPos.y, 0.0) / max(L.y, 0.12));
+        sun *= textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
+    }
+    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * sun);
     fragColor = vec4(color, 1.0);
 }
 @end

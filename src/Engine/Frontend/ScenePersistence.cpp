@@ -222,6 +222,15 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
              << L.ambient << ' ' << L.skyColor[0] << ' ' << L.skyColor[1] << ' ' << L.skyColor[2] << ' ' << L.fogDensity << "\n";
         // Sun path and weather, again on a line of their own.
         file << "LIGHTING3 " << (L.sunFollowsTime ? 1 : 0) << ' ' << (L.hasWeather ? 1 : 0) << ' ' << L.overcast << ' ' << L.rain << ' ' << L.wetGround << "\n";
+        // The sky's atmosphere (and the fog's height), the clouds, the picture: a line each, read back by tag.
+        file << "LIGHTING4 " << L.skyMode << ' ' << L.airColor[0] << ' ' << L.airColor[1] << ' ' << L.airColor[2] << ' ' << L.airDensity << ' ' << L.haze << ' '
+             << L.hazeColor[0] << ' ' << L.hazeColor[1] << ' ' << L.hazeColor[2] << ' ' << L.ozone << ' '
+             << L.groundColor[0] << ' ' << L.groundColor[1] << ' ' << L.groundColor[2] << ' '
+             << L.sunSize << ' ' << L.moonSize << ' ' << L.moonPhase << ' ' << L.moonLight << ' ' << L.stars << ' ' << L.fogHeight << "\n";
+        file << "LIGHTING5 " << (L.hasClouds ? 1 : 0) << ' ' << L.cloudCoverage << ' ' << L.cloudDensity << ' ' << L.cloudBase << ' ' << L.cloudThickness << ' '
+             << L.cloudScale << ' ' << L.windSpeed << ' ' << L.windDirection << "\n";
+        file << "LIGHTING6 " << (L.hasPicture ? 1 : 0) << ' ' << L.toneCurve << ' ' << L.exposure << ' ' << (L.autoExposure ? 1 : 0) << ' ' << L.bloom << ' '
+             << L.vignette << ' ' << L.contrast << ' ' << L.saturation << ' ' << L.temperature << ' ' << L.filmGrain << "\n";
     }
 
     return file.good();
@@ -682,6 +691,64 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 } else {
                     file.clear();
                     file.seekg(here3);
+                }
+                // Later additions, each on a line of its own and each optional: the sky's atmosphere, the clouds,
+                // the picture. A scene saved before them keeps its sky of one colour and the plain picture.
+                for (;;) {
+                    const auto mark = file.tellg();
+                    std::string tagN;
+                    gfx::LightingSettings N = gfx::Lighting();
+                    bool ok = false;
+                    if (file >> tagN) {
+                        if (tagN == "LIGHTING4") {
+                            int mode = 0;
+                            ok = static_cast<bool>(file >> mode >> N.airColor[0] >> N.airColor[1] >> N.airColor[2] >> N.airDensity >> N.haze
+                                                        >> N.hazeColor[0] >> N.hazeColor[1] >> N.hazeColor[2] >> N.ozone
+                                                        >> N.groundColor[0] >> N.groundColor[1] >> N.groundColor[2]
+                                                        >> N.sunSize >> N.moonSize >> N.moonPhase >> N.moonLight >> N.stars >> N.fogHeight);
+                            N.skyMode = mode == 1 ? 1 : 0;
+                            N.airDensity = std::clamp(N.airDensity, 0.0f, 4.0f);
+                            N.haze = std::clamp(N.haze, 0.0f, 12.0f);
+                            N.ozone = std::clamp(N.ozone, 0.0f, 3.0f);
+                            N.sunSize = std::clamp(N.sunSize, 0.2f, 12.0f);
+                            N.moonSize = std::clamp(N.moonSize, 0.2f, 12.0f);
+                            N.moonPhase = std::clamp(N.moonPhase, 0.0f, 1.0f);
+                            N.moonLight = std::clamp(N.moonLight, 0.0f, 4.0f);
+                            N.stars = std::clamp(N.stars, 0.0f, 4.0f);
+                            N.fogHeight = std::clamp(N.fogHeight, 0.0f, 5000.0f);
+                        } else if (tagN == "LIGHTING5") {
+                            int hc = 0;
+                            ok = static_cast<bool>(file >> hc >> N.cloudCoverage >> N.cloudDensity >> N.cloudBase >> N.cloudThickness
+                                                        >> N.cloudScale >> N.windSpeed >> N.windDirection);
+                            N.hasClouds = hc != 0;
+                            N.cloudCoverage = std::clamp(N.cloudCoverage, 0.0f, 1.0f);
+                            N.cloudDensity = std::clamp(N.cloudDensity, 0.2f, 3.0f);
+                            N.cloudBase = std::clamp(N.cloudBase, 100.0f, 12000.0f);
+                            N.cloudThickness = std::clamp(N.cloudThickness, 200.0f, 6000.0f);
+                            N.cloudScale = std::clamp(N.cloudScale, 0.3f, 3.0f);
+                            N.windSpeed = std::clamp(N.windSpeed, 0.0f, 80.0f);
+                        } else if (tagN == "LIGHTING6") {
+                            int hp = 0, curve = 1, autoExposure = 1;
+                            ok = static_cast<bool>(file >> hp >> curve >> N.exposure >> autoExposure >> N.bloom >> N.vignette
+                                                        >> N.contrast >> N.saturation >> N.temperature >> N.filmGrain);
+                            N.hasPicture = hp != 0;
+                            N.toneCurve = std::clamp(curve, 0, 3);
+                            N.autoExposure = autoExposure != 0;
+                            N.exposure = std::clamp(N.exposure, -4.0f, 4.0f);
+                            N.bloom = std::clamp(N.bloom, 0.0f, 1.0f);
+                            N.vignette = std::clamp(N.vignette, 0.0f, 1.0f);
+                            N.contrast = std::clamp(N.contrast, 0.5f, 1.5f);
+                            N.saturation = std::clamp(N.saturation, 0.0f, 2.0f);
+                            N.temperature = std::clamp(N.temperature, -1.0f, 1.0f);
+                            N.filmGrain = std::clamp(N.filmGrain, 0.0f, 1.0f);
+                        }
+                    }
+                    if (!ok) {
+                        file.clear();
+                        file.seekg(mark);
+                        break;
+                    }
+                    gfx::Lighting() = N;
                 }
             } else {
                 file.clear();

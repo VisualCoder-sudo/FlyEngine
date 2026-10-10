@@ -2,10 +2,14 @@
 #include "../../include/Engine/Atmosphere.hpp"
 #include "../../include/Engine/Clouds.hpp"
 #include "../../include/Engine/Graphics.hpp"
+#include "../../include/Engine/Platform/Platform.hpp"
 #include "raymath.h"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 namespace gfx {
@@ -271,6 +275,48 @@ void SetQualityTier(int tier) {
     q.volumetrics = tier == 0 ? 0 : (tier == 1 ? 1 : 2);
     q.shadowCascades = tier == 0 ? 1 : (tier == 1 ? 2 : (tier == 2 ? 3 : 4));
     quality = q;
+}
+
+namespace {
+std::string QualityFile() {
+    const std::string dir = platform::ConfigDir();
+    return dir.empty() ? std::string() : (std::filesystem::u8path(dir) / "graphics.cfg").string();
+}
+}
+
+void LoadQualitySettings() {
+    const std::string path = QualityFile();
+    if (path.empty()) return;
+    std::ifstream in(path);
+    if (!in) return;
+    RenderQuality q = quality;
+    std::string key;
+    while (in >> key) {
+        float v = 0.0f;
+        if (!(in >> v)) break;
+        if (key == "tier") q.tier = (int)v;
+        else if (key == "renderScale") q.renderScale = std::clamp(v, 0.5f, 1.0f);
+        else if (key == "antiAliasing") q.antiAliasing = std::clamp((int)v, 0, 2);
+        else if (key == "bloom") q.bloom = v != 0.0f;
+        else if (key == "ambientOcclusion") q.ambientOcclusion = v != 0.0f;
+        else if (key == "clouds") q.clouds = std::clamp((int)v, 0, 3);
+        else if (key == "volumetrics") q.volumetrics = std::clamp((int)v, 0, 2);
+        else if (key == "shadowCascades") q.shadowCascades = std::clamp((int)v, 1, 4);
+    }
+    quality = q;
+}
+
+void SaveQualitySettings() {
+    const std::string path = QualityFile();
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::u8path(path).parent_path(), ec);
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) return;
+    const RenderQuality& q = quality;
+    out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
+        << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
+        << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades << "\n";
 }
 
 void InitPostFX() {

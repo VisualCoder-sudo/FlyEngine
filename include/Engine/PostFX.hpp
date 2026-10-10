@@ -33,6 +33,10 @@ struct RenderQuality {
 };
 RenderQuality& Quality();
 void SetQualityTier(int tier);
+// The editor and the player keep the choice in <config dir>/graphics.cfg. (Tests do not load it:
+// they run at the default, whatever the machine's owner picked.)
+void LoadQualitySettings();
+void SaveQualitySettings();
 
 // The 1x1 texture holding the exposure multiplier of this frame.
 Texture2D GetExposureTexture();

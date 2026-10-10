@@ -975,7 +975,7 @@ void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
     Vector3 lightDir = gfx::SunDirection();
     SetShaderValue(terrainShader, shaderLocs[LocLightDir], &lightDir, SHADER_UNIFORM_VEC3);
     // Linear light (the shader divides the diffuse term by pi, so the sun is handed over times pi).
-    Vector3 lightColor = Vector3Scale(gfx::SunRadiance(), PI);
+    Vector3 lightColor = Vector3Scale(gfx::SunRadianceShaded(), PI);
     SetShaderValue(terrainShader, shaderLocs[LocLightColor], &lightColor, SHADER_UNIFORM_VEC3);
     Vector3 ambient = gfx::AmbientSky();
     SetShaderValue(terrainShader, shaderLocs[LocAmbientColor], &ambient, SHADER_UNIFORM_VEC3);

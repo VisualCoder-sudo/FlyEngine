@@ -1315,6 +1315,7 @@ float DayAmountNow() { return DayAmount(); }
 // With an atmosphere the light comes out of it (src/Engine/Atmosphere.cpp); under a sky of one colour it is the
 // plain sun and ambient above.
 Vector3 SunRadiance() { return AtmosphereActive() ? AtmosphereLight().sunRadiance : FlatSunRadiance(); }
+Vector3 SunRadianceShaded() { return Vector3Scale(SunRadiance(), CloudSunlightNow()); }
 Vector3 AmbientSky() { return AtmosphereActive() ? AtmosphereLight().ambientSky : FlatAmbientSky(); }
 Vector3 AmbientGround() { return AtmosphereActive() ? AtmosphereLight().ambientGround : Vector3Scale(FlatAmbientSky(), 0.72f); }
 Vector3 SkyRadiance() { return AtmosphereActive() ? AtmosphereLight().skyRadiance : SrgbToLinear(CurrentSky()); }

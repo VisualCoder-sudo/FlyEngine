@@ -234,6 +234,49 @@ int main() {
     const Shot green = Shoot(engine, "green", 30);
     CHECK(green.top.y > green.top.x && green.top.y > green.top.z);
 
+    // ---- Save / load: the sky's atmosphere, the clouds and the picture come back; a scene saved before they
+    // existed keeps its sky of one colour.
+    {
+        gfx::ResetLighting();
+        gfx::LightingSettings& S = gfx::Lighting();
+        S.hasSky = true; S.skyMode = 1; S.airColor[0] = 0.9f; S.airDensity = 1.7f; S.haze = 4.5f; S.hazeColor[2] = 0.6f; S.ozone = 0.4f;
+        S.groundColor[1] = 0.7f; S.sunSize = 2.5f; S.moonSize = 3.0f; S.moonPhase = 0.25f; S.moonLight = 1.8f; S.stars = 2.2f;
+        S.hasFog = true; S.fogDensity = 0.01f; S.fogHeight = 180.0f;
+        S.hasClouds = true; S.cloudCoverage = 0.7f; S.cloudDensity = 1.4f; S.cloudBase = 900.0f; S.cloudThickness = 2400.0f; S.cloudScale = 1.6f;
+        S.windSpeed = 22.0f; S.windDirection = 215.0f;
+        S.hasPicture = true; S.toneCurve = 3; S.exposure = -0.75f; S.autoExposure = false; S.bloom = 0.8f; S.vignette = 0.3f;
+        S.contrast = 1.2f; S.saturation = 0.8f; S.temperature = 0.4f; S.filmGrain = 0.2f;
+        std::vector<ScatteredObject*> objs; std::vector<std::unique_ptr<ModelGroup>> models;
+        std::stringstream ss;
+        CHECK(SaveSceneToStream(ss, objs, models, "", nullptr));
+        const std::string saved = ss.str();
+        gfx::ResetLighting();
+        std::vector<ScatteredObject*> objs2; std::vector<std::unique_ptr<ModelGroup>> models2;
+        CHECK(LoadSceneFromStream(ss, engine, objs2, models2, "", nullptr, nullptr));
+        const gfx::LightingSettings& R = gfx::Lighting();
+        auto near = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
+        CHECK(R.hasSky && R.skyMode == 1 && near(R.airColor[0], 0.9f) && near(R.airDensity, 1.7f) && near(R.haze, 4.5f) && near(R.hazeColor[2], 0.6f) && near(R.ozone, 0.4f));
+        CHECK(near(R.groundColor[1], 0.7f) && near(R.sunSize, 2.5f) && near(R.moonSize, 3.0f) && near(R.moonPhase, 0.25f) && near(R.moonLight, 1.8f) && near(R.stars, 2.2f));
+        CHECK(R.hasFog && near(R.fogHeight, 180.0f));
+        CHECK(R.hasClouds && near(R.cloudCoverage, 0.7f) && near(R.cloudDensity, 1.4f) && near(R.cloudBase, 900.0f) && near(R.cloudThickness, 2400.0f) && near(R.cloudScale, 1.6f));
+        CHECK(near(R.windSpeed, 22.0f) && near(R.windDirection, 215.0f));
+        CHECK(R.hasPicture && R.toneCurve == 3 && near(R.exposure, -0.75f) && !R.autoExposure && near(R.bloom, 0.8f) && near(R.vignette, 0.3f));
+        CHECK(near(R.contrast, 1.2f) && near(R.saturation, 0.8f) && near(R.temperature, 0.4f) && near(R.filmGrain, 0.2f));
+
+        // The same scene as an older editor wrote it: without the three newer lines.
+        std::string old = saved;
+        const size_t cut = old.find("LIGHTING4");
+        CHECK(cut != std::string::npos);
+        if (cut != std::string::npos) old.erase(cut);
+        std::stringstream so(old);
+        gfx::ResetLighting();
+        std::vector<ScatteredObject*> objs3; std::vector<std::unique_ptr<ModelGroup>> models3;
+        CHECK(LoadSceneFromStream(so, engine, objs3, models3, "", nullptr, nullptr));
+        CHECK(gfx::Lighting().hasSky && gfx::Lighting().skyMode == 0 && !gfx::Lighting().hasClouds && !gfx::Lighting().hasPicture);
+        CHECK(!gfx::AtmosphereActive());
+        gfx::ResetLighting();
+    }
+
     std::printf(g_fail ? "sky_test: %d FAILED\n" : "sky_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }

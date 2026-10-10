@@ -161,6 +161,7 @@ Color CurrentSky();              // the sky colour now: the Sky item (or the eng
 // The scene is lit in linear light: a white surface in full noon sun comes to about 1.
 Vector3 SunDirection();          // unit vector the sunlight travels along
 Vector3 SunRadiance();           // linear light on a surface that faces the sun (colour x intensity x day/night x cloud)
+Vector3 SunRadianceShaded();     // the same with the clouds' shadow averaged in, for shaders that do not read the cloud-shadow texture themselves
 Vector3 AmbientSky();            // linear light from the sky on a surface that faces up
 Vector3 AmbientGround();         // linear light bounced off the ground on a surface that faces down
 Vector3 SkyRadiance();           // the sky's own linear light, for reflections (water, puddles)

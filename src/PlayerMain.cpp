@@ -13,6 +13,7 @@
 #include "Engine/Backend/CharacterController.hpp"
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Graphics.hpp"
+#include "Engine/PostFX.hpp"
 #include "Terrain/Terrain.hpp"
 #include "Terrain/Water/WaterBody.hpp"
 #include "CityGen/City.hpp"
@@ -559,6 +560,7 @@ struct PlayerOptions {
     int height = 720;
     bool hotReload = true;
     size_t maxMemoryBytes = 0; // 0 = unlimited
+    int quality = -1;          // --quality: 0 low .. 3 ultra; -1 = what Preferences > Rendering saved
 };
 
 static void PrintUsage(const char* exeName) {
@@ -574,6 +576,7 @@ static void PrintUsage(const char* exeName) {
         "  --res WxH            Window resolution (e.g., --res 1920x1080)\n"
         "  --nohotreload        Disable script hot-reload\n"
         "  --maxmem4G           Budget texture/mesh memory at 4GB (reported, not enforced)\n"
+        "  --quality LEVEL      Picture quality: low, medium, high or ultra\n"
         "\n"
         "Example:\n"
         "  %s -play MyProject --capfps60 --fullscreen\n",
@@ -615,6 +618,12 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             opts.hotReload = false;
         } else if (arg == "--maxmem4G") {
             opts.maxMemoryBytes = 4ull * 1024 * 1024 * 1024;
+        } else if (arg == "--quality") {
+            if (i + 1 < argc) {
+                const std::string level = argv[++i];
+                opts.quality = level == "low" ? 0 : level == "medium" ? 1 : level == "high" ? 2 : level == "ultra" ? 3 : -1;
+                if (opts.quality < 0) std::printf("[Player] --quality takes low, medium, high or ultra (got '%s')\n", level.c_str());
+            }
         } else if (arg == "-h" || arg == "--help") {
             PrintUsage(argv[0]);
             std::exit(0);
@@ -713,6 +722,8 @@ int main(int argc, char* argv[]) {
     // Create engine in player mode
     Engine engine(opts.width, opts.height, info.name + " / FlyEngine C++ Runtime", opts.targetFPS);
     engine.SetPlayerBuild(true);
+    gfx::LoadQualitySettings();
+    if (opts.quality >= 0) gfx::SetQualityTier(opts.quality);
 
     // Configure window
     if (opts.fullscreen) {

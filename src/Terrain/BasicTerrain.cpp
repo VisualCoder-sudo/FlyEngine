@@ -2,6 +2,7 @@
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 #include "../../include/Engine/Graphics.hpp"
+#include "../../include/Engine/Clouds.hpp"
 #include "raylib.h"
 #include "raymath.h"
 // Bind splatmap + albedo textures to explicit GL texture slots in Draw() using
@@ -1430,6 +1431,18 @@ void BasicTerrain::Draw() {
     if (s_shaderLightColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderLightColorLoc, &lightColor, SHADER_UNIFORM_VEC3);
     if (s_shaderAmbientColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientColorLoc, &ambientColor, SHADER_UNIFORM_VEC3);
     if (s_shaderAmbientGroundLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientGroundLoc, &ambientGround, SHADER_UNIFORM_VEC3);
+    {   // The clouds' shadow drifts over the terrain.
+        const int cloudShadowLoc = GetShaderLocation(s_terrainShader, "cloudShadow");
+        const int cloudShadowTexLoc = GetShaderLocation(s_terrainShader, "cloudShadowTex");
+        const Vector4 cloudShadow = gfx::GetCloudShadowParams();
+        if (cloudShadowLoc >= 0) SetShaderValue(s_terrainShader, cloudShadowLoc, &cloudShadow, SHADER_UNIFORM_VEC4);
+        if (cloudShadowTexLoc >= 0) {
+            // A unit of its own (nothing else binds it), so with no clouds it reads the default white texture.
+            const int unit = 12;
+            SetShaderValue(s_terrainShader, cloudShadowTexLoc, &unit, SHADER_UNIFORM_INT);
+            SetShaderValueTexture(s_terrainShader, cloudShadowTexLoc, gfx::GetCloudShadowTexture());
+        }
+    }
 
     DrawModel(model, position, 1.0f, WHITE);
     gfx::IncrementDrawCallCount(1);
