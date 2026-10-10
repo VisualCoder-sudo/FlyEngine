@@ -3,6 +3,7 @@
 #include "../PhysicsCollision.hpp"
 #include "ScatteredObject.hpp"
 #include "Box3DWrapper.hpp"
+#include "../../Terrain/TerrainCollider.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <unordered_map>
@@ -31,6 +32,7 @@ struct ContactEvent {
 class Simulation : public Entity {
 public:
     explicit Simulation(std::vector<ScatteredObject*>& objects);
+    ~Simulation() override;
     void Update(float dt) override;
 
     bool IsPlaying() const { return playing; }
@@ -66,6 +68,29 @@ public:
 
     // Move a kinematic body by delta (for CharacterController)
     void MoveKinematic(ScatteredObject* obj, Vector3 delta);
+
+    // Kinematic character queries. The capsule is upright and centred on
+    // `position`: `radius` plus a straight section running halfSegment above
+    // and below the centre, so its total height is 2 * (halfSegment + radius).
+    // Everything solid is collided against (terrain, city, static and dynamic
+    // bodies) except `self`'s own body and sensors.
+    struct MoverResult {
+        Vector3 position{};   // where the capsule ended up
+        Vector3 moved{};      // position - start; less than the request when something blocked it
+    };
+    // Slides the capsule by `delta`: it stops at obstacles, slides along walls
+    // and slopes, and is pushed out of anything it already overlaps. When
+    // flattenBelowNormalY > 0, surfaces whose normal.y is in [0, flattenBelowNormalY)
+    // (walls and slopes too steep to stand on) act as vertical walls, so
+    // pushing into them cannot shove the capsule up the slope.
+    MoverResult MoveCapsule(ScatteredObject* self, Vector3 position, Vector3 delta, float radius, float halfSegment,
+                            float flattenBelowNormalY = 0.0f);
+    // Fraction (0..1) of `delta` the capsule can travel before touching something.
+    float CastCapsule(ScatteredObject* self, Vector3 position, Vector3 delta, float radius, float halfSegment);
+    // Finds the most upward-facing surface touching the bottom of the capsule.
+    // True when its normal.y >= minNormalY (i.e. walkable); outNormal is that surface's normal.
+    bool GetCapsuleGround(ScatteredObject* self, Vector3 position, float radius, float halfSegment,
+                          float minNormalY, Vector3& outNormal);
 
     const std::vector<ContactEvent>& GetContactBeginEvents() const { return contactBeginEvents; }
     const std::vector<ContactEvent>& GetContactHitEvents() const { return contactHitEvents; }
@@ -105,6 +130,7 @@ public:
     bool HasBody(ScatteredObject* obj) const { return bodyMap.find(obj) != bodyMap.end(); }
 
 private:
+    bool FindBodyId(ScatteredObject* obj, b3BodyId& out) const;
     void StopPlay();
     void CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId);
     void WriteBack();
@@ -135,6 +161,7 @@ private:
 
     std::vector<b3HullData*> hulls;
     std::vector<b3MeshData*> meshes;
+    std::vector<terrain::TerrainCollider> terrainColliders;
     std::vector<b3JointId> joints;
 
     std::vector<ContactEvent> contactBeginEvents;

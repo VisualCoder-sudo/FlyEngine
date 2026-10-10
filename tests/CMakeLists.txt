@@ -91,6 +91,12 @@ target_link_libraries(city_district_test PRIVATE FlyEngineCore FlyRL)
 add_executable(character_jump_test character_jump_test.cpp)
 target_link_libraries(character_jump_test PRIVATE FlyEngineCore FlyRL)
 
+# Terrain collision: the height-field collider must line up with the terrain mesh, and the player and
+# dynamic bodies must stand / walk / rest on it. Opens a window, so built but not registered with ctest:
+# build/tests/terrain_collision_test
+add_executable(terrain_collision_test terrain_collision_test.cpp)
+target_link_libraries(terrain_collision_test PRIVATE FlyEngineCore FlyRL)
+
 # Stepped tower mesh: its base ledge must face up (it was culled from above). Opens a window, so built but
 # not registered with ctest: build/tests/city_tower_mesh_test
 add_executable(city_tower_mesh_test city_tower_mesh_test.cpp)
