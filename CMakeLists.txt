@@ -328,6 +328,9 @@ function(fly_add_executables suffix rl_lib)
         set_target_properties(Flyengine${suffix} PROPERTIES OUTPUT_NAME Flyengine-fallback)
         set_target_properties(FlyPlayer${suffix} PROPERTIES OUTPUT_NAME FlyPlayer-fallback)
     endif()
+    # The editor launches the FlyPlayer sitting next to it for Play, so building the editor alone (e.g. the
+    # IDE's Flyengine target) must rebuild the player too, or Play runs a stale one.
+    add_dependencies(Flyengine${suffix} FlyPlayer${suffix})
     # Windows .exe icon
     if(WIN32)
         target_sources(Flyengine${suffix} PRIVATE resources/app.rc)
