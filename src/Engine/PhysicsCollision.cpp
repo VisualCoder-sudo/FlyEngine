@@ -160,7 +160,7 @@ bool BuildHullImpl(const std::vector<Vector3>& points, int maxVerts, ConvexShape
     int i3 = -1; best = -1.0f;
     for (int i = 0; i < (int)pts.size(); ++i) {
         if (i == i0 || i == i1 || i == i2) continue;
-        float d = std::fabsf(Dot3(n01, Sub3(pts[i], pts[i0])));
+        float d = std::fabs(Dot3(n01, Sub3(pts[i], pts[i0])));
         if (d > best) { best = d; i3 = i; }
     }
     if (i3 < 0 || best < 1e-9f) return false;

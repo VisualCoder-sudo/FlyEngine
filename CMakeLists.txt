@@ -6,6 +6,13 @@ if(WIN32)
     add_compile_definitions(FLY_RL_WIN32_SYMBOLS=1)
 endif()
 
+# GCC 12 (Debian 12) miscompiles the engine at -O3: the editor viewport renders as a flat clear colour.
+# -O2 is fine there, so GNU Release builds use it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "" FORCE)
+endif()
+
 # C++20 (designated initializers are convenient for sokol's descriptor structs).
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -407,6 +414,51 @@ if(UNIX AND NOT APPLE)
             COMMENT "Creating case-insensitive symlinks for FlyPlayer"
     )
 endif()
+
+# Collect the built executables into <source>/exe after every build.
+set(FLY_EXE_DIR "${CMAKE_SOURCE_DIR}/exe" CACHE PATH "Where built executables are copied")
+set(_fly_exe_targets Flyengine FlyPlayer flyexport)
+if(FLY_HAS_FALLBACK)
+    list(APPEND _fly_exe_targets Flyengine_fallback FlyPlayer_fallback)
+endif()
+# Platform tag appended to the copied names: _win, _arch, _deb (other distros: _linux, macOS: _mac).
+if(WIN32)
+    set(FLY_PLATFORM_TAG win)
+elseif(APPLE)
+    set(FLY_PLATFORM_TAG mac)
+else()
+    set(FLY_PLATFORM_TAG linux)
+    if(EXISTS /etc/os-release)
+        file(STRINGS /etc/os-release _fly_osr REGEX "^ID(_LIKE)?=")
+        string(TOLOWER "${_fly_osr}" _fly_osr)
+        if(_fly_osr MATCHES "arch")
+            set(FLY_PLATFORM_TAG arch)
+        elseif(_fly_osr MATCHES "debian|ubuntu")
+            set(FLY_PLATFORM_TAG deb)
+        endif()
+    endif()
+endif()
+set(FLY_PLATFORM_TAG "${FLY_PLATFORM_TAG}" CACHE STRING "Suffix for executables copied to FLY_EXE_DIR")
+
+add_custom_target(fly_collect_exe ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FLY_EXE_DIR}"
+        COMMENT "Copying executables to ${FLY_EXE_DIR}")
+# Data the editor reads from next to the executable (see CachedRoots in Platform.cpp).
+# (copy_directory_if_different needs CMake 3.26; assets/ is large, so avoid recopying it every build when possible.)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.26)
+    set(_fly_copy_dir copy_directory_if_different)
+else()
+    set(_fly_copy_dir copy_directory)
+endif()
+add_custom_command(TARGET fly_collect_exe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E ${_fly_copy_dir} "${CMAKE_SOURCE_DIR}/assets" "${FLY_EXE_DIR}/assets"
+        COMMAND ${CMAKE_COMMAND} -E ${_fly_copy_dir} "${CMAKE_SOURCE_DIR}/ScriptingSDK" "${FLY_EXE_DIR}/ScriptingSDK")
+foreach(t ${_fly_exe_targets})
+    add_dependencies(fly_collect_exe ${t})
+    add_custom_command(TARGET fly_collect_exe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${t}>"
+            "${FLY_EXE_DIR}/$<TARGET_FILE_BASE_NAME:${t}>_${FLY_PLATFORM_TAG}${CMAKE_EXECUTABLE_SUFFIX}")
+endforeach()
 
 # --- flyplugin CLI tool ----------------------------------------------------
 if(NOT WIN32)

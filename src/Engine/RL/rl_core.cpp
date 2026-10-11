@@ -13,6 +13,9 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -73,6 +76,31 @@ void PollEvents() {
     }
 }
 
+// Diagnostics: FLYENGINE_LOG_INPUT=1 prints mouse-lock requests and the first mouse events to stderr.
+static bool InputLogEnabled() {
+    static const bool on = std::getenv("FLYENGINE_LOG_INPUT") != nullptr;
+    return on;
+}
+
+// FLYENGINE_LOG_INPUT=1 logs to stderr; a value starting with '/' is a file to append to, so that the player the
+// editor starts (its output is discarded) can log too. Each line carries the process id.
+static FILE* InputLog() {
+    static FILE* f = [] {
+        const char* v = std::getenv("FLYENGINE_LOG_INPUT");
+        if (v && v[0] == '/') {
+            if (FILE* out = std::fopen(v, "a")) {
+                setvbuf(out, nullptr, _IOLBF, 0);
+#if defined(__linux__)
+                std::fprintf(out, "[input] ---- log opened by pid %d ----\n", (int)getpid());
+#endif
+                return out;
+            }
+        }
+        return stderr;
+    }();
+    return f;
+}
+
 void OnEvent(const sapp_event* ev) {
     DispatchEvent(ev);
 }
@@ -110,6 +138,7 @@ void DispatchEvent(const sapp_event* ev) {
             break;
         case SAPP_EVENTTYPE_MOUSE_DOWN: {
             const int b = (int)ev->mouse_button;
+            if (InputLogEnabled()) std::fprintf(InputLog(), "[input] button %d down at %.0f,%.0f\n", b, ev->mouse_x, ev->mouse_y);
             if (b >= 0 && b < kMaxMouseButtons) {
                 c.mouseDown[b] = true;
                 c.mousePressedEvt[b] = true;
@@ -118,6 +147,7 @@ void DispatchEvent(const sapp_event* ev) {
         }
         case SAPP_EVENTTYPE_MOUSE_UP: {
             const int b = (int)ev->mouse_button;
+            if (InputLogEnabled()) std::fprintf(InputLog(), "[input] button %d up\n", b);
             if (b >= 0 && b < kMaxMouseButtons) {
                 c.mouseDown[b] = false;
                 c.mouseReleasedEvt[b] = true;
@@ -125,6 +155,15 @@ void DispatchEvent(const sapp_event* ev) {
             break;
         }
         case SAPP_EVENTTYPE_MOUSE_MOVE:
+            // Only moves that matter for the lock: while it is requested or active (the picker's plain moves would
+            // otherwise use up the log).
+            if (InputLogEnabled() && (c.cursorLocked || sapp_mouse_locked())) {
+                static int logged = 0;
+                if (logged++ < 300) {
+                    std::fprintf(InputLog(), "[input] move  want-lock=%d real-lock=%d pos=%.0f,%.0f delta=%.1f,%.1f\n",
+                                 (int)c.cursorLocked, (int)sapp_mouse_locked(), ev->mouse_x, ev->mouse_y, ev->mouse_dx, ev->mouse_dy);
+                }
+            }
             // sokol_app applies lock/unlock requests asynchronously (at the end of
             // a frame, and only while the window has focus). Until the real state
             // matches the requested one, the deltas are position differences from
@@ -197,6 +236,15 @@ void InitWindow(int width, int height, const char* title) {
         forced = std::getenv("FLYENGINE_FORCE_FALLBACK") != nullptr;
         if (forced) std::snprintf(why, sizeof(why), "FLYENGINE_FORCE_FALLBACK is set");
 #endif
+#if defined(FLY_FALLBACK_SUFFIX)
+        // Vulkan on a CPU renderer (a VM without GPU acceleration) is far slower than the OpenGL fallback.
+        // If there is no fallback executable this returns false and Vulkan runs as before.
+        if (!forced && std::getenv("FLYENGINE_FORCE_VULKAN") == nullptr && flyapp_graphics_is_software()) {
+            std::fprintf(stderr, "Flyengine: Vulkan is a software renderer here; starting the OpenGL build instead "
+                                 "(set FLYENGINE_FORCE_VULKAN=1 to keep Vulkan).\n");
+            if (flyapp_start_fallback(FLY_FALLBACK_SUFFIX)) return;   // (does not return on success)
+        }
+#endif
         if (forced || !flyapp_graphics_usable(why, sizeof(why))) {
             std::fprintf(stderr, "Flyengine: the Vulkan backend cannot run here: %s\n", why);
 #if defined(FLY_FALLBACK_SUFFIX)
@@ -218,6 +266,12 @@ void InitWindow(int width, int height, const char* title) {
     // buffer; the swapchain only receives the final copy.
     desc.depth_format = SAPP_PIXELFORMAT_NONE;
     desc.swap_interval = 1;
+#if defined(SOKOL_GLCORE)
+    // sokol asks for GL 4.3 by default, but the shaders are GLSL 4.10 (see cmake/FlySokol.cmake). Requesting only what is
+    // needed lets the OpenGL build start on drivers that stop at 4.1 (VM graphics, older Mesa).
+    desc.gl.major_version = 4;
+    desc.gl.minor_version = 1;
+#endif
     // raylib only syncs to the display when FLAG_VSYNC_HINT is set; otherwise
     // SetTargetFPS() alone paces the loop.
     desc.disable_vsync = (c.configFlags & FLAG_VSYNC_HINT) == 0;
@@ -228,7 +282,10 @@ void InitWindow(int width, int height, const char* title) {
     desc.max_dropped_files = 32;
     desc.icon.sokol_default = true;
     desc.logger.func = slog_func;
+    flyapp_gl_retry_arm();
     flyapp_open(&desc);
+    flyapp_gl_retry_disarm();
+    if (InputLogEnabled()) InputLog();   // creates the log file now, so it exists even before any mouse event
     // Matches StartupWMClass in packaging/flyengine.desktop, so the window
     // groups under the launcher's icon (X11; no-op elsewhere).
     flyapp_set_window_class("flyengine");
@@ -358,6 +415,8 @@ void EndDrawing(void) {
     c.fpsFrames++;
     if (c.fpsAccum >= 0.5) {
         c.fps = (int)std::lround(c.fpsFrames / c.fpsAccum);
+        static const bool logFps = std::getenv("FLYENGINE_LOG_FPS") != nullptr;   // diagnostics: FLYENGINE_LOG_FPS=1
+        if (logFps) std::fprintf(stderr, "FPS %d (%.1f ms/frame)\n", c.fps, 1000.0 * c.fpsAccum / c.fpsFrames);
         c.fpsAccum = 0.0;
         c.fpsFrames = 0;
     }
@@ -499,15 +558,49 @@ void HideCursor(void) {
 
 bool IsCursorHidden(void) { return Core().cursorHidden || Core().cursorLocked; }
 
+// Mouse lock (raw relative motion) does not work with the absolute pointer a virtual machine gives its guest:
+// the camera moves once and then stops. There, "locking" only hides the cursor and the camera follows the
+// cursor's position deltas instead. FLYENGINE_MOUSE_LOCK=0/1 overrides the detection.
+static bool MouseLockUsable() {
+    static const bool usable = [] {
+        if (const char* env = std::getenv("FLYENGINE_MOUSE_LOCK")) return env[0] != '0';
+#if defined(__linux__)
+        for (const char* path : { "/sys/class/dmi/id/sys_vendor", "/sys/class/dmi/id/product_name" }) {
+            if (FILE* f = std::fopen(path, "r")) {
+                char buf[128] = {};
+                std::fread(buf, 1, sizeof(buf) - 1, f);
+                std::fclose(f);
+                for (const char* vm : { "QEMU", "KVM", "VirtualBox", "innotek", "VMware", "Xen", "Parallels", "Hyper-V",
+                                        "Virtual Machine", "Bochs" }) {
+                    if (std::strstr(buf, vm)) return false;
+                }
+            }
+        }
+#endif
+        return true;
+    }();
+    return usable;
+}
+
 void EnableCursor(void) {
     CoreState& c = Core();
+    if (InputLogEnabled()) std::fprintf(InputLog(), "[input] EnableCursor\n");
     c.cursorLocked = false;
     c.cursorHidden = false;
-    if (c.windowOpen) sapp_lock_mouse(false);
+    if (c.windowOpen) {
+        sapp_lock_mouse(false);
+        if (!MouseLockUsable()) sapp_show_mouse(true);   // DisableCursor only hid it there
+    }
 }
 
 void DisableCursor(void) {
     CoreState& c = Core();
+    if (InputLogEnabled()) std::fprintf(InputLog(), "[input] DisableCursor (real lock usable: %d)\n", (int)MouseLockUsable());
+    if (!MouseLockUsable()) {
+        c.cursorHidden = true;
+        if (c.windowOpen) sapp_show_mouse(false);
+        return;
+    }
     c.cursorLocked = true;
     if (c.windowOpen) sapp_lock_mouse(true);
 }

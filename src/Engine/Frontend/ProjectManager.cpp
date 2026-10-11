@@ -625,9 +625,12 @@ void ApplyWindowIconImage(const Image& source) {
 }
 
 void ApplyWindowIcon() {
-    constexpr const char* iconPaths[] = { "assets/FlyengineLogo.png", "../assets/FlyengineLogo.png" };
+    // The engine's data root first (works from any working directory, e.g. inside an AppImage), then the cwd guesses.
+    const std::string resolved = platform::ResolveAsset("assets/FlyengineLogo.png");
+    const char* iconPaths[] = { resolved.c_str(), "assets/FlyengineLogo.png", "../assets/FlyengineLogo.png" };
     bool found = false;
     for (const char* path : iconPaths) {
+        if (path[0] == '\0') continue;
         if (FileExists(path)) {
             found = true;
             TraceLog(LOG_INFO, "ApplyWindowIcon: found %s", path);
@@ -810,7 +813,9 @@ Info ShowProjectManager() {
     Texture2D folderTex = { 0 };
     float folderScale = 1.0f;
 
-    Image folderImg = LoadImage("assets/EditorIcons/Folder.png");
+    Image folderImg = {};
+    if (const std::string resolved = platform::ResolveAsset("assets/EditorIcons/Folder.png"); !resolved.empty()) folderImg = LoadImage(resolved.c_str());
+    if (folderImg.data == nullptr) folderImg = LoadImage("assets/EditorIcons/Folder.png");
     if (folderImg.data == nullptr) folderImg = LoadImage("../assets/EditorIcons/Folder.png");
     if (folderImg.data != nullptr) {
         if (folderImg.height > 0) ImageColorBrightness(&folderImg, 180);

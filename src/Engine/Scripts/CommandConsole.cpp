@@ -19,7 +19,7 @@ namespace console {
 
 namespace {
 
-constexpr int MAX_INPUT = 512;
+constexpr int MAX_INPUT_LEN = 512;
 constexpr float BAR_HEIGHT = 30.0f;
 constexpr float FONT_SIZE = 16.0f;
 constexpr float FEEDBACK_FONT_SIZE = 14.0f;
@@ -555,7 +555,7 @@ void Update() {
     if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_V)) {
         const char* clip = GetClipboardText();
         if (clip && clip[0] != '\0') {
-            for (const char* p = clip; *p != '\0' && (int)input.size() < MAX_INPUT; ++p) {
+            for (const char* p = clip; *p != '\0' && (int)input.size() < MAX_INPUT_LEN; ++p) {
                 if (*p == '\r' || *p == '\n' || (unsigned char)*p < 32) continue;
                 InsertCharAtCursor(*p);
             }
@@ -564,7 +564,7 @@ void Update() {
 
     int key = GetCharPressed();
     while (key > 0) {
-        if (key >= 32 && key <= 126 && (int)input.size() < MAX_INPUT &&
+        if (key >= 32 && key <= 126 && (int)input.size() < MAX_INPUT_LEN &&
             !(IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
             InsertCharAtCursor((char)key);
         }

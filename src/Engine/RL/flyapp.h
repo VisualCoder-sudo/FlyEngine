@@ -53,6 +53,13 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
 // Vulkan backend only: whether this machine's GPU/driver can run it (always
 // true on the other backends). On false, `why` holds a short reason.
 bool flyapp_graphics_usable(char* why, size_t why_size);
+// Vulkan backend only: true when the only Vulkan device is a CPU renderer (llvmpipe/lavapipe), where the
+// OpenGL fallback is the better choice. Always false on the other backends.
+bool flyapp_graphics_is_software(void);
+// OpenGL on Linux: if creating the window/context aborts, re-run this program with Mesa's software renderer.
+// Arm before flyapp_open() and disarm right after it returns. No-op elsewhere.
+void flyapp_gl_retry_arm(void);
+void flyapp_gl_retry_disarm(void);
 // Starts the executable next to this one whose name is ours plus `suffix`
 // (e.g. "-fallback"), with the same arguments, and does not return on success
 // (Linux: exec; Windows: runs it to completion, then exits with its code).

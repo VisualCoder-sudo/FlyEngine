@@ -95,3 +95,8 @@ scene_*.png
 
 # Screenshots written by the rendering tests into the working directory
 /*.png
+
+# Collected executables
+/exe/
+/dist/
+/exe-deb/

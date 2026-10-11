@@ -212,12 +212,37 @@ if(backend STREQUAL "VULKAN")
         if(NOT FLY_VULKAN_INCLUDE_DIR AND EXISTS ${_vk_vendored}/vulkan/vulkan.h)
             set(FLY_VULKAN_INCLUDE_DIR ${_vk_vendored})
         endif()
-        find_library(FLY_VULKAN_LOADER NAMES vulkan vulkan-1 HINTS ENV VULKAN_SDK PATH_SUFFIXES lib Lib)
+        find_library(FLY_VULKAN_LOADER NAMES vulkan vulkan-1 libvulkan.so.1 HINTS ENV VULKAN_SDK PATH_SUFFIXES lib Lib)
+        if(NOT FLY_VULKAN_LOADER AND WIN32 AND MSVC AND EXISTS ${_vk_vendored}/vulkan/vulkan_core.h)
+            # No Vulkan SDK: build vulkan-1.lib ourselves from the vendored headers. It is only an import
+            # library; vulkan-1.dll comes with the GPU driver at runtime.
+            set(_vk_lib ${CMAKE_BINARY_DIR}/vulkan-1.lib)
+            if(NOT EXISTS ${_vk_lib})
+                file(STRINGS ${_vk_vendored}/vulkan/vulkan_core.h _vk_decls REGEX "VKAPI_CALL vk[A-Za-z0-9]+\\(")
+                set(_vk_def "LIBRARY vulkan-1\nEXPORTS\n")
+                foreach(_l ${_vk_decls})
+                    if(_l MATCHES "VKAPI_CALL (vk[A-Za-z0-9]+)\\(")
+                        string(APPEND _vk_def "    ${CMAKE_MATCH_1}\n")
+                    endif()
+                endforeach()
+                file(WRITE ${CMAKE_BINARY_DIR}/vulkan-1.def "${_vk_def}")
+                get_filename_component(_cl_dir ${CMAKE_C_COMPILER} DIRECTORY)
+                find_program(FLY_MSVC_LIB lib HINTS ${_cl_dir})
+                if(FLY_MSVC_LIB)
+                    execute_process(COMMAND ${FLY_MSVC_LIB} /nologo /machine:x64 /def:${CMAKE_BINARY_DIR}/vulkan-1.def /out:${_vk_lib}
+                                    RESULT_VARIABLE _vk_rc OUTPUT_QUIET ERROR_QUIET)
+                endif()
+            endif()
+            if(EXISTS ${_vk_lib})
+                set(FLY_VULKAN_LOADER ${_vk_lib} CACHE FILEPATH "Generated Vulkan import library" FORCE)
+                message(STATUS "Vulkan SDK not found: generated ${_vk_lib} from vendored headers")
+            endif()
+        endif()
         if(NOT FLY_VULKAN_INCLUDE_DIR OR NOT FLY_VULKAN_LOADER)
             message(FATAL_ERROR
                 "Vulkan backend: headers or loader not found.\n"
-                "  Linux:   install the Vulkan loader (Arch: vulkan-icd-loader, Debian: libvulkan-dev)\n"
-                "  Windows: install the LunarG Vulkan SDK\n"
+                "  Linux:   install the Vulkan loader (Arch: vulkan-icd-loader, Debian: libvulkan1); headers are vendored\n"
+                "  Windows: install the LunarG Vulkan SDK, or build from an MSVC prompt (lib.exe is used to generate vulkan-1.lib)\n"
                 "or configure with -DFLYENGINE_GRAPHICS_BACKEND=GL")
         endif()
         target_include_directories(${target} PUBLIC ${FLY_VULKAN_INCLUDE_DIR})
