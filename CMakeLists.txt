@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 project(Flyengine LANGUAGES CXX C)
+if(WIN32)
+    # Marks objects built against the renamed rl_ShowCursor/rl_CloseWindow symbols
+    # (include/rl/raylib.h). Changing it forces a full recompile of stale objects.
+    add_compile_definitions(FLY_RL_WIN32_SYMBOLS=1)
+endif()
 
 # C++20 (designated initializers are convenient for sokol's descriptor structs).
 set(CMAKE_CXX_STANDARD 20)
@@ -98,6 +103,11 @@ option(FLYENGINE_ENABLE_DESKTOP_VALIDATION "Validate .desktop/MIME files at buil
 # Window, input and rendering: sokol + the raylib-compatible layer (FlyRL).
 include(cmake/FlySokol.cmake)
 
+# Third-party libraries (Box3D, libcurl) are linked statically: an exported game is a single executable with no
+# .so/.dll beside it, and a shared copy would also make FlyPlayer depend on a path inside the build tree. (curl's own
+# CMakeLists defaults BUILD_SHARED_LIBS to ON, and that value stuck in the cache of existing build directories.)
+set(BUILD_SHARED_LIBS OFF)
+
 # Box3D physics
 add_subdirectory(extern/box3d)
 
@@ -156,9 +166,11 @@ elseif(UNIX)
     # dl  : dynamic loading for the CLR host and miniz
     # m   : box3d maths helpers on glibc
     set(FLYENGINE_PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
-    find_package(Threads REQUIRED)
     list(APPEND FLYENGINE_PLATFORM_LIBS Threads::Threads)
 endif()
+
+# Threads::Threads is needed on every platform (FlySqlite links it).
+find_package(Threads REQUIRED)
 
 # --- SQLite (compiled once, shared by every executable) --------------------
 add_library(FlySqlite STATIC extern/sqlite/sqlite3.c)
@@ -174,11 +186,16 @@ set_target_properties(FlySqlite PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(FlyPluginCore STATIC
         src/Plugin/ManifestParser.c
         src/Plugin/VersionCompat.c
-        src/Plugin/PluginLoader.c
         src/Plugin/PluginIdentityValidator.c
-        src/Plugin/PluginIPC.c
         extern/cjson/cJSON.c
 )
+# The process loader, IPC and sandbox use fork/Unix sockets/dlopen/seccomp and
+# are POSIX-only. They are not used by the engine itself on Windows.
+if(NOT WIN32)
+    target_sources(FlyPluginCore PRIVATE
+            src/Plugin/PluginLoader.c
+            src/Plugin/PluginIPC.c)
+endif()
 target_include_directories(FlyPluginCore PUBLIC include extern/cjson)
 target_link_libraries(FlyPluginCore PUBLIC ${CMAKE_DL_LIBS})
 set_target_properties(FlyPluginCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -212,7 +229,13 @@ add_library(FlyEngineCore STATIC
         src/Engine/Backend/Benchmark.cpp
         src/Engine/Backend/CrashReporter.cpp
         src/Engine/TextureManager.cpp
+        src/Engine/Occlusion.cpp
+        src/Engine/Vfs.cpp
+        src/Engine/Export/PackArchive.cpp
+        src/Engine/Export/PeIcon.cpp
+        src/Engine/Export/ExportManager.cpp
         src/Engine/Frontend/ui.cpp
+        src/Engine/Frontend/ExportDialog.cpp
         src/Engine/Platform/Platform.cpp
         src/Engine/Platform/FileDialog.cpp
         src/Engine/Platform/ProcessRunner.cpp
@@ -238,8 +261,6 @@ add_library(FlyEngineCore STATIC
         src/SceneTest.cpp
         src/Engine/TechnicalTools.cpp
 
-        # Plugin sandbox (the rest of the plugin system is in FlyPluginCore)
-        src/Plugin/PluginSandbox.c
 
         # ufbx FBX parser (MIT)
         extern/ufbx/ufbx.cpp
@@ -263,6 +284,10 @@ set_target_properties(FlyImGui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # with explicit [0,1]/[-1,1] depth-range projections). PUBLIC because that
 # header is part of FlyEngineCore's public interface.
 target_include_directories(FlyEngineCore PUBLIC src/Engine/Backend/cglm/include)
+if(NOT WIN32)
+    # Plugin sandbox (seccomp/cgroups, Linux only)
+    target_sources(FlyEngineCore PRIVATE src/Plugin/PluginSandbox.c)
+endif()
 
 # miniz deflate/inflate (public domain). Compiled unconditionally, not just for
 # FlyCloud: BasicTerrain persistence deflates its heightmap and splatmap, and
@@ -335,6 +360,10 @@ function(fly_add_executables suffix rl_lib)
     if(WIN32)
         target_sources(Flyengine${suffix} PRIVATE resources/app.rc)
     endif()
+    # The player carries placeholder icons that Export overwrites with the game's own (include/Engine/PeIcon.hpp).
+    if(WIN32)
+        target_sources(FlyPlayer${suffix} PRIVATE resources/player.rc)
+    endif()
     foreach(exe Flyengine${suffix} FlyPlayer${suffix})
         # GUI subsystem on Windows (no console window), regular main() still works.
         set_target_properties(${exe} PROPERTIES WIN32_EXECUTABLE ON)
@@ -353,6 +382,12 @@ function(fly_add_executables suffix rl_lib)
 endfunction()
 
 fly_add_executables("" FlyRL)
+
+# `flyexport <project> --out <dir>`: the editor's Export without the editor (see src/ExportMain.cpp).
+add_executable(flyexport src/ExportMain.cpp)
+target_link_libraries(flyexport PRIVATE FlyEngineCore FlyRL)
+add_dependencies(flyexport FlyPlayer)
+
 if(FLY_HAS_FALLBACK)
     fly_add_executables("_fallback" FlyRL_fallback)
 endif()
@@ -374,18 +409,23 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # --- flyplugin CLI tool ----------------------------------------------------
+if(NOT WIN32)
 add_executable(flyplugin src/Plugin/cli/FlyPluginCLI.c)
 target_link_libraries(flyplugin PRIVATE FlyPluginCore)
 
 # --- flyplugin-runner (plugin process runner) ------------------------------
 add_executable(flyplugin-runner src/Plugin/PluginProcessRunner.c)
 target_link_libraries(flyplugin-runner PRIVATE FlyPluginCore)
+endif()
 
 # --- LTO (Release only) ----------------------------------------------------
 if(FLYENGINE_ENABLE_LTO AND FLYENGINE_IPO_SUPPORTED)
+    if(TARGET flyplugin)
+        set_target_properties(flyplugin flyplugin-runner PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
     set_target_properties(
             FlyEngineCore FlyRL FlyImGui FlySqlite FlyPluginCore
-            ${PROJECT_NAME} FlyPlayer flyplugin flyplugin-runner
+            ${PROJECT_NAME} FlyPlayer
             PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 elseif(FLYENGINE_ENABLE_LTO)
     message(STATUS "LTO not supported by this toolchain: ${FLYENGINE_IPO_MSG}")
@@ -397,8 +437,12 @@ endif()
 
 # --- Install / packaging ---------------------------------------------------
 
-install(TARGETS ${PROJECT_NAME} FlyPlayer flyplugin flyplugin-runner
+install(TARGETS ${PROJECT_NAME} FlyPlayer
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(NOT WIN32)
+    install(TARGETS flyplugin flyplugin-runner
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 if(FLY_HAS_FALLBACK)
     install(TARGETS Flyengine_fallback FlyPlayer_fallback
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

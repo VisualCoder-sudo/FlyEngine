@@ -25,12 +25,11 @@
 #include <vector>
 
 #if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+#include "Engine/Platform/WinBegin.h"
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include "Engine/Platform/WinEnd.h"
 #endif
 
 namespace platform {
@@ -124,7 +123,7 @@ std::string WinDialog(Kind kind, const std::string& title, const std::string& st
     std::string result;
 
     std::wstring wTitle = ToWide(title);
-    std::wstring wDir = ToWide(IsDirectory(startDir) ? fs::u8path(startDir).make_preferred().u8string() : std::string());
+    std::wstring wDir = IsDirectory(startDir) ? fs::u8path(startDir).make_preferred().wstring() : std::wstring();
 
     if (kind == Kind::Folder) {
         BROWSEINFOW bi = {};

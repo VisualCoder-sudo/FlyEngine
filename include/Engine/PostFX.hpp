@@ -30,6 +30,7 @@ struct RenderQuality {
     int clouds = 2;               // 0 = flat layer, 1 = volumetric (fewer steps), 2 = volumetric, 3 = volumetric (more steps)
     int volumetrics = 2;          // 0 = plain distance fog, 1 = light shafts (fewer steps), 2 = light shafts
     int shadowCascades = 3;       // 1..4
+    int fpsCap = 180;             // editor frame-rate limit; 0 = unlimited. (The player has its own, see PlayerMain.)
 };
 RenderQuality& Quality();
 void SetQualityTier(int tier);
@@ -37,6 +38,12 @@ void SetQualityTier(int tier);
 // they run at the default, whatever the machine's owner picked.)
 void LoadQualitySettings();
 void SaveQualitySettings();
+// The same key/value text graphics.cfg holds, for embedding in an exported game and reading back from it.
+std::string QualitySettingsText();
+std::string QualitySettingsText(const RenderQuality& quality);
+void LoadQualitySettingsFromText(const std::string& text);
+// Applies RenderQuality::fpsCap to the frame limiter (0 = unlimited). Call after changing it.
+void ApplyFpsCap();
 
 // The 1x1 texture holding the exposure multiplier of this frame.
 Texture2D GetExposureTexture();

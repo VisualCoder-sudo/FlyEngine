@@ -1,22 +1,16 @@
 // ProjectManager.cpp - the "Projects" hub window.
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+#include "../../../include/Engine/Platform/WinBegin.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
 #include <shellapi.h>
-#undef CloseWindow
-#undef ShowCursor
-#undef Rectangle
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef PlaySound
 #endif
+#include "../../../include/Engine/Platform/WinEnd.h"
 
 #include "../../../include/Engine/Backend/TextureManager.hpp"
+#include "../../../include/Engine/Vfs.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/Graphics.hpp"
@@ -132,10 +126,46 @@ namespace detail {
         return !key.empty();
     }
 
+    // An input stream over a project file: the file on disk, or (in an exported game) the copy inside the
+    // executable's archive. Derived from std::istream so it can go straight into LoadSceneFromStream.
+    class SceneSource : public std::istream {
+    public:
+        SceneSource() : std::istream(nullptr) {}
+        void open(const std::string& path, std::ios::openmode) {
+            opened = false;
+            clear();
+            if (vfs::Handles(path)) {
+                std::vector<unsigned char> bytes;
+                if (!vfs::Read(path, bytes)) return;
+                // Windows writes project files with CRLF line endings. Reading from disk in text mode folds
+                // them back to LF, but archive bytes are raw: left alone, every line would keep a trailing
+                // '\r' and "---SCENE---" would never match. So fold them here too.
+                std::string text;
+                text.reserve(bytes.size());
+                for (size_t i = 0; i < bytes.size(); ++i) {
+                    if (bytes[i] == '\r' && i + 1 < bytes.size() && bytes[i + 1] == '\n') continue;
+                    text.push_back((char)bytes[i]);
+                }
+                mem.str(std::move(text));
+                rdbuf(&mem);
+                opened = true;
+            } else {
+                if (!file.open(path, std::ios::in)) return;
+                rdbuf(&file);
+                opened = true;
+            }
+        }
+        bool is_open() const { return opened; }
+    private:
+        std::filebuf file;
+        std::stringbuf mem;
+        bool opened = false;
+    };
+
     // Opens the .flyproj at `projectFile` and parses the header lines. On success
     // `scene` is left open and positioned just past the "---SCENE---" marker, ready
     // for the scene blob.
-    bool ReadProjectFileAt(const std::string& projectFile, HeaderFields& out, std::ifstream& scene) {
+    bool ReadProjectFileAt(const std::string& projectFile, HeaderFields& out, SceneSource& scene) {
         if (projectFile.empty()) return false;
         scene.open(projectFile, std::ios::in);
         if (!scene.is_open()) return false;
@@ -189,7 +219,7 @@ namespace detail {
     }
 
     // Same as above, but resolves the file from the project folder.
-    bool ReadProjectFile(const std::string& projectFolder, HeaderFields& out, std::ifstream& scene) {
+    bool ReadProjectFile(const std::string& projectFolder, HeaderFields& out, SceneSource& scene) {
         return ReadProjectFileAt(FindProjectFile(projectFolder), out, scene);
     }
 
@@ -578,6 +608,22 @@ bool CreateProject(const std::string& name, const std::string& templateName) {
     return CreateProjectFileInternal(name, templateName);
 }
 
+void ApplyWindowIconImage(const Image& source) {
+    Image icon = ImageCopy(source);
+    ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    Image iconSmall = ImageCopy(icon);
+    ImageResize(&iconSmall, 32, 32);
+    Image iconLarge = ImageCopy(icon);
+    ImageResize(&iconLarge, 256, 256);
+
+    Image icons[2] = { iconSmall, iconLarge };
+    SetWindowIcons(icons, 2);
+
+    UnloadImage(iconSmall);
+    UnloadImage(iconLarge);
+    UnloadImage(icon);
+}
+
 void ApplyWindowIcon() {
     constexpr const char* iconPaths[] = { "assets/FlyengineLogo.png", "../assets/FlyengineLogo.png" };
     bool found = false;
@@ -589,19 +635,8 @@ void ApplyWindowIcon() {
             if (icon.data != nullptr) {
                 TraceLog(LOG_INFO, "ApplyWindowIcon: loaded %dx%d, format=%d",
                          icon.width, icon.height, icon.format);
-                ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-
-                Image iconSmall = ImageCopy(icon);
-                ImageResize(&iconSmall, 32, 32);
-                Image iconLarge = ImageCopy(icon);
-                ImageResize(&iconLarge, 256, 256);
-
-                Image icons[2] = { iconSmall, iconLarge };
-                SetWindowIcons(icons, 2);
+                ApplyWindowIconImage(icon);
                 TraceLog(LOG_INFO, "ApplyWindowIcon: SetWindowIcons called");
-
-                UnloadImage(iconSmall);
-                UnloadImage(iconLarge);
                 UnloadImage(icon);
             }
         }
@@ -614,7 +649,7 @@ void ApplyWindowIcon() {
 
 bool ReadProjectHeader(const std::string& projectFolder, Info& outInfo) {
     HeaderFields fields;
-    std::ifstream scene;
+    detail::SceneSource scene;
     if (!ReadProjectFile(projectFolder, fields, scene)) return false;
     outInfo.name = fields.name;
     outInfo.path = projectFolder;
@@ -624,7 +659,7 @@ bool ReadProjectHeader(const std::string& projectFolder, Info& outInfo) {
 
 bool ReadProjectHeaderFromPath(const std::string& projectFilePath, Info& outInfo) {
     HeaderFields fields;
-    std::ifstream scene;
+    detail::SceneSource scene;
     if (!detail::ReadProjectFileAt(projectFilePath, fields, scene)) return false;
     // Report the containing folder as the project path - that's what the rest of
     // the engine treats as the project's identity.
@@ -641,7 +676,7 @@ bool OpenProjectFileFromPath(const std::string& projectFilePath, Engine& engine,
                              phys::Simulation* physicsSim,
                              terrain::Terrain** outTerrain) {
     HeaderFields fields;
-    std::ifstream scene;
+    detail::SceneSource scene;
     if (!detail::ReadProjectFileAt(projectFilePath, fields, scene)) return false;
     outInfo.name = fields.name;
     outInfo.path = detail::BaseDirOf(projectFilePath);
@@ -656,7 +691,7 @@ bool OpenProjectFile(const std::string& projectFolder, Engine& engine,
                      phys::Simulation* physicsSim,
                      terrain::Terrain** outTerrain) {
     HeaderFields fields;
-    std::ifstream scene;
+    detail::SceneSource scene;
     if (!ReadProjectFile(projectFolder, fields, scene)) return false;
     outInfo.name = fields.name;
     outInfo.path = projectFolder;
@@ -688,7 +723,7 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
               projectFolder.substr(projectFolder.find_last_of("\\/") + 1) + ".flyproj")
         : existing;
     {
-        std::ifstream scene;
+        detail::SceneSource scene;
         if (ReadProjectFile(projectFolder, fields, scene)) {
         } else {
             const Info& current = GetCurrentProject();
@@ -712,7 +747,7 @@ std::string SaveProjectFileTemp(const std::string& projectFolder, const std::vec
     const std::string name = projectFolder.substr(projectFolder.find_last_of("\\/") + 1);
     const std::string tempFile = detail::JoinPath(projectFolder, name + "_temp.flyproj");
     {
-        std::ifstream scene;
+        detail::SceneSource scene;
         if (ReadProjectFile(projectFolder, fields, scene)) {
         } else {
             const Info& current = GetCurrentProject();
@@ -1115,3 +1150,4 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
 }
 
 } // namespace project
+

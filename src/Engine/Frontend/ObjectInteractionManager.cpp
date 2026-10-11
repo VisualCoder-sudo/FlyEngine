@@ -1,6 +1,7 @@
 #include <unordered_set>
 #include "../../../include/Engine/Frontend/ObjectInteractionManager.hpp"
 #include "../../../include/Engine.hpp"
+#include "../../../include/Engine/PostFX.hpp"
 #include "../../../include/Engine/Backend/CameraController.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
@@ -934,6 +935,22 @@ void ObjectInteractionManager::Update(float dt) {
 
     if (ui::ConsumeImportRequest()) {
         ImportMesh();
+        return;
+    }
+
+    // Export pressed: save everything first (the saved files are what gets packed), then pack on a worker.
+    if (ui::ConsumeExportRequest()) {
+        const project::Info& current = project::GetCurrentProject();
+        terrain::Terrain* terrain = nullptr;
+        for (auto& entity : engine.GetEntities()) {
+            if (auto* t = dynamic_cast<terrain::Terrain*>(entity.get())) { terrain = t; break; }
+        }
+        if (!current.path.empty() && project::SaveProjectFile(current.path, objects, models, terrain)) {
+            gfx::SaveQualitySettings();
+            ui::StartExport(current.path);
+        } else {
+            ui::LogAlways("Export: could not save the project first; nothing was exported.");
+        }
         return;
     }
 

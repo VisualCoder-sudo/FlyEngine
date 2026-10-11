@@ -99,6 +99,7 @@ void Terrain::Draw() {
             gfx::IncrementRenderedEntityCount(1);
             gfx::IncrementDrawCallCount(1);
             gfx::AddMeshCount(1);
+            gfx::AddModelTriangles(chunk.gpuModel);
         } else {
             gfx::IncrementCulledEntityCount(1);
         }
@@ -884,7 +885,7 @@ bool Terrain::SaveToFile(const std::string& path) const {
 }
 
 bool Terrain::LoadFromFile(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
+    platform::InputStream file(path);
     if (!file) return false;
     return ReadFromStream(file);
 }

@@ -1,5 +1,6 @@
 // ui.cpp (fixed)
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/ExportManager.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
@@ -1696,6 +1697,11 @@ static void LaunchPlayer() {
     
     // Try to find FlyPlayer in the same directory
     std::filesystem::path playerPath = exePath.parent_path() / "FlyPlayer";
+    {
+        // Knows the platform's file name too (FlyPlayer.exe on Windows).
+        const std::string found = exporter::FindPlayerExecutable();
+        if (!found.empty()) playerPath = std::filesystem::u8path(found);
+    }
     if (!std::filesystem::exists(playerPath)) {
         // Try case-insensitive search
         for (auto& entry : std::filesystem::directory_iterator(exePath.parent_path())) {
@@ -1812,6 +1818,8 @@ static void DrawImGuiTopBar() {
         if (ImGui::MenuItem("Save")) { g_pendingFileAction = MenuAction::Save; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Save as")) { g_pendingFileAction = MenuAction::SaveAs; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Open scene")) { g_pendingFileAction = MenuAction::OpenScene; ImGui::CloseCurrentPopup(); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Export...")) { OpenExportDialog(); ImGui::CloseCurrentPopup(); }
         ImGui::Separator();
         if (ImGui::MenuItem("Preferences")) { g_showPreferences = true; ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();
@@ -6227,6 +6235,17 @@ static void DrawPreferencesRenderingTab() {
         q.tier = -1;        // no longer one of the presets
         gfx::SaveQualitySettings();
     }
+
+    // The editor's frame-rate limit. Not part of the quality presets, so changing it leaves the tier alone.
+    DrawPrefsSettingRowBegin("FPS cap");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::DragInt("##fpscap", &q.fpsCap, 1.0f, 0, 1000, q.fpsCap == 0 ? "Unlimited" : "%d")) {
+        q.fpsCap = std::clamp(q.fpsCap, 0, 1000);
+        gfx::ApplyFpsCap();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) gfx::SaveQualitySettings();
+    ImGui::SameLine();
+    ImGui::TextDisabled("0 = unlimited");
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
     ImGui::Indent(8.0f);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 16.0f);
@@ -6712,6 +6731,7 @@ void DrawImGuiFrame(const Camera3D& camera) {
     DrawImGuiAssetBrowserPopups();
     scriptLauncher::DrawImGuiModal();
     DrawImGuiPreferencesWindow();
+    DrawExportDialog();
     city::DrawCityEditorPanel();
     PumpAssetBrowserDialogs();
     DrawPathPromptModal();

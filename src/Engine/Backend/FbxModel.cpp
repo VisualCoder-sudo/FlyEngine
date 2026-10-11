@@ -1,6 +1,7 @@
 #include "../../../include/Engine/Backend/FbxModel.hpp"
 
 #include "ufbx.h"
+#include "../../../include/Engine/Vfs.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -121,7 +122,17 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
     opts.target_axes = ufbx_axes_right_handed_y_up;
 
     ufbx_error error;
-    ufbx_scene* scene = ufbx_load_file(path.c_str(), &opts, &error);
+    ufbx_scene* scene = nullptr;
+    if (vfs::Handles(path)) {
+        // Inside an exported game's archive: parse from memory. Geometry is all that is needed here (textures
+        // come from the scene's own texture paths), so external files are not followed.
+        std::vector<unsigned char> bytes;
+        if (!vfs::Read(path, bytes) || bytes.empty()) return false;
+        opts.load_external_files = false;
+        scene = ufbx_load_memory(bytes.data(), bytes.size(), &opts, &error);
+    } else {
+        scene = ufbx_load_file(path.c_str(), &opts, &error);
+    }
     if (!scene) return false;
 
     // Materials actually referenced by faces get compact indices; index 0 is a

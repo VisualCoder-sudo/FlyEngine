@@ -1,4 +1,5 @@
-﻿#include "../../include/Terrain/BasicTerrain.hpp"
+﻿#include "Engine/Vfs.hpp"
+#include "../../include/Terrain/BasicTerrain.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 #include "../../include/Engine/Graphics.hpp"
@@ -622,7 +623,13 @@ void BasicTerrain::LoadTerrainTextures() {
     // ResolveAsset only returns files, so ask each data root for the directory
     // itself. The first root that has it is the one the files came from.
     std::string dirPath;
+    if (platform::IsEmbedded()) {
+        // An exported game keeps the engine's data under __engine/ in its archive.
+        const std::string candidate = vfs::VirtualPath("__engine/assets/Textures/TerrainTextures");
+        if (vfs::IsDir(candidate)) dirPath = candidate;
+    }
     for (const std::string& r : platform::DataSearchRoots()) {
+        if (!dirPath.empty()) break;
         const std::string candidate =
             (std::filesystem::u8path(r) / "assets" / "Textures" / "TerrainTextures").string();
         std::error_code ec;
@@ -633,15 +640,11 @@ void BasicTerrain::LoadTerrainTextures() {
 
     // Collect texture files
     std::vector<std::string> texFiles;
-    std::error_code ec;
-    auto dirIt = std::filesystem::directory_iterator(dirPath, ec);
-    if (ec) { ui::Log("[TerrainPaint] directory_iterator failed: %s", ec.message().c_str()); return; }
-    for (const auto& entry : dirIt) {
-        if (!entry.is_regular_file()) continue;
-        std::string ext = entry.path().extension().string();
+    for (const std::string& name : platform::ListDir(dirPath)) {
+        std::string ext = std::filesystem::u8path(name).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".qoi" || ext == ".png") {
-            texFiles.push_back(entry.path().string());
+            texFiles.push_back((std::filesystem::u8path(dirPath) / name).generic_string());
         }
     }
     std::sort(texFiles.begin(), texFiles.end());
@@ -1384,6 +1387,7 @@ void BasicTerrain::Draw() {
         DrawModel(model, position, 1.0f, WHITE);
         gfx::IncrementDrawCallCount(1);
         gfx::AddMeshCount(1);
+        gfx::AddModelTriangles(model);
         return;
     }
 
@@ -1447,6 +1451,7 @@ void BasicTerrain::Draw() {
     DrawModel(model, position, 1.0f, WHITE);
     gfx::IncrementDrawCallCount(1);
     gfx::AddMeshCount(1);
+    gfx::AddModelTriangles(model);
 }
 
 bool BasicTerrain::IsVisible(const Frustum& frustum) const {

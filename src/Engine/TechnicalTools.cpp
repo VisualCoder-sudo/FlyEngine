@@ -10,6 +10,7 @@
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/PostFX.hpp"
 
 #include <raylib.h>
 
@@ -56,8 +57,14 @@ constexpr int GL_SAMPLER_CUBE = 0x8B60;
 // is deliberate -- resolving them properly needs dbghelp, and that is a new
 // link dependency the player build does not otherwise have.
 #if defined(_WIN32)
-    // windows.h arrives with raylib.h on Windows; CaptureStackBackTrace is
-    // exported from kernel32, which every target here already links.
+    // CaptureStackBackTrace is exported from kernel32, which every target here
+    // already links. windows.h/psapi.h are needed for it and for
+    // GetProcessMemoryInfo; raylib.h does not pull them in.
+    #include "Engine/Platform/WinBegin.h"
+    #include <windows.h>
+    #include <psapi.h>
+    #include "Engine/Platform/WinEnd.h"
+    #pragma comment(lib, "psapi.lib")
 #else
     #if defined(__GLIBC__) || defined(__APPLE__)
         #include <execinfo.h>
@@ -750,6 +757,31 @@ void RegisterBuiltinCommands(Console& console, Engine* engine, CVarSystem& cvars
         }
     );
     
+    // Frame-rate limit of the editor (the same setting as Preferences > Rendering > FPS cap).
+    console.Register(
+        "fps_cap",
+        "Show or set the editor's frame-rate limit (0 = unlimited)",
+        "fps_cap [fps]",
+        [&](const std::vector<std::string>& args) {
+            gfx::RenderQuality& q = gfx::Quality();
+            if (args.empty()) {
+                console.AddOutput("fps_cap = " + (q.fpsCap == 0 ? std::string("unlimited") : std::to_string(q.fpsCap)), CYAN);
+                return true;
+            }
+            char* end = nullptr;
+            const long v = std::strtol(args[0].c_str(), &end, 10);
+            if (end == args[0].c_str() || *end != '\0' || v < 0 || v > 1000) {
+                console.AddOutput("Usage: fps_cap [0-1000]  (0 = unlimited)", RED);
+                return false;
+            }
+            q.fpsCap = (int)v;
+            gfx::ApplyFpsCap();
+            gfx::SaveQualitySettings();
+            console.AddOutput("fps_cap = " + (v == 0 ? std::string("unlimited") : std::to_string(v)), CYAN);
+            return true;
+        }
+    );
+
     // Clear
     console.Register(
         "clear",
@@ -1799,8 +1831,8 @@ InputRecorder& InputRecorder::Instance() {
 }
 
 void InputRecorder::Initialize() {
-    // Create recordings directory
-    fs::create_directories(recordingsPath);
+    // Create recordings directory (an exported game does not litter its folder with developer-tool directories)
+    if (!platform::IsEmbedded()) fs::create_directories(recordingsPath);
 }
 
 void InputRecorder::Shutdown() {
@@ -1901,7 +1933,7 @@ CaptureSystem& CaptureSystem::Instance() {
 
 void CaptureSystem::Initialize(const std::string& outputDir) {
     this->outputDir = outputDir;
-    fs::create_directories(outputDir);
+    if (!platform::IsEmbedded()) fs::create_directories(outputDir);
 }
 
 void CaptureSystem::CaptureScreenshot(bool includeUI, int superSample) {
@@ -2126,7 +2158,7 @@ void ShaderReloader::Initialize(Engine* eng) {
     
     // Create shader directory
     std::error_code ec;
-    fs::create_directories(shaderDir, ec);
+    if (!platform::IsEmbedded()) fs::create_directories(shaderDir, ec);
     
     CONSOLE.Log("Shader Reloader initialized. Press F7 for editor.");
 }

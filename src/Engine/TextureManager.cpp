@@ -2,6 +2,7 @@
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../include/Engine/TechnicalTools.hpp"
+#include "Engine/Platform/Platform.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <future>
@@ -159,7 +160,7 @@ void UnloadGPUTexture(const std::string& relPath) {
 }
 
 void LoadGPUCache() {
-    if (g_projectDir.empty()) return;
+    if (g_projectDir.empty() || platform::IsEmbedded()) return;
     g_gpuCacheFilePath = (fs::path(g_projectDir) / ".texture_gpu_cache.json").generic_string();
     g_gpuCacheLoaded = true;
     std::ifstream file(g_gpuCacheFilePath);
@@ -177,7 +178,7 @@ void LoadGPUCache() {
 }
 
 void SaveGPUCache() {
-    if (g_projectDir.empty() || g_gpuCacheFilePath.empty()) return;
+    if (g_projectDir.empty() || g_gpuCacheFilePath.empty() || platform::IsEmbedded()) return;
     std::ofstream file(g_gpuCacheFilePath);
     if (!file) return;
     

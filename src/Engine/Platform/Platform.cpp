@@ -4,6 +4,8 @@
 
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Platform/PlatformInternal.hpp"
+#include "Engine/Vfs.hpp"
+#include <algorithm>
 
 #include <cstdio>
 #include <cstdlib>
@@ -13,15 +15,11 @@
 #include <system_error>
 
 #if defined(_WIN32)
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
+    #include "Engine/Platform/WinBegin.h"
     #include <windows.h>
     #include <shlobj.h>
     #include <shellapi.h>
+    #include "Engine/Platform/WinEnd.h"
 #else
     #include <pwd.h>
     #include <unistd.h>
@@ -317,8 +315,60 @@ std::string FoundDataRoot() {
     return std::string();
 }
 
+bool IsEmbedded() { return vfs::Active(); }
+
+void InputStream::open(const std::string& path) {
+    opened_ = false;
+    clear();
+    if (vfs::Handles(path)) {
+        std::vector<unsigned char> bytes;
+        if (!vfs::Read(path, bytes)) { setstate(std::ios::failbit); return; }
+        mem_.str(std::string(bytes.begin(), bytes.end()));
+        rdbuf(&mem_);
+        opened_ = true;
+    } else if (file_.open(path, std::ios::in | std::ios::binary)) {
+        rdbuf(&file_);
+        opened_ = true;
+    } else {
+        setstate(std::ios::failbit);
+    }
+}
+
+bool FileExistsAny(const std::string& path) {
+    if (vfs::Handles(path)) return vfs::Exists(path);
+    return FileExists(path);
+}
+
+bool ReadAll(const std::string& path, std::vector<unsigned char>& out) {
+    out.clear();
+    if (vfs::Handles(path)) return vfs::Read(path, out);
+    std::ifstream in(fs::u8path(path), std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    const std::streamsize size = in.tellg();
+    in.seekg(0);
+    out.resize((size_t)size);
+    return size == 0 || (bool)in.read((char*)out.data(), size);
+}
+
+std::vector<std::string> ListDir(const std::string& dir) {
+    if (vfs::Handles(dir)) return vfs::List(dir);
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(fs::u8path(dir), ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        names.push_back(it->path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 std::string ResolveAsset(const std::string& repoRelative) {
     if (repoRelative.empty()) return std::string();
+
+    // An exported game keeps the engine's own data under "__engine/" in its archive.
+    if (vfs::Active()) {
+        const std::string virt = vfs::VirtualPath("__engine/" + repoRelative);
+        if (vfs::Exists(virt)) return virt;
+    }
 
     // An absolute path is the caller telling us exactly where it is; respect
     // that instead of appending it to a search root.

@@ -44,6 +44,9 @@ public:
     void Draw() override;
 
     BoundingBox GetBoundingBox() const;
+    // A plain opaque cube big enough to hide things behind it: fills `out` with its 8 world-space corners
+    // and returns true. Used by occlusion culling.
+    bool GetOccluderCorners(Vector3 out[8], float& volume) const;
     Vector3* GetPosPtr();
     Vector3* GetSizePtr();
     Color* GetColorPtr();
@@ -211,6 +214,11 @@ private:
     mutable int colliderCacheKey = -1;
     // Bumped whenever the mesh geometry changes so the collider cache reloads.
     unsigned int geometryVersion = 0;
+
+    // Last GetBoundingBox() answer and the pos/size/rotation it was computed from.
+    mutable Vector3 boundsCacheKey[3]{};
+    mutable BoundingBox boundsCache{};
+    mutable bool boundsCacheValid = false;
 
     // Transparency: 0 = fully visible/opaque, 1 = fully invisible/transparent
     float transparency = 0.0f;

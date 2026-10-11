@@ -2,6 +2,7 @@
 
 #include "Terrain.hpp"
 #include "TerrainTypes.hpp"
+#include "Engine/Platform/Platform.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -127,7 +128,7 @@ public:
     // pointer). The registry sets its Transform/layers/chunks from the file and
     // registers it into the slot order. Returns the number of terrains loaded.
     int ReadFile(const std::string& path, const std::function<Terrain*()>& create) {
-        std::ifstream in(path, std::ios::binary);
+        platform::InputStream in(path);
         if (!in) return 0;
 
         TerrainFileHeader fileHeader;

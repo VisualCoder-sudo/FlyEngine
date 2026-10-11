@@ -6,6 +6,7 @@
 #include "../../Terrain/TerrainCollider.hpp"
 #include "raylib.h"
 #include "raymath.h"
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -161,6 +162,14 @@ private:
 
     std::vector<b3HullData*> hulls;
     std::vector<b3MeshData*> meshes;
+    // Hulls / triangle meshes built from a model's geometry, kept between Play sessions and shared by every
+    // object using the same model at the same size (building one from a dense mesh is slow).
+    std::unordered_map<std::string, b3HullData*> hullCache;
+    std::unordered_map<std::string, b3MeshData*> meshCache;
+    std::string GeometryKey(const ScatteredObject* obj, const Vector3& size) const;
+    b3HullData* GetMeshHull(ScatteredObject* obj, const Vector3& size);       // nullptr if it cannot be built
+    b3MeshData* GetMeshShapeData(ScatteredObject* obj, const Vector3& size);  // nullptr if it cannot be built
+    void ClearGeometryCache();
     std::vector<terrain::TerrainCollider> terrainColliders;
     std::vector<b3JointId> joints;
 

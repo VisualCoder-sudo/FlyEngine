@@ -28,6 +28,7 @@
 // depend on struct padding or the compiler's layout. Every scalar is
 // little-endian, written byte by byte.
 
+#include "Engine/Platform/Platform.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
 
 #include "miniz.h"
@@ -244,7 +245,7 @@ bool BasicTerrain::SaveToFile(const std::string& path) const {
 }
 
 bool BasicTerrain::LoadFromFile(const std::string& path) {
-    std::ifstream is(path, std::ios::binary);
+    platform::InputStream is(path);
     if (!is) return false;
 
     char magic[4] = {0, 0, 0, 0};
@@ -279,7 +280,7 @@ int BasicTerrain::ReadCollection(const std::string& path,
                                  const std::function<BasicTerrain*()>& makeInstance) {
     if (!makeInstance) return 0;
 
-    std::ifstream is(path, std::ios::binary);
+    platform::InputStream is(path);
     if (!is) return 0;
 
     char magic[4] = {0, 0, 0, 0};

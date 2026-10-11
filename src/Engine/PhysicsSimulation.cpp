@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <map>
 
 namespace phys {
@@ -111,6 +112,18 @@ struct IndexedTriMesh {
     std::vector<int32_t> indices;
 };
 
+// Convex hull of a point cloud, simplified until Box3D accepts it. A hull with
+// more than 255 half-edges is rejected outright (a dense mesh like a circuit
+// board asks for ~300 at 64 vertices), which used to leave the object with no
+// collider at all -- you walked straight through it. Fewer vertices means
+// fewer edges (at most 6 per vertex), so retry with a smaller budget.
+b3HullData* CreateHullRobust(const std::vector<b3Vec3>& verts) {
+    for (int maxVerts : { 64, 48, 32, 24, 16, 8 }) {
+        if (b3HullData* hull = b3CreateHull(verts.data(), (int)verts.size(), maxVerts)) return hull;
+    }
+    return nullptr;
+}
+
 IndexedTriMesh BuildIndexedTriMesh(const std::vector<Vector3>& raw) {
     IndexedTriMesh result;
     std::map<std::tuple<int, int, int>, int32_t> vertMap;
@@ -150,6 +163,65 @@ Simulation::~Simulation() {
     // Height fields are referenced by shapes in the world, so the world goes first.
     world.reset();
     for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);
+    ClearGeometryCache();   // after the world: its shapes reference these
+}
+
+std::string Simulation::GeometryKey(const ScatteredObject* obj, const Vector3& size) const {
+    // The model's own meshes pointer distinguishes a model that was reloaded under the same path.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "|%p|%d|%.5f,%.5f,%.5f",
+                  obj->HasModel() ? (const void*)obj->GetModel().meshes : nullptr,
+                  (int)obj->GetShapeType(), size.x, size.y, size.z);
+    return obj->GetModelPath() + buf;
+}
+
+b3HullData* Simulation::GetMeshHull(ScatteredObject* obj, const Vector3& size) {
+    const std::string key = GeometryKey(obj, size);
+    auto it = hullCache.find(key);
+    if (it != hullCache.end()) return it->second;
+
+    std::vector<Vector3> rawVerts;
+    ExtractMeshVerts(obj, rawVerts);
+    std::vector<b3Vec3> verts = DedupeVertsToB3(rawVerts);
+    b3HullData* hull = nullptr;
+    if (verts.size() >= 4) {
+        for (auto& v : verts) { v.x *= size.x; v.y *= size.y; v.z *= size.z; }
+        hull = CreateHullRobust(verts);
+    }
+    hullCache[key] = hull;   // a failure is remembered too, so it is not retried for every copy
+    return hull;
+}
+
+b3MeshData* Simulation::GetMeshShapeData(ScatteredObject* obj, const Vector3& size) {
+    const std::string key = GeometryKey(obj, size);
+    auto it = meshCache.find(key);
+    if (it != meshCache.end()) return it->second;
+
+    std::vector<Vector3> rawVerts;
+    ExtractMeshVerts(obj, rawVerts);
+    b3MeshData* mesh = nullptr;
+    if (!rawVerts.empty()) {
+        IndexedTriMesh imesh = BuildIndexedTriMesh(rawVerts);
+        for (auto& v : imesh.vertices) { v.x *= size.x; v.y *= size.y; v.z *= size.z; }
+        b3MeshDef md{};
+        md.vertices = imesh.vertices.data();
+        md.indices = imesh.indices.data();
+        md.vertexCount = (int)imesh.vertices.size();
+        md.triangleCount = (int)imesh.indices.size() / 3;
+        md.weldTolerance = 0.001f;
+        md.weldVertices = true;
+        md.identifyEdges = true;
+        mesh = b3CreateMesh(&md, nullptr, 0);
+    }
+    meshCache[key] = mesh;
+    return mesh;
+}
+
+void Simulation::ClearGeometryCache() {
+    for (auto& [key, hull] : hullCache) if (hull) b3DestroyHull(hull);
+    for (auto& [key, mesh] : meshCache) if (mesh) b3DestroyMesh(mesh);
+    hullCache.clear();
+    meshCache.clear();
 }
 
 b3WorldId Simulation::GetWorldId() const {
@@ -275,6 +347,7 @@ void Simulation::StartPlay() {
     bodyToObject.clear();
     hulls.clear();
     meshes.clear();
+    if (hullCache.size() + meshCache.size() > 128) ClearGeometryCache();   // no world exists yet: safe to free
     joints.clear();
     contactBeginEvents.clear();
     contactHitEvents.clear();
@@ -419,17 +492,10 @@ void Simulation::CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId) {
                     hulls.push_back(cyl);
                 }
             } else {
-                std::vector<Vector3> rawVerts;
-                ExtractMeshVerts(obj, rawVerts);
-                std::vector<b3Vec3> verts = DedupeVertsToB3(rawVerts);
-                if (verts.size() >= 4) {
-                    for (auto& v : verts) { v.x *= size.x; v.y *= size.y; v.z *= size.z; }
-                    b3HullData* hull = b3CreateHull(verts.data(), (int)verts.size(), 64);
-                    if (hull) {
-                        b3CreateHullShape(bodyId, &shapeDef, hull);
-                        hulls.push_back(hull);
-                    }
+                if (b3HullData* hull = GetMeshHull(obj, size)) {
+                    b3CreateHullShape(bodyId, &shapeDef, hull);
                 } else {
+                    // Never leave a solid object without a collider.
                     b3BoxHull box = b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z);
                     b3CreateHullShape(bodyId, &shapeDef, &box.base);
                 }
@@ -456,41 +522,17 @@ void Simulation::CreateShapeForObject(ScatteredObject* obj, b3BodyId bodyId) {
                 // back to a convex hull for dynamic ones so their physics still
                 // works.
                 if (!obj->anchored) {
-                    std::vector<Vector3> rawVerts;
-                    ExtractMeshVerts(obj, rawVerts);
-                    std::vector<b3Vec3> verts = DedupeVertsToB3(rawVerts);
-                    if (verts.size() >= 4) {
-                        for (auto& v : verts) { v.x *= size.x; v.y *= size.y; v.z *= size.z; }
-                        b3HullData* hull = b3CreateHull(verts.data(), (int)verts.size(), 64);
-                        if (hull) {
-                            b3CreateHullShape(bodyId, &shapeDef, hull);
-                            hulls.push_back(hull);
-                            break;
-                        }
+                    if (b3HullData* hull = GetMeshHull(obj, size)) {
+                        b3CreateHullShape(bodyId, &shapeDef, hull);
+                        break;
                     }
                     b3BoxHull box = b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z);
                     b3CreateHullShape(bodyId, &shapeDef, &box.base);
                     break;
                 }
 
-                std::vector<Vector3> rawVerts;
-                ExtractMeshVerts(obj, rawVerts);
-                if (!rawVerts.empty()) {
-                    IndexedTriMesh imesh = BuildIndexedTriMesh(rawVerts);
-                    for (auto& v : imesh.vertices) { v.x *= size.x; v.y *= size.y; v.z *= size.z; }
-                    b3MeshDef md{};
-                    md.vertices = imesh.vertices.data();
-                    md.indices = imesh.indices.data();
-                    md.vertexCount = (int)imesh.vertices.size();
-                    md.triangleCount = (int)imesh.indices.size() / 3;
-                    md.weldTolerance = 0.001f;
-                    md.weldVertices = true;
-                    md.identifyEdges = true;
-                    b3MeshData* mesh = b3CreateMesh(&md, nullptr, 0);
-                    if (mesh) {
-                        b3CreateMeshShape(bodyId, &shapeDef, mesh, b3Vec3_one);
-                        meshes.push_back(mesh);
-                    }
+                if (b3MeshData* mesh = GetMeshShapeData(obj, size)) {
+                    b3CreateMeshShape(bodyId, &shapeDef, mesh, b3Vec3_one);
                 } else {
                     b3BoxHull box = b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z);
                     b3CreateHullShape(bodyId, &shapeDef, &box.base);

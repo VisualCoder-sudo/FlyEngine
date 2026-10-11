@@ -1,4 +1,5 @@
 #include "../../include/CityGen/City.hpp"
+#include "Engine/Platform/Platform.hpp"
 #include "../../include/CityGen/CityEditor.hpp"
 #include "../../include/CityGen/CityGeometry.hpp"
 #include "../../include/CityGen/CityPhysics.hpp"
@@ -6489,7 +6490,7 @@ bool CityRegistry::WriteFile(const std::string& path) const {
 }
 
 int CityRegistry::ReadFile(const std::string& path, const std::function<City*()>& create) {
-    std::ifstream in(path, std::ios::binary);
+    platform::InputStream in(path);
     if (!in) return 0;
 
     CityFileHeader fh;

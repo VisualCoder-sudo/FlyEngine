@@ -1,6 +1,7 @@
 #include "../../include/Engine.hpp"
 #include "../../include/Engine/Graphics.hpp"
 #include "../../include/Engine/PostFX.hpp"
+#include "../../include/Engine/Occlusion.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
@@ -188,7 +189,19 @@ void Engine::Draw() {
         gfx::DrawGround();
         gfx::IncrementDrawCallCount(1); // ground plane
         gfx::AddMeshCount(1);
-        gfx::AddTriangleCount(6); // ground plane is 2 triangles
+        gfx::AddTriangleCount(2); // ground plane is 2 triangles
+        // Big opaque boxes hide what is behind them: rasterize them once so the objects drawn below can be
+        // skipped when they are completely covered.
+        if (gfx::GetFrustumCullingEnabled()) {
+            std::vector<occlusion::OccluderBox> occluders;
+            for (auto& entity : entities) {
+                if (isPlayerBuild && entity->IsEditorOnly()) continue;
+                auto* obj = dynamic_cast<ScatteredObject*>(entity.get());
+                occlusion::OccluderBox box;
+                if (obj && obj->GetOccluderCorners(box.corners, box.volume)) occluders.push_back(box);
+            }
+            occlusion::BeginFrame(occluders);
+        }
         // Draw opaque entities first (they write depth)
         for (auto& entity : entities) {
             if (isPlayerBuild && entity->IsEditorOnly()) continue;
@@ -196,6 +209,7 @@ void Engine::Draw() {
                 entity->Draw(); // Entity handles its own frustum culling and draw call counting
             }
         }
+        occlusion::EndFrame();
         pOpaque = GetTime();
         // Draw transparent entities last (water renders on top, reads depth)
         for (auto& entity : entities) {

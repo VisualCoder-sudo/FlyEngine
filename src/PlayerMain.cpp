@@ -32,6 +32,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include "Engine/Vfs.hpp"
+#include "Engine/Scripts/StaticModules.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -40,6 +42,23 @@
 #include <vector>
 #include <chrono>
 #include <deque>
+#include <sstream>
+
+#if defined(_WIN32)
+#include "Engine/Platform/WinBegin.h"
+#include <windows.h>
+#include "Engine/Platform/WinEnd.h"
+#include <cstdio>
+// FlyPlayer is a GUI-subsystem program, so it has no console of its own. When it is started from a
+// terminal, join that terminal so printf/fprintf output (scene load errors, "[Player]" lines) is visible.
+static void AttachParentConsole() {
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+}
+#endif
 
 namespace fs = std::filesystem;
 
@@ -554,6 +573,7 @@ static DebugStats g_debugStats;
 struct PlayerOptions {
     std::string projectPath;
     int targetFPS = 60;
+    bool fpsFromArgs = false;   // a --capfps*/--fps flag was given; otherwise the editor's FPS cap applies
     bool noScripts = false;
     bool noCacheRecompile = false;
     bool fullscreen = false;
@@ -572,7 +592,9 @@ static void PrintUsage(const char* exeName) {
         "\n"
         "Options:\n"
         "  --capfps30           Cap framerate at 30 FPS\n"
-        "  --capfps60           Cap framerate at 60 FPS (default)\n"
+        "  --capfps60           Cap framerate at 60 FPS\n"
+        "  --fps <n>            Cap framerate at n FPS (0 = unlimited)\n"
+        "                       (default: the FPS cap set in the editor's Preferences > Rendering)\n"
         "  --noscripts          Disable game scripts (Scripts/*.cpp) entirely\n"
         "  --nocacherecompile   Skip shader cache recompilation on startup\n"
         "  --fullscreen         Start in fullscreen mode\n"
@@ -609,8 +631,12 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             if (i + 1 < argc) opts.projectPath = argv[++i];
         } else if (arg == "--capfps30") {
             opts.targetFPS = 30;
+            opts.fpsFromArgs = true;
         } else if (arg == "--capfps60") {
             opts.targetFPS = 60;
+            opts.fpsFromArgs = true;
+        } else if (arg == "--fps") {
+            if (i + 1 < argc) { opts.targetFPS = std::max(0, std::atoi(argv[++i])); opts.fpsFromArgs = true; }
         } else if (arg == "--noscripts") {
             opts.noScripts = true;
             std::printf("[Player] --noscripts flag detected, game scripts disabled\n");
@@ -661,11 +687,68 @@ static fs::path ResolveProjectDir(const std::string& input) {
     return p;
 }
 
+// What an exported game carries in its archive, besides the project: how it should present itself (written by the
+// editor's Export dialog, see __meta/export.cfg) and the graphics settings chosen at export time.
+struct EmbeddedConfig {
+    std::string projectFile;   // the .flyproj inside the archive, relative to its root
+    std::string name;          // project name
+    std::string title;         // window title
+    std::string exeName;       // file name chosen at export; the X11 window class, so a .desktop file can match it
+    int width = 1280, height = 720;
+    bool fullscreen = false;
+};
+
+static std::string ReadEmbeddedText(const char* path) {
+    std::vector<unsigned char> bytes;
+    if (!vfs::Read(path, bytes)) return std::string();
+    return std::string(bytes.begin(), bytes.end());
+}
+
+static EmbeddedConfig ReadEmbeddedConfig() {
+    EmbeddedConfig cfg;
+    std::istringstream in(ReadEmbeddedText("__meta/export.cfg"));
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t sp = line.find(' ');
+        if (sp == std::string::npos) continue;
+        const std::string key = line.substr(0, sp), value = line.substr(sp + 1);
+        if (key == "projectFile") cfg.projectFile = value;
+        else if (key == "name") cfg.name = value;
+        else if (key == "title") cfg.title = value;
+        else if (key == "exe") cfg.exeName = value;
+        else if (key == "width") cfg.width = std::max(320, std::atoi(value.c_str()));
+        else if (key == "height") cfg.height = std::max(240, std::atoi(value.c_str()));
+        else if (key == "fullscreen") cfg.fullscreen = std::atoi(value.c_str()) != 0;
+    }
+    return cfg;
+}
+
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+    AttachParentConsole();
+#endif
+    // An exported game is this executable with an archive appended; when there is one, it is the project.
+    const bool embedded = vfs::MountSelfExecutable();
+    EmbeddedConfig emb;
+    if (embedded) {
+        emb = ReadEmbeddedConfig();
+        if (emb.projectFile.empty()) {
+            std::fprintf(stderr, "This executable's data archive has no project in it.\n");
+            return 1;
+        }
+    }
     PlayerOptions opts = ParseArgs(argc, argv);
+    if (embedded) {
+        // The game cannot be pointed at another project, and it never builds scripts at startup.
+        opts.projectPath = vfs::VirtualPath(emb.projectFile);
+        opts.noScripts = !NativeScript::HasStaticModules();   // built-in scripts load as usual; nothing else is ever built
+        if (opts.width == 1280 && opts.height == 720) { opts.width = emb.width; opts.height = emb.height; }
+        if (emb.fullscreen) opts.fullscreen = true;
+    }
 
     // Auto-detect project from working directory if not specified
-    if (opts.projectPath.empty()) {
+    if (opts.projectPath.empty() && !embedded) {
         fs::path cwd = fs::current_path();
         // Check if CWD or parent contains a .flyproj file
         fs::path projDir = cwd;
@@ -694,8 +777,8 @@ int main(int argc, char* argv[]) {
     }
 
     fs::path projectInput = opts.projectPath;
-    // Make absolute to handle relative paths correctly
-    projectInput = fs::absolute(projectInput);
+    // Make absolute to handle relative paths correctly (an archive path already is complete)
+    if (!embedded) projectInput = fs::absolute(projectInput);
     bool isSpecificFlyproj = projectInput.extension() == ".flyproj";
     
     fs::path projectDir;
@@ -705,14 +788,17 @@ int main(int argc, char* argv[]) {
         projectDir = ResolveProjectDir(opts.projectPath);
     }
     
-    if (!fs::exists(projectDir)) {
+    if (!embedded && !fs::exists(projectDir)) {
         std::fprintf(stderr, "Project not found: %s\n", projectDir.string().c_str());
         return 1;
     }
 
     // Read project info to get window title
     project::Info info;
-    if (isSpecificFlyproj) {
+    if (embedded) {
+        info.name = emb.name.empty() ? projectInput.stem().string() : emb.name;
+        info.path = vfs::kRoot;
+    } else if (isSpecificFlyproj) {
         if (!project::ReadProjectHeader(projectInput.string(), info)) {
             info.name = projectInput.stem().string();
             info.path = projectDir.string();
@@ -732,10 +818,25 @@ int main(int argc, char* argv[]) {
     // ShaderCache is initialized by graphics system
 
     // Create engine in player mode
-    Engine engine(opts.width, opts.height, info.name + " / FlyEngine C++ Runtime", opts.targetFPS);
+    const std::string windowTitle = embedded ? (emb.title.empty() ? info.name : emb.title)
+                                             : info.name + " / FlyEngine C++ Runtime";
+    Engine engine(opts.width, opts.height, windowTitle, opts.targetFPS);
     engine.SetPlayerBuild(true);
-    gfx::LoadQualitySettings();
+    if (embedded) {
+        // The game's own icon (File > Export > Icon), when it has one.
+        std::vector<unsigned char> iconBytes;
+        if (vfs::Read("__meta/icon.png", iconBytes) && !iconBytes.empty()) {
+            Image icon = LoadImageFromMemory(".png", iconBytes.data(), (int)iconBytes.size());
+            if (icon.data != nullptr) { project::ApplyWindowIconImage(icon); UnloadImage(icon); }
+        }
+        if (!emb.exeName.empty()) SetWindowClass(emb.exeName.c_str());
+    }
+    if (embedded) gfx::LoadQualitySettingsFromText(ReadEmbeddedText("__meta/graphics.cfg"));   // chosen at export time
+    else gfx::LoadQualitySettings();
     if (opts.quality >= 0) gfx::SetQualityTier(opts.quality);
+    // The editor's FPS cap (Preferences > Rendering) also governs the player, unless the command line chose one.
+    if (opts.fpsFromArgs) SetTargetFPS(opts.targetFPS);
+    else gfx::ApplyFpsCap();
 
     // The loading screen: this machine's choice (Preferences > Loading in the editor), then the project's own
     // look if it has one, then the command line.
@@ -774,8 +875,8 @@ int main(int argc, char* argv[]) {
     // C/C++ plugins (unless --no-native-scripts). Created before the scene
     // loads because scene persistence restores the standalone-script list
     // into its runtime.
-    bool noNativeScripts = false;
-    for (int i = 1; i < argc; ++i) {
+    bool noNativeScripts = embedded && !NativeScript::HasStaticModules();   // plugins are built in (or absent), never loaded from disk
+    for (int i = 1; i < argc && !embedded; ++i) {
         if (std::string(argv[i]) == "--no-native-scripts") {
             noNativeScripts = true;
             break;
@@ -903,6 +1004,11 @@ int main(int argc, char* argv[]) {
     // Custom run loop with debug stats
     std::printf("[Player] Press Ctrl+F5 to toggle debug stats overlay, F9 for the memory tracker\n");
     
+    // Test hooks: FLY_EXIT_AFTER_FRAMES=<n> quits after n frames (FLY_SCREENSHOT=<file> saves the last one first).
+    const char* exitAfterEnv = std::getenv("FLY_EXIT_AFTER_FRAMES");
+    const int exitAfterFrames = exitAfterEnv ? std::atoi(exitAfterEnv) : 0;
+    int frameCounter = 0;
+
     while (!WindowShouldClose()) {
         g_debugStats.FrameStart();
         
@@ -1000,6 +1106,11 @@ int main(int argc, char* argv[]) {
         engine.RenderFrame();
         
         g_debugStats.FrameEnd();
+
+        if (exitAfterFrames > 0 && ++frameCounter >= exitAfterFrames) {
+            if (const char* shot = std::getenv("FLY_SCREENSHOT")) TakeScreenshot(shot);
+            break;
+        }
     }
     
     // Shutdown Technical Tools

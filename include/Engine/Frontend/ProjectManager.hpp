@@ -23,6 +23,8 @@ struct Info {
 // Applies the Flyengine logo as the active window's icon/taskbar icon.
 // Safe to call from the splash, project manager, or editor window.
 void ApplyWindowIcon();
+// Sets `source` (any size) as the active window's icon.
+void ApplyWindowIconImage(const Image& source);
 
 // Runs the project-manager window (its own raylib window). Returns the
 // project the user chose to open, or an empty Info if they quit.

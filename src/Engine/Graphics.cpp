@@ -873,7 +873,7 @@ void Init() {
     // harness stubs GetRoadShader() so it can never see this; the file + loud log
     // let the real application surface it.
     if (!IsShaderValid(roadShader)) {
-        FILE* dzD = std::fopen("road_shader_status.txt", "w");
+        FILE* dzD = platform::IsEmbedded() ? nullptr : std::fopen("road_shader_status.txt", "w");
         if (dzD) {
             fputs("ROAD_SHADER_LINK_FAILED - road depth bias INACTIVE, expect z-fighting.\n", dzD);
             fclose(dzD);
@@ -881,7 +881,7 @@ void Init() {
         TraceLog(LOG_ERROR, "ROAD SHADER LINK FAILED (id=0): depth bias inactive, "
                             "roads will z-fight the ground at altitude. Check road_shader_status.txt");
     } else {
-        FILE* dzD = std::fopen("road_shader_status.txt", "w");
+        FILE* dzD = platform::IsEmbedded() ? nullptr : std::fopen("road_shader_status.txt", "w");
         if (dzD) {
             fputs("ROAD_SHADER_LINK_OK - depth bias active (constant world-space offset).\n", dzD);
             fclose(dzD);
@@ -1847,6 +1847,9 @@ void gfx::IncrementDrawCallCount(int count) { g_drawCallCount += count; }
 
 int gfx::GetTriangleCount() { return g_triangleCount; }
 void gfx::AddTriangleCount(int count) { g_triangleCount += count; }
+void gfx::AddModelTriangles(const Model& model) {
+    for (int i = 0; i < model.meshCount; ++i) g_triangleCount += model.meshes[i].triangleCount;
+}
 
 int gfx::GetMeshCount() { return g_meshCount; }
 void gfx::AddMeshCount(int count) { g_meshCount += count; }

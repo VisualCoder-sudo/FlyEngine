@@ -10,6 +10,9 @@
 #pragma once
 
 #include <string>
+#include <istream>
+#include <sstream>
+#include <fstream>
 #include <vector>
 
 // Export decoration for the FlyNative_* C ABI (FlyScriptApi.cpp). Game
@@ -65,6 +68,8 @@ enum class DialogPurpose {
     ImportMesh,
     ChooseProjectFolder,
     ChooseFolder,
+    ExportFolder,
+    ExportIcon,
 };
 
 // Only one dialog can be in flight at a time; the editor UI is modal anyway.
@@ -187,6 +192,29 @@ bool HasUsableFont();
 // the file is not present under any search root, which callers pass on to
 // raylib unchanged so the usual "FILEIO: failed to open" warning still fires.
 std::string ResolveAsset(const std::string& repoRelative);
+
+// --- Exported games ---------------------------------------------------------
+// An exported game carries its project and engine data in an archive appended to its executable (vfs::, see
+// Engine/Vfs.hpp). These helpers read from that archive first and from the disk otherwise, so code that is not
+// going through raylib's file functions (which are already redirected) can stay path based.
+bool IsEmbedded();                                                    // running from an exported executable
+bool FileExistsAny(const std::string& path);
+bool ReadAll(const std::string& path, std::vector<unsigned char>& out);
+std::vector<std::string> ListDir(const std::string& dir);             // names of the immediate children
+
+// Input stream over a file on disk or one inside the exported archive (a drop-in for std::ifstream in readers
+// that are given a path). Check it like a stream: `platform::InputStream in(path); if (!in) return false;`
+class InputStream : public std::istream {
+public:
+    InputStream() : std::istream(nullptr) {}
+    explicit InputStream(const std::string& path) : std::istream(nullptr) { open(path); }
+    void open(const std::string& path);
+    bool is_open() const { return opened_; }
+private:
+    std::filebuf file_;
+    std::stringbuf mem_;
+    bool opened_ = false;
+};
 
 // Same as ResolveAsset but takes a bare shader file name ("terrain.vert").
 // CMake flattens the shaders next to the executable in a dev build, while an

@@ -695,6 +695,7 @@ void WaterBody::Draw() {
         DrawModel(farShellModel, { 0.0f, 0.0f, 0.0f }, 1.0f, WHITE);
         gfx::IncrementDrawCallCount(1);
         gfx::AddMeshCount(1);
+        gfx::AddModelTriangles(farShellModel);
     }
 
     // Chunks render inside the disk - disable the shell's rim clip for them.
@@ -746,6 +747,7 @@ void WaterBody::Draw() {
         DrawModel(chunk.model, { 0.0f, 0.0f, 0.0f }, 1.0f, WHITE);
         gfx::IncrementDrawCallCount(1);
         gfx::AddMeshCount(1);
+        gfx::AddModelTriangles(chunk.model);
     }
 
     EndShaderMode();

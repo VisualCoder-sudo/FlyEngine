@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -341,6 +342,7 @@ void SetQualityTier(int tier) {
     q.clouds = tier;
     q.volumetrics = tier == 0 ? 0 : (tier == 1 ? 1 : 2);
     q.shadowCascades = tier == 0 ? 1 : (tier == 1 ? 2 : (tier == 2 ? 3 : 4));
+    q.fpsCap = quality.fpsCap;   // the frame-rate limit is not part of a preset
     quality = q;
 }
 
@@ -351,11 +353,7 @@ std::string QualityFile() {
 }
 }
 
-void LoadQualitySettings() {
-    const std::string path = QualityFile();
-    if (path.empty()) return;
-    std::ifstream in(path);
-    if (!in) return;
+static void ParseQuality(std::istream& in) {
     RenderQuality q = quality;
     std::string key;
     while (in >> key) {
@@ -369,11 +367,37 @@ void LoadQualitySettings() {
         else if (key == "clouds") q.clouds = std::clamp((int)v, 0, 3);
         else if (key == "volumetrics") q.volumetrics = std::clamp((int)v, 0, 2);
         else if (key == "shadowCascades") q.shadowCascades = std::clamp((int)v, 1, 4);
+        else if (key == "fpsCap") q.fpsCap = std::clamp((int)v, 0, 1000);
     }
     quality = q;
 }
 
+void LoadQualitySettings() {
+    const std::string path = QualityFile();
+    if (path.empty()) return;
+    std::ifstream in(path);
+    if (!in) return;
+    ParseQuality(in);
+}
+
+void LoadQualitySettingsFromText(const std::string& text) {
+    std::istringstream in(text);
+    ParseQuality(in);
+}
+
+std::string QualitySettingsText() { return QualitySettingsText(quality); }
+
+std::string QualitySettingsText(const RenderQuality& q) {
+    std::ostringstream out;
+    out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
+        << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
+        << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
+        << "\nfpsCap " << q.fpsCap << "\n";
+    return out.str();
+}
+
 void SaveQualitySettings() {
+    if (platform::IsEmbedded()) return;   // an exported game never writes the machine's graphics.cfg
     const std::string path = QualityFile();
     if (path.empty()) return;
     std::error_code ec;
@@ -383,8 +407,11 @@ void SaveQualitySettings() {
     const RenderQuality& q = quality;
     out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
         << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
-        << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades << "\n";
+        << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
+        << "\nfpsCap " << q.fpsCap << "\n";
 }
+
+void ApplyFpsCap() { SetTargetFPS(quality.fpsCap); }
 
 void InitPostFX() {
     if (ps.initialized) return;

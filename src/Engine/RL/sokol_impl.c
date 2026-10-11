@@ -234,20 +234,14 @@ void flyapp_recenter_locked_pointer(void) {
         XGrabPointer(_sapp.x11.display, _sapp.x11.window, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
                      GrabModeAsync, GrabModeAsync, _sapp.x11.window, _sapp.x11.hidden_cursor, CurrentTime);
     }
-    Window root_ret, child_ret;
-    int root_x, root_y, win_x, win_y;
-    unsigned int mask;
-    const int w = _sapp.window_width, h = _sapp.window_height;
-    if (!XQueryPointer(_sapp.x11.display, _sapp.x11.window, &root_ret, &child_ret,
-                       &root_x, &root_y, &win_x, &win_y, &mask)) {
-        XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, w / 2, h / 2);   // on another screen: bring it back
-        XFlush(_sapp.x11.display);
-        return;
-    }
-    if (win_x < w / 4 || win_x > w - w / 4 || win_y < h / 4 || win_y > h - h / 4) {
-        XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, w / 2, h / 2);
-        XFlush(_sapp.x11.display);
-    }
+    // Warp back to the centre every frame, from the very first one (as GLFW's disabled cursor does). The raw
+    // motion events carry the camera movement, so the visible pointer position does not matter -- but keeping it
+    // at the centre means even a fast flick cannot carry it out of the window within a frame. Under XWayland the
+    // warp (made while the pointer is grabbed and hidden) is also what makes the compositor lock the pointer;
+    // before, nothing warped until it had already strayed a quarter of the window from the centre, so a quick
+    // swipe right after the lock could leave the window.
+    XWarpPointer(_sapp.x11.display, None, _sapp.x11.window, 0, 0, 0, 0, _sapp.window_width / 2, _sapp.window_height / 2);
+    XFlush(_sapp.x11.display);
 }
 
 void* flyapp_native_window(void) {

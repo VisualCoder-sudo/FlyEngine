@@ -66,6 +66,9 @@ private:
     bool crouch = false;
     bool grounded = false;
     float verticalVelocity = 0.0f;  // persists across frames so gravity actually accumulates
+    // Step-ups and step-downs move the capsule at once (physics needs that), so the camera is eased
+    // instead: the capsule's jump is stored here (negated) and decays to zero, which the camera adds.
+    float stepSmoothOffset = 0.0f;
     float coyoteTimer = 0.0f;
     float jumpBufferTimer = 0.0f;
 

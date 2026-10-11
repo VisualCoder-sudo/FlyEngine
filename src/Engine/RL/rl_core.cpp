@@ -1,5 +1,6 @@
 // raylib core module on sokol_app: window lifecycle, frame pacing, input,
 // timing, files and misc utilities.
+#include "flyvfs.h"
 #include "rl_internal.hpp"
 
 #include "flyapp.h"
@@ -590,14 +591,20 @@ int GetRandomValue(int min, int max) {
     return dist(g_rng);
 }
 
+static const FlyVfsHooks* g_vfs = nullptr;
+void FlySetVfsHooks(const FlyVfsHooks* hooks) { g_vfs = hooks; }
+static bool VfsOwns(const char* path) { return g_vfs && path && g_vfs->handles && g_vfs->handles(path) != 0; }
+
 bool FileExists(const char* fileName) {
     if (!fileName || !*fileName) return false;
+    if (VfsOwns(fileName)) return g_vfs->fileExists(fileName) != 0;
     std::error_code ec;
     return fs::is_regular_file(fs::u8path(fileName), ec);
 }
 
 bool DirectoryExists(const char* dirPath) {
     if (!dirPath || !*dirPath) return false;
+    if (VfsOwns(dirPath)) return g_vfs->dirExists(dirPath) != 0;
     std::error_code ec;
     return fs::is_directory(fs::u8path(dirPath), ec);
 }
@@ -643,6 +650,13 @@ const char* GetWorkingDirectory(void) {
 
 unsigned char* LoadFileData(const char* fileName, int* dataSize) {
     if (dataSize) *dataSize = 0;
+    if (VfsOwns(fileName)) {
+        int size = 0;
+        unsigned char* data = g_vfs->readFile ? g_vfs->readFile(fileName, &size) : nullptr;
+        if (!data) TraceLog(LOG_WARNING, "FILEIO: [%s] Not found in the embedded archive", fileName);
+        if (dataSize) *dataSize = data ? size : 0;
+        return data;
+    }
     FILE* f = fileName ? std::fopen(fileName, "rb") : nullptr;
     if (!f) {
         TraceLog(LOG_WARNING, "FILEIO: [%s] Failed to open file", fileName ? fileName : "(null)");
@@ -717,9 +731,13 @@ char* LoadFileText(const char* fileName) {
     int size = 0;
     unsigned char* data = LoadFileData(fileName, &size);
     if (!data && size == 0) {
-        FILE* f = fileName ? std::fopen(fileName, "rb") : nullptr;
-        if (!f) return nullptr;
-        std::fclose(f);
+        if (VfsOwns(fileName)) {
+            if (!g_vfs->fileExists(fileName)) return nullptr;
+        } else {
+            FILE* f = fileName ? std::fopen(fileName, "rb") : nullptr;
+            if (!f) return nullptr;
+            std::fclose(f);
+        }
     }
     char* text = (char*)RL_MALLOC((size_t)size + 1);
     if (size > 0) std::memcpy(text, data, (size_t)size);
@@ -746,3 +764,4 @@ unsigned char* CompressData(const unsigned char*, int, int* compDataSize) {
     TraceLog(LOG_WARNING, "SYSTEM: CompressData() is not available in this build");
     return nullptr;
 }
+

@@ -74,6 +74,21 @@ add_executable(texture_hash_test texture_hash_test.cpp)
 target_link_libraries(texture_hash_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME texture_hash COMMAND texture_hash_test)
 
+# The export archive and virtual file system (pack files onto an executable, mount, read back). No window.
+add_executable(vfs_pack_test vfs_pack_test.cpp)
+target_link_libraries(vfs_pack_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME vfs_pack COMMAND vfs_pack_test)
+
+# Export for Windows from a prebuilt player (stand-in PE executable). No window.
+add_executable(export_windows_test export_windows_test.cpp)
+target_link_libraries(export_windows_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME export_windows COMMAND export_windows_test)
+
+# Window-free: patches the icon of a synthetic PE (src/Engine/Export/PeIcon.cpp).
+add_executable(pe_icon_test pe_icon_test.cpp)
+target_link_libraries(pe_icon_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME pe_icon COMMAND pe_icon_test)
+
 # Property test for the city polygon helpers (park outlines / triangulation).
 add_executable(city_geometry_test city_geometry_test.cpp
     ${CMAKE_SOURCE_DIR}/src/CityGen/CityGeometry.cpp

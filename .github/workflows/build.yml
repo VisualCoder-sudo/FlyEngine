@@ -232,6 +232,23 @@ jobs:
           }
           Write-Host "no dynamic CRT dependency"
 
+      # A portable zip: unzip anywhere and run bin\Flyengine.exe. The engine finds assets/ by searching relative to
+      # the executable (share/flyengine), so no installer or working directory is needed.
+      - name: Create the portable zip
+        run: |
+          cmake --install build --prefix stage/Flyengine
+          foreach ($f in 'bin/Flyengine.exe', 'bin/FlyPlayer.exe', 'share/flyengine/assets', 'share/flyengine/ScriptingSDK') {
+            if (-not (Test-Path "stage/Flyengine/$f")) { Write-Host "::error::missing $f in the install tree"; exit 1 }
+          }
+          Compress-Archive -Path stage/Flyengine -DestinationPath flyengine-windows-x86_64.zip
+          Get-ChildItem flyengine-windows-x86_64.zip | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flyengine-windows-x86_64
+          path: flyengine-windows-x86_64.zip
+          if-no-files-found: error
+
   package:
     name: Linux tarball
     runs-on: ubuntu-latest

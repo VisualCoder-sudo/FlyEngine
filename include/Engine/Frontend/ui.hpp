@@ -110,6 +110,13 @@ void ShowPreferences(bool show, int category);
 // The top-bar Import button requests a mesh import; the interaction manager
 // consumes the request once per frame it was set (never while play is active).
 bool ConsumeImportRequest();
+
+// Export (File > Export...), see ExportDialog.cpp.
+void OpenExportDialog();
+void DrawExportDialog();                           // once per frame, from DrawImGuiFrame
+bool ConsumeExportRequest();                       // the dialog's Export button was pressed: save the project, then...
+void StartExport(const std::string& projectDir);   // ...call this (the saved files are what gets packed)
+bool IsExporting();
 // Asset-browser drag released over the viewport: model path + ground position.
 bool ConsumeModelSpawnRequest(std::string& outPath, Vector3& outPos);
 

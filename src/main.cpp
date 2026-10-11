@@ -113,6 +113,7 @@ void RunEditor(const project::Info& info) {
     Engine engine(1280, 720, "Flyengine Editor / " + info.name);
     engine.SetClearColor(Color{ 36, 38, 44, 255 });
     gfx::LoadQualitySettings();     // Preferences > Rendering
+    gfx::ApplyFpsCap();             // ...including its frame-rate cap
 
     // The loading screen (Preferences > Loading): a percentage, what is being done, and the log lines.
     loading::Load();

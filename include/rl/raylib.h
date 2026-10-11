@@ -983,6 +983,17 @@ extern "C" {            // Prevents name mangling of functions
 #endif
 
 // Window-related functions
+#if defined(_WIN32) && !defined(RL_NO_WIN32_SYMBOL_RENAME)
+// user32.lib exports CloseWindow/ShowCursor too. Because sokol_app pulls in user32,
+// FlyRL's own definitions would clash at link time (LNK2005), so they are
+// exported as rl_CloseWindow/rl_ShowCursor. Source code keeps using the raylib
+// names. WinBegin.h/WinEnd.h cooperate with these macros.
+#define RL_WIN32_SYMBOL_RENAME 1
+#undef CloseWindow
+#undef ShowCursor
+#define CloseWindow rl_CloseWindow
+#define ShowCursor  rl_ShowCursor
+#endif
 RLAPI void InitWindow(int width, int height, const char *title);  // Initialize window and OpenGL context
 RLAPI void CloseWindow(void);                                     // Close window and unload OpenGL context
 RLAPI bool WindowShouldClose(void);                               // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)

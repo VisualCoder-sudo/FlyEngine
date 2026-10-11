@@ -1,3 +1,4 @@
+#include "Engine/Vfs.hpp"
 #include <unordered_set>
 #include "../../../include/Engine/Backend/ModelImport.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
@@ -406,6 +407,8 @@ ImportResult ImportModel(const std::string& sourcePath,
 std::string ResolveStoredAssetPath(const std::string& stored, const std::string& projectDir) {
     if (stored.empty() || projectDir.empty()) return stored;
     if (IsAbsolutePath(stored)) return stored;
+    // Inside an exported game's archive there is no real directory to make the path absolute against.
+    if (vfs::Handles(projectDir)) return (fs::path(projectDir) / stored).lexically_normal().generic_string();
     std::error_code ec;
     fs::path resolved = fs::absolute(fs::path(projectDir) / stored, ec);
     if (ec) return stored;
@@ -414,6 +417,7 @@ std::string ResolveStoredAssetPath(const std::string& stored, const std::string&
 
 bool IsAbsolutePath(const std::string& p) {
     if (p.empty()) return false;
+    if (vfs::Handles(p)) return true;   // an archive path: already complete
     // std::filesystem handles every case correctly per-platform: "C:\x" and
     // "\\server\share" on Windows, a leading "/" on POSIX. The previous
     // hand-rolled check only recognised a drive letter or a leading "//", so a

@@ -8,8 +8,21 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#else
 #include <dirent.h>
 #include <unistd.h>
+#endif
 
 // strdup is POSIX, not C standard
 #ifndef _GNU_SOURCE
@@ -550,25 +563,42 @@ static void scan_type_dir(const char* base_path, const char* type_dir, PluginTyp
     struct stat st;
     if (stat(full_path, &st) != 0 || !S_ISDIR(st.st_mode)) return;
     
-    // Use opendir/readdir
+    // Directory iteration (FindFirstFile on Windows, opendir/readdir elsewhere)
+#define FLY_ADD_PLUGIN(NAME) do { \
+        PluginInfo* info = scan_plugin_dir(base_path, type_dir, (NAME)); \
+        if (info) { \
+            if (list->count >= list->capacity) { \
+                list->capacity = list->capacity ? list->capacity * 2 : 8; \
+                list->plugins = realloc(list->plugins, list->capacity * sizeof(PluginInfo)); \
+            } \
+            list->plugins[list->count++] = *info; \
+            free(info); \
+        } \
+    } while (0)
+
+#ifdef _WIN32
+    char pattern[1100];
+    snprintf(pattern, sizeof(pattern), "%s/*", full_path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!is_plugin_dir(fd.cFileName)) continue;
+        FLY_ADD_PLUGIN(fd.cFileName);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
     DIR* dir = opendir(full_path);
     if (!dir) return;
-    
+
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
         if (!is_plugin_dir(entry->d_name)) continue;
-        
-        PluginInfo* info = scan_plugin_dir(base_path, type_dir, entry->d_name);
-        if (info) {
-            if (list->count >= list->capacity) {
-                list->capacity = list->capacity ? list->capacity * 2 : 8;
-                list->plugins = realloc(list->plugins, list->capacity * sizeof(PluginInfo));
-            }
-            list->plugins[list->count++] = *info;
-            free(info);
-        }
+        FLY_ADD_PLUGIN(entry->d_name);
     }
     closedir(dir);
+#endif
+#undef FLY_ADD_PLUGIN
 }
 
 PluginList* PluginList_Scan(const char* project_root, char** error_out) {

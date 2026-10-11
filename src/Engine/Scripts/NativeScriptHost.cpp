@@ -4,6 +4,7 @@
  */
 
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
+#include "../../../include/Engine/Scripts/StaticModules.hpp"
 #include "../../../include/CPluginAPI.h"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
@@ -23,22 +24,39 @@
 #include <chrono>
 #include <thread>
 
+#if defined(_WIN32)
+    #include "../../../include/Engine/Platform/WinBegin.h"
+    #include <windows.h>
+    #include "../../../include/Engine/Platform/WinEnd.h"
+    // windows.h maps LoadLibrary -> LoadLibraryA, which would rename the
+    // NativeScriptHost::LoadLibrary member defined below.
+    #undef LoadLibrary
+#endif
+
 namespace fs = std::filesystem;
 
 namespace NativeScript {
+
+// --- Modules compiled into the executable (exported games), see StaticModules.hpp -----------------------------
+namespace {
+// Set from static initializers of the generated glue, which may run before this file's own: plain data only.
+StaticScriptEntry g_staticScriptEntry = nullptr;
+const StaticPlugin* g_staticPluginTable = nullptr;
+size_t g_staticPluginCount = 0;
+} // namespace
+
+void SetStaticScriptEntry(StaticScriptEntry entry) { g_staticScriptEntry = entry; }
+void SetStaticPlugins(const StaticPlugin* plugins, size_t count) { g_staticPluginTable = plugins; g_staticPluginCount = count; }
+bool HasStaticModules() { return g_staticScriptEntry != nullptr || g_staticPluginCount > 0; }
+
 
 // ============================================================================
 // PLATFORM-SPECIFIC LIBRARY LOADING
 // ============================================================================
 
 #if defined(_WIN32)
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
-    #include <windows.h>
+    // windows.h is included at the top of the file (it must not end up inside
+    // namespace NativeScript).
 
     void* NativeScriptHost::LoadLibrary(const std::string& path) {
         return ::LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -229,7 +247,16 @@ bool NativeScriptHost::Initialize(const std::string& projectPath) {
     m_lastError.clear();
     
     ui::LogAlways("[NativeScriptHost] Initializing for project: %s", projectPath.c_str());
-    
+
+    // An exported game has its plugins built in: nothing to scan, and no folders to create next to the executable.
+    if (g_staticPluginCount > 0 || g_staticScriptEntry) m_projectPath.clear();   // nothing on disk to watch
+    if (g_staticPluginCount > 0) {
+        for (size_t i = 0; i < g_staticPluginCount; ++i) LoadStaticPlugin(g_staticPluginTable[i].name, g_staticPluginTable[i].getEntry);
+        ui::LogAlways("[NativeScriptHost] Initialized with %zu built-in plugins", plugins.size());
+        return true;
+    }
+    if (g_staticScriptEntry) return true;   // scripts only: still nothing on disk to load
+
     fs::path pluginsDir = fs::path(projectPath) / "plugins";
     std::error_code ec;
     if (!fs::exists(pluginsDir, ec)) {
@@ -392,6 +419,33 @@ bool NativeScriptHost::LoadPlugin(const std::string& pluginPath) {
     return true;
 }
 
+bool NativeScriptHost::LoadStaticPlugin(const char* name, CP_PluginEntry* (*getEntry)(void)) {
+    auto plugin = std::make_unique<PluginModule>();
+    plugin->name = name ? name : "plugin";
+    plugin->entry = getEntry ? getEntry() : nullptr;
+    if (!plugin->entry) {
+        ui::LogAlways("[NativeScriptHost] ERROR: built-in plugin %s returned no entry", plugin->name.c_str());
+        return false;
+    }
+    if (!CP_API_VersionAtLeast(CP_API_CURRENT_VERSION, plugin->entry->api_version)) {
+        ui::LogAlways("[NativeScriptHost] ERROR: built-in plugin %s needs a newer plugin API", plugin->name.c_str());
+        return false;
+    }
+    CP_Internal_SetEngine(m_engine);
+    CP_Internal_SetScriptRuntime(m_runtime.get());
+    if (plugin->entry->on_load) {
+        const int result = plugin->entry->on_load(CP_GetEngineAPI());
+        if (result != 0) {
+            ui::LogAlways("[NativeScriptHost] ERROR: built-in plugin %s on_load failed with code %d", plugin->name.c_str(), result);
+            return false;
+        }
+    }
+    plugin->loaded = true;
+    ui::LogAlways("[NativeScriptHost] Loaded built-in plugin: %s", plugin->name.c_str());
+    plugins.push_back(std::move(plugin));
+    return true;
+}
+
 void NativeScriptHost::UnloadPlugin(const std::string& pluginName) {
     for (auto it = plugins.begin(); it != plugins.end(); ++it) {
         if ((*it)->name == pluginName) {
@@ -530,6 +584,10 @@ int CallScriptTick(const FlyScriptClass* cls, void* instance, float dt) {
 } // namespace
 
 bool NativeScriptHost::InitializeScripts(const std::string& projectPath) {
+    if (g_staticScriptEntry) {
+        m_projectPath.clear();   // nothing to build, watch or hot-reload: the scripts are part of this executable
+        return LoadStaticScripts();
+    }
     fs::path p = fs::u8path(projectPath);
     if (p.extension() == ".flyproj") p = p.parent_path();
     m_projectPath = p.string();
@@ -669,6 +727,24 @@ bool NativeScriptHost::LoadScriptLibrary(const std::string& path) {
         names += m_module->classes[i].name;
     }
     ui::LogAlways("[Scripts] Loaded %d script class%s: %s", m_module->class_count,
+                  m_module->class_count == 1 ? "" : "es", names.empty() ? "(none)" : names.c_str());
+    return true;
+}
+
+bool NativeScriptHost::LoadStaticScripts() {
+    const FlyScriptModule* module = g_staticScriptEntry ? g_staticScriptEntry(&m_api) : nullptr;
+    if (!module || module->abi_version != FLY_SCRIPT_ABI_VERSION) {
+        ui::LogAlways("[Scripts] ERROR: the scripts built into this executable do not match the engine's script ABI");
+        return false;
+    }
+    UnloadScriptLibrary();
+    m_module = module;
+    std::string names;
+    for (int i = 0; i < m_module->class_count; ++i) {
+        if (i) names += ", ";
+        names += m_module->classes[i].name;
+    }
+    ui::LogAlways("[Scripts] %d built-in script class%s: %s", m_module->class_count,
                   m_module->class_count == 1 ? "" : "es", names.empty() ? "(none)" : names.c_str());
     return true;
 }

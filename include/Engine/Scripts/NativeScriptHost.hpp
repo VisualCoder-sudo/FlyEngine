@@ -97,7 +97,7 @@ public:
     bool InitializeScripts(const std::string& projectPath);
 
     // True when a script library is loaded.
-    bool ScriptsReady() const { return m_scriptLib != nullptr; }
+    bool ScriptsReady() const { return m_module != nullptr; }   // a loaded library, or scripts built into the executable
 
     // Rebuild Scripts/*.cpp in the background and reload on success.
     void RequestScriptRebuild();
@@ -170,6 +170,8 @@ private:
     void StartBuild();
     void FinishBuild();
     bool LoadScriptLibrary(const std::string& path);
+    bool LoadStaticScripts();                                   // scripts linked into the executable (exported game)
+    bool LoadStaticPlugin(const char* name, CP_PluginEntry* (*getEntry)(void));
     void UnloadScriptLibrary();
     const FlyScriptClass* FindClass(const std::string& name) const;
     bool StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex);

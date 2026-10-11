@@ -258,6 +258,8 @@ constexpr int kMaterialMapCount = MATERIAL_MAP_BRDF + 1;
 // not as GPU-truth.
 int GetDrawCallCount();
 int GetTriangleCount();
+// Adds every mesh of `model` to this frame's triangle count (call after drawing it).
+void AddModelTriangles(const Model& model);
 
 // Feed the draw-call, mesh and triangle counters. Call these at the same place
 // you issue a draw.

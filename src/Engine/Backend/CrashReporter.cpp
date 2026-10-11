@@ -14,15 +14,11 @@
 #include <cstdio>
 
 #if defined(_WIN32)
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
+    #include "Engine/Platform/WinBegin.h"
     #include <windows.h>
     #include <psapi.h>
     #include <dbghelp.h>
+    #include "Engine/Platform/WinEnd.h"
     #pragma comment(lib, "dbghelp.lib")
     #pragma comment(lib, "psapi.lib")
 #else

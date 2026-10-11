@@ -76,6 +76,7 @@ CharacterController::CharacterController(Engine& engine, Camera3D* camera, phys:
     if (body) {
         Vector3 spawnPos = {0, 5, 0};  // Spawn 5 units up
         *body->GetPosPtr() = spawnPos;
+        stepSmoothOffset = 0.0f;
         camera->position = {spawnPos.x, spawnPos.y + CAMERA_OFFSET, spawnPos.z};
     }
     
@@ -114,6 +115,7 @@ void CharacterController::EnsurePhysicsBody() {
         Vector3 spawnPos = SpawnPosition();
         sim.SetBodyPosition(body, spawnPos);
         *body->GetPosPtr() = spawnPos;
+        stepSmoothOffset = 0.0f;
         camera->position = {spawnPos.x, spawnPos.y + CAMERA_OFFSET, spawnPos.z};
         
         // Sync gravity from physics simulation (in case it was changed)
@@ -194,7 +196,11 @@ void CharacterController::Update(float dt) {
     // Sync camera position to body FIRST
     if (body) {
         Vector3 pos = *body->GetPosPtr();
-        camera->position = {pos.x, pos.y + CAMERA_OFFSET, pos.z};
+        // Let the step offset die away (~0.15 s) so a ledge is climbed smoothly rather than snapped.
+        stepSmoothOffset = std::clamp(stepSmoothOffset, -STEP_HEIGHT, STEP_HEIGHT);
+        stepSmoothOffset *= expf(-15.0f * dt);
+        if (fabsf(stepSmoothOffset) < 0.001f) stepSmoothOffset = 0.0f;
+        camera->position = {pos.x, pos.y + CAMERA_OFFSET + stepSmoothOffset, pos.z};
     }
     
     // THEN update camera target from new position
@@ -393,6 +399,7 @@ void CharacterController::UpdateKinematic(float dt) {
                 if (landed.y > pos.y + 0.01f &&
                     sim.GetCapsuleGround(body, landed, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y, landedNormal)) {
                     newPos = landed;
+                    stepSmoothOffset -= landed.y - pos.y;   // ease the camera up the step
                 }
             }
         }
@@ -407,6 +414,8 @@ void CharacterController::UpdateKinematic(float dt) {
             dropped.y -= STEP_HEIGHT * fraction;
             Vector3 droppedNormal;
             if (sim.GetCapsuleGround(body, dropped, CAPSULE_RADIUS, halfSegment, WALKABLE_NORMAL_Y, droppedNormal)) {
+                // A real step down (a curb), not the small drop of walking down a slope: ease the camera.
+                if (newPos.y - dropped.y > 0.1f) stepSmoothOffset += newPos.y - dropped.y;
                 newPos = dropped;
             }
         }

@@ -4,6 +4,7 @@
 #include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/Occlusion.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/FbxModel.hpp"
@@ -532,6 +533,11 @@ void ScatteredObject::Draw() {
         gfx::IncrementCulledEntityCount(1);
         return;
     }
+    // Hidden behind a big opaque box this frame (main view only; see Occlusion.hpp).
+    if (!gfx::IsInShadowPass() && gfx::GetFrustumCullingEnabled() && occlusion::IsOccluded(GetBoundingBox())) {
+        gfx::IncrementCulledEntityCount(1);
+        return;
+    }
 
     gfx::IncrementRenderedEntityCount(1);
 
@@ -559,6 +565,7 @@ void ScatteredObject::Draw() {
         DrawModel(model, Vector3Zero(), 1.0f, drawColor);
         gfx::IncrementDrawCallCount(1);
         gfx::AddMeshCount(1);
+        gfx::AddModelTriangles(model);
 
         if (isSelected) {
             // Selection outline: the same transform at 102% scale, drawn as
@@ -579,6 +586,7 @@ void ScatteredObject::Draw() {
     DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false);
     gfx::IncrementDrawCallCount(1);
     gfx::AddMeshCount(1);
+    gfx::AddModelTriangles(gfx::GetShapeModel(shape));
 
     if (isSelected) {
         DrawShapeModel(shape, pos, size, rotMat, WHITE, GetTexture(), true);
@@ -586,28 +594,47 @@ void ScatteredObject::Draw() {
 }
 
 BoundingBox ScatteredObject::GetBoundingBox() const {
-    Vector3 halfSize = { size.x * 0.5f, size.y * 0.5f, size.z * 0.5f };
-    Matrix rot = MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
+    // Called several times per object per frame (culling, shadow pass, picking), almost always with the
+    // transform unchanged, so remember the last answer. pos/size/rotation are plain members edited through
+    // pointers all over the editor, so compare the inputs instead of tracking edits.
+    const Vector3 key[3] = { pos, size, rotation };
+    if (boundsCacheValid && std::memcmp(key, boundsCacheKey, sizeof(key)) == 0) return boundsCache;
+
+    const Matrix rot = MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
+    const Vector3 half = { size.x * 0.5f, size.y * 0.5f, size.z * 0.5f };
+    // The box of the rotated cuboid's 8 corners is its centre +/- |R| * half-extents.
+    const Vector3 ext = {
+        fabsf(rot.m0) * half.x + fabsf(rot.m4) * half.y + fabsf(rot.m8)  * half.z,
+        fabsf(rot.m1) * half.x + fabsf(rot.m5) * half.y + fabsf(rot.m9)  * half.z,
+        fabsf(rot.m2) * half.x + fabsf(rot.m6) * half.y + fabsf(rot.m10) * half.z
+    };
 
     BoundingBox box;
-    box.min = {  1e30f,  1e30f,  1e30f };
-    box.max = { -1e30f, -1e30f, -1e30f };
+    box.min = { pos.x - ext.x, pos.y - ext.y, pos.z - ext.z };
+    box.max = { pos.x + ext.x, pos.y + ext.y, pos.z + ext.z };
 
-    for (int i = 0; i < 8; ++i) {
-        Vector3 corner = {
-            (i & 1) ?  halfSize.x : -halfSize.x,
-            (i & 2) ?  halfSize.y : -halfSize.y,
-            (i & 4) ?  halfSize.z : -halfSize.z
-        };
-        Vector3 world = Vector3Add(pos, Vector3Transform(corner, rot));
-        box.min.x = fminf(box.min.x, world.x);
-        box.min.y = fminf(box.min.y, world.y);
-        box.min.z = fminf(box.min.z, world.z);
-        box.max.x = fmaxf(box.max.x, world.x);
-        box.max.y = fmaxf(box.max.y, world.y);
-        box.max.z = fmaxf(box.max.z, world.z);
-    }
+    std::memcpy(boundsCacheKey, key, sizeof(key));
+    boundsCache = box;
+    boundsCacheValid = true;
     return box;
+}
+
+bool ScatteredObject::GetOccluderCorners(Vector3 out[8], float& volume) const {
+    // Only solid, fully opaque cuboids: a texture could have see-through parts, a mesh is not a solid box.
+    if (hasOwnModel || shape != ShapeType::Cube || transparency > 0.0f || color.a < 255) return false;
+    const float smallest = fminf(size.x, fminf(size.y, size.z));
+    if (smallest < 1.5f) return false;   // thin or small things hide too little to be worth the cost
+
+    const Matrix rot = useRenderRotation
+        ? renderRotation
+        : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
+    const Vector3 half = { size.x * 0.5f, size.y * 0.5f, size.z * 0.5f };
+    for (int i = 0; i < 8; ++i) {
+        const Vector3 corner = { (i & 1) ? half.x : -half.x, (i & 2) ? half.y : -half.y, (i & 4) ? half.z : -half.z };
+        out[i] = Vector3Add(pos, Vector3Transform(corner, rot));
+    }
+    volume = size.x * size.y * size.z;
+    return true;
 }
 
 BoundingBox ModelGroup::GetBounds() const {

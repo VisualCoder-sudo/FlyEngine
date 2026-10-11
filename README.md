@@ -275,6 +275,47 @@ them yourself, e.g. `cc -shared -fPIC -I<FlyEngine>/include -o build/x.so x.c`.
 API 1.1 added `ui_set_accent_color`, which re-skins the editor's accent colour
 (editor only). A plugin built against a newer API than the engine is refused.
 
+## Exporting a game
+
+**File > Export...** packs a project into **one executable**: FlyPlayer with the project's scene, models and
+textures appended to it (compressed), and the project's C++ scripts and plugins compiled *into* it. Nothing else
+ships: no `.so`/`.dll`, no source, no compiler needed on the player's machine. The editor saves the project first;
+the window title, size, fullscreen and **FPS cap** are chosen in the dialog and stored in `<project>/export.cfg`
+(the graphics settings are the ones saved under Preferences > Rendering at export time).
+
+From a terminal: `flyexport <project> --out <dir> [--name N] [--title T] [--icon game.png] [--fps N] [--size WxH] [--fullscreen]`.
+
+**Icon.** Pick a square PNG (256x256 or larger) under *Icon* in the dialog; it is stored in `export.cfg`. The game's window
+and taskbar use it on Windows and X11. For a Windows target it is also written into the `.exe` itself, so Explorer shows it
+(the Windows `FlyPlayer.exe` must be built with `resources/player.rc`; the replacement works from any host, see
+`include/Engine/PeIcon.hpp`). Linux executables cannot carry an icon; tick *Also write .desktop + .png* (`--launcher`) to get `<name>.png` and
+`<name>.desktop` beside the game for launchers (off by default: one file). Native Wayland windows have no window-icon API; there the `.desktop` file is what applies.
+
+How it works:
+
+- The data is an archive appended to a copy of the player (`include/Engine/PackArchive.hpp` describes the format).
+  At startup the player finds it at the end of its own file and serves every project/engine file from it through a
+  virtual file system (`include/Engine/Vfs.hpp`, hooked into raylib's file functions in `rl_core.cpp`); the files sit under the
+  synthetic root `/__embedded__`. An exported game ignores this machine's `graphics.cfg`/`loading.cfg` and writes nothing next
+  to itself. For testing, `FLY_EXIT_AFTER_FRAMES=<n>` makes any player quit after n frames (`FLY_SCREENSHOT=<file>` saves the last one).
+- A project **without** C++ code only needs the `FlyPlayer` next to the editor. A project **with** scripts or plugins is
+  relinked: its sources are compiled with the flags the player was built with and linked into a copy of it, using a
+  *runtime kit* made by `packaging/make_kit.py <build_dir> <kit_dir>` (static libraries, the link command, compile
+  flags and headers). Put the kit in a folder named `kit` next to the editor, or set `FLYENGINE_KIT_DIR`. Make the kit from
+  a Release build configured with `-DFLYENGINE_ENABLE_FLYCLOUD=OFF`, so the game has no libcurl/OpenSSL dependency.
+- Plugins are compiled in, so they need their **source**: `plugins/<name>/src/*.cpp` (optionally `plugins/<name>/include`).
+  Keep the entry point as `extern "C"` (`CP_REGISTER_PLUGIN` inside an `extern "C"` block). Scripts are everything under `Scripts/`.
+- Targets: Linux (Arch) and Linux (Debian) are offered when the editor runs on that distribution (the build happens
+  natively). **Windows (x86-64)** from a non-Windows editor works for projects *without* C++ scripts or plugins: put a
+  64-bit Windows `FlyPlayer.exe` (built on Windows or by CI) in `players/windows-x64/` next to the editor (or point
+  `FLYENGINE_PLAYERS_DIR` at the folder) and the target enables itself; Export appends the data to it and writes
+  `<name>.exe`. The editor checks the file really is a 64-bit Windows executable, and refuses a project with scripts or
+  plugins for that target, because compiling them needs that OS's compiler. Building for the *other* Linux distribution
+  (needs a container) is not implemented yet and shows as disabled.
+
+`packaging/test_export.sh <project> [kit]` exports a project, runs the result alone in an empty folder and checks that it
+exits cleanly, has no library dependencies beyond the system's, and writes nothing next to itself.
+
 ---
 
 ## Shaders
@@ -531,6 +572,8 @@ a Debug build after touching `src/Engine/RL`.
   on a dynamic CRT dependency (the build is configured for a static CRT so
   `VCRUNTIME140.dll` is not needed at runtime).
 - **Tarball** - produces `flyengine-linux-x86_64.tar.gz` as a build artifact.
+- **Windows zip** - the Windows job also produces `flyengine-windows-x86_64.zip` (D3D11, static CRT): unzip anywhere and run
+  `Flyengine/bin/Flyengine.exe`. Its `bin/FlyPlayer.exe` is the base for Windows exports.
 
 ---
 

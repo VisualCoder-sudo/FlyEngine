@@ -68,7 +68,7 @@ Look* LookFor(const std::string& prefix, Settings& s) {
 unsigned char Byte(int v) { return (unsigned char)std::clamp(v, 0, 255); }
 
 void ReadFile(const std::string& path, Settings& s, bool playerOnly) {
-    std::ifstream in(path);
+    platform::InputStream in(path);
     if (!in) return;
     std::string line;
     while (std::getline(in, line)) {
@@ -196,7 +196,8 @@ Settings& GetSettings() { return g_settings; }
 
 void Load(const std::string& projectFolder) {
     g_settings = Settings{};
-    const std::string machine = ConfigFile();
+    // An exported game ignores this machine's editor preferences: it looks the way it was exported.
+    const std::string machine = platform::IsEmbedded() ? std::string() : ConfigFile();
     if (!machine.empty()) ReadFile(machine, g_settings, false);
     if (!projectFolder.empty()) ReadFile(ProjectFile(projectFolder), g_settings, true);
 }
