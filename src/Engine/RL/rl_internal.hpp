@@ -91,7 +91,8 @@ struct CoreState {
     bool filesDropped = false;
     bool cursorLocked = false;
     bool cursorHidden = false;
-    int cursorShape = 0;
+    int cursorShape = -1;   // last shape handed to the OS (-1 = none yet)
+    int cursorWanted = 0;   // shape requested this frame; applied once in EndDrawing
 
     float masterVolume = 1.0f;
 };

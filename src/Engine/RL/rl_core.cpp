@@ -319,6 +319,8 @@ void CloseWindow(void) {
     c.windowOpen = false;
     c.cursorLocked = false;
     c.cursorHidden = false;
+    c.cursorShape = -1;   // new window starts with the default cursor
+    c.cursorWanted = 0;
     // Flags apply to the next window only, like raylib.
     c.configFlags = 0;
     TraceLog(LOG_INFO, "Window closed successfully");
@@ -388,10 +390,13 @@ void BeginDrawing(void) {
     GfxBeginFrame();
 }
 
+static void ApplyMouseCursor();
+
 void EndDrawing(void) {
     CoreState& c = Core();
     GfxEndFrame();
     flyapp_present();
+    ApplyMouseCursor();
 
     // Frame pacing (SetTargetFPS), like raylib's WaitTime-based limiter.
     if (c.targetFrameTime > 0.0) {
@@ -526,7 +531,14 @@ float GetMouseWheelMove(void) {
 Vector2 GetMouseWheelMoveV(void) { return Core().wheel; }
 
 void SetMouseCursor(int cursor) {
+    // Only record the request: callers reset to DEFAULT then set HAND in the same
+    // frame, and pushing both to the OS made the cursor flicker.
+    Core().cursorWanted = cursor;
+}
+
+static void ApplyMouseCursor() {
     CoreState& c = Core();
+    const int cursor = c.cursorWanted;
     if (!c.windowOpen || c.cursorShape == cursor) return;
     c.cursorShape = cursor;
     sapp_mouse_cursor mc = SAPP_MOUSECURSOR_DEFAULT;

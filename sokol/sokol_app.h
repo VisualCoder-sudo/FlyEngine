@@ -13088,7 +13088,14 @@ _SOKOL_PRIVATE void _sapp_x11_create_hidden_cursor(void) {
     SOKOL_ASSERT((cursor >= 0) && (cursor < _SAPP_MOUSECURSOR_NUM));
     SOKOL_ASSERT(_sapp.x11.display);
     if (theme) {
-        XcursorImage* img = XcursorLibraryLoadImage(name, theme, size);
+        // Themes disagree on names (CSS "pointer" vs legacy "hand2"/"pointing_hand");
+        // without this the ugly built-in X11 glyph below shows up instead.
+        const char* alt[] = { name, 0, 0, 0 };
+        if (0 == strcmp(name, "pointer")) { alt[1] = "pointing_hand"; alt[2] = "hand2"; alt[3] = "hand1"; }
+        XcursorImage* img = 0;
+        for (int i = 0; (i < 4) && alt[i] && !img; i++) {
+            img = XcursorLibraryLoadImage(alt[i], theme, size);
+        }
         if (img) {
             _sapp.x11.standard_cursors[cursor] = XcursorImageLoadCursor(_sapp.x11.display, img);
             XcursorImageDestroy(img);
@@ -13102,6 +13109,8 @@ _SOKOL_PRIVATE void _sapp_x11_create_hidden_cursor(void) {
 _SOKOL_PRIVATE void _sapp_x11_create_standard_cursors(void) {
     SOKOL_ASSERT(_sapp.x11.display);
     const char* cursor_theme = XcursorGetTheme(_sapp.x11.display);
+    if (!cursor_theme) { cursor_theme = getenv("XCURSOR_THEME"); }
+    if (!cursor_theme) { cursor_theme = "default"; }
     const int size = XcursorGetDefaultSize(_sapp.x11.display);
     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_ARROW, "default", cursor_theme, size, XC_left_ptr);
     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_IBEAM, "text", cursor_theme, size, XC_xterm);

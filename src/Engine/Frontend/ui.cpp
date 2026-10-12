@@ -5050,7 +5050,6 @@ void Draw() {
     DrawTerrainEditorUI();
 
     // Floating popups (topmost within the 2D pass, before the script editor)
-    DrawContextMenu();
     DrawColorPickerPopupWindow();
     DrawCollisionPopup();
 
@@ -6800,6 +6799,10 @@ void DrawImGuiFrame(const Camera3D& camera) {
 
     ImGui::Render();
     rlImGuiRender();
+
+    // Viewport right-click menu is hand-drawn (2D), so paint it after the ImGui
+    // pass or every ImGui window (asset browser, etc.) covers it.
+    DrawContextMenu();
 }
 
 } // namespace ui
