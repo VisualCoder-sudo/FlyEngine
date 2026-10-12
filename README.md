@@ -648,3 +648,19 @@ should reach for anything platform-specific. It covers:
 * [Box3D](https://github.com/erincatto/box3d) by Erin Catto
 * [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut
 * [ufbx](https://github.com/ufbx/ufbx) by Ulti
+* [cglm](https://github.com/recp/cglm) by Recep Aslantas
+* [TinyGLTF](https://github.com/syoyo/tinygltf) by Syoyo Fujita and contributors
+* [meshoptimizer](https://github.com/zeux/meshoptimizer) by Arseny Kapoulkine
+* [KTX-Software](https://github.com/KhronosGroup/KTX-Software) by The Khronos Group
+* [glslang](https://github.com/KhronosGroup/glslang) by The Khronos Group and contributors
+* [stb](https://github.com/nothings/stb) by Sean Barrett and contributors
+* [miniaudio](https://github.com/mackron/miniaudio) and dr_libs by David Reid
+* [QOI](https://github.com/phoboslab/qoi) by Dominic Szablewski
+* [SQLite](https://www.sqlite.org/) by D. Richard Hipp and contributors
+* [nlohmann/json](https://github.com/nlohmann/json) by Niels Lohmann
+* [cJSON](https://github.com/DaveGamble/cJSON) by Dave Gamble and contributors
+* [miniz](https://github.com/richgel999/miniz) by Rich Geldreich and contributors
+* [libcurl](https://curl.se/) by Daniel Stenberg and contributors
+* [OpenSSL](https://www.openssl.org/) by The OpenSSL Project
+
+Full list with licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
