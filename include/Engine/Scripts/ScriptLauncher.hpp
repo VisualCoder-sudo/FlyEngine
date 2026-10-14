@@ -30,6 +30,15 @@ std::string EnsureScriptsDir();
 // on failure.
 std::string MaterializeScript(const std::string& className);
 
+// Script files made by MaterializeScript are temporary until the project is saved (like model imports).
+// CommitPendingScripts (every save) makes them permanent. DiscardPendingScripts (editor close, next launch)
+// deletes the ones never saved, but only while still the untouched stub: code the user wrote is never deleted.
+// Deletes the script's .cpp from the project. Returns whether a file was removed.
+bool DeleteScriptFile(const std::string& className);
+void CommitPendingScripts();
+void DiscardPendingScripts();
+void DiscardPendingScript(const std::string& file);   // just this one, if it is still an untouched new stub
+
 // Queues `file` to open. If a remembered editor is active it is launched
 // immediately; if that launch fails, the remembered choice is forgotten and
 // the picker is shown instead. With no remembered editor, the picker is

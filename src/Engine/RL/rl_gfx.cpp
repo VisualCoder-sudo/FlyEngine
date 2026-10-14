@@ -433,8 +433,7 @@ sg_sampler GetSamplerFor(const TextureRec& tex, bool compare) {
 // ---------------------------------------------------------------------------
 // Pipelines
 // ---------------------------------------------------------------------------
-sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& tmpl) {
-    GfxState& g = Gfx();
+static uint64_t HashPipelineKey(const PipelineKey& key) {
     uint64_t h = HashBytes(&key.shader, sizeof(key.shader));
     h = HashBytes(&key.layout, sizeof(key.layout), h);
     const uint8_t small[] = { key.primitive, key.indexType, key.blend, key.depthTest, key.depthWrite, key.cull, key.instanced };
@@ -442,6 +441,18 @@ sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& tmpl) {
     h = HashBytes(&key.format.color, sizeof(key.format.color), h);
     h = HashBytes(&key.format.depth, sizeof(key.format.depth), h);
     h = HashBytes(&key.format.colorCount, sizeof(key.format.colorCount), h);
+    return h;
+}
+
+sg_pipeline FindPipeline(const PipelineKey& key) {
+    GfxState& g = Gfx();
+    auto it = g.pipelines.find(HashPipelineKey(key));
+    return it != g.pipelines.end() ? it->second : sg_pipeline{};
+}
+
+sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& tmpl) {
+    GfxState& g = Gfx();
+    const uint64_t h = HashPipelineKey(key);
     auto it = g.pipelines.find(h);
     if (it != g.pipelines.end()) return it->second;
 

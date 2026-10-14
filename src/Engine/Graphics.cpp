@@ -52,6 +52,15 @@ int ReflectionQualityToResolution(int quality) {
     return 360 + (int)std::lroundf(t * 1080.0f); // 360..1440
 }
 
+// The mirrored camera must see the same aspect as the screen, or its horizontal FOV is narrower
+// and the reflection only covers the centre. The long side gets the quality resolution.
+int reflW = 768, reflH = 768;
+void ReflectionDims(int res, int& w, int& h) {
+    const float aspect = (float)GetScreenWidth() / fmaxf((float)GetScreenHeight(), 1.0f);
+    if (aspect >= 1.0f) { w = res; h = std::max(1, (int)lroundf(res / aspect)); }
+    else { h = res; w = std::max(1, (int)lroundf(res * aspect)); }
+}
+
 const Vector3 kAmbient = { 0.35f, 0.35f, 0.35f };
 gfx::LightingSettings lightingSettings;
 Color engineClear = { 245, 245, 245, 255 };
@@ -949,7 +958,8 @@ void Init() {
     shadowMap = LoadRenderTextureDepth(shadowMapResolution, shadowMapResolution);
 
     // Float, like the scene target: the water reflects the scene's linear light.
-    reflectionTarget = LoadRenderTextureEx(reflectionResolution, reflectionResolution, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
+    ReflectionDims(reflectionResolution, reflW, reflH);
+    reflectionTarget = LoadRenderTextureEx(reflW, reflH, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
     SetTextureFilter(reflectionTarget.texture, TEXTURE_FILTER_BILINEAR);
 
     InitPostFX();
@@ -1320,7 +1330,8 @@ void SetReflectionQuality(int quality) {
     reflectionResolution = resolution;
 
     if (reflectionTarget.id > 0) UnloadRenderTexture(reflectionTarget);
-    reflectionTarget = LoadRenderTextureEx(reflectionResolution, reflectionResolution, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
+    ReflectionDims(reflectionResolution, reflW, reflH);
+    reflectionTarget = LoadRenderTextureEx(reflW, reflH, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
     SetTextureFilter(reflectionTarget.texture, TEXTURE_FILTER_BILINEAR);
 }
 
@@ -1330,6 +1341,17 @@ Camera3D BeginReflectionPass(float planeHeight, const Camera3D& worldCamera, Col
     if (!reflectionEnabled || reflectionTarget.id == 0) {
         inReflectionPass = false;
         return worldCamera;
+    }
+
+    {   // Screen aspect changed (window resize): rebuild the target to match.
+        int w, h;
+        ReflectionDims(reflectionResolution, w, h);
+        if (w != reflW || h != reflH) {
+            UnloadRenderTexture(reflectionTarget);
+            reflW = w; reflH = h;
+            reflectionTarget = LoadRenderTextureEx(reflW, reflH, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, true);
+            SetTextureFilter(reflectionTarget.texture, TEXTURE_FILTER_BILINEAR);
+        }
     }
 
     inReflectionPass = true;

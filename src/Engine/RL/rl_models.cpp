@@ -344,7 +344,9 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     key.cull = useLines ? 0 : 1;
     key.instanced = instanced;
     key.format = g.passFormat;
-    sg_apply_pipeline(GetPipeline(key, MeshPipelineTemplate(*sh, instanced)));
+    sg_pipeline pip = FindPipeline(key);
+    if (!pip.id) pip = GetPipeline(key, MeshPipelineTemplate(*sh, instanced));
+    sg_apply_pipeline(pip);
 
     sg_bindings bind{};
     for (int a = 0; a < kMeshAttribs; ++a) {

@@ -1,4 +1,5 @@
 // ProjectManager.cpp - the "Projects" hub window.
+#include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Platform/WinBegin.h"
 
 #ifdef _WIN32
@@ -715,6 +716,7 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     // Saving makes imports permanent: dedupe textures into assets/shared and
     // drop unused imported folders *before* the scene records their paths.
     textureManager::CommitAssets(objects);
+    scriptLauncher::CommitPendingScripts();
 
     HeaderFields fields;
     // Write back to the file this project already lives in. Falling back to the

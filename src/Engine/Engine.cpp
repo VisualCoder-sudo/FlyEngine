@@ -137,11 +137,8 @@ void Engine::Draw() {
     // below the first play-active water body's surface. Water shaders sample this
     // image during the transparent pass, so mountains and objects show up in the water.
     if (gfx::IsReflectionsEnabled() && ui::IsPlayActive()) {
-        WaterBody* reflBody = nullptr;
-        for (auto& entity : entities) {
-            auto* wb = dynamic_cast<WaterBody*>(entity.get());
-            if (wb) { reflBody = wb; break; }
-        }
+        const auto& waterBodies = WaterBody::GetInstances();
+        WaterBody* reflBody = waterBodies.empty() ? nullptr : waterBodies.front();
         if (reflBody) {
             Camera3D reflCam = gfx::BeginReflectionPass(reflBody->GetWaterHeight(), camera, skyColor);
             terrain::Terrain::SetDrawCamera(&reflCam);
@@ -193,7 +190,8 @@ void Engine::Draw() {
         // Big opaque boxes hide what is behind them: rasterize them once so the objects drawn below can be
         // skipped when they are completely covered.
         if (gfx::GetFrustumCullingEnabled()) {
-            std::vector<occlusion::OccluderBox> occluders;
+            static std::vector<occlusion::OccluderBox> occluders;
+            occluders.clear();
             for (auto& entity : entities) {
                 if (isPlayerBuild && entity->IsEditorOnly()) continue;
                 auto* obj = dynamic_cast<ScatteredObject*>(entity.get());

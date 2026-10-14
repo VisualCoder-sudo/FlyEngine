@@ -371,7 +371,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
     float worldMaxZ = position.z + halfD;
 
     // 1. Build set of chunk keys that should exist
-    std::unordered_set<int64_t> activeKeys;
+    const uint32_t stamp = ++chunkStamp;
 
     // Build meshes gradually (max per frame) so a fast camera pan can't spawn
     // thousands of meshes in one frame and hitch. NO direction gating: the near
@@ -425,7 +425,6 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
             if (newLod == 0) newLod = 1;
 
             int64_t key = ChunkKey(gx, gz);
-            activeKeys.insert(key);
 
             auto it = chunks.find(key);
             if (it == chunks.end()) {
@@ -436,6 +435,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
                 chunk.gridZ = gz;
                 chunk.cellSize = CHUNK_SIZE;
                 chunk.fade = 1.0f;
+                chunk.seenStamp = stamp;
                 chunk.lodDist = dist;
                 BuildChunkMesh(chunk, LOD_RESOLUTIONS[newLod], CHUNK_SIZE, worldMinX, worldMaxX, worldMinZ, worldMaxZ);
                 chunk.currentLod = newLod;
@@ -446,6 +446,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
                 // boundary from rebuilding the same mesh every frame, which is what
                 // made the old all-directions version feel laggy.
                 Chunk& chunk = it->second;
+                chunk.seenStamp = stamp;
                 if (newLod != chunk.currentLod) {
                     const float margin = 24.0f;
                     bool crossed = (dist < chunk.lodDist - margin) || (dist > chunk.lodDist + margin);
@@ -482,7 +483,7 @@ void WaterBody::UpdateChunks(const Camera3D& camera) {
 
     // 2. Fade active chunks up, inactive chunks down
     for (auto& [key, chunk] : chunks) {
-        if (activeKeys.count(key)) {
+        if (chunk.seenStamp == stamp) {
             chunk.fade = fminf(chunk.fade + dt * FADE_SPEED, 1.0f);
         } else {
             chunk.fade = fmaxf(chunk.fade - dt * FADE_SPEED, 0.0f);

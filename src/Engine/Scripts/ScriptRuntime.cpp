@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/VisualScript.hpp"
 // ScriptRuntime.cpp - world context + lifecycle backing the native script host.
 
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
@@ -94,6 +95,14 @@ ScatteredObject* ScriptRuntime::FindByName(const std::string& name) const
     if (!objectsPtr) return nullptr;
     for (auto* obj : *objectsPtr)
         if (obj && obj->GetName() == name) return obj;
+    return nullptr;
+}
+
+ScatteredObject* ScriptRuntime::FindByNameNth(const std::string& name, int occurrence) const
+{
+    if (!objectsPtr) return nullptr;
+    for (auto* obj : *objectsPtr)
+        if (obj && obj->GetName() == name && --occurrence <= 0) return obj;
     return nullptr;
 }
 
@@ -270,6 +279,7 @@ void ScriptRuntime::StopAllScripts()
 
 void ScriptRuntime::OnPlayStarted()
 {
+    vscript::Run(*this);
     if (!hostPtr) return;
     playCreatedObjects.clear();
     CaptureWorldSettings();

@@ -2,6 +2,8 @@
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Engine/Backend/VisualScript.hpp"
+#include "../../../include/Engine/Frontend/ui.hpp"
 
 #include "imgui.h"
 #include "raylib.h"
@@ -9,6 +11,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <utility>
 #include <string>
 #include <vector>
 #include <cstdlib>
@@ -368,6 +372,73 @@ std::string EnsureScriptsDir() {
     return (fs::path(projectFolder) / kScriptDirName).string();
 }
 
+// Files this session created and the scene has not been saved with yet: "path<TAB>class" per line, journaled
+// in the project folder so a crash or quit without saving doesn't leave them behind.
+static std::vector<std::pair<std::string, std::string>> g_pendingScripts;
+
+static std::string PendingJournalPath() {
+    const std::string folder = ProjectFolder();
+    return folder.empty() ? std::string() : (fs::path(folder) / ".pending_scripts").generic_string();
+}
+
+static void WritePendingJournal() {
+    const std::string jp = PendingJournalPath();
+    if (jp.empty()) return;
+    std::error_code ec;
+    if (g_pendingScripts.empty()) { fs::remove(jp, ec); return; }
+    std::ofstream out(jp, std::ios::trunc);
+    for (const auto& p : g_pendingScripts) out << p.first << '\t' << p.second << '\n';
+}
+
+static void DeleteIfUntouched(const std::string& file, const std::string& cls) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::error_code ec;
+    if (content == MakeScriptStub(cls)) fs::remove(file, ec);
+}
+
+void CommitPendingScripts() {
+    g_pendingScripts.clear();
+    WritePendingJournal();
+}
+
+void DiscardPendingScripts() {
+    const std::string jp = PendingJournalPath();
+    if (!jp.empty()) {
+        std::ifstream in(jp);
+        std::string line;
+        while (std::getline(in, line)) {
+            const size_t tab = line.find('\t');
+            if (tab != std::string::npos) g_pendingScripts.emplace_back(line.substr(0, tab), line.substr(tab + 1));
+        }
+    }
+    for (const auto& p : g_pendingScripts) DeleteIfUntouched(p.first, p.second);
+    g_pendingScripts.clear();
+    WritePendingJournal();
+}
+
+bool DeleteScriptFile(const std::string& className) {
+    const std::string dir = EnsureScriptsDir();
+    if (dir.empty()) return false;
+    const std::string filePath = (fs::path(dir) / (SanitizeStem(MakeClassName(className)) + ".cpp")).string();
+    for (auto it = g_pendingScripts.begin(); it != g_pendingScripts.end(); ++it)
+        if (it->first == filePath) { g_pendingScripts.erase(it); WritePendingJournal(); break; }
+    std::error_code ec;
+    return fs::remove(filePath, ec);
+}
+
+void DiscardPendingScript(const std::string& file) {
+    for (auto it = g_pendingScripts.begin(); it != g_pendingScripts.end(); ++it)
+        if (it->first == file) {
+            DeleteIfUntouched(it->first, it->second);
+            g_pendingScripts.erase(it);
+            WritePendingJournal();
+            return;
+        }
+}
+
 std::string MaterializeScript(const std::string& className) {
     const std::string dir = EnsureScriptsDir();
     const std::string classIdent = MakeClassName(className);
@@ -385,6 +456,8 @@ std::string MaterializeScript(const std::string& className) {
         if (!out) return {};
         out.write(source.data(), static_cast<std::streamsize>(source.size()));
         out.close();
+        g_pendingScripts.emplace_back(filePath, classIdent);
+        WritePendingJournal();
     }
     return filePath;
 }
@@ -475,6 +548,29 @@ bool DrawImGuiModal() {
                 closed = true;
             }
             ImGui::PopID();
+        }
+
+        // Not a code editor: opens the script as a node graph in the Visual Script tab.
+        // Same row layout as the editors above: an icon-sized button (a little node graph), then the label.
+        ImGui::PushID("vscript");
+        bool vsClicked = ImGui::Button("##vsicon", ImVec2(iconSize + 22.0f, iconSize + 5.0f));
+        {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            const ImVec2 n1(a.x + (b.x - a.x) * 0.28f, a.y + (b.y - a.y) * 0.35f), n2(a.x + (b.x - a.x) * 0.72f, a.y + (b.y - a.y) * 0.65f);
+            dl->AddBezierCubic(n1, ImVec2(n2.x, n1.y), ImVec2(n1.x, n2.y), n2, IM_COL32(235, 235, 235, 255), 1.6f);
+            dl->AddRectFilled(ImVec2(n1.x - 5, n1.y - 4), ImVec2(n1.x + 5, n1.y + 4), IM_COL32(60, 170, 90, 255), 2.0f);
+            dl->AddRectFilled(ImVec2(n2.x - 5, n2.y - 4), ImVec2(n2.x + 5, n2.y + 4), IM_COL32(70, 130, 220, 255), 2.0f);
+        }
+        ImGui::SameLine();
+        vsClicked = ImGui::Selectable("Visual Script") || vsClicked;
+        ImGui::PopID();
+        if (vsClicked) {
+            vscript::OpenByName(std::filesystem::path(g_pendingFile).stem().string());
+            DiscardPendingScript(g_pendingFile);   // a stub made just to offer the choice is not wanted
+            ui::SelectBottomTab(2);
+            g_pendingFile.clear();
+            closed = true;
         }
 
         ImGui::Spacing();

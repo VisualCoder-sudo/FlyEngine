@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
 #include <unordered_set>
 #include "../../../include/Engine/Frontend/ObjectInteractionManager.hpp"
 #include "../../../include/Engine.hpp"
@@ -1393,6 +1394,7 @@ void ObjectInteractionManager::Update(float dt) {
                 dragPivot = { wp.x, wh, wp.z };
                 if (ui::GetActiveTool() == ui::TransformTool::Move) {
                     dragAxisWorldLen = WaterMoveHandleLen(startSize, activeHandle);
+                    axisMove.Begin(GetMouseRay(GetMousePosition(), camera), startPos, AxisDirection(activeHandle));
                 }
                 dragStartStates.clear();
                 freeDrag = false;
@@ -1404,18 +1406,14 @@ void ObjectInteractionManager::Update(float dt) {
             Vector3 ws = *waterSel->GetSizePtr();
 
             if (ui::GetActiveTool() == ui::TransformTool::Move) {
-                Vector2 mouseDelta = Vector2Subtract(GetMousePosition(), dragStart);
-                float worldPerPixel = dragAxisWorldLen / fmaxf(40.0f, 1.0f);
+                float along = axisMove.Offset(GetMouseRay(GetMousePosition(), camera));
 
                 if (activeHandle == 0) {
-                    float dx = Vector2DotProduct(mouseDelta, { 1.0f, 0.0f });
-                    *waterSel->GetPosPtr() = { startPos.x + dx * worldPerPixel, startPos.y, startPos.z };
+                    *waterSel->GetPosPtr() = { startPos.x + along, startPos.y, startPos.z };
                 } else if (activeHandle == 1) {
-                    float dy = Vector2DotProduct(mouseDelta, { 0.0f, -1.0f });
-                    waterSel->SetWaterHeight(startPos.y + dy * worldPerPixel);
+                    waterSel->SetWaterHeight(startPos.y + along);
                 } else if (activeHandle == 2) {
-                    float dz = Vector2DotProduct(mouseDelta, { 1.0f, 0.0f });
-                    *waterSel->GetPosPtr() = { startPos.x, startPos.y, startPos.z + dz * worldPerPixel };
+                    *waterSel->GetPosPtr() = { startPos.x, startPos.y, startPos.z + along };
                 }
             } else if (ui::GetActiveTool() == ui::TransformTool::Scale) {
                 Vector2 mouseDelta = Vector2Subtract(GetMousePosition(), dragStart);
@@ -1521,6 +1519,8 @@ void ObjectInteractionManager::Update(float dt) {
                     rotatePrevEuler = { DEG2RAD * startRotation.x, DEG2RAD * startRotation.y, DEG2RAD * startRotation.z };
                 } else if (ui::GetActiveTool() == ui::TransformTool::Move) {
                     dragAxisWorldLen = MoveHandleWorldLen(pivot, startSize, activeHandle, camera);
+                    axisMove.Begin(GetMouseRay(GetMousePosition(), camera), startPos,
+                                   HandleAxisDirection(startRotation, activeHandle));
                 }
                 freeDrag = false;
                 return;
@@ -1537,25 +1537,7 @@ void ObjectInteractionManager::Update(float dt) {
                     Vector3 hit = RayPlaneIntersection(ray, startPos, dragPlaneNormal);
                     next = Vector3Add(startPos, Vector3Subtract(hit, dragPlanePoint));
                 } else {
-                    Vector3 axisDir = HandleAxisDirection(*primary->GetRotationPtr(), activeHandle);
-                    Vector3 pivot = SelectionCenter();
-
-                    Vector3 handleWorld = Vector3Add(pivot, Vector3Scale(axisDir, dragAxisWorldLen));
-                    Vector2 handleScreen = GetWorldToScreen(handleWorld, camera);
-                    Vector3 probeWorld = Vector3Add(pivot, Vector3Scale(axisDir, dragAxisWorldLen + 1.0f));
-                    Vector2 screenAxis = Vector2Subtract(GetWorldToScreen(probeWorld, camera), handleScreen);
-                    float screenAxisLen = Vector2Length(screenAxis);
-
-                    if (screenAxisLen > 2.0f) {
-                        Vector2 screenDir = Vector2Scale(screenAxis, 1.0f / screenAxisLen);
-                        float cursorAlong = Vector2DotProduct(Vector2Subtract(GetMousePosition(), handleScreen), screenDir);
-                        float worldPerPixel = 1.0f / screenAxisLen;
-                        next = Vector3Add(*primary->GetPosPtr(), Vector3Scale(axisDir, cursorAlong * worldPerPixel));
-                    } else {
-                        if (activeHandle == 0) next.x += amount;
-                        if (activeHandle == 1) next.y += amount;
-                        if (activeHandle == 2) next.z += amount;
-                    }
+                    next = axisMove.Apply(GetMouseRay(GetMousePosition(), camera));
                 }
 
                 if (multi) {
@@ -2038,4 +2020,5 @@ void ObjectInteractionManager::CompleteSpawn(const std::string& absModelPath, Ve
 void ObjectInteractionManager::CleanupPendingImports() {
     // Imports are temporary until saved: anything not committed is discarded.
     textureManager::DiscardPendingImports();
+    scriptLauncher::DiscardPendingScripts();
 }

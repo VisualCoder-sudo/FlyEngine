@@ -1,3 +1,4 @@
+#include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../include/Engine.hpp"
 #include "../include/Engine/Backend/Benchmark.hpp"
 #include "../include/Engine/Backend/CameraController.hpp"
@@ -161,6 +162,7 @@ void RunEditor(const project::Info& info) {
     loading::Progress(0.0f, "Preparing textures");
     textureManager::Init(info.path);
     textureManager::DiscardPendingImports();   // imports left over from a session that never saved
+    scriptLauncher::DiscardPendingScripts();   // so are new script files
 
     loading::Range(0.42f, 0.92f);
     terrain::Terrain* loadedTerrain = nullptr;
@@ -210,6 +212,7 @@ void RunEditor(const project::Info& info) {
     // Imports that were never saved are scratch: delete them now, while the
     // project directory is still known (Shutdown forgets it).
     textureManager::DiscardPendingImports();
+    scriptLauncher::DiscardPendingScripts();
     textureManager::Shutdown();
 }
 

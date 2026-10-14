@@ -1,5 +1,6 @@
 #pragma once
 #include "raylib.h"
+#include <string>
 
 namespace console {
 
@@ -9,6 +10,9 @@ void Draw();                 // call last, inside the 2D pass
 bool IsActive();             // the bar's text field has focus
 bool IsOverBar(Vector2 point);
 Rectangle GetBounds();       // bar rect, used for UI hit-testing
+
+// Runs one console line without touching the bar. Returns false (and the message in *out) on an error.
+bool RunLine(const std::string& line, std::string* out);
 
 void Focus();
 void Blur();

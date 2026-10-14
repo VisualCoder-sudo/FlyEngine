@@ -77,6 +77,8 @@ public:
     const std::vector<std::unique_ptr<ModelGroup>>& GetModels() const { return *modelsPtr; }
     Camera3D& GetCamera() { return *cameraPtr; }
     ScatteredObject* FindByName(const std::string& name) const;
+    // The `occurrence`-th (1-based) object with that name, in scene order. Lets same-named objects be told apart.
+    ScatteredObject* FindByNameNth(const std::string& name, int occurrence) const;
     ScatteredObject* CreateObject(const std::string& shapeName);
     bool IsSimPlaying() const { return isPlaying; }
     void SetSimPlaying(bool playing);

@@ -65,6 +65,8 @@ int BasicTerrain::s_shaderAmbientGroundLoc = -1;
 int BasicTerrain::s_shaderFogDensityLoc = -1;
 int BasicTerrain::s_shaderFogColorLoc = -1;
 int BasicTerrain::s_shaderTextureTilingLoc = -1;
+int BasicTerrain::s_shaderCloudShadowLoc = -1;
+int BasicTerrain::s_shaderCloudShadowTexLoc = -1;
 
 BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
     : width(w), depth(d), scale(s), maxHeight(maxH), textureTiling(texTile) {
@@ -106,6 +108,8 @@ BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
             s_shaderFogDensityLoc = GetShaderLocation(s_terrainShader, "fogDensity");
             s_shaderFogColorLoc = GetShaderLocation(s_terrainShader, "fogColor");
             s_shaderTextureTilingLoc = GetShaderLocation(s_terrainShader, "textureTiling");
+            s_shaderCloudShadowLoc = GetShaderLocation(s_terrainShader, "cloudShadow");
+            s_shaderCloudShadowTexLoc = GetShaderLocation(s_terrainShader, "cloudShadowTex");
         }
         shaderLoaded = true;
     }
@@ -1232,7 +1236,7 @@ void BasicTerrain::Update(float dt) {
     
     Ray ray = GetMouseRay(GetMousePosition(), *cam);
     Vector3 hitPoint{};
-    bool hit = Raycast(ray, nullptr, &hitPoint, nullptr);
+    bool hit = !overUI && Raycast(ray, nullptr, &hitPoint, nullptr);
 
     // Track the brush across the WHOLE terrain. If the heightfield raycast
     // misses for any reason, fall back to a guaranteed analytic ground-plane
@@ -1436,8 +1440,8 @@ void BasicTerrain::Draw() {
     if (s_shaderAmbientColorLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientColorLoc, &ambientColor, SHADER_UNIFORM_VEC3);
     if (s_shaderAmbientGroundLoc >= 0) SetShaderValue(s_terrainShader, s_shaderAmbientGroundLoc, &ambientGround, SHADER_UNIFORM_VEC3);
     {   // The clouds' shadow drifts over the terrain.
-        const int cloudShadowLoc = GetShaderLocation(s_terrainShader, "cloudShadow");
-        const int cloudShadowTexLoc = GetShaderLocation(s_terrainShader, "cloudShadowTex");
+        const int cloudShadowLoc = s_shaderCloudShadowLoc;
+        const int cloudShadowTexLoc = s_shaderCloudShadowTexLoc;
         const Vector4 cloudShadow = gfx::GetCloudShadowParams();
         if (cloudShadowLoc >= 0) SetShaderValue(s_terrainShader, cloudShadowLoc, &cloudShadow, SHADER_UNIFORM_VEC4);
         if (cloudShadowTexLoc >= 0) {

@@ -7,6 +7,7 @@
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/TechnicalTools.hpp"
 #include "../../../include/Terrain/BasicTerrain.hpp"
+#include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <algorithm>
@@ -303,13 +304,43 @@ void CharacterController::UpdateKinematic(float dt) {
 
     Vector3 vel = { moveDir.x * speed, 0.0f, moveDir.z * speed };
 
+    // Water with Player Collision on: the player is buoyant. Submerged fraction f of the
+    // capsule gives lift 1.6 g * f, so it settles with ~60% of its height under (head above
+    // water), sinks/rises smoothly, and can swim and hop out.
+    float waterFrac = 0.0f;
+    for (WaterBody* water : WaterBody::GetInstances()) {
+        if (!water || !water->GetPlayerCollision()) continue;
+        const BoundingBox pb = { { pos.x - CAPSULE_RADIUS, pos.y - CAPSULE_HALF_HEIGHT, pos.z - CAPSULE_RADIUS },
+                                 { pos.x + CAPSULE_RADIUS, pos.y + CAPSULE_HALF_HEIGHT, pos.z + CAPSULE_RADIUS } };
+        if (!water->IntersectsXZ(pb)) continue;
+        const float surface = water->GetHeightAt(pos.x, pos.z);
+        const float f = std::clamp((surface - (pos.y - CAPSULE_HALF_HEIGHT)) / CAPSULE_HEIGHT, 0.0f, 1.0f);
+        waterFrac = std::max(waterFrac, f);
+    }
+    const bool inWater = waterFrac > 0.25f;
+    if (inWater) {
+        vel.x *= 0.6f;
+        vel.z *= 0.6f;
+    }
+
     // Vertical velocity - handle jump BEFORE applying gravity.
     // verticalVelocity is a class member, so it carries over frame to frame
     // instead of being recomputed from 0 every Update() call.
     bool canJump = grounded || coyoteTimer > 0.0f;
     bool shouldJump = canJump && jumpBufferTimer > 0.0f;
 
-    if (shouldJump) {
+    if (inWater) {
+        if (jumpBufferTimer > 0.0f) {
+            verticalVelocity = jumpForce * 0.7f;   // swim stroke / hop out
+            wantJump = false;
+            jumpBufferTimer = 0.0f;
+        } else {
+            verticalVelocity += (gravity - gravity * 1.6f * waterFrac) * dt;
+            verticalVelocity -= verticalVelocity * std::min(4.0f * dt, 1.0f);   // water drag
+        }
+        coyoteTimer = 0.0f;
+        grounded = verticalVelocity <= 0.0f && grounded;
+    } else if (shouldJump) {
         verticalVelocity = jumpForce;
         wantJump = false;
         jumpBufferTimer = 0.0f;

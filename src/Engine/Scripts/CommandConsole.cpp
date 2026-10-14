@@ -460,6 +460,12 @@ void RunCurrentInput() {
 
 } // namespace
 
+bool RunLine(const std::string& line, std::string* out) {
+    CommandResult r = Evaluate(Trim(line));
+    if (out) *out = r.text;
+    return !r.error;
+}
+
 Rectangle GetBounds() {
     return GetBarBounds();
 }

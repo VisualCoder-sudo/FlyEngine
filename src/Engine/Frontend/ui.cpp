@@ -1,6 +1,9 @@
 // ui.cpp (fixed)
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include <map>
+#include <set>
 #include "../../../include/Engine/ExportManager.hpp"
+#include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
@@ -58,6 +61,12 @@ static Vector3* g_rotation = nullptr;
 static Vector3* g_origin = nullptr;
 static const std::vector<ScatteredObject*>* g_sceneObjects = nullptr;
 static std::vector<std::unique_ptr<ModelGroup>>* g_sceneModels = nullptr;
+
+// A script is one thing: a C++ class and/or a node graph, found by the class name. Keys the graph by that name.
+static std::string ScriptKey(const ScriptRuntime::StandaloneScript& s) {
+    return scriptLauncher::MakeClassName(s.typeName.empty() ? s.name : s.typeName);
+}
+
 static const std::vector<WaterBody*>& SceneWaters() {
     return WaterBody::GetInstances();
 }
@@ -314,6 +323,8 @@ static Vector2 g_explorerMenuPos = { 0.0f, 0.0f };
 static ExplorerMenuMode g_explorerMenuMode = ExplorerMenuMode::Empty;
 static ScatteredObject* g_explorerMenuObject = nullptr;
 static int g_explorerMenuScript = -1;
+static std::set<std::string> g_scriptSel;   // selected scripts in the Explorer, by ScriptKey (Ctrl/Shift-click)
+static int g_scriptSelAnchor = -1;
 static double g_explorerMenuOpenTime = 0.0;
 
 // Vertical scroll offset (pixels) for the explorer panel content
@@ -334,6 +345,7 @@ static bool g_mouseDrag = false;
 
 // Collapsible property-group state (all open by default).
 static bool g_generalOpen = true;
+static bool g_waterInteractOpen = true;
 static bool g_positionOpen = true;
 static bool g_sizeOpen = true;
 static bool g_rotationOpen = true;
@@ -900,6 +912,7 @@ void BlurAllInput() {
                 s.name = g_scriptNameBuffer;
                 if (s.typeName == oldClass)
                     s.typeName = scriptLauncher::MakeClassName(s.name);
+                vscript::RenameKey(oldClass, ScriptKey(s));
             }
         }
         g_scriptRenameIndex = -1;
@@ -1275,6 +1288,50 @@ static bool DrawDialogButton(Rectangle rec, const char* text, bool isPrimary) {
     return clicked;
 }
 
+// Deletes a script for real: its graph, its Explorer entry and its .cpp, and tells the host so the still compiled
+// class doesn't bring it back. `index` is its StandaloneScripts slot, or -1 to look it up by key.
+static void DeleteScriptEverywhere(const std::string& key, int index = -1) {
+    vscript::RemoveByName(key);
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return;
+    auto& scripts = rt->StandaloneScripts();
+    if (index < 0)
+        for (int i = 0; i < static_cast<int>(scripts.size()); ++i)
+            if (ScriptKey(scripts[i]) == key) { index = i; break; }
+    if (index >= 0 && index < static_cast<int>(scripts.size())) rt->RemoveStandalone(index);
+    g_scriptSel.erase(key);
+    if (scriptLauncher::DeleteScriptFile(key) && rt->GetHost()) rt->GetHost()->ForgetScriptClass(key);
+}
+
+// True when the script menu was opened on one of several selected scripts: the menu then acts on all of them.
+static bool ScriptMenuIsMulti() {
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt || g_scriptSel.size() < 2) return false;
+    auto& scripts = rt->StandaloneScripts();
+    return g_explorerMenuScript >= 0 && g_explorerMenuScript < static_cast<int>(scripts.size()) &&
+           g_scriptSel.count(ScriptKey(scripts[g_explorerMenuScript])) > 0;
+}
+
+// Graphs made in the Visual Script tab get a script entry of their own, so the Explorer lists them too.
+static void SyncVisualScriptEntries() {
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return;
+    auto& scripts = rt->StandaloneScripts();
+    for (int i = 0; i < vscript::Count(); ++i) {
+        const std::string key = vscript::NameAt(i);
+        bool found = false;
+        for (const auto& s : scripts) if (ScriptKey(s) == key) { found = true; break; }
+        if (!found && g_sceneObjects)
+            for (auto* o : *g_sceneObjects) if (o && o->script == key) { found = true; break; }
+        if (found) continue;
+        ScriptRuntime::StandaloneScript s;
+        s.name = key;
+        s.typeName = key;
+        s.runOnPlay = true;
+        scripts.push_back(std::move(s));
+    }
+}
+
 static const char* ExplorerMenuItemLabel(int i) {
     switch (g_explorerMenuMode) {
         case ExplorerMenuMode::Object: {
@@ -1288,6 +1345,7 @@ static const char* ExplorerMenuItemLabel(int i) {
             if (singleSel && i == cursor++) return has ? "Edit Script" : "Add Script";
             if (has && i == cursor++) return "Remove Script";
             if (has && i == cursor++) return "Choose Editor...";
+            if (has && i == cursor++) return "Open in Visual Script";
             if (canGroup && i == cursor++) return "Group";
             if (inModel && i == cursor++) return "Ungroup";
             return nullptr;
@@ -1300,7 +1358,8 @@ static const char* ExplorerMenuItemLabel(int i) {
         case ExplorerMenuMode::Empty:
             return i == 0 ? "Insert Script" : nullptr;
         case ExplorerMenuMode::Script:
-            return i == 0 ? "Rename" : (i == 1 ? "Delete" : (i == 2 ? "Choose Editor..." : nullptr));
+            if (ScriptMenuIsMulti()) return i == 0 ? "Open in Visual Script" : (i == 1 ? "Delete Selected" : nullptr);
+            return i == 0 ? "Rename" : (i == 1 ? "Delete" : (i == 2 ? "Choose Editor..." : (i == 3 ? "Open in Visual Script" : nullptr)));
     }
     return nullptr;
 }
@@ -1329,6 +1388,11 @@ static void PerformExplorerMenuAction(int i) {
             }
             if (has && i == cursor++) {
                 scriptLauncher::ChooseEditorForObjectScript(g_explorerMenuObject);
+                return;
+            }
+            if (has && i == cursor++) {
+                vscript::OpenByName(scriptLauncher::MakeClassName(g_explorerMenuObject->script));
+                SelectBottomTab(2);
                 return;
             }
             if (canGroup && i == cursor++) {
@@ -1374,6 +1438,20 @@ static void PerformExplorerMenuAction(int i) {
             if (ScriptRuntime* rt = GetActiveRuntime()) {
                 auto& scripts = rt->StandaloneScripts();
                 if (g_explorerMenuScript < 0 || g_explorerMenuScript >= static_cast<int>(scripts.size())) return;
+                if (ScriptMenuIsMulti()) {
+                    const std::set<std::string> keys = g_scriptSel;
+                    if (i == 0) {
+                        for (const auto& k : keys) vscript::OpenByName(k);
+                        SelectBottomTab(2);
+                    } else if (i == 1) {
+                        for (int k = static_cast<int>(scripts.size()) - 1; k >= 0; --k)
+                            if (keys.count(ScriptKey(scripts[k]))) {
+                                DeleteScriptEverywhere(ScriptKey(scripts[k]), k);
+                            }
+                        g_scriptSel.clear();
+                    }
+                    return;
+                }
                 if (i == 0) {
                     g_scriptRenameIndex = g_explorerMenuScript;
                     snprintf(g_scriptNameBuffer, sizeof(g_scriptNameBuffer), "%s", scripts[g_explorerMenuScript].name.c_str());
@@ -1381,10 +1459,13 @@ static void PerformExplorerMenuAction(int i) {
                     g_cursorPos = static_cast<int>(strlen(g_scriptNameBuffer));
                     g_selStart = -1;
                 } else if (i == 1) {
-                    rt->RemoveStandalone(g_explorerMenuScript);
+                    DeleteScriptEverywhere(ScriptKey(scripts[g_explorerMenuScript]), g_explorerMenuScript);
                 } else if (i == 2) {
                     auto& s = scripts[g_explorerMenuScript];
                     scriptLauncher::ChooseEditorForStandaloneScript(s.name, s.typeName);
+                } else if (i == 3) {
+                    vscript::OpenByName(ScriptKey(scripts[g_explorerMenuScript]));
+                    SelectBottomTab(2);
                 }
             }
             break;
@@ -2436,6 +2517,7 @@ static void DrawImGuiExplorer() {
         }
     }
 
+    SyncVisualScriptEntries();
     if (ScriptRuntime* rt = GetActiveRuntime()) {
         auto& scripts = rt->StandaloneScripts();
         ImGui::Spacing();
@@ -2453,6 +2535,7 @@ static void DrawImGuiExplorer() {
                     s.name = g_scriptNameBuffer;
                     if (s.typeName == oldClass)
                         s.typeName = scriptLauncher::MakeClassName(s.name);
+                    vscript::RenameKey(oldClass, ScriptKey(s));
                     g_scriptRenameIndex = -1;
                 } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
                     g_scriptRenameIndex = -1;
@@ -2461,14 +2544,28 @@ static void DrawImGuiExplorer() {
                 char label[128];
                 snprintf(label, sizeof(label), "%s", scripts[i].name.c_str());
                 bool rightClicked = false;
-                bool clicked = ExplorerRowIcon(ROWICON_SCRIPT, label, false, &rightClicked);
+                const std::string key = ScriptKey(scripts[i]);
+                bool clicked = ExplorerRowIcon(ROWICON_SCRIPT, label, g_scriptSel.count(key) > 0, &rightClicked);
+                if (rightClicked && !g_scriptSel.count(key)) { g_scriptSel = { key }; g_scriptSelAnchor = i; }
                 if (clicked && !g_explorerMenuOpen) {
-                    if (i >= 0 && i < static_cast<int>(scripts.size())) {
-                        std::string className;
-                        scriptLauncher::EditStandaloneScript(scripts[i].name, scripts[i].typeName, &className);
-                        if (!className.empty()) {
-                            scripts[i].typeName = className;
-                            scripts[i].runOnPlay = true;
+                    const ImGuiIO& io = ImGui::GetIO();
+                    if (io.KeyCtrl) {                       // Ctrl: add or remove this one
+                        if (!g_scriptSel.erase(key)) g_scriptSel.insert(key);
+                        g_scriptSelAnchor = i;
+                    } else if (io.KeyShift && g_scriptSelAnchor >= 0) {   // Shift: everything from the anchor to here
+                        g_scriptSel.clear();
+                        const int lo = std::min(g_scriptSelAnchor, i), hi = std::max(g_scriptSelAnchor, i);
+                        for (int k = lo; k <= hi && k < static_cast<int>(scripts.size()); ++k) g_scriptSel.insert(ScriptKey(scripts[k]));
+                    } else {                                // plain click: just this one, and edit it
+                        g_scriptSel = { key };
+                        g_scriptSelAnchor = i;
+                        if (i >= 0 && i < static_cast<int>(scripts.size())) {
+                            std::string className;
+                            scriptLauncher::EditStandaloneScript(scripts[i].name, scripts[i].typeName, &className);
+                            if (!className.empty()) {
+                                scripts[i].typeName = className;
+                                scripts[i].runOnPlay = true;
+                            }
                         }
                     }
                 } else if (rightClicked) {
@@ -3105,7 +3202,7 @@ static float PropertiesContentHeight() {
         float h = 50.0f;
         h += group(g_positionOpen, 3.0f);   // Pos X, Water H, Pos Z
         h += group(g_sizeOpen, 2.0f);        // Width, Depth
-        h += group(g_generalOpen, 2.0f);     // Color swatch, Transparency
+        h += group(g_generalOpen, 3.0f);     // Color swatch, Transparency, Player Collision
         h += group(g_waterNoiseOpen, 4.0f); // Noise: Amplitude, Frequency, Speed, Octaves
         h += group(g_waterFoamOpen, 3.0f);      // Foam: Intensity, Scale, Threshold
         h += group(g_waterDetailOpen, 2.0f);    // Surface detail: Intensity, Scale
@@ -3116,10 +3213,11 @@ static float PropertiesContentHeight() {
     }
 
     float h = 50.0f; // below the title strip
-    h += group(true, 7.0f);               // General (color + anchored + can collide + boat + collision + transparency + mass)
+    h += group(true, 6.0f);               // General (color + anchored + can collide + collision + transparency + mass)
     if (g_selectedObject && g_selectedObject->HasModel()) h += rowHeight; // mesh info line
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
     if (g_selectedObject && g_selectedObject->HasModel() && !g_playActive) h += rowHeight; // browse / clear row
+    if (g_selectedObject) h += group(g_waterInteractOpen, 3.0f);  // Water Interactions
     h += group(g_positionOpen, 3.0f);     // Position
     h += group(g_sizeOpen, 3.0f);         // Size
     if (g_rotation) h += group(g_rotationOpen, 3.0f);
@@ -3233,6 +3331,30 @@ if (g_selection.size() > 1) {
 
             float trans = w->GetTransparency();
             if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_TRANSPARENCY, trans, "Transparency:", labelX)) w->SetTransparency(trans);
+            y += rowHeight;
+
+            // Player Collision: on = the player floats and swims; off = falls through.
+            DrawTextArial("Player Collision:", labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
+            {
+                Rectangle check = { generalControlX, y, 22.0f, 22.0f };
+                bool on = w->GetPlayerCollision();
+                bool hovered = CheckCollisionPointRec(mouse, check);
+                float t = HoverProgress(29, hovered);
+                DrawRectangleRounded(check, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, t));
+                DrawRectangleLinesEx(check, hovered ? 2.0f : 1.0f, hovered ? theme::ACCENT : theme::BORDER);
+                if (on) {
+                    Vector2 c1 = { check.x + 3.0f, check.y + check.height * 0.5f };
+                    Vector2 c2 = { check.x + check.width * 0.5f, check.y + check.height - 5.0f };
+                    Vector2 c3 = { check.x + check.width - 3.0f, check.y + 4.0f };
+                    DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
+                    DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
+                }
+                if (hovered) MarkHand();
+                if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    w->SetPlayerCollision(!on);
+                    Log("'%s' player collision = %s", w->GetName().c_str(), !on ? "true" : "false");
+                }
+            }
             y += rowHeight;
         }
         y += groupGap;
@@ -3419,34 +3541,6 @@ if (g_selection.size() > 1) {
             }
             Log("'%s' canCollide = %s", g_selectedObject->GetName().c_str(),
                 g_selectedObject->canCollide ? "true" : "false");
-        }
-
-        // --- Boat (floats, thrust + rudder + planing; W/S throttle, A/D rudder in play) ---
-        y += rowHeight;
-        DrawTextArial("Boat:", labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
-        {
-            Rectangle boatCheck = { generalControlX, y, 22.0f, 22.0f };
-            bool boatOn = g_selectedObject != nullptr && g_selectedObject->boat.enabled;
-            bool boatDisabled = g_selectedObject == nullptr;
-            bool boatHovered = CheckCollisionPointRec(mouse, boatCheck);
-            DrawRectangleRounded(boatCheck, 0.2f, 4, boatDisabled ? theme::BG_WIDGET : theme::BG_INPUT);
-            DrawRectangleLinesEx(boatCheck, boatHovered ? 2.0f : 1.0f, boatHovered ? theme::ACCENT : theme::BORDER);
-            if (boatOn) {
-                Vector2 c1 = { boatCheck.x + 3.0f, boatCheck.y + boatCheck.height * 0.5f };
-                Vector2 c2 = { boatCheck.x + boatCheck.width * 0.5f, boatCheck.y + boatCheck.height - 5.0f };
-                Vector2 c3 = { boatCheck.x + boatCheck.width - 3.0f, boatCheck.y + 4.0f };
-                DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
-                DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
-            }
-            if (boatHovered && !boatDisabled) MarkHand();
-            if (!boatDisabled && boatHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                bool nv = !g_selectedObject->boat.enabled;
-                g_selectedObject->boat.enabled = nv;
-                if (g_selection.size() > 1) {
-                    for (auto* obj : g_selection) if (obj && obj != g_selectedObject) obj->boat.enabled = nv;
-                }
-                Log("'%s' boat = %s", g_selectedObject->GetName().c_str(), nv ? "true" : "false");
-            }
         }
 
         // --- Collision accuracy (combo) ---
@@ -3778,6 +3872,44 @@ if (g_selection.size() > 1) {
         }
     }
     y += groupGap;
+
+    // --- Water Interactions ---
+    if (g_selectedObject) {
+        y = DrawGroupHeader(panelRec, y, "Water Interactions", g_waterInteractOpen, 110);
+        if (g_waterInteractOpen) {
+            struct WaterOpt { const char* label; bool ScatteredObject::WaterInteraction::* member; int hoverId; };
+            const WaterOpt opts[3] = {
+                { "Floats:", &ScatteredObject::WaterInteraction::floats, 26 },
+                { "Foam:",   &ScatteredObject::WaterInteraction::foam,   27 },
+                { "Splash:", &ScatteredObject::WaterInteraction::splash, 28 },
+            };
+            for (const WaterOpt& o : opts) {
+                DrawTextArial(o.label, labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
+                Rectangle check = { generalControlX, y, 22.0f, 22.0f };
+                bool on = g_selectedObject->waterInteraction.*(o.member);
+                bool hovered = CheckCollisionPointRec(mouse, check);
+                float t = HoverProgress(o.hoverId, hovered);
+                DrawRectangleRounded(check, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, t));
+                DrawRectangleLinesEx(check, hovered ? 2.0f : 1.0f, hovered ? theme::ACCENT : theme::BORDER);
+                if (on) {
+                    Vector2 c1 = { check.x + 3.0f, check.y + check.height * 0.5f };
+                    Vector2 c2 = { check.x + check.width * 0.5f, check.y + check.height - 5.0f };
+                    Vector2 c3 = { check.x + check.width - 3.0f, check.y + 4.0f };
+                    DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
+                    DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
+                }
+                if (hovered) MarkHand();
+                if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    bool nv = !on;
+                    g_selectedObject->waterInteraction.*(o.member) = nv;
+                    for (auto* obj : g_selection) if (obj && obj != g_selectedObject) obj->waterInteraction.*(o.member) = nv;
+                    Log("'%s' %s %s", g_selectedObject->GetName().c_str(), o.label, nv ? "true" : "false");
+                }
+                y += rowHeight;
+            }
+        }
+        y += groupGap;
+    }
 
     // --- Position ---
     y = DrawGroupHeader(panelRec, y, "Position", g_positionOpen, 100);
@@ -5937,7 +6069,7 @@ static void HandleAssetBrowserViewportDrop(const Camera3D& camera) {
     }
 }
 
-// The bottom panel's tabs: 0 = Assets, 1 = Output. g_bottomTabRequest switches tab for one frame (-1 = none).
+// The bottom panel's tabs: 0 = Assets, 1 = Output, 2 = Visual Script. g_bottomTabRequest switches tab for one frame (-1 = none).
 static int g_bottomTabActive = 0;
 static int g_bottomTabRequest = -1;
 
@@ -5964,6 +6096,38 @@ static void DrawOutputTab() {
         followedTotal = g_logTotal;
     }
     ImGui::EndChild();
+}
+
+static void DrawVisualScriptTab() {
+    vscript::SceneListing scene;
+    scene.deleteScript = [](const std::string& key) { DeleteScriptEverywhere(key); };
+    // Objects can share a name, so a repeat gets "#2", "#3"... in scene order. The script runner counts the same way.
+    std::map<const ScatteredObject*, std::string> labels;
+    if (g_sceneObjects) {
+        std::map<std::string, int> seen;
+        for (auto* o : *g_sceneObjects) {
+            if (!o) continue;
+            const int n = ++seen[o->GetName()];
+            labels[o] = n > 1 ? o->GetName() + "#" + std::to_string(n) : o->GetName();
+        }
+    }
+    if (g_sceneModels)
+        for (const auto& m : *g_sceneModels) {
+            if (!m) continue;
+            vscript::SceneListing::Group grp;
+            grp.name = m->name;
+            for (auto* o : m->members) if (o) grp.members.push_back(labels.count(o) ? labels[o] : o->GetName());
+            scene.groups.push_back(std::move(grp));
+        }
+    if (g_sceneObjects)
+        for (auto* o : *g_sceneObjects) if (o && !o->parentModel) scene.loose.push_back(labels[o]);
+    if (ScriptRuntime* rt = GetActiveRuntime()) {
+        for (const auto& sc : rt->StandaloneScripts()) scene.existingScripts.push_back(ScriptKey(sc));
+    }
+    if (g_sceneObjects)
+        for (auto* o : *g_sceneObjects)
+            if (o && !o->script.empty()) scene.existingScripts.push_back(scriptLauncher::MakeClassName(o->script));
+    vscript::DrawEditor(scene);
 }
 
 static void DrawImGuiAssetBrowser(const Camera3D& camera) {
@@ -6004,6 +6168,7 @@ static void DrawImGuiAssetBrowser(const Camera3D& camera) {
         ImGuiTabItemFlags assetsFlags = ImGuiTabItemFlags_None, outputFlags = ImGuiTabItemFlags_None;
         if (g_bottomTabRequest == 0) assetsFlags |= ImGuiTabItemFlags_SetSelected;
         if (g_bottomTabRequest == 1) outputFlags |= ImGuiTabItemFlags_SetSelected;
+        ImGuiTabItemFlags scriptFlags = g_bottomTabRequest == 2 ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
         g_bottomTabRequest = -1;
 
         if (ImGui::BeginTabItem("Assets", nullptr, assetsFlags)) {
@@ -6032,6 +6197,11 @@ static void DrawImGuiAssetBrowser(const Camera3D& camera) {
         } else if (unread) {
             // The dot sits at the top-right of the tab's label.
             ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(outMax.x - 6.0f, outMin.y + 6.0f), 4.0f, IM_COL32(235, 64, 52, 255), 12);
+        }
+        if (ImGui::BeginTabItem("Visual Script", nullptr, scriptFlags)) {
+            g_bottomTabActive = 2;
+            DrawVisualScriptTab();
+            ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }

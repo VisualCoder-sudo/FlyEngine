@@ -214,6 +214,8 @@ add_library(FlyEngineCore STATIC
         src/Engine/Backend/ScatteredObject.cpp
         src/Engine/Frontend/ObjectInteractionManager.cpp
         src/Engine/Frontend/ScenePersistence.cpp
+        src/Engine/Backend/VisualScript.cpp
+        src/Engine/Frontend/VisualScriptEditor.cpp
         src/Engine/Graphics.cpp
         src/Engine/PostFX.cpp
         src/Engine/Atmosphere.cpp

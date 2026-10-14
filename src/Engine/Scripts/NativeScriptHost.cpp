@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/VisualScript.hpp"
 /*
  * NativeScriptHost.cpp - Native plugin loading, C++ game scripts, hot-reload.
  * Plugins use CPluginAPI (vtable-based); scripts use FlyScriptABI.h.
@@ -739,6 +740,13 @@ bool NativeScriptHost::LoadStaticScripts() {
     }
     UnloadScriptLibrary();
     m_module = module;
+    {   // a rebuilt library no longer has the deleted classes: forget the ones that are really gone
+        std::vector<std::string> still;
+        for (const auto& h : m_hiddenClasses)
+            for (int k = 0; k < m_module->class_count; ++k)
+                if (h == m_module->classes[k].name) { still.push_back(h); break; }
+        m_hiddenClasses = still;
+    }
     std::string names;
     for (int i = 0; i < m_module->class_count; ++i) {
         if (i) names += ", ";
@@ -778,9 +786,16 @@ void NativeScriptHost::BindWorld(std::vector<ScatteredObject*>& objects,
     m_runtime->BindWorld(objects, models, camera, sim, engine);
 }
 
+void NativeScriptHost::ForgetScriptClass(const std::string& className) {
+    if (std::find(m_hiddenClasses.begin(), m_hiddenClasses.end(), className) == m_hiddenClasses.end())
+        m_hiddenClasses.push_back(className);
+    RequestScriptRebuild();
+}
+
 void NativeScriptHost::SyncStandaloneScripts() {
     auto& scripts = m_runtime->StandaloneScripts();
     for (const std::string& name : GetScriptClassNames()) {
+        if (std::find(m_hiddenClasses.begin(), m_hiddenClasses.end(), name) != m_hiddenClasses.end()) continue;
         bool listed = false;
         for (const auto& s : scripts)
             if (s.typeName == name) { listed = true; break; }
@@ -807,6 +822,7 @@ bool NativeScriptHost::ObjectAlive(ScatteredObject* obj) const {
 
 bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex) {
     if (className.empty()) return false;
+    if (vscript::Has(className) && (!m_module || !FindClass(className))) return false;   // a visual-only script
     if (!m_module) {
         ui::LogAlways("[Scripts] Cannot start '%s': no script library is loaded (check the compiler output).",
                       className.c_str());

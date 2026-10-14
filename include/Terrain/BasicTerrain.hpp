@@ -268,6 +268,8 @@ private:
     static int s_shaderFogDensityLoc;
     static int s_shaderFogColorLoc;
     static int s_shaderTextureTilingLoc;
+    static int s_shaderCloudShadowLoc;
+    static int s_shaderCloudShadowTexLoc;
 
     // Static layer registry (shared across all BasicTerrain instances)
     static Texture2D s_layerTextures[4];

@@ -117,6 +117,8 @@ public:
     // Adds every script class not yet in the standalone list, so a script
     // dropped into Scripts/ shows up in the explorer and runs on Play.
     void SyncStandaloneScripts();
+    // A script was deleted: keep its (still compiled) class from being listed again, and rebuild without it.
+    void ForgetScriptClass(const std::string& className);
 
     // Lifecycle, called through ScriptRuntime by the editor and FlyNative_*.
     bool StartObjectScriptOn(ScatteredObject* obj);
@@ -155,6 +157,7 @@ private:
     const FlyScriptModule* m_module = nullptr;
     std::vector<RunningScript> m_running;
     bool m_ticking = false;  // inside the per-frame tick loop
+    std::vector<std::string> m_hiddenClasses;
     bool m_pendingPlay = false;
     bool m_pendingStop = false;
 

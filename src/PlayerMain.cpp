@@ -13,6 +13,7 @@
 #include "Engine/Backend/CharacterController.hpp"
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Graphics.hpp"
+#include "Engine/Frontend/ui.hpp"
 #include "Engine/PostFX.hpp"
 #include "Engine/LoadingScreen.hpp"
 #include "Terrain/Terrain.hpp"
@@ -938,6 +939,7 @@ int main(int argc, char* argv[]) {
     loading::Progress(0.0f, "Starting the simulation");
     // Auto-start physics simulation (no editor Play button in player)
     simRef.StartPlay();
+    ui::SetPlayActive(true);
 
     // Ensure CharacterController body exists in physics world
     if (charControllerPtr) {
@@ -948,10 +950,8 @@ int main(int argc, char* argv[]) {
     // player starts physics directly instead of through the editor's play
     // toggle, so the host has to be told play began.
     nativeScriptHostPtr->BindWorld(rawObjectPtrs, sceneModels, engine.GetCamera(), simRef, engine);
-    if (nativeScriptHostPtr->ScriptsReady()) {
-        nativeScriptHostPtr->SyncStandaloneScripts();
-        nativeScriptHostPtr->SetPlayActive(true);
-    }
+    if (nativeScriptHostPtr->ScriptsReady()) nativeScriptHostPtr->SyncStandaloneScripts();
+    nativeScriptHostPtr->SetPlayActive(true);   // also runs the scene's visual script
 
     // Initialize Technical Tools (console, profiler, inspector, physics debug, recorder, capture, memory tracker)
     loading::Range(0.98f, 1.0f);

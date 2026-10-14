@@ -1,3 +1,5 @@
+#include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
+#include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
@@ -51,7 +53,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 21\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 24\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         const Vector3& pos = *object->GetPosPtr();
@@ -84,10 +86,9 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         // v10: transparency (0 = visible, 1 = invisible).
         // v11: texture path (project-relative).
         file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath());
-        {   // v21: boat parameters
-            const auto& bp = object->boat;
-            file << ' ' << (int)bp.enabled << ' ' << (int)bp.playerControlled << ' ' << bp.thrust << ' ' << bp.steering
-                 << ' ' << bp.keel << ' ' << bp.planeSpeed;
+        {   // v22: water interactions
+            const auto& wi = object->waterInteraction;
+            file << ' ' << (int)wi.floats << ' ' << (int)wi.foam << ' ' << (int)wi.splash;
         }
         file << '\n';
     }
@@ -193,6 +194,8 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
             // v20: dynamic water (wake / splash / foam life / spray)
             file << ripple.wakeStrength << ' ' << ripple.splashStrength << ' ' << ripple.foamLifetime << ' '
                  << (ripple.spray ? 1 : 0) << ' ' << ripple.sprayAmount << '\n';
+            // v23: player collision (buoyancy for the player)
+            file << (water->GetPlayerCollision() ? 1 : 0) << '\n';
         }
     }
 
@@ -235,6 +238,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
              << L.vignette << ' ' << L.contrast << ' ' << L.saturation << ' ' << L.temperature << ' ' << L.filmGrain << "\n";
     }
 
+    vscript::Save(file);
     return file.good();
 }
 
@@ -243,6 +247,7 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
                      const std::string& path,
                      terrain::Terrain* terrain) {
     textureManager::CommitAssets(objects);   // see SaveProjectFile
+    scriptLauncher::CommitPendingScripts();
     std::ofstream file(path, std::ios::trunc);
     if (!file) return false;
     std::error_code ec;
@@ -281,7 +286,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 21) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 24) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -404,13 +409,19 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             }
         }
 
-        // v21 added boat parameters.
-        if (version >= 21) {
+        // v21 stored boat parameters (feature removed): read and discard.
+        if (version == 21) {
             int en = 0, pc = 1;
-            auto& bp = object->boat;
-            if (!(file >> en >> pc >> bp.thrust >> bp.steering >> bp.keel >> bp.planeSpeed)) return false;
-            bp.enabled = (en != 0);
-            bp.playerControlled = (pc != 0);
+            float thrust, steering, keel, planeSpeed;
+            if (!(file >> en >> pc >> thrust >> steering >> keel >> planeSpeed)) return false;
+        }
+        // v22 added water interactions.
+        if (version >= 22) {
+            int fl = 1, fo = 1, sp = 1;
+            if (!(file >> fl >> fo >> sp)) return false;
+            object->waterInteraction.floats = (fl != 0);
+            object->waterInteraction.foam   = (fo != 0);
+            object->waterInteraction.splash = (sp != 0);
         }
 
         loaded.push_back(std::move(object));
@@ -650,10 +661,16 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 rpp.spray = (sprayOn != 0);
             }
 
+            int playerCol = 0; // scenes older than v23: player falls through
+            if (version >= 23) {
+                if (!(file >> playerCol)) return false;
+            }
+
             auto water = std::make_unique<WaterBody>(pos, wsize, height,
                 Color{ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
             water->SetName(wname);
             water->SetTransparency(transparency);
+            water->SetPlayerCollision(playerCol != 0);
 
             WaterBody::NoiseParams np;
             np.amplitude = amp; np.frequency = freq; np.speed = speed;
@@ -793,6 +810,9 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             }
         }
     }
+
+    vscript::Clear();
+    if (version >= 24) vscript::Load(file);
 
     AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {

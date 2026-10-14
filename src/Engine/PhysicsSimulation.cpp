@@ -705,10 +705,11 @@ void Simulation::ApplyBuoyancy() {
             // touches the surface, and a continuous wake while it moves through.
             {
                 const float wakeRadius = sqrtf(halfExt.x * halfExt.z); // long hulls: width-ish, not length
-                if (!rec.wasSubmerged && vel.y < -0.8f) {
+                if (obj->waterInteraction.splash && !rec.wasSubmerged && vel.y < -0.8f) {
                     water->AddSplash({ pos.x, waterSurface, pos.z }, -vel.y, wakeRadius);
                 }
                 const b3Vec3 hullX = b3Body_GetWorldVector(rec.bodyId, { 1.0f, 0.0f, 0.0f });
+                if (obj->waterInteraction.foam)
                 water->AddBodyWake(obj, pos, vel, wakeRadius, submergedFraction, fixedDt,
                                    { halfExt.x, halfExt.z }, atan2f(hullX.z, hullX.x));
             }
@@ -716,72 +717,9 @@ void Simulation::ApplyBuoyancy() {
             // Per-point Archimedes buoyancy + linear drag at each point's own velocity
             // (which includes the body's spin, so rotation is damped too).
             const float densityRatio = WATER_DENSITY / OBJECT_DENSITY;
-            const bool isBoat = obj->boat.enabled;
-            // Boats are streamlined: far less horizontal hull drag than a tumbling block.
-            float dragXZ = isBoat ? 0.15f : DRAG_COEFF;
-            const float dragY = isBoat ? 2.5f : DRAG_COEFF;
-            if (isBoat) {
-                auto& bp = obj->boat;
-                if (bp.playerControlled) {
-                    bp.throttle = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 0.6f : 0.0f);
-                    bp.rudder   = (IsKeyDown(KEY_D) ? 1.0f : 0.0f) - (IsKeyDown(KEY_A) ? 1.0f : 0.0f);
-                }
-                const bool alongX = halfExt.x > halfExt.z;
-                const float halfLen = alongX ? halfExt.x : halfExt.z;
-                const b3Vec3 fLocal = alongX ? b3Vec3{ 1, 0, 0 } : b3Vec3{ 0, 0, 1 };
-                const b3Vec3 fw = b3Body_GetWorldVector(rec.bodyId, fLocal);
-                float fx = fw.x, fz = fw.z;
-                const float fl = sqrtf(fx * fx + fz * fz);
-                if (fl > 1e-4f) {
-                    fx /= fl; fz /= fl;
-                    const float rx = -fz, rz = fx; // starboard-side lateral axis
-                    const float vF = vel.x * fx + vel.z * fz;
-                    const float vL = vel.x * rx + vel.z * rz;
-
-                    // Stern point (propeller + rudder), below the waterline end of the hull.
-                    const b3Pos sp = b3Body_GetWorldPoint(rec.bodyId,
-                        { alongX ? -halfLen : 0.0f, -halfExt.y * 0.5f, alongX ? 0.0f : -halfLen });
-                    const float sternH = water->GetHeightAt((float)sp.x, (float)sp.z, kRippleBuoyancyWeight);
-                    const float propSub = fmaxf(Clamp((sternH - (float)sp.y) / fmaxf(halfExt.y, 0.3f) + 0.5f, 0.0f, 1.0f), submergedFraction * 0.6f);
-
-                    // Planing: above planeSpeed the hull rides up on dynamic lift, wetted
-                    // area (and so hull drag) falls, and the bow trims up.
-                    const float u = Clamp(fabsf(vF) / fmaxf(obj->boat.planeSpeed, 0.1f), 0.0f, 1.0f);
-                    const float plane = u * u * (3.0f - 2.0f * u);
-                    // Quadratic hull drag along the heading sets a real top speed.
-                    const float quad = -0.08f * (1.0f - 0.5f * plane) * fabsf(vF) * vF * mass * submergedFraction;
-                    b3Body_ApplyForceToCenter(rec.bodyId, { fx * quad, 0.0f, fz * quad }, true);
-
-                    // Propeller thrust at the stern, only while the prop is in water.
-                    const float thrustF = obj->boat.throttle * obj->boat.thrust * mass * propSub;
-                    b3Body_ApplyForce(rec.bodyId, { fx * thrustF, 0.0f, fz * thrustF }, sp, true);
-
-                    // Rudder: sideways force at the stern, proportional to flow past it.
-                    // Reverses with the direction of travel like a real rudder.
-                    const float flow = Clamp(vF + obj->boat.throttle * 2.0f, -12.0f, 12.0f);
-                    const float rudF = -obj->boat.rudder * obj->boat.steering * flow * mass * 0.45f * propSub;
-                    b3Body_ApplyForce(rec.bodyId, { rx * rudF, 0.0f, rz * rudF }, sp, true);
-
-                    // Keel: resists sideways slip so the boat carves instead of drifting.
-                    const float keelF = -obj->boat.keel * vL * mass * submergedFraction;
-                    b3Body_ApplyForceToCenter(rec.bodyId, { rx * keelF, 0.0f, rz * keelF }, true);
-
-                    // Planing lift, applied a little aft of centre so the bow trims up.
-                    if (plane > 0.0f) {
-                        const b3Pos lp = b3Body_GetWorldPoint(rec.bodyId,
-                            { alongX ? -halfLen * 0.3f : 0.0f, 0.0f, alongX ? 0.0f : -halfLen * 0.3f });
-                        b3Body_ApplyForce(rec.bodyId, { 0.0f, GRAVITY * mass * 0.25f * plane * submergedFraction, 0.0f }, lp, true);
-                    }
-
-                    // Prop wash: churned foam trail at the stern while under power.
-                    if (fabsf(obj->boat.throttle) > 0.05f && propSub > 0.0f) {
-                        const float wr = fmaxf(sqrtf(halfExt.x * halfExt.z) * 0.5f, 0.2f);
-                        const Vector3 pv2 = { vel.x - fx * obj->boat.throttle * 3.0f, vel.y, vel.z - fz * obj->boat.throttle * 3.0f };
-                        water->AddBodyWake((const char*)obj + 1, { (float)sp.x, (float)sp.y, (float)sp.z },
-                                           pv2, wr, propSub, fixedDt);
-                    }
-                }
-            }
+            const float dragXZ = DRAG_COEFF;
+            const float dragY = DRAG_COEFF;
+            const float buoyancyScale = obj->waterInteraction.floats ? 1.0f : 0.0f;
             const float perPointMass = mass / (float)ptCount;
             for (int i = 0; i < ptCount; ++i) {
                 const Pt& pt = pts[i];
@@ -793,10 +731,10 @@ void Simulation::ApplyBuoyancy() {
                 // term is what makes a fast impact slam to a stop instead of
                 // gliding on, and fades as the body slows.
                 const float pvSpeed = sqrtf(pv.x * pv.x + pv.y * pv.y + pv.z * pv.z);
-                const float quadXZ = isBoat ? 0.0f : 0.5f;
+                const float quadXZ = 0.5f;
                 const float quadY = 1.0f;
                 const b3Vec3 f = { -(dragXZ + quadXZ * pvSpeed) * k * pv.x,
-                                   GRAVITY * densityRatio * k - (dragY + quadY * pvSpeed) * k * pv.y,
+                                   buoyancyScale * GRAVITY * densityRatio * k - (dragY + quadY * pvSpeed) * k * pv.y,
                                    -(dragXZ + quadXZ * pvSpeed) * k * pv.z };
                 b3Body_ApplyForce(rec.bodyId, f, bp, true);
             }
@@ -815,24 +753,19 @@ void Simulation::ApplyBuoyancy() {
                 gradX = (mzz * bx - mxz * bz) / det;
                 gradZ = (mxx * bz - mxz * bx) / det;
             }
-            const float pushForce = WAVE_PUSH * submergedFraction * mass;
+            const float pushForce = obj->waterInteraction.floats ? WAVE_PUSH * submergedFraction * mass : 0.0f;
             b3Body_ApplyForceToCenter(rec.bodyId, { -gradX * pushForce, 0.0f, -gradZ * pushForce }, true);
 
             // Angular damping
             Vector3 angVel = b3wrap::GetBodyAngularVelocity(rec.bodyId);
             float angSpeed = Vector3Length(angVel);
             if (angSpeed > 0.01f) {
-                float angDrag;
-                if (isBoat) {
-                    angDrag = 4.0f * submergedFraction * angSpeed;
-                } else {
-                    // Scale by rotational inertia (~ m * size^2) so big and small
-                    // bodies both lose spin in about a second, with a quadratic
-                    // term so a fast spin is killed quickly.
-                    const Vector3 sz = *obj->GetSizePtr();
-                    const float inertia = mass * (sz.x * sz.x + sz.y * sz.y + sz.z * sz.z) / 12.0f;
-                    angDrag = inertia * submergedFraction * (3.0f * angSpeed + 0.6f * angSpeed * angSpeed);
-                }
+                // Scale by rotational inertia (~ m * size^2) so big and small
+                // bodies both lose spin in about a second, with a quadratic
+                // term so a fast spin is killed quickly.
+                const Vector3 sz = *obj->GetSizePtr();
+                const float inertia = mass * (sz.x * sz.x + sz.y * sz.y + sz.z * sz.z) / 12.0f;
+                const float angDrag = inertia * submergedFraction * (3.0f * angSpeed + 0.6f * angSpeed * angSpeed);
                 Vector3 angDragVec = Vector3Scale(angVel, -angDrag / angSpeed);
                 b3Body_ApplyTorque(rec.bodyId, { angDragVec.x, angDragVec.y, angDragVec.z }, true);
             }

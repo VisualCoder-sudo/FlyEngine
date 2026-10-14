@@ -1,4 +1,5 @@
 #pragma once
+#include "MoveModule.hpp"
 #include "../Backend/Entity.hpp"
 #include "../include/Engine/Backend/ScatteredObject.hpp"
 #include "ui.hpp"
@@ -58,6 +59,7 @@ private:
     Vector3 startPos = { 0.0f, 0.0f, 0.0f };
     Vector3 dragPlanePoint = { 0.0f, 0.0f, 0.0f }; // mouse-ray hit on the drag plane at press
     Vector3 dragPlaneNormal = { 0.0f, 1.0f, 0.0f }; // camera view direction at press
+    MoveModule axisMove;                        // shared axis drag (objects + water)
     float dragAxisWorldLen = 1.0f;              // grabbed axis handle offset (0.7 * size) in world units
     Vector3 startSize = { 1.0f, 1.0f, 1.0f };
     Vector3 startRotation = { 0.0f, 0.0f, 0.0f };

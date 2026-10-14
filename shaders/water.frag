@@ -106,8 +106,10 @@ void main() {
     // and pops in a hard line when it slides out of view while turning. Fading the
     // border keeps that transition smooth instead of showing a reversing streak.
     vec2 edgeDist = abs(reflUV - vec2(0.5)) * 2.0; // 0 = centre, 1 = frustum edge
-    float edgeFade = clamp(1.0 - smoothstep(0.55, 0.95, edgeDist.x)
-                                  - smoothstep(0.55, 0.95, edgeDist.y), 0.0, 1.0);
+    // The mirrored camera shares the player camera's view, so a point on the water plane lands
+    // on the same screen position in both images. The fade must therefore stay out of the
+    // visible area and only soften the last few percent at the true frustum border.
+    float edgeFade = 1.0 - smoothstep(0.94, 1.0, max(edgeDist.x, edgeDist.y));
     vec2 reflUVClamped = clamp(reflUV, vec2(0.0), vec2(1.0));
 
     // Distortion grows with wave steepness: calm water stays crisp, rough water

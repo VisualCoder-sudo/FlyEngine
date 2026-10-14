@@ -276,6 +276,8 @@ struct PipelineKey {
     PassFormat format;
 };
 sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& descTemplate);
+// Cache lookup only; id 0 on a miss (lets callers skip building the template).
+sg_pipeline FindPipeline(const PipelineKey& key);
 
 // ---------------------------------------------------------------------------
 // Immediate-mode batch (rl_batch.cpp)

@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <cstdint>
 
 class Engine;
 
@@ -59,7 +60,9 @@ public:
         int currentLod = -1;
         float fade = 0.0f;
         float lodDist = 0.0f; // camera distance at last LOD swap (hysteresis anchor)
+        uint32_t seenStamp = 0; // == WaterBody::chunkStamp when in the near disk this frame
     };
+    uint32_t chunkStamp = 0;
 
     static constexpr float CHUNK_SIZE = 20.0f;
     static constexpr float MAX_RENDER_DISTANCE = 350.0f;
@@ -99,6 +102,10 @@ public:
     const Color& GetBaseColor() const { return baseColor; }
     void SetBaseColor(Color c) { baseColor = c; }
 
+    // When true the player gets buoyancy and can swim in this water; when false
+    // the player falls straight through it.
+    bool GetPlayerCollision() const { return playerCollision; }
+    void SetPlayerCollision(bool v) { playerCollision = v; }
     float GetTransparency() const { return transparency; }
     void SetTransparency(float t) { transparency = Clamp(t, 0.0f, 1.0f); }
 
@@ -262,6 +269,7 @@ private:
     float waterHeight = 0.0f;
     Color baseColor = { 0, 100, 200, 180 };
     float transparency = 0.3f;
+    bool playerCollision = false;
     std::string name = "WaterBody";
 
     NoiseParams noise;
