@@ -310,6 +310,7 @@ void NativeScriptHost::Update(float dt) {
     }
 
     TickScripts(dt);
+    if (m_runtime->IsSimPlaying()) vscript::Tick(*m_runtime, dt);
 
     if (!m_engine) return;
 

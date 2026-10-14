@@ -17,6 +17,9 @@ constexpr float kPinR = 6.0f;
 ImVec2 g_pan(20.0f, 20.0f);
 int g_selected = 0;
 int g_dragFrom = 0;            // node whose exec-out pin is being dragged
+int g_dragPin = 0;             // ...and which of its output pins
+int g_dragData = 0;            // value node whose output is being dragged
+int g_wireMenuToPin = -1;      // >= 0: the wire menu is for a value wire into that input pin
 ImVec2 g_menuCanvasPos(0, 0);
 char g_search[64] = "";
 std::string g_browsePath;      // folder shown in the target picker, e.g. "Workspace/Group1"
@@ -27,6 +30,12 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Start: return IM_COL32(40, 130, 60, 255);
         case NodeType::Change: return IM_COL32(40, 95, 170, 255);
         case NodeType::End: return IM_COL32(170, 50, 50, 255);
+        case NodeType::OnUpdate: case NodeType::OnStop: return IM_COL32(40, 130, 60, 255);
+        case NodeType::Branch: case NodeType::Sequence: case NodeType::Delay:
+        case NodeType::Repeat: case NodeType::DoOnce: return IM_COL32(150, 110, 30, 255);
+        case NodeType::Print: return IM_COL32(110, 70, 160, 255);
+        case NodeType::SetVariable: return IM_COL32(40, 130, 140, 255);
+        default: if (IsPure(t)) return IM_COL32(40, 110, 130, 255); break;
     }
     return IM_COL32(80, 80, 80, 255);
 }
@@ -38,11 +47,50 @@ float TargetButtonW(const Node& n) {
     return std::max(180.0f, ImGui::CalcTextSize(TargetLabel(n).c_str()).x + 24.0f);
 }
 
-float NodeWidth(const Node& n) { return n.type == NodeType::Change ? 10.0f + 60.0f + TargetButtonW(n) + 14.0f : 130.0f; }
+constexpr float kRowH = 26.0f;
+
+int BodyRows(NodeType t) {
+    switch (t) {
+        case NodeType::Change: return 3;
+        case NodeType::SetVariable: return 2;
+        case NodeType::Print: case NodeType::Delay: case NodeType::Branch:
+        case NodeType::Sequence: case NodeType::Repeat:
+        case NodeType::GetVariable: case NodeType::Not: return 1;
+        case NodeType::GetProperty: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
+        case NodeType::Mul: case NodeType::Div: case NodeType::Random: return 2;
+        case NodeType::Compare: case NodeType::Lerp: return 3;
+        default: return 0;
+    }
+}
+
+// Body row that holds data input pin `pin`, or -1.
+int DataPinRow(const Node& n, int pin) {
+    if (pin < 0 || pin >= DataInputCount(n.type)) return -1;
+    switch (n.type) {
+        case NodeType::SetVariable: return 1;
+        case NodeType::Change: return 2;
+        case NodeType::Compare: return pin == 0 ? 0 : 2;
+        default: return pin;
+    }
+}
+
+bool IsWired(const Graph& g, int id, int pin) {
+    for (const DataLink& d : g.dataLinks) if (d.to == id && d.toPin == pin) return true;
+    return false;
+}
+
+// Branching nodes list their output pins in rows under the body; everything else has one pin in the header.
+bool MultiOut(const Node& n) { return OutputCount(n.type, &n) > 1; }
+
+float NodeWidth(const Node& n) {
+    if (n.type == NodeType::Change) return 10.0f + 60.0f + TargetButtonW(n) + 14.0f;
+    return BodyRows(n.type) ? 190.0f : 130.0f;
+}
 
 float NodeHeight(const Node& n) {
-    if (n.type != NodeType::Change) return kHeaderH + 12.0f;
-    return kHeaderH + 8.0f + 3 * 26.0f + 8.0f;
+    const int rows = BodyRows(n.type) + (MultiOut(n) ? OutputCount(n.type, &n) : 0);
+    if (!rows) return kHeaderH + 12.0f;
+    return kHeaderH + 8.0f + rows * kRowH + 8.0f;
 }
 
 bool IsBoolProp(const std::string& p) {
@@ -50,8 +98,21 @@ bool IsBoolProp(const std::string& p) {
 }
 bool IsVecProp(const std::string& p) { return p == "Position" || p == "Size" || p == "Rotation"; }
 
+ImVec2 InData(const Node& n, ImVec2 o, int pin) {
+    return ImVec2(o.x + n.x, o.y + n.y + kHeaderH + 6.0f + DataPinRow(n, pin) * kRowH + 11.0f);
+}
+
+void DrawDataPin(ImDrawList* dl, ImVec2 c, bool connected) {
+    const ImU32 col = IM_COL32(90, 200, 230, 255);
+    if (connected) dl->AddCircleFilled(c, 5.5f, col);
+    else dl->AddCircle(c, 5.5f, col, 0, 1.8f);
+}
+
 ImVec2 InPin(const Node& n, ImVec2 o) { return ImVec2(o.x + n.x, o.y + n.y + kHeaderH * 0.5f); }
-ImVec2 OutPin(const Node& n, ImVec2 o) { return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH * 0.5f); }
+ImVec2 OutPin(const Node& n, ImVec2 o, int pin = 0) {
+    const float y = MultiOut(n) ? kHeaderH + 8.0f + (BodyRows(n.type) + pin) * kRowH + kRowH * 0.5f : kHeaderH * 0.5f;
+    return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + y);
+}
 
 void DrawWire(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
     const float d = std::max(40.0f, std::abs(b.x - a.x) * 0.5f);
@@ -72,7 +133,7 @@ float WireDistance(ImVec2 a, ImVec2 b, ImVec2 m) {
     return best;
 }
 
-int g_wireMenuFrom = 0, g_wireMenuTo = 0;
+int g_wireMenuFrom = 0, g_wireMenuTo = 0, g_wireMenuPin = 0;
 
 void DrawExecPin(ImDrawList* dl, ImVec2 c, bool connected) {
     const ImU32 col = IM_COL32(245, 245, 245, 255);
@@ -172,7 +233,90 @@ void DrawTargetPopup(Node& n, const SceneListing& scene) {
     ImGui::EndPopup();
 }
 
+// One labelled text field in a node body row.
+void StrRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, const char* id, bool wired = false) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    if (wired) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); return; }
+    ImGui::SetNextItemWidth(NodeWidth(n) - 80.0f);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%s", s.c_str());
+    if (ImGui::InputText(id, buf, sizeof(buf))) s = buf;
+}
+
+void NumRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, bool integer, bool wired = false) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    if (wired) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); return; }
+    ImGui::SetNextItemWidth(NodeWidth(n) - 80.0f);
+    char b[32];
+    if (integer) {
+        int v = std::atoi(s.c_str());
+        if (ImGui::DragInt("##num", &v, 0.1f, 0, 1000)) { std::snprintf(b, sizeof(b), "%d", v); s = b; }
+    } else {
+        float v = static_cast<float>(std::atof(s.c_str()));
+        if (ImGui::DragFloat("##num", &v, 0.05f, 0.0f, 3600.0f)) { std::snprintf(b, sizeof(b), "%g", v); s = b; }
+    }
+}
+
+void ComboRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, const std::vector<std::string>& items) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    ImGui::SetNextItemWidth(NodeWidth(n) - 80.0f);
+    if (ImGui::BeginCombo("##combo", s.c_str())) {
+        for (const auto& it : items) if (ImGui::Selectable(it.c_str(), it == s)) s = it;
+        ImGui::EndCombo();
+    }
+}
+
 void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
+    const Graph& g = Active();
+    auto wired = [&](int pin) { return IsWired(g, n.id, pin); };
+    static const std::vector<std::string> kOps = { "==", "!=", "<", ">", "<=", ">=" };
+    ImGui::PushID(n.id);
+    switch (n.type) {
+        case NodeType::Print: StrRow(n, o, 0, "Text", n.value, "##txt", wired(0)); break;
+        case NodeType::Delay: NumRow(n, o, 0, "Seconds", n.value, false, wired(0)); break;
+        case NodeType::Repeat: NumRow(n, o, 0, "Times", n.value, true); break;
+        case NodeType::Sequence: NumRow(n, o, 0, "Outputs", n.value, true); break;
+        case NodeType::Branch: StrRow(n, o, 0, wired(0) ? "Condition" : "Variable", n.target, "##var", wired(0)); break;
+        case NodeType::SetVariable:
+            StrRow(n, o, 0, "Name", n.target, "##var");
+            StrRow(n, o, 1, "Value", n.value, "##val", wired(0));
+            break;
+        case NodeType::GetVariable: StrRow(n, o, 0, "Name", n.target, "##var"); break;
+        case NodeType::GetProperty:
+            StrRow(n, o, 0, "Object", n.target, "##obj");
+            ComboRow(n, o, 1, "Property", n.prop, ObjectProperties());
+            break;
+        case NodeType::Compare:
+            StrRow(n, o, 0, "A", n.target, "##a", wired(0));
+            ComboRow(n, o, 1, "Op", n.prop, kOps);
+            StrRow(n, o, 2, "B", n.value, "##b", wired(1));
+            break;
+        case NodeType::Not: StrRow(n, o, 0, "In", n.target, "##a", wired(0)); break;
+        case NodeType::Lerp:
+            StrRow(n, o, 0, "A", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "B", n.value, "##b", wired(1));
+            StrRow(n, o, 2, "T", n.prop, "##t", wired(2));
+            break;
+        default:
+            if (IsPure(n.type)) {
+                StrRow(n, o, 0, DataInputLabel(n.type, 0), n.target, "##a", wired(0));
+                StrRow(n, o, 1, DataInputLabel(n.type, 1), n.value, "##b", wired(1));
+            }
+            break;
+    }
+    ImGui::PopID();
     if (n.type != NodeType::Change) return;
     const float x = o.x + n.x + 10.0f;
     float y = o.y + n.y + kHeaderH + 6.0f;
@@ -213,7 +357,8 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(n.prop == "Color" ? "Colour" : "Value");
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
-    DrawValueWidget(n);
+    if (IsWired(g, n.id, 0)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
+    else DrawValueWidget(n);
     ImGui::PopID();
 }
 
@@ -323,18 +468,27 @@ void DrawEditor(const SceneListing& scene) {
     }
     if (bgHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) g_selected = 0;
     // Wire under the mouse (if any): lit up, and right-click offers to delete it.
-    int hoverFrom = 0, hoverTo = 0;
+    int hoverFrom = 0, hoverTo = 0, hoverPin = 0, hoverDataPin = -1;
     if (bgHovered) {
         float best = 9.0f;
         for (const Link& l : g.links) {
             const Node* a = Find(l.from); const Node* b = Find(l.to);
             if (!a || !b) continue;
-            const float dist = WireDistance(OutPin(*a, o), InPin(*b, o), ImGui::GetMousePos());
-            if (dist < best) { best = dist; hoverFrom = l.from; hoverTo = l.to; }
+            const float dist = WireDistance(OutPin(*a, o, l.fromPin), InPin(*b, o), ImGui::GetMousePos());
+            if (dist < best) { best = dist; hoverFrom = l.from; hoverTo = l.to; hoverPin = l.fromPin; }
+        }
+    }
+    if (bgHovered && !hoverFrom) {   // value wires count only when no exec wire is under the mouse
+        float best = 9.0f;
+        for (const DataLink& l : g.dataLinks) {
+            const Node* a = Find(l.from); const Node* b = Find(l.to);
+            if (!a || !b || DataPinRow(*b, l.toPin) < 0) continue;
+            const float dist = WireDistance(OutPin(*a, o), InData(*b, o, l.toPin), ImGui::GetMousePos());
+            if (dist < best) { best = dist; hoverFrom = l.from; hoverTo = l.to; hoverDataPin = l.toPin; }
         }
     }
     if (bgHovered && hoverFrom && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-        g_wireMenuFrom = hoverFrom; g_wireMenuTo = hoverTo;
+        g_wireMenuFrom = hoverFrom; g_wireMenuTo = hoverTo; g_wireMenuPin = hoverPin; g_wireMenuToPin = hoverDataPin;
         ImGui::OpenPopup("##vsWire");
     } else if (bgHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
         const ImVec2 m = ImGui::GetMousePos();
@@ -346,12 +500,20 @@ void DrawEditor(const SceneListing& scene) {
     // Wires.
     for (const Link& l : g.links) {
         const Node* a = Find(l.from); const Node* b = Find(l.to);
-        const bool lit = l.from == hoverFrom && l.to == hoverTo;
-        if (a && b) DrawWire(dl, OutPin(*a, o), InPin(*b, o), lit ? IM_COL32(255, 200, 60, 255) : IM_COL32(245, 245, 245, 230));
+        const bool lit = l.from == hoverFrom && l.to == hoverTo && l.fromPin == hoverPin;
+        if (a && b) DrawWire(dl, OutPin(*a, o, l.fromPin), InPin(*b, o), lit ? IM_COL32(255, 200, 60, 255) : IM_COL32(245, 245, 245, 230));
+    }
+
+    for (const DataLink& l : g.dataLinks) {
+        const Node* a = Find(l.from); const Node* b = Find(l.to);
+        if (!a || !b || DataPinRow(*b, l.toPin) < 0) continue;
+        const bool lit = hoverDataPin == l.toPin && l.from == hoverFrom && l.to == hoverTo;
+        DrawWire(dl, OutPin(*a, o), InData(*b, o, l.toPin), lit ? IM_COL32(255, 200, 60, 255) : IM_COL32(90, 200, 230, 230));
     }
 
     // Nodes.
     int toDelete = 0;
+    int dropDataNode = 0, dropDataPin = -1;
     const ImVec2 mouse = ImGui::GetMousePos();
     int dropTarget = 0;
     for (Node& n : g.nodes) {
@@ -377,36 +539,70 @@ void DrawEditor(const SceneListing& scene) {
         if (ImGui::BeginPopup("##vsNode")) {
             if (ImGui::MenuItem("Delete node")) toDelete = n.id;
             if (ImGui::MenuItem("Break links"))
+            {
                 g.links.erase(std::remove_if(g.links.begin(), g.links.end(), [&](const Link& l) { return l.from == n.id || l.to == n.id; }), g.links.end());
+                g.dataLinks.erase(std::remove_if(g.dataLinks.begin(), g.dataLinks.end(), [&](const DataLink& l) { return l.from == n.id || l.to == n.id; }), g.dataLinks.end());
+            }
             ImGui::EndPopup();
         }
         ImGui::PopID();
 
         // Pins.
-        bool inLinked = false, outLinked = false;
-        for (const Link& l : g.links) { if (l.to == n.id) inLinked = true; if (l.from == n.id) outLinked = true; }
-        if (n.type != NodeType::Start) {
+        bool inLinked = false;
+        for (const Link& l : g.links) if (l.to == n.id) inLinked = true;
+        const bool hasInput = !IsPure(n.type) && n.type != NodeType::Start && n.type != NodeType::OnUpdate && n.type != NodeType::OnStop;
+        if (hasInput) {
             DrawExecPin(dl, InPin(n, o), inLinked);
             const ImVec2 c = InPin(n, o);
             if (g_dragFrom && std::abs(mouse.x - c.x) < 16 && std::abs(mouse.y - c.y) < 14) dropTarget = n.id;
         }
-        if (n.type != NodeType::End) {
+        for (int pin = 0; pin < DataInputCount(n.type); ++pin) {
+            if (DataPinRow(n, pin) < 0) continue;
+            const ImVec2 c = InData(n, o, pin);
+            DrawDataPin(dl, c, IsWired(g, n.id, pin));
+            if (g_dragData && std::abs(mouse.x - c.x) < 16 && std::abs(mouse.y - c.y) < 14) { dropDataNode = n.id; dropDataPin = pin; }
+        }
+        if (IsPure(n.type)) {   // single value output on the header's right edge
             const ImVec2 c = OutPin(n, o);
-            DrawExecPin(dl, c, outLinked);
+            bool linked = false;
+            for (const DataLink& d : g.dataLinks) if (d.from == n.id) linked = true;
+            DrawDataPin(dl, c, linked);
             ImGui::SetCursorScreenPos(ImVec2(c.x - 10, c.y - 10));
             ImGui::PushID(n.id + 100000);
+            ImGui::InvisibleButton("##dout", ImVec2(20, 20));
+            if (ImGui::IsItemActivated()) g_dragData = n.id;
+            ImGui::PopID();
+        }
+        for (int pin = 0; pin < OutputCount(n.type, &n); ++pin) {
+            bool pinLinked = false;
+            for (const Link& l : g.links) if (l.from == n.id && l.fromPin == pin) pinLinked = true;
+            const ImVec2 c = OutPin(n, o, pin);
+            DrawExecPin(dl, c, pinLinked);
+            if (MultiOut(n)) {
+                const char* label = OutputLabel(n, pin);
+                dl->AddText(ImVec2(c.x - 16 - ImGui::CalcTextSize(label).x, c.y - 7), IM_COL32(220, 220, 220, 255), label);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(c.x - 10, c.y - 10));
+            ImGui::PushID(n.id + 100000 + pin * 1000000);
             ImGui::InvisibleButton("##out", ImVec2(20, 20));
-            if (ImGui::IsItemActivated()) g_dragFrom = n.id;
+            if (ImGui::IsItemActivated()) { g_dragFrom = n.id; g_dragPin = pin; }
             ImGui::PopID();
         }
         DrawNodeBody(n, o, scene);
     }
 
     if (g_dragFrom) {
-        if (const Node* a = Find(g_dragFrom)) DrawWire(dl, OutPin(*a, o), mouse, IM_COL32(255, 200, 60, 255));
+        if (const Node* a = Find(g_dragFrom)) DrawWire(dl, OutPin(*a, o, g_dragPin), mouse, IM_COL32(255, 200, 60, 255));
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            if (dropTarget) Connect(g_dragFrom, dropTarget);
+            if (dropTarget) Connect(g_dragFrom, dropTarget, g_dragPin);
             g_dragFrom = 0;
+        }
+    }
+    if (g_dragData) {
+        if (const Node* a = Find(g_dragData)) DrawWire(dl, OutPin(*a, o), mouse, IM_COL32(90, 200, 230, 255));
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (dropDataNode) ConnectData(g_dragData, dropDataNode, dropDataPin);
+            g_dragData = 0;
         }
     }
     if (toDelete) { RemoveNode(toDelete); if (g_selected == toDelete) g_selected = 0; }
@@ -417,9 +613,14 @@ void DrawEditor(const SceneListing& scene) {
     dl->PopClipRect();
 
     if (ImGui::BeginPopup("##vsWire")) {
-        if (ImGui::MenuItem("Delete link"))
-            g.links.erase(std::remove_if(g.links.begin(), g.links.end(),
-                [&](const Link& l) { return l.from == g_wireMenuFrom && l.to == g_wireMenuTo; }), g.links.end());
+        if (ImGui::MenuItem("Delete link")) {
+            if (g_wireMenuToPin >= 0)
+                g.dataLinks.erase(std::remove_if(g.dataLinks.begin(), g.dataLinks.end(),
+                    [&](const DataLink& l) { return l.from == g_wireMenuFrom && l.to == g_wireMenuTo && l.toPin == g_wireMenuToPin; }), g.dataLinks.end());
+            else
+                g.links.erase(std::remove_if(g.links.begin(), g.links.end(),
+                    [&](const Link& l) { return l.from == g_wireMenuFrom && l.to == g_wireMenuTo && l.fromPin == g_wireMenuPin; }), g.links.end());
+        }
         ImGui::EndPopup();
     }
 
@@ -429,7 +630,15 @@ void DrawEditor(const SceneListing& scene) {
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::InputTextWithHint("##search", "Search...", g_search, sizeof(g_search));
         ImGui::Separator();
-        const NodeType all[] = { NodeType::Start, NodeType::Change, NodeType::End };
+        struct Category { const char* name; std::vector<NodeType> types; };
+        const std::vector<Category> categories = {
+            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop } },
+            { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
+            { "Actions", { NodeType::Change, NodeType::Print } },
+            { "Variables", { NodeType::SetVariable, NodeType::GetVariable, NodeType::GetProperty } },
+            { "Math", { NodeType::Add, NodeType::Sub, NodeType::Mul, NodeType::Div, NodeType::Random, NodeType::Lerp } },
+            { "Logic", { NodeType::Compare, NodeType::And, NodeType::Or, NodeType::Not } },
+        };
         auto matches = [](const char* name) {
             if (!g_search[0]) return true;
             std::string a = name, b = g_search;
@@ -439,9 +648,14 @@ void DrawEditor(const SceneListing& scene) {
         };
         auto add = [&](NodeType t) { AddNode(t, g_menuCanvasPos.x, g_menuCanvasPos.y); ImGui::CloseCurrentPopup(); };
         if (g_search[0]) {
-            for (NodeType t : all) if (matches(TypeName(t)) && ImGui::MenuItem(TypeName(t))) add(t);
+            for (const auto& c : categories)
+                for (NodeType t : c.types) if (matches(TypeName(t)) && ImGui::MenuItem(TypeName(t))) add(t);
         } else if (ImGui::BeginMenu("Insert Node")) {
-            for (NodeType t : all) if (ImGui::MenuItem(TypeName(t))) add(t);
+            for (const auto& c : categories) {
+                if (!ImGui::BeginMenu(c.name)) continue;
+                for (NodeType t : c.types) if (ImGui::MenuItem(TypeName(t))) add(t);
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
         ImGui::EndPopup();

@@ -237,6 +237,29 @@ bool ScriptRuntime::SetObjectProperty(ScatteredObject* target, const std::string
     return false;
 }
 
+bool ScriptRuntime::GetObjectProperty(ScatteredObject* target, const std::string& prop, std::string& out)
+{
+    if (!target) return false;
+    char b[96];
+    auto vec = [&](Vector3 v) { std::snprintf(b, sizeof(b), "(%g, %g, %g)", v.x, v.y, v.z); out = b; return true; };
+    if (prop == "Position") return vec(*target->GetPosPtr());
+    if (prop == "Size") return vec(*target->GetSizePtr());
+    if (prop == "Rotation") return vec(*target->GetRotationPtr());
+    if (prop == "Origin") return vec(*target->GetOriginPtr());
+    if (prop == "Velocity") return vec(target->GetVelocity());
+    if (prop == "Color") {
+        const Color c = *target->GetColorPtr();
+        std::snprintf(b, sizeof(b), "(%d, %d, %d)", c.r, c.g, c.b);
+        out = b;
+        return true;
+    }
+    if (prop == "Mass") { std::snprintf(b, sizeof(b), "%g", target->GetMass()); out = b; return true; }
+    if (prop == "Transparency") { std::snprintf(b, sizeof(b), "%g", target->GetTransparency()); out = b; return true; }
+    if (prop == "Anchored") { out = target->anchored ? "true" : "false"; return true; }
+    if (prop == "CanCollide") { out = target->canCollide ? "true" : "false"; return true; }
+    return false;
+}
+
 void ScriptRuntime::SetPhysicsGravity(float g) { if (sim) sim->SetGravity(g); }
 float ScriptRuntime::GetPhysicsGravity() const { return sim ? sim->GetGravity() : -19.62f; }
 void ScriptRuntime::SetPhysicsFriction(float f) { if (sim) sim->SetFriction(f); }
@@ -353,6 +376,7 @@ void ScriptRuntime::RestoreWorldSettings()
 
 void ScriptRuntime::OnPlayStopped()
 {
+    vscript::Stop(*this);
     if (hostPtr) hostPtr->ClearAllScripts();
     RollbackCreatedObjects();
     RestoreWorldSettings();

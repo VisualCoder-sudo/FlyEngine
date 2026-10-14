@@ -94,6 +94,8 @@ public:
     // Returns false and fills outError on failure.
     bool SetObjectProperty(ScatteredObject* target, const std::string& prop,
                            const std::string& rhs, std::string& outError);
+    // Reads a property in the same console syntax SetObjectProperty accepts: "(x, y, z)", "(r, g, b)", "true", "1.5".
+    bool GetObjectProperty(ScatteredObject* target, const std::string& prop, std::string& out);
 
     // ---- physics get/set routed to the simulation ----
     void SetBodyVelocity(ScatteredObject* object, Vector3 velocity);
