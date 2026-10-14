@@ -402,6 +402,17 @@ void FlyNative_Print_Impl(const char* text) {
     ui::LogAlways("%s", text);
 }
 
+const char* FlyNative_SnippetGetInput_Impl(const char* snippet, int pin) {
+    static thread_local std::string value;
+    value.clear();
+    if (ScriptRuntime* rt = ActiveRuntime(); rt && snippet) value = rt->SnippetInput(snippet, pin);
+    return value.c_str();
+}
+
+void FlyNative_SnippetSetOutput_Impl(const char* snippet, int pin, const char* value) {
+    if (ScriptRuntime* rt = ActiveRuntime(); rt && snippet) rt->SetSnippetOutput(snippet, pin, value ? value : "");
+}
+
 } // namespace impl
 
 extern "C" {
@@ -545,6 +556,13 @@ FLY_API void FlyNative_BindRuntime(void* hostPtr) {
 
 FLY_API void FlyNative_Print(const char* text) {
     FLY_TRY { impl::FlyNative_Print_Impl(text); } FLY_CATCH()
+}
+
+FLY_API const char* FlyNative_SnippetGetInput(const char* snippet, int pin) {
+    FLY_TRY { return impl::FlyNative_SnippetGetInput_Impl(snippet, pin); } FLY_CATCH(return "";)
+}
+FLY_API void FlyNative_SnippetSetOutput(const char* snippet, int pin, const char* value) {
+    FLY_TRY { impl::FlyNative_SnippetSetOutput_Impl(snippet, pin, value); } FLY_CATCH()
 }
 
 // FindObject and GetSelf

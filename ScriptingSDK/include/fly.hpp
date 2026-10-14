@@ -52,6 +52,17 @@ const FlyApi*& Api();
 float& Dt();
 }
 
+// Visual Script Code Snippet bridge (an engine from before it existed has a shorter table: inputs read "", outputs vanish).
+namespace detail {
+inline bool HaveSnippets() { return Api()->size >= offsetof(FlyApi, SnippetSetOutput) + sizeof(void*); }
+inline std::string SnippetInput(const char* snippet, int pin) {
+    return HaveSnippets() ? std::string(Api()->SnippetGetInput(snippet, pin)) : std::string();
+}
+inline void SnippetOutput(const char* snippet, int pin, const std::string& value) {
+    if (HaveSnippets()) Api()->SnippetSetOutput(snippet, pin, value.c_str());
+}
+}
+
 // Seconds since the previous frame.
 inline float DeltaTime() { return detail::Dt(); }
 

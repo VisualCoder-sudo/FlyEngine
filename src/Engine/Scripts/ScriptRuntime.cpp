@@ -331,6 +331,35 @@ bool ScriptRuntime::StartSnippet(const std::string& className)
     return hostPtr && hostPtr->StartSnippetScript(className);
 }
 
+void ScriptRuntime::SetSnippetInputs(const std::string& className, std::vector<std::string> values)
+{
+    snippetValues[className].in = std::move(values);
+}
+
+std::string ScriptRuntime::SnippetInput(const std::string& className, int pin) const
+{
+    const auto it = snippetValues.find(className);
+    if (it == snippetValues.end() || pin < 0 || pin >= static_cast<int>(it->second.in.size())) return {};
+    return it->second.in[pin];
+}
+
+void ScriptRuntime::SetSnippetOutput(const std::string& className, int pin, const std::string& value)
+{
+    if (pin < 0 || pin > 63) return;
+    auto& out = snippetValues[className].out;
+    if (static_cast<int>(out.size()) <= pin) out.resize(pin + 1);
+    out[pin] = value;
+}
+
+std::string ScriptRuntime::SnippetOutput(const std::string& className, int pin) const
+{
+    const auto it = snippetValues.find(className);
+    if (it == snippetValues.end() || pin < 0 || pin >= static_cast<int>(it->second.out.size())) return {};
+    return it->second.out[pin];
+}
+
+void ScriptRuntime::ClearSnippetValues() { snippetValues.clear(); }
+
 void ScriptRuntime::StopObjectScript(ScatteredObject* obj)
 {
     if (hostPtr && obj) hostPtr->StopObjectScriptOn(obj);
@@ -354,6 +383,7 @@ void ScriptRuntime::StopAllScripts()
 
 void ScriptRuntime::OnPlayStarted()
 {
+    ClearSnippetValues();
     vscript::Run(*this);
     if (!hostPtr) return;
     playCreatedObjects.clear();
@@ -429,6 +459,7 @@ void ScriptRuntime::RestoreWorldSettings()
 void ScriptRuntime::OnPlayStopped()
 {
     vscript::Stop(*this);
+    ClearSnippetValues();
     if (hostPtr) hostPtr->ClearAllScripts();
     RollbackCreatedObjects();
     RestoreWorldSettings();

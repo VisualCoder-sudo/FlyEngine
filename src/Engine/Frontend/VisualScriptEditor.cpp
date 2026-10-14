@@ -20,7 +20,8 @@ ImVec2 g_pan(20.0f, 20.0f);
 int g_selected = 0;
 int g_dragFrom = 0;            // node whose exec-out pin is being dragged
 int g_dragPin = 0;             // ...and which of its output pins
-int g_dragData = 0;            // value node whose output is being dragged
+int g_dragData = 0;            // value node (or snippet) whose output is being dragged
+int g_dragDataPin = 0;         // ...and which of its value outputs
 int g_wireMenuToPin = -1;      // >= 0: the wire menu is for a value wire into that input pin
 ImVec2 g_menuCanvasPos(0, 0);
 char g_search[64] = "";
@@ -71,7 +72,7 @@ int BodyRows(NodeType t) {
         case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: return 1;
         case NodeType::PlaySound: return 2;
         case NodeType::ShowText: case NodeType::SetWorld: return 3;
-        case NodeType::CodeSnippet: return 7;
+        case NodeType::CodeSnippet: return 9;   // Inputs, Outputs, then the code box (7 rows)
         case NodeType::CreateObject: case NodeType::Clone: case NodeType::SetVelocity: case NodeType::AddForce:
         case NodeType::AddImpulse: case NodeType::Teleport: return 2;
         case NodeType::GetProperty: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
@@ -83,8 +84,9 @@ int BodyRows(NodeType t) {
 
 // Body row that holds data input pin `pin`, or -1.
 int DataPinRow(const Node& n, int pin) {
-    if (pin < 0 || pin >= DataInputCount(n.type)) return -1;
+    if (pin < 0 || pin >= DataInputCount(n)) return -1;
     switch (n.type) {
+        case NodeType::CodeSnippet: return 2 + pin;   // pins run down the sides of the code box
         case NodeType::SetVariable: case NodeType::SetVelocity: case NodeType::AddForce:
         case NodeType::AddImpulse: case NodeType::Teleport: return 1;
         case NodeType::Change: case NodeType::SetWorld: return 2;
@@ -121,6 +123,12 @@ bool IsVecProp(const std::string& p) { return p == "Position" || p == "Size" || 
 
 ImVec2 InData(const Node& n, ImVec2 o, int pin) {
     return ImVec2(o.x + n.x, o.y + n.y + kHeaderH + 6.0f + DataPinRow(n, pin) * kRowH + 11.0f);
+}
+
+// A value node's one output sits on the header; a Code Snippet's run down its right edge beside the code box.
+ImVec2 OutData(const Node& n, ImVec2 o, int pin) {
+    if (n.type != NodeType::CodeSnippet) return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH * 0.5f);
+    return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH + 6.0f + (2 + pin) * kRowH + 11.0f);
 }
 
 void DrawDataPin(ImDrawList* dl, ImVec2 c, bool connected) {
@@ -410,12 +418,39 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             break;
         case NodeType::GetVariable: StrRow(n, o, 0, "Name", n.target, "##var"); break;
         case NodeType::CodeSnippet: {
+            // How many value pins the node has; wires to pins that no longer exist are dropped.
+            const std::string insBefore = n.target, outsBefore = n.prop;
+            auto countRow = [&](int row, const char* label, std::string& field, const char* id) {
+                const float cx = o.x + n.x + 24.0f, cy = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+                ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(label);
+                ImGui::SetCursorScreenPos(ImVec2(cx + 60.0f, cy));
+                ImGui::SetNextItemWidth(120.0f);
+                int v = std::clamp(std::atoi(field.c_str()), 0, 6);
+                if (ImGui::DragInt(id, &v, 0.1f, 0, 6)) field = std::to_string(v);
+            };
+            countRow(0, "Inputs", n.target, "##ins");
+            countRow(1, "Outputs", n.prop, "##outs");
+            if (n.target != insBefore || n.prop != outsBefore) SanitizeDataLinks();
+            // Pin numbers in the gutters: In(0) / Out(0) in the code match them.
+            ImDrawList* cdl = ImGui::GetWindowDrawList();
+            for (int i = 0; i < SnippetInputs(n); ++i) {
+                const ImVec2 p = InData(n, o, i);
+                char t[8]; std::snprintf(t, sizeof(t), "%d", i);
+                cdl->AddText(ImVec2(p.x + 9.0f, p.y - 7.0f), IM_COL32(90, 200, 230, 255), t);
+            }
+            for (int i = 0; i < SnippetOutputs(n); ++i) {
+                const ImVec2 p = OutData(n, o, i);
+                char t[8]; std::snprintf(t, sizeof(t), "%d", i);
+                cdl->AddText(ImVec2(p.x - 17.0f, p.y - 7.0f), IM_COL32(90, 200, 230, 255), t);
+            }
             // The body of a fly::Script::Run() coroutine: co_await fly::Wait(1.0f) and the rest of fly.hpp work here.
-            const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f;
+            const float x = o.x + n.x + 24.0f, y = o.y + n.y + kHeaderH + 6.0f + 2 * kRowH;
             ImGui::SetCursorScreenPos(ImVec2(x, y));
             static char buf[16384];
             std::snprintf(buf, sizeof(buf), "%s", n.value.c_str());
-            if (ImGui::InputTextMultiline("##code", buf, sizeof(buf), ImVec2(NodeWidth(n) - 20.0f, 7 * kRowH - 6.0f),
+            if (ImGui::InputTextMultiline("##code", buf, sizeof(buf), ImVec2(NodeWidth(n) - 48.0f, 7 * kRowH - 6.0f),
                                           ImGuiInputTextFlags_AllowTabInput))
                 n.value = buf;
             if (n.value.empty() && !ImGui::IsItemActive()) {
@@ -677,7 +712,7 @@ void DrawEditor(const SceneListing& scene) {
         for (const DataLink& l : g.dataLinks) {
             const Node* a = Find(l.from); const Node* b = Find(l.to);
             if (!a || !b || DataPinRow(*b, l.toPin) < 0) continue;
-            const float dist = WireDistance(OutPin(*a, o), InData(*b, o, l.toPin), ImGui::GetMousePos());
+            const float dist = WireDistance(OutData(*a, o, l.fromPin), InData(*b, o, l.toPin), ImGui::GetMousePos());
             if (dist < best) { best = dist; hoverFrom = l.from; hoverTo = l.to; hoverDataPin = l.toPin; }
         }
     }
@@ -702,7 +737,7 @@ void DrawEditor(const SceneListing& scene) {
         const Node* a = Find(l.from); const Node* b = Find(l.to);
         if (!a || !b || DataPinRow(*b, l.toPin) < 0) continue;
         const bool lit = hoverDataPin == l.toPin && l.from == hoverFrom && l.to == hoverTo;
-        DrawWire(dl, OutPin(*a, o), InData(*b, o, l.toPin), lit ? IM_COL32(255, 200, 60, 255) : IM_COL32(90, 200, 230, 230));
+        DrawWire(dl, OutData(*a, o, l.fromPin), InData(*b, o, l.toPin), lit ? IM_COL32(255, 200, 60, 255) : IM_COL32(90, 200, 230, 230));
     }
 
     // Nodes.
@@ -750,21 +785,23 @@ void DrawEditor(const SceneListing& scene) {
             const ImVec2 c = InPin(n, o);
             if (g_dragFrom && std::abs(mouse.x - c.x) < 16 && std::abs(mouse.y - c.y) < 14) dropTarget = n.id;
         }
-        for (int pin = 0; pin < DataInputCount(n.type); ++pin) {
+        for (int pin = 0; pin < DataInputCount(n); ++pin) {
             if (DataPinRow(n, pin) < 0) continue;
             const ImVec2 c = InData(n, o, pin);
             DrawDataPin(dl, c, IsWired(g, n.id, pin));
             if (g_dragData && std::abs(mouse.x - c.x) < 16 && std::abs(mouse.y - c.y) < 14) { dropDataNode = n.id; dropDataPin = pin; }
         }
-        if (IsPure(n.type)) {   // single value output on the header's right edge
-            const ImVec2 c = OutPin(n, o);
+        // Value outputs: a value node has one on the header's right edge, a Code Snippet has its own down the side.
+        const int valueOuts = n.type == NodeType::CodeSnippet ? SnippetOutputs(n) : IsPure(n.type) ? 1 : 0;
+        for (int pin = 0; pin < valueOuts; ++pin) {
+            const ImVec2 c = OutData(n, o, pin);
             bool linked = false;
-            for (const DataLink& d : g.dataLinks) if (d.from == n.id) linked = true;
+            for (const DataLink& d : g.dataLinks) if (d.from == n.id && d.fromPin == pin) linked = true;
             DrawDataPin(dl, c, linked);
             ImGui::SetCursorScreenPos(ImVec2(c.x - 10, c.y - 10));
-            ImGui::PushID(n.id + 100000);
+            ImGui::PushID(n.id + 100000 + pin * 7000000 + 3000000);
             ImGui::InvisibleButton("##dout", ImVec2(20, 20));
-            if (ImGui::IsItemActivated()) g_dragData = n.id;
+            if (ImGui::IsItemActivated()) { g_dragData = n.id; g_dragDataPin = pin; }
             ImGui::PopID();
         }
         for (int pin = 0; pin < OutputCount(n.type, &n); ++pin) {
@@ -793,9 +830,9 @@ void DrawEditor(const SceneListing& scene) {
         }
     }
     if (g_dragData) {
-        if (const Node* a = Find(g_dragData)) DrawWire(dl, OutPin(*a, o), mouse, IM_COL32(90, 200, 230, 255));
+        if (const Node* a = Find(g_dragData)) DrawWire(dl, OutData(*a, o, g_dragDataPin), mouse, IM_COL32(90, 200, 230, 255));
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            if (dropDataNode) ConnectData(g_dragData, dropDataNode, dropDataPin);
+            if (dropDataNode) ConnectData(g_dragData, dropDataNode, dropDataPin, g_dragDataPin);
             g_dragData = 0;
         }
     }

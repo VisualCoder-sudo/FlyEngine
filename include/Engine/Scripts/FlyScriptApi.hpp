@@ -100,6 +100,10 @@ FLY_API void  FlyNative_SetFov(float fov);
 FLY_API float FlyNative_GetEnvironment(int what);
 FLY_API void  FlyNative_SetEnvironment(int what, float value);
 
+// Visual Script Code Snippet nodes: values wired into / out of the running snippet class.
+FLY_API const char* FlyNative_SnippetGetInput(const char* snippet, int pin);
+FLY_API void FlyNative_SnippetSetOutput(const char* snippet, int pin, const char* value);
+
 // Physics (game.Physics.* - routed to the simulation).
 FLY_API float FlyNative_GetGravity(void);
 FLY_API void  FlyNative_SetGravity(float g);

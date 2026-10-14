@@ -106,6 +106,12 @@ typedef struct FlyApi {
      * smaller `size`, and fly.hpp checks it before calling these. */
     float (*GetEnvironment)(int what);
     void  (*SetEnvironment)(int what, float value);
+
+    /* Visual Script "Code Snippet" nodes: the values wired into / out of the node whose generated class is `snippet`.
+     * SnippetGetInput returns the pin's text ("" if nothing is wired); the pointer stays valid until the next call
+     * from the same thread. Added after the first releases: check `size` first (fly.hpp does). */
+    const char* (*SnippetGetInput)(const char* snippet, int pin);
+    void        (*SnippetSetOutput)(const char* snippet, int pin, const char* value);
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

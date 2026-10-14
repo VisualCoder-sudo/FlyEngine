@@ -178,6 +178,8 @@ FlyApi MakeScriptApi() {
     a.Print = FlyNative_Print;
     a.GetEnvironment = FlyNative_GetEnvironment;
     a.SetEnvironment = FlyNative_SetEnvironment;
+    a.SnippetGetInput = FlyNative_SnippetGetInput;
+    a.SnippetSetOutput = FlyNative_SnippetSetOutput;
     return a;
 }
 

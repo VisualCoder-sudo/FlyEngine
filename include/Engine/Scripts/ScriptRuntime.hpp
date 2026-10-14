@@ -1,6 +1,7 @@
 #pragma once
 #include "../Backend/Entity.hpp"
 #include "raylib.h"
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -126,6 +127,13 @@ public:
     void StartObjectScript(ScatteredObject* obj);
     // Starts a Visual Script Code Snippet's generated class. False if it isn't compiled into the loaded library.
     bool StartSnippet(const std::string& className);
+    // Values wired into / out of a Code Snippet node, keyed by its generated class name. Inputs are what the node's
+    // pins held when the flow reached it; outputs are the latest value the snippet set (empty until it does).
+    void SetSnippetInputs(const std::string& className, std::vector<std::string> values);
+    std::string SnippetInput(const std::string& className, int pin) const;
+    void SetSnippetOutput(const std::string& className, int pin, const std::string& value);
+    std::string SnippetOutput(const std::string& className, int pin) const;
+    void ClearSnippetValues();
     void StopObjectScript(ScatteredObject* obj);
     void StartStandaloneScript(int index);
     void StopStandaloneScript(int index);
@@ -153,6 +161,9 @@ private:
     std::vector<ScatteredObject*>* objectsPtr = nullptr;
     std::vector<std::unique_ptr<ModelGroup>>* modelsPtr = nullptr;
     Camera3D* cameraPtr = nullptr;
+
+    struct SnippetValues { std::vector<std::string> in, out; };
+    std::map<std::string, SnippetValues> snippetValues;
 
     std::vector<StandaloneScript> standaloneScripts;
     std::vector<ScatteredObject*> playCreatedObjects;

@@ -45,7 +45,8 @@ enum class NodeType {
     SetVolume = 35,     // value = master volume 0..1
     ShowText = 36,      // value = text, prop = screen position (see HudPositions), target = seconds (0 = until replaced; empty text clears)
     SetWorld = 37,      // target = world group, prop = property, value = value (like Change, world groups only)
-    CodeSnippet = 38,   // value = C++ (the body of a fly::Script::Run coroutine), started when the flow reaches it
+    CodeSnippet = 38,   // value = C++ (the body of a fly::Script::Run coroutine), started when the flow reaches it;
+                        // target = number of value inputs, prop = number of value outputs (0..6 each)
     Count_
 };
 
@@ -61,8 +62,9 @@ struct Node {
 // exec wire: node `from` output pin `fromPin` -> node `to` (single exec input)
 struct Link { int from = 0, to = 0, fromPin = 0; };
 
-// value wire: value node `from` (its single output) -> data input pin `toPin` of node `to`
-struct DataLink { int from = 0, to = 0, toPin = 0; };
+// value wire: output pin `fromPin` of node `from` (a value node has one; a Code Snippet has several) -> data input pin
+// `toPin` of node `to`
+struct DataLink { int from = 0, to = 0, toPin = 0, fromPin = 0; };
 
 struct Graph {
     std::string name = "Script 1";
@@ -95,7 +97,11 @@ Node* Find(int id);
 void Connect(int from, int to, int fromPin = 0);   // replaces any wire already entering `to`, and leaving that pin unless AllowsFanOut
 bool AllowsFanOut(NodeType t);                     // event nodes: one output pin may feed several nodes
 bool AllowsFanIn(NodeType t);                      // End: its input may take several wires
-void ConnectData(int from, int to, int toPin);   // replaces any wire already entering that input pin
+void ConnectData(int from, int to, int toPin, int fromPin = 0);   // replaces any wire already entering that input pin
+void SanitizeDataLinks();                        // drops value wires whose pins no longer exist (a snippet lost a pin)
+int SnippetInputs(const Node& n);                // Code Snippet pin counts, clamped to 0..6
+int SnippetOutputs(const Node& n);
+int DataInputCount(const Node& n);               // the node's own count: DataInputCount(type), or the snippet's pins
 bool IsPure(NodeType t);                         // value node (no exec pins)
 int DataInputCount(NodeType t);                  // value input pins (Branch condition, Print text, Math A/B, ...)
 const char* DataInputLabel(NodeType t, int pin);
@@ -115,7 +121,8 @@ const std::vector<std::string>& KeyNames();   // keys offered by On Key Pressed
 const std::vector<std::string>& ShapeNames(); // shapes offered by Create Object
 const std::vector<std::string>& HudPositions();   // screen spots offered by Show Text
 
-// Code Snippet nodes. Their C++ is written to Scripts/.visualscript/snippets.cpp as one hidden fly::Script class per
+// Code Snippet nodes. Inside the snippet: In(i) / InNum(i) / InBool(i) / InVec3(i) read what was wired into input pin i
+// when the flow reached the node, and Out(i, value) sets output pin i for the nodes wired after it. Their C++ is written to Scripts/.visualscript/snippets.cpp as one hidden fly::Script class per
 // node, compiled with the project's other scripts, and started by the node. Errors point at "Code Snippet <Graph>/<n>"
 // with line numbers counted from the snippet's own first line.
 inline constexpr const char* kSnippetClassPrefix = "VSnip_";

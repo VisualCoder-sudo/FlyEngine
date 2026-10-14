@@ -155,7 +155,10 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::PlaySound) n.value = "1";
     else if (type == NodeType::SetVolume) n.value = "1";
     else if (type == NodeType::ShowText) { n.value = "Hello"; n.prop = "Top Center"; n.target = "3"; }
-    else if (type == NodeType::CodeSnippet) n.value = "fly::Print(\"Hello from a snippet\");\n";
+    else if (type == NodeType::CodeSnippet) {
+        n.value = "fly::Print(\"Hello from a snippet\");\n";
+        n.target = "0"; n.prop = "0";   // value inputs / value outputs
+    }
     else if (type == NodeType::SetWorld) { n.target = "Lighting"; n.prop = "GlobalShadows"; n.value = "true"; }
     g2.nodes.push_back(n);
     return g2.nodes.back();
@@ -178,6 +181,10 @@ bool IsEvent(NodeType t) { return t == NodeType::Start || t == NodeType::OnUpdat
 }
 
 bool IsPure(NodeType t) { return (t >= NodeType::GetVariable && t <= NodeType::Raycast); }
+
+int SnippetInputs(const Node& n) { return std::clamp(std::atoi(n.target.c_str()), 0, 6); }
+int SnippetOutputs(const Node& n) { return std::clamp(std::atoi(n.prop.c_str()), 0, 6); }
+int DataInputCount(const Node& n) { return n.type == NodeType::CodeSnippet ? SnippetInputs(n) : DataInputCount(n.type); }
 
 int DataInputCount(NodeType t) {
     switch (t) {
@@ -248,13 +255,26 @@ void Connect(int from, int to, int fromPin) {
     L.push_back({ from, to, fromPin });
 }
 
-void ConnectData(int from, int to, int toPin) {
+void ConnectData(int from, int to, int toPin, int fromPin) {
     if (from == to) return;
     Node* a = Find(from); Node* b = Find(to);
-    if (!a || !b || !IsPure(a->type) || toPin < 0 || toPin >= DataInputCount(b->type)) return;
+    if (!a || !b || toPin < 0 || toPin >= DataInputCount(*b)) return;
+    const bool snippet = a->type == NodeType::CodeSnippet;
+    if (!IsPure(a->type) && !snippet) return;
+    if (fromPin < 0 || fromPin >= (snippet ? SnippetOutputs(*a) : 1)) return;
     auto& L = Active().dataLinks;
     L.erase(std::remove_if(L.begin(), L.end(), [&](const DataLink& l) { return l.to == to && l.toPin == toPin; }), L.end());
-    L.push_back({ from, to, toPin });
+    L.push_back({ from, to, toPin, fromPin });
+}
+
+void SanitizeDataLinks() {
+    Graph& g = Active();
+    g.dataLinks.erase(std::remove_if(g.dataLinks.begin(), g.dataLinks.end(), [&](const DataLink& l) {
+        const Node* a = FindIn(g, l.from); const Node* b = FindIn(g, l.to);
+        if (!a || !b) return true;
+        if (l.toPin >= DataInputCount(*b)) return true;
+        return l.fromPin >= (a->type == NodeType::CodeSnippet ? SnippetOutputs(*a) : 1);
+    }), g.dataLinks.end());
 }
 
 const std::vector<std::string>& KeyNames() {
@@ -345,7 +365,10 @@ void SaveGraph(std::ostream& out, const Graph& g) {
             << std::quoted(n.target) << ' ' << std::quoted(n.prop) << ' ' << std::quoted(n.value) << "\n";
     if (!g.dataLinks.empty()) {
         out << "VDLINKS " << g.dataLinks.size() << "\n";
-        for (const DataLink& l : g.dataLinks) out << "VDLINK " << l.from << ' ' << l.to << ' ' << l.toPin << "\n";
+        for (const DataLink& l : g.dataLinks) {   // pin-0 sources keep the original line
+            if (l.fromPin == 0) out << "VDLINK " << l.from << ' ' << l.to << ' ' << l.toPin << "\n";
+            else out << "VDLINKP " << l.from << ' ' << l.to << ' ' << l.toPin << ' ' << l.fromPin << "\n";
+        }
     }
     for (const Link& l : g.links) {   // pin-0 wires keep the original line, so old readers still parse them
         if (l.fromPin == 0) out << "VLINK " << l.from << ' ' << l.to << "\n";
@@ -371,7 +394,8 @@ bool LoadGraph(std::istream& in, Graph& g) {
         if (in >> tag && tag == "VDLINKS" && in >> nd && nd <= 100000) {
             for (size_t i = 0; i < nd; ++i) {
                 DataLink d;
-                if (!(in >> tag >> d.from >> d.to >> d.toPin) || tag != "VDLINK") return false;
+                if (!(in >> tag >> d.from >> d.to >> d.toPin) || (tag != "VDLINK" && tag != "VDLINKP")) return false;
+                if (tag == "VDLINKP" && !(in >> d.fromPin)) return false;
                 g.dataLinks.push_back(d);
             }
         } else { in.clear(); in.seekg(mark); }
@@ -466,10 +490,13 @@ std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) 
     for (const DataLink& d : g.dataLinks)
         if (d.to == n.id && d.toPin == pin) {
             const Node* src = FindIn(g, d.from);
-            std::string v = src ? Eval(rt, gi, *src, depth + 1) : std::string();
+            std::string v;
+            if (src && src->type == NodeType::CodeSnippet) v = rt.SnippetOutput(SnippetClassName(g.name, src->id), d.fromPin);
+            else if (src) v = Eval(rt, gi, *src, depth + 1);
             if (!v.empty()) return v;
             break;
         }
+    if (n.type == NodeType::CodeSnippet) return {};   // an unwired snippet input is empty (its `value` is the code)
     if (IsPure(n.type)) return pin == 0 ? n.target : pin == 1 ? n.value : n.prop;
     if (n.type == NodeType::Branch) {   // unwired Branch tests the variable named in its field
         const auto it = g_vars.find(n.target);
@@ -587,11 +614,16 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
             case NodeType::Branch:
                 stack.push_back({ n->id, Truthy(Input(rt, gi, *n, 0, 0)) ? 0 : 1 });
                 break;
-            case NodeType::CodeSnippet:
-                if (!rt.StartSnippet(SnippetClassName(g.name, n->id)))
+            case NodeType::CodeSnippet: {
+                const std::string cls = SnippetClassName(g.name, n->id);
+                std::vector<std::string> inputs;
+                for (int i = 0; i < SnippetInputs(*n); ++i) inputs.push_back(Input(rt, gi, *n, i, 0));
+                rt.SetSnippetInputs(cls, std::move(inputs));
+                if (!rt.StartSnippet(cls))
                     ui::Log("[script] Code Snippet #%d is not compiled yet - check the compiler output, then Play again", n->id);
                 stack.push_back({ n->id, 0 });
                 break;
+            }
             case NodeType::SetWorld: {
                 Node applied = *n;
                 applied.value = Input(rt, gi, *n, 0, 0);
@@ -741,7 +773,8 @@ void EmitSnippet(std::string& includes, std::string& classes, const std::string&
         body += line + "\n";
     }
     const std::string cls = SnippetClassName(graphName, n.id);
-    classes += "struct " + cls + " : fly::Script {\n    fly::Task Run() override {\n";
+    classes += "struct " + cls + " : vsnip::Base {\n    const char* Key() const override { return \"" + cls + "\"; }\n";
+    classes += "    fly::Task Run() override {\n";
     classes += "#line 1 \"Code Snippet " + graphName + "/" + std::to_string(n.id) + "\"\n";
     classes += body;
     classes += "\n        co_return;\n    }\n};\nFLY_SCRIPT(" + cls + ")\n\n";
@@ -758,8 +791,41 @@ std::string GenerateSnippetSource() {
         for (const Node& n : g.nodes)
             if (n.type == NodeType::CodeSnippet) EmitSnippet(includes, classes, g.name, n);
     if (classes.empty()) return {};
+    static const char* const kBase = R"CPP(
+// What a snippet can use besides the whole of fly.hpp: the values wired into and out of its node.
+//   In(i) / InNum(i) / InBool(i) / InVec3(i)   read input pin i (as it was when the flow reached the node)
+//   Out(i, value)                              set output pin i (text, number, bool or fly::Vec3)
+namespace vsnip {
+struct Base : fly::Script {
+    virtual const char* Key() const = 0;
+    std::string In(int pin) const { return fly::detail::SnippetInput(Key(), pin); }
+    double InNum(int pin, double fallback = 0.0) const {
+        const std::string s = In(pin);
+        char* end = nullptr;
+        const double v = std::strtod(s.c_str(), &end);
+        return (end && end != s.c_str()) ? v : fallback;
+    }
+    bool InBool(int pin) const { const std::string s = In(pin); return !s.empty() && s != "0" && s != "false"; }
+    fly::Vec3 InVec3(int pin) const {
+        float x = 0, y = 0, z = 0;
+        std::sscanf(In(pin).c_str(), " ( %f , %f , %f", &x, &y, &z);
+        return { x, y, z };
+    }
+    template <class T> void Out(int pin, const T& v) const {
+        std::string s;
+        if constexpr (std::is_same_v<T, bool>) s = v ? "true" : "false";
+        else if constexpr (std::is_same_v<T, fly::Vec3>) { char b[96]; std::snprintf(b, sizeof(b), "(%g, %g, %g)", v.x, v.y, v.z); s = b; }
+        else if constexpr (std::is_arithmetic_v<T>) { char b[48]; std::snprintf(b, sizeof(b), "%.10g", static_cast<double>(v)); s = b; }
+        else s = std::string(v);
+        fly::detail::SnippetOutput(Key(), pin, s);
+    }
+};
+}
+
+)CPP";
     return "// Generated by the Visual Script editor from Code Snippet nodes. Edit the nodes, not this file.\n"
-           "#include \"fly.hpp\"\n#include <cmath>\n#include <string>\n#include <vector>\n" + includes + "\n" + classes;
+           "#include \"fly.hpp\"\n#include <cmath>\n#include <cstdio>\n#include <cstdlib>\n#include <string>\n#include <type_traits>\n#include <vector>\n"
+           + includes + kBase + classes;
 }
 
 bool WriteSnippetSources(const std::string& projectDir, bool createFolders) {

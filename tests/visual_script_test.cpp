@@ -40,6 +40,8 @@ std::string g_rayHit;                           // what RayCastName returns
 std::vector<std::string> g_rays;                // "origin|dir|dist"
 std::vector<std::string> g_snippetsStarted;     // class names handed to StartSnippet
 bool g_snippetsKnown = true;
+std::map<std::string, std::vector<std::string>> g_snippetInputs;    // what the node handed the snippet
+std::map<std::string, std::vector<std::string>> g_snippetOutputs;   // what the "snippet" set (tests seed these)
 
 struct alignas(16) FakeObject { char c; };
 FakeObject g_objects[3];                        // fake objects: only their addresses matter
@@ -55,7 +57,7 @@ int g_drawTextCalls = 0;
 void ResetStubs() {
     g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear();
     g_destroyed = g_cloned = g_scriptsStarted = 0;
-    g_snippetsStarted.clear(); g_snippetsKnown = true;
+    g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
     g_names.clear(); g_rayHit.clear();
     g_keyPressed = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear();
     vscript::SetSoundPlayer(nullptr);
@@ -110,6 +112,11 @@ std::string ScriptRuntime::RayCastName(const std::string& o, const std::string& 
     return g_rayHit;
 }
 void ScriptRuntime::StartObjectScript(ScatteredObject*) { ++g_scriptsStarted; }
+void ScriptRuntime::SetSnippetInputs(const std::string& cls, std::vector<std::string> v) { g_snippetInputs[cls] = std::move(v); }
+std::string ScriptRuntime::SnippetOutput(const std::string& cls, int pin) const {
+    const auto it = g_snippetOutputs.find(cls);
+    return it != g_snippetOutputs.end() && pin >= 0 && pin < static_cast<int>(it->second.size()) ? it->second[pin] : std::string();
+}
 bool ScriptRuntime::StartSnippet(const std::string& cls) {
     g_snippetsStarted.push_back(cls);
     return g_snippetsKnown;                          // false = "not compiled yet"
@@ -727,6 +734,112 @@ static void TestSnippetStartsClass() {
     CHECK(Logged("[script]") && !Logged("[visual script]"));   // the output prefix
 }
 
+static std::string SnipName(int id) { return "VSnip_T_" + std::to_string(id); }
+
+static void TestSnippetInputs() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::CodeSnippet), add = Add(NodeType::Add), get = Add(NodeType::GetProperty);
+    N(c).target = "3";                                        // three value inputs
+    N(add).target = "2"; N(add).value = "3";
+    N(get).target = "Workspace/Cube"; N(get).prop = "Position";
+    ConnectData(add, c, 0); ConnectData(get, c, 2);           // pin 1 stays unwired
+    Link_(s, c);
+    Run(RT());
+    const auto& in = g_snippetInputs[SnipName(c)];
+    CHECK(in.size() == 3);
+    if (in.size() == 3) { CHECK(in[0] == "5"); CHECK(in[1].empty()); CHECK(in[2] == "(1, 2, 3)"); }
+
+    Fresh();                                                  // no inputs: an empty list
+    const int s2 = Add(NodeType::Start), c2 = Add(NodeType::CodeSnippet);
+    Link_(s2, c2);
+    Run(RT());
+    CHECK(g_snippetInputs[SnipName(c2)].empty());
+}
+
+static void TestSnippetOutputs() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::CodeSnippet), p = Add(NodeType::Print), q = Add(NodeType::Print);
+    N(c).prop = "2";                                          // two value outputs
+    N(p).value = "none"; N(q).value = "none";
+    Link_(s, c); Link_(c, p); Link_(p, q);
+    ConnectData(c, p, 0, 0); ConnectData(c, q, 0, 1);
+    CHECK(Active().dataLinks.size() == 2);
+    g_snippetOutputs[SnipName(c)] = { "alpha", "beta" };      // what the snippet's Out(0), Out(1) would have set
+    Run(RT());
+    CHECK(g_log.size() == 2);
+    if (g_log.size() == 2) {
+        CHECK(g_log[0].find("alpha") != std::string::npos);
+        CHECK(g_log[1].find("beta") != std::string::npos);
+    }
+
+    g_log.clear(); g_snippetOutputs.clear();                  // nothing set yet: the pin's own literal takes over
+    Run(RT());
+    CHECK(g_log.size() == 2 && g_log[0].find("none") != std::string::npos);
+}
+
+static void TestSnippetPinRules() {
+    Fresh();
+    const int c = Add(NodeType::CodeSnippet), p = Add(NodeType::Print), add = Add(NodeType::Add);
+    CHECK(SnippetInputs(N(c)) == 0 && SnippetOutputs(N(c)) == 0);   // starts with none
+    ConnectData(c, p, 0);  CHECK(Active().dataLinks.empty());       // no output pins yet
+    ConnectData(add, c, 0); CHECK(Active().dataLinks.empty());      // no input pins yet
+    N(c).target = "2"; N(c).prop = "2";
+    ConnectData(c, p, 0, 1);  CHECK(Active().dataLinks.size() == 1);
+    ConnectData(c, p, 0, 2);                                       // there is no output 2: nothing changes
+    CHECK(Active().dataLinks.size() == 1 && Active().dataLinks[0].fromPin == 1);
+    ConnectData(add, c, 1);   CHECK(Active().dataLinks.size() == 2);
+    ConnectData(add, c, 2);   CHECK(Active().dataLinks.size() == 2);   // no input 2
+    ConnectData(c, c, 0);     CHECK(Active().dataLinks.size() == 2);   // no self wire
+
+    N(c).prop = "1";                                               // drop to one output: the wire from output 1 goes
+    SanitizeDataLinks();
+    CHECK(Active().dataLinks.size() == 1 && Active().dataLinks[0].to == c);
+    N(c).target = "1";
+    SanitizeDataLinks();                                           // and the one into input 1
+    CHECK(Active().dataLinks.empty());
+
+    N(c).target = "99"; N(c).prop = "-4";                          // counts are clamped
+    CHECK(SnippetInputs(N(c)) == 6 && SnippetOutputs(N(c)) == 0);
+}
+
+static void TestSnippetWiresSaveLoad() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::CodeSnippet), p = Add(NodeType::Print), add = Add(NodeType::Add);
+    N(c).target = "2"; N(c).prop = "3"; N(c).value = "Out(2, InNum(0) + 1);";
+    N(add).target = "4";
+    Link_(s, c); Link_(c, p);
+    ConnectData(add, c, 0); ConnectData(c, p, 0, 2);
+    const std::string saved = SaveAll();
+    CHECK(saved.find("VDLINKP") != std::string::npos);             // a non-zero output pin needs the longer line
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    CHECK(Active().dataLinks.size() == 2);
+    bool pin2 = false;
+    for (const DataLink& d : Active().dataLinks) if (d.fromPin == 2) pin2 = true;
+    CHECK(pin2);
+    CHECK(SaveAll() == saved);
+
+    // Old scenes, whose value wires had no output pin, still load.
+    Clear();
+    std::istringstream old("VSCRIPTS 1\nVGRAPH \"Old\"\nVSCRIPT 3 2 0\nVNODE 1 17 0 0 \"1\" \"\" \"2\"\nVNODE 2 10 0 0 \"\" \"\" \"x\"\nVDLINKS 1\nVDLINK 1 2 0\n");
+    Load(old);
+    CHECK(Count() == 1 && Active().dataLinks.size() == 1 && Active().dataLinks[0].fromPin == 0);
+}
+
+static void TestSnippetGeneratorHelpers() {
+    Fresh();
+    const int a = Add(NodeType::CodeSnippet);
+    N(a).value = "Out(0, InNum(0) * 2);";
+    const std::string src = GenerateSnippetSource();
+    CHECK(src.find("struct VSnip_T_" + std::to_string(a) + " : vsnip::Base") != std::string::npos);
+    CHECK(src.find("const char* Key() const override { return \"VSnip_T_" + std::to_string(a) + "\"; }") != std::string::npos);
+    CHECK(src.find("struct Base : fly::Script") != std::string::npos);
+    CHECK(src.find("std::string In(int pin)") != std::string::npos && src.find("void Out(int pin") != std::string::npos);
+    CHECK(src.find("InNum") != std::string::npos && src.find("InBool") != std::string::npos && src.find("InVec3") != std::string::npos);
+    CHECK(src.find("struct Base") < src.find("struct VSnip_T_"));   // the helpers come first
+}
+
 static void TestSnippetFanOutFromEvent() {
     Fresh();
     const int s = Add(NodeType::Start), a = Add(NodeType::CodeSnippet), b = Add(NodeType::CodeSnippet);
@@ -745,9 +858,9 @@ static void TestSnippetGenerator() {
     N(b).value = "co_await fly::Wait(2.0f);";
     const std::string src = GenerateSnippetSource();
     CHECK(src.find("#include \"fly.hpp\"") != std::string::npos);
-    CHECK(src.find("struct VSnip_T_" + std::to_string(a) + " : fly::Script") != std::string::npos);
+    CHECK(src.find("struct VSnip_T_" + std::to_string(a) + " : vsnip::Base") != std::string::npos);
     CHECK(src.find("FLY_SCRIPT(VSnip_T_" + std::to_string(a) + ")") != std::string::npos);
-    CHECK(src.find("struct VSnip_Other_" + std::to_string(b) + " : fly::Script") != std::string::npos);
+    CHECK(src.find("struct VSnip_Other_" + std::to_string(b) + " : vsnip::Base") != std::string::npos);
     CHECK(src.find("co_await fly::Wait(2.0f);") != std::string::npos);
     CHECK(src.find("#line 1 \"Code Snippet T/" + std::to_string(a) + "\"") != std::string::npos);
     CHECK(src.find("co_return;") != std::string::npos);
@@ -1022,6 +1135,9 @@ int main() {
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
         { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundWithoutBackend", TestSoundWithoutBackend },
         { "ConnectRules", TestConnectRules }, { "SnippetStartsClass", TestSnippetStartsClass }, { "SnippetFanOutFromEvent", TestSnippetFanOutFromEvent },
+        { "SnippetInputs", TestSnippetInputs }, { "SnippetOutputs", TestSnippetOutputs },
+        { "SnippetPinRules", TestSnippetPinRules }, { "SnippetWiresSaveLoad", TestSnippetWiresSaveLoad },
+        { "SnippetGeneratorHelpers", TestSnippetGeneratorHelpers },
         { "SnippetGenerator", TestSnippetGenerator }, { "SnippetWriteFile", TestSnippetWriteFile },
         { "SnippetFingerprint", TestSnippetFingerprint }, { "SnippetSaveLoadMultiline", TestSnippetSaveLoadMultiline },
         { "EventFanOut", TestEventFanOut }, { "EndFanIn", TestEndFanIn }, { "RemoveNodeDropsWires", TestRemoveNodeDropsWires },
