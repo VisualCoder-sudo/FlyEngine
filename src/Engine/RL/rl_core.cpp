@@ -60,6 +60,10 @@ void BeginInputFrame() {
     std::fill(std::begin(c.keyReleasedEvt), std::end(c.keyReleasedEvt), false);
     std::fill(std::begin(c.mousePressedEvt), std::end(c.mousePressedEvt), false);
     std::fill(std::begin(c.mouseReleasedEvt), std::end(c.mouseReleasedEvt), false);
+    // Typed characters and key presses are per-frame like raylib's queues. Without this, keys pressed while nothing
+    // reads them (flying with WASD) pile up and all land in the command bar the moment it gets focus.
+    c.charQueue.clear();
+    c.keyQueue.clear();
     c.mouseDelta = { 0.0f, 0.0f };
     c.wheel = { 0.0f, 0.0f };
     c.filesDropped = false;
