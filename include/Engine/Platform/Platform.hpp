@@ -70,6 +70,7 @@ enum class DialogPurpose {
     ChooseFolder,
     ExportFolder,
     ExportIcon,
+    PickSound,      // Visual Script's Play Sound node
 };
 
 // Only one dialog can be in flight at a time; the editor UI is modal anyway.

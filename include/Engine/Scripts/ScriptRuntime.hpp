@@ -97,6 +97,13 @@ public:
     // Reads a property in the same console syntax SetObjectProperty accepts: "(x, y, z)", "(r, g, b)", "true", "1.5".
     bool GetObjectProperty(ScatteredObject* target, const std::string& prop, std::string& out);
 
+    // Visual-script object actions. Vectors use console syntax "(x, y, z)"; failures fill outError.
+    void DestroyObject(ScatteredObject* obj);                 // scene list, physics body and engine entity
+    ScatteredObject* CloneObject(ScatteredObject* source);    // copy added to the scene; null if impossible
+    bool AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError);
+    // Name of the first object a ray hits ("" for none). Needs the simulation.
+    std::string RayCastName(const std::string& origin, const std::string& dir, float maxDistance, std::string& outError);
+
     // ---- physics get/set routed to the simulation ----
     void SetBodyVelocity(ScatteredObject* object, Vector3 velocity);
     void SetBodyAngularVelocity(ScatteredObject* object, Vector3 velocity);
@@ -117,6 +124,8 @@ public:
     // ---- per-object script lifecycle (forwarded to the host) ----
     // `obj->script` holds the FLY_SCRIPT class name for that object.
     void StartObjectScript(ScatteredObject* obj);
+    // Starts a Visual Script Code Snippet's generated class. False if it isn't compiled into the loaded library.
+    bool StartSnippet(const std::string& className);
     void StopObjectScript(ScatteredObject* obj);
     void StartStandaloneScript(int index);
     void StopStandaloneScript(int index);

@@ -1,4 +1,5 @@
 #include "../../../include/Engine/Backend/VisualScript.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
 #include "imgui.h"
 #include <algorithm>
 #include <cfloat>
@@ -6,6 +7,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 namespace vscript {
 
@@ -24,6 +26,8 @@ ImVec2 g_menuCanvasPos(0, 0);
 char g_search[64] = "";
 std::string g_browsePath;      // folder shown in the target picker, e.g. "Workspace/Group1"
 int g_pickerNode = 0;
+int g_soundNode = 0;           // Play Sound node waiting for the system file dialog
+std::string g_soundBrowse;     // folder shown in the project file browser, relative to the project
 
 ImU32 HeaderColor(NodeType t) {
     switch (t) {
@@ -34,6 +38,14 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Branch: case NodeType::Sequence: case NodeType::Delay:
         case NodeType::Repeat: case NodeType::DoOnce: return IM_COL32(150, 110, 30, 255);
         case NodeType::Print: return IM_COL32(110, 70, 160, 255);
+        case NodeType::OnKey: return IM_COL32(40, 130, 60, 255);
+        case NodeType::PlaySound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
+        case NodeType::ShowText: return IM_COL32(110, 70, 160, 255);
+        case NodeType::SetWorld: return IM_COL32(40, 95, 170, 255);
+        case NodeType::CodeSnippet: return IM_COL32(60, 60, 70, 255);
+        case NodeType::CreateObject: case NodeType::Destroy: case NodeType::Clone: case NodeType::SetVelocity:
+        case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: case NodeType::RunScript:
+            return IM_COL32(40, 95, 170, 255);
         case NodeType::SetVariable: return IM_COL32(40, 130, 140, 255);
         default: if (IsPure(t)) return IM_COL32(40, 110, 130, 255); break;
     }
@@ -55,10 +67,16 @@ int BodyRows(NodeType t) {
         case NodeType::SetVariable: return 2;
         case NodeType::Print: case NodeType::Delay: case NodeType::Branch:
         case NodeType::Sequence: case NodeType::Repeat:
-        case NodeType::GetVariable: case NodeType::Not: return 1;
+        case NodeType::GetVariable: case NodeType::Not:
+        case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: return 1;
+        case NodeType::PlaySound: return 2;
+        case NodeType::ShowText: case NodeType::SetWorld: return 3;
+        case NodeType::CodeSnippet: return 7;
+        case NodeType::CreateObject: case NodeType::Clone: case NodeType::SetVelocity: case NodeType::AddForce:
+        case NodeType::AddImpulse: case NodeType::Teleport: return 2;
         case NodeType::GetProperty: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
         case NodeType::Mul: case NodeType::Div: case NodeType::Random: return 2;
-        case NodeType::Compare: case NodeType::Lerp: return 3;
+        case NodeType::Compare: case NodeType::Lerp: case NodeType::Raycast: return 3;
         default: return 0;
     }
 }
@@ -67,8 +85,10 @@ int BodyRows(NodeType t) {
 int DataPinRow(const Node& n, int pin) {
     if (pin < 0 || pin >= DataInputCount(n.type)) return -1;
     switch (n.type) {
-        case NodeType::SetVariable: return 1;
-        case NodeType::Change: return 2;
+        case NodeType::SetVariable: case NodeType::SetVelocity: case NodeType::AddForce:
+        case NodeType::AddImpulse: case NodeType::Teleport: return 1;
+        case NodeType::Change: case NodeType::SetWorld: return 2;
+        case NodeType::PlaySound: return 1;
         case NodeType::Compare: return pin == 0 ? 0 : 2;
         default: return pin;
     }
@@ -83,6 +103,7 @@ bool IsWired(const Graph& g, int id, int pin) {
 bool MultiOut(const Node& n) { return OutputCount(n.type, &n) > 1; }
 
 float NodeWidth(const Node& n) {
+    if (n.type == NodeType::CodeSnippet) return 400.0f;
     if (n.type == NodeType::Change) return 10.0f + 60.0f + TargetButtonW(n) + 14.0f;
     return BodyRows(n.type) ? 190.0f : 130.0f;
 }
@@ -192,7 +213,7 @@ void PlaceListPopup(ImVec2 anchorMin, ImVec2 anchorMax) {
 }
 
 // File-explorer style picker, rooted at "Game".
-void DrawTargetPopup(Node& n, const SceneListing& scene) {
+void DrawTargetPopup(Node& n, const SceneListing& scene, bool objectsOnly) {
     PlaceListPopup(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     if (!ImGui::BeginPopup("##vsTarget")) return;
     ImGui::TextDisabled("Game%s%s", g_browsePath.empty() ? "" : " / ", g_browsePath.c_str());
@@ -204,7 +225,7 @@ void DrawTargetPopup(Node& n, const SceneListing& scene) {
     auto pick = [&](const std::string& path) { n.target = path; ImGui::CloseCurrentPopup(); };
     if (g_browsePath.empty()) {
         if (ImGui::Selectable("[folder] Workspace", false, ImGuiSelectableFlags_DontClosePopups)) g_browsePath = "Workspace";
-        for (const auto& g : WorldGroups())
+        if (!objectsOnly) for (const auto& g : WorldGroups())
             if (ImGui::Selectable(g.c_str())) { pick(g); n.prop = WorldProperties(g).front(); n.value = IsBoolProp(n.prop) ? "true" : "0"; }
     } else if (g_browsePath == "Workspace") {
         // Several objects can share a name, so every row gets an ID of its own.
@@ -278,6 +299,100 @@ void ComboRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, con
     }
 }
 
+bool IsSoundFile(const std::filesystem::path& p) {
+    std::string e = p.extension().string();
+    std::transform(e.begin(), e.end(), e.begin(), ::tolower);
+    return e == ".wav" || e == ".ogg" || e == ".mp3" || e == ".flac" || e == ".qoa" || e == ".xm" || e == ".mod";
+}
+
+// A path inside the project is stored relative to it (so it survives moving the project); anything else as given.
+std::string RelativeToProject(const std::string& projectDir, const std::string& path) {
+    namespace fs = std::filesystem;
+    if (projectDir.empty()) return path;
+    std::error_code ec;
+    const fs::path rel = fs::path(path).lexically_relative(fs::path(projectDir));
+    if (ec || rel.empty() || *rel.begin() == "..") return path;
+    return rel.generic_string();
+}
+
+// "File" row: the path, plus a "..." button offering the system file dialog or the project's own files.
+void SoundRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
+    namespace fs = std::filesystem;
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("File");
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    ImGui::SetNextItemWidth(NodeWidth(n) - 80.0f - 30.0f);
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "%s", n.target.c_str());
+    if (ImGui::InputText("##file", buf, sizeof(buf))) n.target = buf;
+    ImGui::SameLine(0.0f, 4.0f);
+    if (ImGui::Button("...", ImVec2(26.0f, 0.0f))) {
+        g_soundBrowse.clear();
+        ImGui::OpenPopup("##vsSound");
+    }
+    PlaceListPopup(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    if (!ImGui::BeginPopup("##vsSound")) return;
+
+    if (ImGui::Selectable("Choose file from computer...")) {
+        if (platform::BeginOpenFileDialog(platform::DialogPurpose::PickSound, "Choose sound",
+                                          scene.projectDir, { { "Audio", "*.wav;*.ogg;*.mp3;*.flac" } }))
+            g_soundNode = n.id;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+    if (scene.projectDir.empty()) {
+        ImGui::TextDisabled("No project open");
+        ImGui::EndPopup();
+        return;
+    }
+    ImGui::TextDisabled("Project%s%s", g_soundBrowse.empty() ? "" : " / ", g_soundBrowse.c_str());
+    if (!g_soundBrowse.empty() && ImGui::Selectable(".. (up)", false, ImGuiSelectableFlags_DontClosePopups)) {
+        const size_t s = g_soundBrowse.find_last_of('/');
+        g_soundBrowse = s == std::string::npos ? "" : g_soundBrowse.substr(0, s);
+    }
+    std::vector<std::string> folders, files;
+    std::error_code ec;
+    for (fs::directory_iterator it(fs::path(scene.projectDir) / g_soundBrowse, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
+        if (it->is_directory(ec)) folders.push_back(name);
+        else if (IsSoundFile(it->path())) files.push_back(name);
+    }
+    std::sort(folders.begin(), folders.end());
+    std::sort(files.begin(), files.end());
+    const std::string prefix = g_soundBrowse.empty() ? "" : g_soundBrowse + "/";
+    for (size_t i = 0; i < folders.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(("[folder] " + folders[i]).c_str(), false, ImGuiSelectableFlags_DontClosePopups)) g_soundBrowse = prefix + folders[i];
+        ImGui::PopID();
+    }
+    for (size_t i = 0; i < files.size(); ++i) {
+        ImGui::PushID(static_cast<int>(1000 + i));
+        if (ImGui::Selectable(files[i].c_str(), n.target == prefix + files[i])) { n.target = prefix + files[i]; ImGui::CloseCurrentPopup(); }
+        ImGui::PopID();
+    }
+    if (folders.empty() && files.empty()) ImGui::TextDisabled("No sound files here");
+    ImGui::EndPopup();
+}
+
+// "Object" row: a button that opens the scene picker (objects only).
+void ObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Object");
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    const std::string label = n.target.empty() ? std::string("Game...") : "Game/" + n.target;
+    if (ImGui::Button((label + "##t").c_str(), ImVec2(NodeWidth(n) - 80.0f, 0))) {
+        g_browsePath.clear();
+        g_pickerNode = n.id;
+        ImGui::OpenPopup("##vsTarget");
+    }
+    if (g_pickerNode == n.id) DrawTargetPopup(n, scene, true);
+}
+
 void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     const Graph& g = Active();
     auto wired = [&](int pin) { return IsWired(g, n.id, pin); };
@@ -291,9 +406,66 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         case NodeType::Branch: StrRow(n, o, 0, wired(0) ? "Condition" : "Variable", n.target, "##var", wired(0)); break;
         case NodeType::SetVariable:
             StrRow(n, o, 0, "Name", n.target, "##var");
-            StrRow(n, o, 1, "Value", n.value, "##val", wired(0));
+            StrRow(n, o, 1, wired(0) ? "Default" : "Value", n.value, "##val");   // stays editable: the fallback when the wire gives nothing
             break;
         case NodeType::GetVariable: StrRow(n, o, 0, "Name", n.target, "##var"); break;
+        case NodeType::CodeSnippet: {
+            // The body of a fly::Script::Run() coroutine: co_await fly::Wait(1.0f) and the rest of fly.hpp work here.
+            const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f;
+            ImGui::SetCursorScreenPos(ImVec2(x, y));
+            static char buf[16384];
+            std::snprintf(buf, sizeof(buf), "%s", n.value.c_str());
+            if (ImGui::InputTextMultiline("##code", buf, sizeof(buf), ImVec2(NodeWidth(n) - 20.0f, 7 * kRowH - 6.0f),
+                                          ImGuiInputTextFlags_AllowTabInput))
+                n.value = buf;
+            if (n.value.empty() && !ImGui::IsItemActive()) {
+                ImGui::GetWindowDrawList()->AddText(ImVec2(x + 6.0f, y + 4.0f), IM_COL32(150, 150, 150, 255), "C++ here, e.g. fly::Print(\"hi\");");
+            }
+            break;
+        }
+        case NodeType::OnKey: ComboRow(n, o, 0, "Key", n.prop, KeyNames()); break;
+        case NodeType::PlaySound:
+            SoundRow(n, o, 0, scene);
+            StrRow(n, o, 1, "Volume", n.value, "##vol", wired(0));
+            break;
+        case NodeType::SetVolume: StrRow(n, o, 0, "Volume", n.value, "##vol", wired(0)); break;
+        case NodeType::ShowText:
+            StrRow(n, o, 0, "Text", n.value, "##txt", wired(0));
+            ComboRow(n, o, 1, "Position", n.prop, HudPositions());
+            StrRow(n, o, 2, "Seconds", n.target, "##secs");
+            break;
+        case NodeType::SetWorld: {
+            const std::string before = n.target;
+            ComboRow(n, o, 0, "Group", n.target, WorldGroups());
+            if (n.target != before && !WorldProperties(n.target).empty()) {
+                n.prop = WorldProperties(n.target).front();
+                n.value = IsBoolProp(n.prop) ? "true" : "0";
+            }
+            const std::string propBefore = n.prop;
+            ComboRow(n, o, 1, "Property", n.prop, WorldProperties(n.target));
+            if (n.prop != propBefore) n.value = IsBoolProp(n.prop) ? "true" : "0";
+            const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + 2 * kRowH;
+            ImGui::SetCursorScreenPos(ImVec2(x, y));
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Value");
+            ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+            if (wired(0)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
+            else DrawValueWidget(n);
+            break;
+        }
+        case NodeType::CreateObject:
+            ComboRow(n, o, 0, "Shape", n.prop, ShapeNames());
+            StrRow(n, o, 1, "Name", n.value, "##name");
+            break;
+        case NodeType::Destroy: case NodeType::RunScript: ObjectRow(n, o, 0, scene); break;
+        case NodeType::Clone:
+            ObjectRow(n, o, 0, scene);
+            StrRow(n, o, 1, "New name", n.value, "##name");
+            break;
+        case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport:
+            ObjectRow(n, o, 0, scene);
+            StrRow(n, o, 1, "Vector", n.value, "##vec", wired(0));
+            break;
         case NodeType::GetProperty:
             StrRow(n, o, 0, "Object", n.target, "##obj");
             ComboRow(n, o, 1, "Property", n.prop, ObjectProperties());
@@ -304,6 +476,11 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             StrRow(n, o, 2, "B", n.value, "##b", wired(1));
             break;
         case NodeType::Not: StrRow(n, o, 0, "In", n.target, "##a", wired(0)); break;
+        case NodeType::Raycast:
+            StrRow(n, o, 0, "Origin", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "Direction", n.value, "##b", wired(1));
+            StrRow(n, o, 2, "Distance", n.prop, "##t", wired(2));
+            break;
         case NodeType::Lerp:
             StrRow(n, o, 0, "A", n.target, "##a", wired(0));
             StrRow(n, o, 1, "B", n.value, "##b", wired(1));
@@ -334,7 +511,7 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         g_pickerNode = n.id;
         ImGui::OpenPopup("##vsTarget");
     }
-    if (g_pickerNode == n.id) DrawTargetPopup(n, scene);
+    if (g_pickerNode == n.id) DrawTargetPopup(n, scene, false);
 
     y += 26.0f;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
@@ -437,6 +614,23 @@ void DrawScriptManager(const SceneListing& scene) {
 }
 
 void DrawEditor(const SceneListing& scene) {
+    // Code Snippet nodes: once their text stops changing, write it out so the script build picks it up and recompiles.
+    {
+        static size_t s_lastFingerprint = ~size_t(0);
+        static double s_changedAt = -1.0;
+        const size_t fp = SnippetFingerprint();
+        if (fp != s_lastFingerprint) { s_lastFingerprint = fp; s_changedAt = ImGui::GetTime(); }
+        if (s_changedAt >= 0.0 && ImGui::GetTime() - s_changedAt > 0.8) {
+            WriteSnippetSources(scene.projectDir);
+            s_changedAt = -1.0;
+        }
+    }
+    std::string pickedSound;   // the system file dialog answers some frames after it was opened
+    if (g_soundNode && platform::PollDialogResult({ platform::DialogPurpose::PickSound }, pickedSound)) {
+        if (!pickedSound.empty())
+            if (Node* sn = Find(g_soundNode)) sn->target = RelativeToProject(scene.projectDir, pickedSound);
+        g_soundNode = 0;
+    }
     if (Count() == 0) {
         ImGui::BeginChild("##vsEmpty", ImVec2(0, 0), false);
         DrawEmptyState(scene);
@@ -632,9 +826,12 @@ void DrawEditor(const SceneListing& scene) {
         ImGui::Separator();
         struct Category { const char* name; std::vector<NodeType> types; };
         const std::vector<Category> categories = {
-            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop } },
+            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop, NodeType::OnKey } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
-            { "Actions", { NodeType::Change, NodeType::Print } },
+            { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText } },
+            { "Audio", { NodeType::PlaySound, NodeType::SetVolume } },
+            { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript } },
+            { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },
             { "Variables", { NodeType::SetVariable, NodeType::GetVariable, NodeType::GetProperty } },
             { "Math", { NodeType::Add, NodeType::Sub, NodeType::Mul, NodeType::Div, NodeType::Random, NodeType::Lerp } },
             { "Logic", { NodeType::Compare, NodeType::And, NodeType::Or, NodeType::Not } },

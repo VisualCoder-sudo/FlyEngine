@@ -777,7 +777,11 @@ const FlyScriptClass* NativeScriptHost::FindClass(const std::string& name) const
 std::vector<std::string> NativeScriptHost::GetScriptClassNames() const {
     std::vector<std::string> names;
     if (!m_module) return names;
-    for (int i = 0; i < m_module->class_count; ++i) names.push_back(m_module->classes[i].name);
+    for (int i = 0; i < m_module->class_count; ++i) {
+        const std::string name = m_module->classes[i].name;
+        if (name.rfind(vscript::kSnippetClassPrefix, 0) == 0) continue;   // generated for Code Snippet nodes, not a script to list or attach
+        names.push_back(name);
+    }
     return names;
 }
 
@@ -836,9 +840,9 @@ bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject
         return false;
     }
 
-    // One script per object / standalone slot: replace whatever ran there.
+    // One script per object / standalone slot: replace whatever ran there. (Snippets have neither: several can run.)
     if (obj) StopObjectScriptOn(obj);
-    else StopStandaloneScriptAt(standaloneIndex);
+    else if (standaloneIndex >= 0) StopStandaloneScriptAt(standaloneIndex);
 
     void* instance = cls->create(cls);
     if (!instance) return false;
@@ -895,6 +899,16 @@ bool NativeScriptHost::IsObjectScriptRunning(ScatteredObject* obj) const {
     for (const auto& rs : m_running)
         if (rs.object == obj && rs.instance) return true;
     return false;
+}
+
+bool NativeScriptHost::StartSnippetScript(const std::string& className) {
+    if (!m_module) return false;
+    const FlyScriptClass* cls = FindClass(className);
+    if (!cls) return false;
+    void* instance = cls->create(cls);
+    if (!instance) return false;
+    m_running.push_back({ cls, instance, nullptr, -1, className });
+    return true;
 }
 
 bool NativeScriptHost::StartStandaloneScriptAt(int index) {

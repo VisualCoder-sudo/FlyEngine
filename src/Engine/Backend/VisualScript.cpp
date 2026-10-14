@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <iomanip>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -143,6 +147,16 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::Random) { n.target = "0"; n.value = "1"; }
     else if (type == NodeType::Lerp) { n.target = "0"; n.value = "1"; n.prop = "0.5"; }
     else if (type == NodeType::GetProperty) n.prop = "Position";
+    else if (type == NodeType::Raycast) { n.target = "(0, 5, 0)"; n.value = "(0, -1, 0)"; n.prop = "100"; }
+    else if (type == NodeType::CreateObject) n.prop = "Cube";
+    else if (type == NodeType::SetVelocity || type == NodeType::AddForce || type == NodeType::AddImpulse) n.value = "(0, 5, 0)";
+    else if (type == NodeType::Teleport) n.value = "(0, 5, 0)";
+    else if (type == NodeType::OnKey) n.prop = "Space";
+    else if (type == NodeType::PlaySound) n.value = "1";
+    else if (type == NodeType::SetVolume) n.value = "1";
+    else if (type == NodeType::ShowText) { n.value = "Hello"; n.prop = "Top Center"; n.target = "3"; }
+    else if (type == NodeType::CodeSnippet) n.value = "fly::Print(\"Hello from a snippet\");\n";
+    else if (type == NodeType::SetWorld) { n.target = "Lighting"; n.prop = "GlobalShadows"; n.value = "true"; }
     g2.nodes.push_back(n);
     return g2.nodes.back();
 }
@@ -160,10 +174,10 @@ void RemoveNode(int id) {
 }
 
 namespace {
-bool IsEvent(NodeType t) { return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop; }
+bool IsEvent(NodeType t) { return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey; }
 }
 
-bool IsPure(NodeType t) { return t >= NodeType::GetVariable && t < NodeType::Count_; }
+bool IsPure(NodeType t) { return (t >= NodeType::GetVariable && t <= NodeType::Raycast); }
 
 int DataInputCount(NodeType t) {
     switch (t) {
@@ -171,7 +185,9 @@ int DataInputCount(NodeType t) {
         case NodeType::Change: case NodeType::Not: return 1;
         case NodeType::Compare: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
         case NodeType::Mul: case NodeType::Div: case NodeType::Random: return 2;
-        case NodeType::Lerp: return 3;
+        case NodeType::Lerp: case NodeType::Raycast: return 3;
+        case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport:
+        case NodeType::PlaySound: case NodeType::SetVolume: case NodeType::ShowText: case NodeType::SetWorld: return 1;
         default: return 0;
     }
 }
@@ -185,6 +201,10 @@ const char* DataInputLabel(NodeType t, int pin) {
         case NodeType::Random: return pin == 0 ? "Min" : "Max";
         case NodeType::Lerp: return pin == 0 ? "A" : pin == 1 ? "B" : "T";
         case NodeType::Not: return "In";
+        case NodeType::Raycast: return pin == 0 ? "Origin" : pin == 1 ? "Direction" : "Distance";
+        case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: return "Vector";
+        case NodeType::PlaySound: case NodeType::SetVolume: return "Volume";
+        case NodeType::ShowText: return "Text";
         default: return pin == 0 ? "A" : "B";
     }
 }
@@ -209,12 +229,22 @@ const char* OutputLabel(const Node& n, int pin) {
     }
 }
 
+bool AllowsFanOut(NodeType t) { return IsEvent(t); }
+bool AllowsFanIn(NodeType t) { return t == NodeType::End; }
+
 void Connect(int from, int to, int fromPin) {
     if (from == to) return;
     Node* a = Find(from); Node* b = Find(to);
     if (!a || !b || IsPure(a->type) || IsPure(b->type) || IsEvent(b->type) || fromPin < 0 || fromPin >= OutputCount(a->type, a)) return;
     auto& L = Active().links;
-    L.erase(std::remove_if(L.begin(), L.end(), [&](const Link& l) { return (l.from == from && l.fromPin == fromPin) || l.to == to; }), L.end());
+    // Most nodes have one input, so a new wire into `to` replaces the old one; End accepts any number, so separate
+    // chains can finish at one End. Most output pins take one wire as well (use Sequence to do several things);
+    // event nodes may fan out, and their wires run in the order they were made.
+    const bool fanOut = AllowsFanOut(a->type), fanIn = AllowsFanIn(b->type);
+    L.erase(std::remove_if(L.begin(), L.end(), [&](const Link& l) {
+        if (l.from == from && l.fromPin == fromPin && l.to == to) return true;   // the same wire again: replace, never duplicate
+        return (!fanOut && l.from == from && l.fromPin == fromPin) || (!fanIn && l.to == to);
+    }), L.end());
     L.push_back({ from, to, fromPin });
 }
 
@@ -225,6 +255,22 @@ void ConnectData(int from, int to, int toPin) {
     auto& L = Active().dataLinks;
     L.erase(std::remove_if(L.begin(), L.end(), [&](const DataLink& l) { return l.to == to && l.toPin == toPin; }), L.end());
     L.push_back({ from, to, toPin });
+}
+
+const std::vector<std::string>& KeyNames() {
+    static const std::vector<std::string> k = { "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right",
+                                                "1", "2", "3", "4", "Shift", "Ctrl" };
+    return k;
+}
+
+const std::vector<std::string>& HudPositions() {
+    static const std::vector<std::string> p = { "Top Left", "Top Center", "Top Right", "Center", "Bottom Left", "Bottom Center", "Bottom Right" };
+    return p;
+}
+
+const std::vector<std::string>& ShapeNames() {
+    static const std::vector<std::string> s = { "Cube", "Sphere", "Cylinder", "Wedge" };
+    return s;
 }
 
 const char* TypeName(NodeType t) {
@@ -253,6 +299,21 @@ const char* TypeName(NodeType t) {
         case NodeType::Random: return "Random Range";
         case NodeType::Lerp: return "Lerp";
         case NodeType::GetProperty: return "Get Property";
+        case NodeType::Raycast: return "Raycast";
+        case NodeType::CreateObject: return "Create Object";
+        case NodeType::Destroy: return "Destroy";
+        case NodeType::Clone: return "Clone";
+        case NodeType::SetVelocity: return "Set Velocity";
+        case NodeType::AddForce: return "Add Force";
+        case NodeType::AddImpulse: return "Add Impulse";
+        case NodeType::Teleport: return "Teleport";
+        case NodeType::RunScript: return "Run Script";
+        case NodeType::OnKey: return "On Key Pressed";
+        case NodeType::PlaySound: return "Play Sound";
+        case NodeType::SetVolume: return "Set Volume";
+        case NodeType::ShowText: return "Show Text";
+        case NodeType::SetWorld: return "Set World Property";
+        case NodeType::CodeSnippet: return "Code Snippet";
         default: break;
     }
     return "?";
@@ -364,6 +425,10 @@ std::vector<Pending> g_delays;
 std::map<std::string, std::string> g_vars;       // Set Variable / Branch
 std::set<std::pair<int, int>> g_once;            // (graph, node) Do Once nodes already passed
 
+struct HudLine { std::string text; float left = -1.0f; };   // left < 0: stays until replaced
+std::map<std::string, HudLine> g_hud;                     // keyed by screen position
+SoundPlayer g_soundPlayer;
+
 bool Truthy(const std::string& v) { return !v.empty() && v != "0" && v != "false"; }
 
 // "Workspace/Group/Cube#2": the second object named Cube.
@@ -394,13 +459,16 @@ std::string NumStr(double v) {
 
 std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth);
 
-// Value on input pin `pin` of `n`: the wired value node's result, else the pin's literal.
+// Value on input pin `pin` of `n`: the wired value node's result, else the pin's literal. A wire that yields nothing
+// (e.g. a Get Variable that was never set) also falls back to the literal, so the field acts as a default.
 std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) {
     const Graph& g = g_scripts[gi];
     for (const DataLink& d : g.dataLinks)
         if (d.to == n.id && d.toPin == pin) {
             const Node* src = FindIn(g, d.from);
-            return src ? Eval(rt, gi, *src, depth + 1) : std::string();
+            std::string v = src ? Eval(rt, gi, *src, depth + 1) : std::string();
+            if (!v.empty()) return v;
+            break;
         }
     if (IsPure(n.type)) return pin == 0 ? n.target : pin == 1 ? n.value : n.prop;
     if (n.type == NodeType::Branch) {   // unwired Branch tests the variable named in its field
@@ -411,7 +479,7 @@ std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) 
 }
 
 std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
-    if (depth > 64) { ui::Log("[visual script] Value wires loop back on themselves"); return {}; }
+    if (depth > 64) { ui::Log("[script] Value wires loop back on themselves"); return {}; }
     auto in = [&](int pin) { return Input(rt, gi, n, pin, depth); };
     auto num = [&](int pin) { double v = 0.0; ToNumber(in(pin), v); return v; };
     switch (n.type) {
@@ -445,11 +513,17 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
             return NumStr(lo == hi ? lo : std::uniform_real_distribution<double>(lo, hi)(rng));
         }
         case NodeType::Lerp: { const double a = num(0); return NumStr(a + (num(1) - a) * num(2)); }
+        case NodeType::Raycast: {
+            std::string error;
+            std::string hit = rt.RayCastName(in(0), in(1), static_cast<float>(num(2)), error);
+            if (!error.empty()) ui::Log("[script] %s", error.c_str());
+            return hit;
+        }
         case NodeType::GetProperty: {
             ScatteredObject* obj = FindTarget(rt, n.target);
             std::string out;
-            if (!obj) ui::Log("[visual script] No object '%s'", n.target.c_str());
-            else if (!rt.GetObjectProperty(obj, n.prop, out)) ui::Log("[visual script] Can't read '%s'", n.prop.c_str());
+            if (!obj) ui::Log("[script] No object '%s'", n.target.c_str());
+            else if (!rt.GetObjectProperty(obj, n.prop, out)) ui::Log("[script] Can't read '%s'", n.prop.c_str());
             return out;
         }
         default: return {};
@@ -461,31 +535,41 @@ void ApplyChange(ScriptRuntime& rt, const Node& n) {
     std::string result;
     if (IsWorldGroup(n.target)) {
         if (!console::RunLine("game." + n.target + "." + n.prop + " = " + n.value, &result))
-            ui::Log("[visual script] %s", result.c_str());
+            ui::Log("[script] %s", result.c_str());
         return;
     }
     ScatteredObject* obj = FindTarget(rt, n.target);
     std::string error;
-    if (!obj) ui::Log("[visual script] No object '%s'", n.target.c_str());
-    else if (!rt.SetObjectProperty(obj, n.prop, n.value, error)) ui::Log("[visual script] %s", error.c_str());
+    if (!obj) ui::Log("[script] No object '%s'", n.target.c_str());
+    else if (!rt.SetObjectProperty(obj, n.prop, n.value, error)) ui::Log("[script] %s", error.c_str());
 }
 
 // Follows the wire leaving (`fromId`, `pin`) and everything after it. Branching nodes push several continuations;
 // the step cap stops cyclic graphs.
 void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
     constexpr int kMaxSteps = 100000;
+    // Entries are "continue from (node, output pin)". A negative id means "run node -id now": that is how an output
+    // pin with several wires hands each target its turn.
     std::vector<std::pair<int, int>> stack{ { fromId, pin } };
     int steps = 0;
     while (!stack.empty()) {
-        if (++steps > kMaxSteps) { ui::Log("[visual script] Stopped: graph ran over %d steps (loop?)", kMaxSteps); return; }
+        if (++steps > kMaxSteps) { ui::Log("[script] Stopped: graph ran over %d steps (loop?)", kMaxSteps); return; }
         if (gi < 0 || gi >= static_cast<int>(g_scripts.size())) return;
         const Graph& g = g_scripts[gi];
         const auto [id, p] = stack.back();
         stack.pop_back();
-        const Link* link = nullptr;
-        for (const Link& l : g.links) if (l.from == id && l.fromPin == p) { link = &l; break; }
-        if (!link) continue;
-        const Node* n = FindIn(g, link->to);
+        int target = -id;
+        if (id >= 0) {
+            std::vector<int> targets;
+            for (const Link& l : g.links) if (l.from == id && l.fromPin == p) targets.push_back(l.to);
+            if (targets.empty()) continue;
+            if (targets.size() > 1) {   // first wire on top of the stack, so it runs first
+                for (auto it = targets.rbegin(); it != targets.rend(); ++it) stack.push_back({ -*it, 0 });
+                continue;
+            }
+            target = targets[0];
+        }
+        const Node* n = FindIn(g, target);
         if (!n) continue;
         switch (n->type) {
             case NodeType::Change: {
@@ -495,7 +579,7 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 stack.push_back({ n->id, 0 });
                 break;
             }
-            case NodeType::Print: ui::Log("[visual script] %s", Input(rt, gi, *n, 0, 0).c_str()); stack.push_back({ n->id, 0 }); break;
+            case NodeType::Print: ui::Log("[script] %s", Input(rt, gi, *n, 0, 0).c_str()); stack.push_back({ n->id, 0 }); break;
             case NodeType::SetVariable:
                 if (!n->target.empty()) g_vars[n->target] = Input(rt, gi, *n, 0, 0);
                 stack.push_back({ n->id, 0 });
@@ -503,6 +587,70 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
             case NodeType::Branch:
                 stack.push_back({ n->id, Truthy(Input(rt, gi, *n, 0, 0)) ? 0 : 1 });
                 break;
+            case NodeType::CodeSnippet:
+                if (!rt.StartSnippet(SnippetClassName(g.name, n->id)))
+                    ui::Log("[script] Code Snippet #%d is not compiled yet - check the compiler output, then Play again", n->id);
+                stack.push_back({ n->id, 0 });
+                break;
+            case NodeType::SetWorld: {
+                Node applied = *n;
+                applied.value = Input(rt, gi, *n, 0, 0);
+                if (IsWorldGroup(n->target)) ApplyChange(rt, applied);
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::ShowText: {
+                const std::string text = Input(rt, gi, *n, 0, 0);
+                if (text.empty()) g_hud.erase(n->prop);
+                else {
+                    const float secs = static_cast<float>(std::atof(n->target.c_str()));
+                    g_hud[n->prop] = { text, secs > 0.0f ? secs : -1.0f };
+                }
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::SetVolume:
+                SetMasterVolume(std::clamp(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())), 0.0f, 1.0f));
+                stack.push_back({ n->id, 0 });
+                break;
+            case NodeType::PlaySound: {
+                if (!g_soundPlayer) ui::Log("[script] Play Sound: this build has no audio backend");
+                else {
+                    std::string path = n->target;
+                    if (!std::filesystem::path(path).is_absolute() && !rt.GetProjectPath().empty())
+                        path = (std::filesystem::path(rt.GetProjectPath()) / path).string();
+                    g_soundPlayer(path, std::clamp(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())), 0.0f, 1.0f));
+                }
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::CreateObject: {
+                ScatteredObject* obj = rt.CreateObject(n->prop);
+                if (!obj) ui::Log("[script] Can't create '%s'", n->prop.c_str());
+                else if (!n->value.empty()) obj->SetName(n->value);
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::Destroy: case NodeType::Clone: case NodeType::RunScript:
+            case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: {
+                ScatteredObject* obj = FindTarget(rt, n->target);
+                std::string error;
+                if (!obj) { ui::Log("[script] No object '%s'", n->target.c_str()); stack.push_back({ n->id, 0 }); break; }
+                if (n->type == NodeType::Destroy) rt.DestroyObject(obj);
+                else if (n->type == NodeType::RunScript) rt.StartObjectScript(obj);
+                else if (n->type == NodeType::Clone) {
+                    ScatteredObject* copy = rt.CloneObject(obj);
+                    if (!copy) ui::Log("[script] Can't clone '%s'", n->target.c_str());
+                    else if (!n->value.empty()) copy->SetName(n->value);
+                } else {
+                    const std::string vec = Input(rt, gi, *n, 0, 0);
+                    if (n->type == NodeType::AddForce || n->type == NodeType::AddImpulse) rt.AddForce(obj, vec, n->type == NodeType::AddImpulse, error);
+                    else rt.SetObjectProperty(obj, n->type == NodeType::SetVelocity ? "Velocity" : "Position", vec, error);
+                    if (!error.empty()) ui::Log("[script] %s", error.c_str());
+                }
+                stack.push_back({ n->id, 0 });
+                break;
+            }
             case NodeType::Sequence: {
                 const int count = std::clamp(std::atoi(n->value.c_str()), 1, 8);
                 for (int i = count - 1; i >= 0; --i) stack.push_back({ n->id, i });
@@ -525,6 +673,16 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
     }
 }
 
+bool KeyPressed(const std::string& name) {
+    static const std::map<std::string, int> codes = {
+        { "Space", KEY_SPACE }, { "Enter", KEY_ENTER }, { "W", KEY_W }, { "A", KEY_A }, { "S", KEY_S }, { "D", KEY_D },
+        { "Q", KEY_Q }, { "E", KEY_E }, { "R", KEY_R }, { "F", KEY_F }, { "Up", KEY_UP }, { "Down", KEY_DOWN },
+        { "Left", KEY_LEFT }, { "Right", KEY_RIGHT }, { "1", KEY_ONE }, { "2", KEY_TWO }, { "3", KEY_THREE }, { "4", KEY_FOUR },
+        { "Shift", KEY_LEFT_SHIFT }, { "Ctrl", KEY_LEFT_CONTROL } };
+    const auto it = codes.find(name);
+    return it != codes.end() && IsKeyPressed(it->second);
+}
+
 void FireEvents(ScriptRuntime& rt, NodeType type) {
     for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
         std::vector<int> ids;
@@ -535,7 +693,7 @@ void FireEvents(ScriptRuntime& rt, NodeType type) {
 }
 
 void Run(ScriptRuntime& rt) {
-    g_delays.clear(); g_vars.clear(); g_once.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear();
     FireEvents(rt, NodeType::Start);
 }
 
@@ -546,13 +704,107 @@ void Tick(ScriptRuntime& rt, float dt) {
         if (it->left <= 0.0f) { due.push_back(*it); it = g_delays.erase(it); }
         else ++it;
     }
+    for (auto it = g_hud.begin(); it != g_hud.end();) {
+        if (it->second.left >= 0.0f && (it->second.left -= dt) <= 0.0f) it = g_hud.erase(it);
+        else ++it;
+    }
     for (const Pending& d : due) Emit(rt, d.graph, d.node, 0);
     FireEvents(rt, NodeType::OnUpdate);
+    for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
+        std::vector<std::pair<int, std::string>> keys;
+        for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnKey) keys.push_back({ n.id, n.prop });
+        for (const auto& [id, key] : keys) if (KeyPressed(key)) Emit(rt, gi, id, 0);
+    }
 }
 
 void Stop(ScriptRuntime& rt) {
     FireEvents(rt, NodeType::OnStop);
-    g_delays.clear(); g_vars.clear(); g_once.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear();
+}
+
+std::string SnippetClassName(const std::string& graphName, int nodeId) {
+    std::string name = kSnippetClassPrefix;
+    for (char c : graphName) name += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '_';
+    return name + "_" + std::to_string(nodeId);
+}
+
+namespace {
+// Snippet text for the generated file: `#include` lines are hoisted to the top (a blank line keeps the numbering), and a
+// closing co_return makes the body a coroutine even when it never co_awaits.
+void EmitSnippet(std::string& includes, std::string& classes, const std::string& graphName, const Node& n) {
+    std::string body, line;
+    std::istringstream in(n.value);
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos && line.compare(first, 8, "#include") == 0) { includes += line.substr(first) + "\n"; line.clear(); }
+        body += line + "\n";
+    }
+    const std::string cls = SnippetClassName(graphName, n.id);
+    classes += "struct " + cls + " : fly::Script {\n    fly::Task Run() override {\n";
+    classes += "#line 1 \"Code Snippet " + graphName + "/" + std::to_string(n.id) + "\"\n";
+    classes += body;
+    classes += "\n        co_return;\n    }\n};\nFLY_SCRIPT(" + cls + ")\n\n";
+}
+
+std::string SnippetsFilePath(const std::string& projectDir) {
+    return (std::filesystem::path(projectDir) / "Scripts" / ".visualscript" / "snippets.cpp").string();
+}
+}
+
+std::string GenerateSnippetSource() {
+    std::string includes, classes;
+    for (const Graph& g : g_scripts)
+        for (const Node& n : g.nodes)
+            if (n.type == NodeType::CodeSnippet) EmitSnippet(includes, classes, g.name, n);
+    if (classes.empty()) return {};
+    return "// Generated by the Visual Script editor from Code Snippet nodes. Edit the nodes, not this file.\n"
+           "#include \"fly.hpp\"\n#include <cmath>\n#include <string>\n#include <vector>\n" + includes + "\n" + classes;
+}
+
+bool WriteSnippetSources(const std::string& projectDir, bool createFolders) {
+    if (projectDir.empty()) return false;
+    namespace fs = std::filesystem;
+    const std::string path = SnippetsFilePath(projectDir);
+    const std::string want = GenerateSnippetSource();
+    std::error_code ec;
+    if (!createFolders && !fs::is_directory(fs::path(projectDir) / "Scripts", ec)) return false;
+    if (want.empty()) return fs::remove(path, ec);          // the last snippet is gone: drop its classes
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::string have((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (in && have == want) return false;
+    }
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << want;
+    return static_cast<bool>(out);
+}
+
+size_t SnippetFingerprint() {
+    size_t h = 1469598103934665603ull;
+    auto mix = [&h](const std::string& s) { for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; } h ^= 0xff; h *= 1099511628211ull; };
+    for (const Graph& g : g_scripts)
+        for (const Node& n : g.nodes)
+            if (n.type == NodeType::CodeSnippet) { mix(g.name); mix(std::to_string(n.id)); mix(n.value); }
+    return h;
+}
+
+void SetSoundPlayer(SoundPlayer player) { g_soundPlayer = std::move(player); }
+
+void DrawHud(float x, float y, float w, float h) {
+    if (g_hud.empty()) return;
+    constexpr int kSize = 28, kPad = 16;
+    for (const auto& [pos, line] : g_hud) {
+        const int tw = MeasureText(line.text.c_str(), kSize);
+        float px = x + kPad, py = y + kPad;
+        if (pos.find("Center") != std::string::npos) px = x + (w - tw) * 0.5f;
+        else if (pos.find("Right") != std::string::npos) px = x + w - tw - kPad;
+        if (pos == "Center") py = y + (h - kSize) * 0.5f;
+        else if (pos.find("Bottom") == 0) py = y + h - kSize - kPad;
+        DrawText(line.text.c_str(), static_cast<int>(px) + 2, static_cast<int>(py) + 2, kSize, Color{ 0, 0, 0, 160 });
+        DrawText(line.text.c_str(), static_cast<int>(px), static_cast<int>(py), kSize, RAYWHITE);
+    }
 }
 
 } // namespace vscript

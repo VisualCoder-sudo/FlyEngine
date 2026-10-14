@@ -4,6 +4,7 @@
 #include "../../include/Engine/Occlusion.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
+#include "../../include/Engine/Backend/VisualScript.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../include/Terrain/Terrain.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
@@ -242,6 +243,7 @@ void Engine::Draw() {
         Rectangle area = { 0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight() };
         if (!isPlayerBuild) { const Rectangle mid = ui::GetConsoleBarArea(); area = { mid.x, 126.0f, mid.width, (float)GetScreenHeight() - 126.0f }; }
         gfx::DrawLoadingStatus(area);
+        vscript::DrawHud(area.x, area.y, area.width, area.height);   // Show Text messages
     }
 
     // ImGui pass (draws after every raylib overlay so it stays on top)

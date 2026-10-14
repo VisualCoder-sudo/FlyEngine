@@ -6100,6 +6100,7 @@ static void DrawOutputTab() {
 
 static void DrawVisualScriptTab() {
     vscript::SceneListing scene;
+    scene.projectDir = ::project::GetCurrentProject().path;
     scene.deleteScript = [](const std::string& key) { DeleteScriptEverywhere(key); };
     // Objects can share a name, so a repeat gets "#2", "#3"... in scene order. The script runner counts the same way.
     std::map<const ScatteredObject*, std::string> labels;

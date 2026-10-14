@@ -124,7 +124,8 @@ bool IsSourceExt(const fs::path& p, bool includeHeaders) {
     return includeHeaders && (ext == ".hpp" || ext == ".h" || ext == ".hh");
 }
 
-// Every script source under Scripts/, skipping hidden folders (.build, .vscode).
+// Every script source under Scripts/, skipping hidden folders (.build, .vscode). The one exception is
+// .visualscript, where the Visual Script editor writes the C++ of its Code Snippet nodes.
 std::vector<fs::path> CollectFiles(const fs::path& scriptsDir, bool includeHeaders) {
     std::vector<fs::path> files;
     std::error_code ec;
@@ -133,7 +134,8 @@ std::vector<fs::path> CollectFiles(const fs::path& scriptsDir, bool includeHeade
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const fs::path& p = it->path();
         if (it->is_directory(ec)) {
-            if (p.filename().string().rfind('.', 0) == 0) it.disable_recursion_pending();
+            const std::string folder = p.filename().string();
+            if (folder.rfind('.', 0) == 0 && folder != ".visualscript") it.disable_recursion_pending();
             continue;
         }
         if (it->is_regular_file(ec) && IsSourceExt(p, includeHeaders)) files.push_back(p);

@@ -203,3 +203,24 @@ add_executable(script_diagnostics_test
     ${CMAKE_SOURCE_DIR}/src/Engine/Scripts/ScriptDiagnostics.cpp)
 target_include_directories(script_diagnostics_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME script_diagnostics COMMAND script_diagnostics_test)
+
+# Visual Script runtime tests (include/Engine/Backend/VisualScript.hpp).
+#
+# VisualScript.cpp is compiled straight into the test and everything it reaches (ScriptRuntime, the
+# console, ui::Log, the raylib audio/text calls) is replaced by recording stubs in the test itself, so
+# like math_backend_parity this does NOT link FlyEngineCore and needs no window, GL context or audio device.
+add_executable(visual_script_test
+    visual_script_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Engine/Backend/VisualScript.cpp
+)
+
+target_include_directories(visual_script_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include/rl
+    ${CMAKE_SOURCE_DIR}/extern/box3d/include
+    ${CMAKE_SOURCE_DIR}/extern
+)
+
+target_compile_features(visual_script_test PRIVATE cxx_std_20)
+
+add_test(NAME visual_script COMMAND visual_script_test)

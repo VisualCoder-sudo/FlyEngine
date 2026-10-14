@@ -130,6 +130,53 @@ ScatteredObject* ScriptRuntime::CreateObject(const std::string& shapeName)
     return raw;
 }
 
+void ScriptRuntime::DestroyObject(ScatteredObject* obj)
+{
+    if (!obj || !objectsPtr) return;
+    auto fit = std::find(objectsPtr->begin(), objectsPtr->end(), obj);
+    if (fit == objectsPtr->end()) return;   // already gone
+    objectsPtr->erase(fit);
+    playCreatedObjects.erase(std::remove(playCreatedObjects.begin(), playCreatedObjects.end(), obj), playCreatedObjects.end());
+    if (sim) sim->RemoveObject(obj);
+    if (engine) engine->RemoveEntity(obj);
+}
+
+ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source)
+{
+    if (!source || !objectsPtr || !engine) return nullptr;
+    std::unique_ptr<ScatteredObject> copy = source->Clone();
+    if (!copy) return nullptr;
+    ScatteredObject* raw = copy.get();
+    objectsPtr->push_back(raw);
+    engine->AddEntity(std::move(copy));
+    if (isPlaying) {
+        playCreatedObjects.push_back(raw);
+        if (sim) sim->SpawnBodyForObject(raw);
+    }
+    return raw;
+}
+
+bool ScriptRuntime::AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError)
+{
+    Vector3 v;
+    if (!obj) { outError = "No target object"; return false; }
+    if (!ParseVec3(vec, v)) { outError = "'" + vec + "' is not a valid (x, y, z) tuple"; return false; }
+    if (!sim || !isPlaying) { outError = "Forces only work while playing"; return false; }
+    if (impulse) sim->ApplyImpulseToBody(obj, v);
+    else sim->ApplyForceToBody(obj, v);
+    return true;
+}
+
+std::string ScriptRuntime::RayCastName(const std::string& origin, const std::string& dir, float maxDistance, std::string& outError)
+{
+    Vector3 o, d;
+    if (!ParseVec3(origin, o)) { outError = "'" + origin + "' is not a valid (x, y, z) tuple"; return {}; }
+    if (!ParseVec3(dir, d)) { outError = "'" + dir + "' is not a valid (x, y, z) tuple"; return {}; }
+    if (!sim) { outError = "No physics simulation"; return {}; }
+    const phys::RaycastHit hit = sim->RayCast(o, d, maxDistance > 0.0f ? maxDistance : 100.0f);
+    return hit.hit && hit.object ? hit.object->GetName() : std::string();
+}
+
 void ScriptRuntime::SetSimPlaying(bool playing)
 {
     if (playing == isPlaying) return;
@@ -277,6 +324,11 @@ void ScriptRuntime::RemoveStandalone(int index)
 void ScriptRuntime::StartObjectScript(ScatteredObject* obj)
 {
     if (hostPtr && obj && !obj->script.empty()) hostPtr->StartObjectScriptOn(obj);
+}
+
+bool ScriptRuntime::StartSnippet(const std::string& className)
+{
+    return hostPtr && hostPtr->StartSnippetScript(className);
 }
 
 void ScriptRuntime::StopObjectScript(ScatteredObject* obj)

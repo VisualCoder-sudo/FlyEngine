@@ -15,6 +15,7 @@
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
+#include "../../../include/Engine/Frontend/ProjectManager.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -812,7 +813,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     }
 
     vscript::Clear();
-    if (version >= 24) vscript::Load(file);
+    if (version >= 24) {
+        vscript::Load(file);
+        vscript::WriteSnippetSources(::project::GetCurrentProject().path, false);   // keeps Code Snippet classes in step with the scene
+    }
 
     AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {

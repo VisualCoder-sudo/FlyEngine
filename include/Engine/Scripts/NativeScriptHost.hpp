@@ -124,6 +124,9 @@ public:
     bool StartObjectScriptOn(ScatteredObject* obj);
     void StopObjectScriptOn(ScatteredObject* obj);
     bool IsObjectScriptRunning(ScatteredObject* obj) const;
+    // Visual Script Code Snippet nodes: starts the generated class `className` on its own (no object, no explorer
+    // slot). Returns false when the library has no such class (not compiled yet).
+    bool StartSnippetScript(const std::string& className);
     bool StartStandaloneScriptAt(int index);
     void StopStandaloneScriptAt(int index);
     bool IsStandaloneScriptRunning(int index) const;
