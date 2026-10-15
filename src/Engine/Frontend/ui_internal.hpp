@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -252,5 +253,54 @@ void DrawCollisionPopup();
 void DrawColorPickerPopupWindow();
 void DrawPropertiesPanel();
 void DrawScriptErrorPanel();
+
+// ui_explorer.cpp / ui.cpp (Explorer)
+enum class ExplorerMenuMode { Object, Empty, Script, Model };
+struct ExplorerEntry {
+    ScatteredObject* obj = nullptr;
+    ModelGroup* model = nullptr;
+    class WaterBody* water = nullptr;
+    BasicTerrain* basicTerrain = nullptr;
+    class terrain::Terrain* legacyTerrain = nullptr;
+    bool isHeader = false;
+    int objRowIndex = -1;
+};
+extern int g_explorerAnchorIndex;
+extern bool g_explorerDragActive;
+extern std::vector<ScatteredObject*> g_explorerDragObjects;
+extern bool g_explorerDragPending;
+extern Vector2 g_explorerDragStart;
+extern ModelGroup* g_explorerDropTarget;
+extern bool g_explorerDropValid;
+extern ExplorerMenuMode g_explorerMenuMode;
+extern ScatteredObject* g_explorerMenuObject;
+extern bool g_explorerMenuOpen;
+extern double g_explorerMenuOpenTime;
+extern Vector2 g_explorerMenuPos;
+extern int g_explorerMenuScript;
+extern ScatteredObject* g_lastExplorerClick;
+extern double g_lastExplorerClickTime;
+extern ModelGroup* g_lastExplorerModelClick;
+extern int g_lightingSel;
+extern char g_nameBuffer[64];
+extern ScatteredObject* g_primarySelection;
+extern terrain::Terrain* g_renameLegacyTerrain;
+extern ModelGroup* g_renameModel;
+extern ScatteredObject* g_renameObject;
+extern BasicTerrain* g_renameTerrain;
+extern char g_scriptNameBuffer[64];
+extern int g_scriptRenameIndex;
+extern std::set<std::string> g_scriptSel;
+extern int g_scriptSelAnchor;
+extern BasicTerrain* g_selectedTerrain;
+std::vector<ExplorerEntry> BuildExplorerEntries();
+int ExplorerMenuItemCount();
+Rectangle GetExplorerPanelBounds();
+ScatteredObject* KeepPrimary(const std::vector<ScatteredObject*>& selection, ScatteredObject* candidate);
+ImTextureID RowTex(RowIconType i);
+const char* ExplorerMenuItemLabel(int i);
+void PerformExplorerDrop(const std::vector<ScatteredObject*>& dragged, ModelGroup* target);
+void DrawImGuiExplorer();
+void DrawImGuiExplorerMenu();
 
 } // namespace ui
