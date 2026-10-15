@@ -5,6 +5,7 @@
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "raylib.h"
 #include "imgui.h"
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -12,6 +13,17 @@
 class ModelGroup;
 
 namespace ui {
+
+// C++-friendly constexpr color constants
+constexpr Color COL_WHITE     = Color{ 255, 255, 255, 255 };
+constexpr Color COL_RED       = Color{ 255, 0,   0,   255 };
+constexpr Color COL_ORANGE    = Color{ 255, 165, 0,   255 };
+constexpr Color COL_GOLD      = Color{ 255, 215, 0,   255 };
+constexpr Color COL_LIME      = Color{ 0,   255, 0,   255 };
+constexpr Color COL_GREEN     = Color{ 0,   128, 0,   255 };
+constexpr Color COL_BLUE      = Color{ 0,   0,   255, 255 };
+constexpr Color COL_PURPLE    = Color{ 128, 0,   128, 255 };
+constexpr Color COL_MAGENTA   = Color{ 255, 0,   255, 255 };
 
 // ---------------------------------------------------------------------------
 // Dark theme palette
@@ -108,5 +120,23 @@ void DrawPathPromptModal();
 extern bool g_showPreferences;
 extern int g_prefsCategory;
 void DrawImGuiPreferencesWindow();
+
+// Small drawing and cursor helpers defined in ui.cpp.
+float HoverProgress(uint64_t key, bool hovered);
+Color Mix(Color from, Color to, float t);
+void MarkHand();
+void DrawTextArial(const char* text, float posX, float posY, float fontSize, Color color);
+float MeasureTextArial(const char* text, float fontSize);
+void DrawDropdownBox(const Rectangle& r, bool active, float alpha = 1.0f);
+extern bool g_clickConsumedThisFrame;
+
+// ui_terrain_panel.cpp: the terrain tool panel (bottom-right dock).
+extern bool g_terrainToolDropdownListPending;
+extern Rectangle g_terrainToolDropdownListRect;
+extern int g_terrainToolDropdownActiveTool;
+extern bool g_terrainToolDropdownOpen;
+void DrawTerrainToolIcon(int kind, Rectangle ir, Color col);
+Rectangle GetTerrainPanelBounds();
+void DrawTerrainToolPanel();
 
 } // namespace ui
