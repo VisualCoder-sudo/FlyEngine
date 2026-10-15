@@ -1,6 +1,8 @@
 // The sound system (include/Engine/Audio.hpp) without a sound card: decode a WAV, mix it through a device-less
 // engine and look at the samples. No window.
 #include "Engine/Audio.hpp"
+#include "Engine/PackArchive.hpp"
+#include "Engine/Vfs.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -123,6 +125,26 @@ int main() {
     // More sounds than voices: the oldest give way, the count stays capped.
     for (int i = 0; i < 100; ++i) audio::Play(wav);
     CHECK(audio::ActiveVoices() <= 64);
+
+    // An exported game: the sound is inside the archive appended to the executable, named relative to it or
+    // under the virtual root, and plays from there.
+    {
+        const fs::path fakeExe = dir / "player", packed = dir / "game";
+        std::ofstream(fakeExe, std::ios::binary) << "not really an executable";
+        pack::Entry e; e.path = "assets/Audio/tone.wav"; e.diskPath = wav;
+        std::string err;
+        CHECK(pack::BuildExecutable(fakeExe.string(), packed.string(), { e }, err));
+        CHECK(vfs::MountFile(packed.string()));
+        audio::ClipInfo packedInfo;
+        CHECK(audio::GetClipInfo(vfs::VirtualPath("assets/Audio/tone.wav"), packedInfo));
+        CHECK(packedInfo.frames == 4000 && packedInfo.sampleRate == 8000);
+        CHECK(audio::GetClipInfo("assets/Audio/tone.wav", packedInfo) && packedInfo.frames == 4000);
+        CHECK(audio::Play(vfs::VirtualPath("assets/Audio/tone.wav")) != 0);
+        float pl, pr; Peaks(2400, pl, pr);
+        CHECK(pl > 0.1f);
+        audio::StopAll();
+        vfs::Unmount();
+    }
 
     audio::Shutdown();
     CHECK(!audio::Available());
