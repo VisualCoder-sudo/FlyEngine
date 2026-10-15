@@ -104,4 +104,9 @@ void DrawImGuiAssetBrowserPopups();
 void PumpAssetBrowserDialogs();
 void DrawPathPromptModal();
 
+// ui_preferences.cpp: the Preferences window. The top bar's Edit menu opens it.
+extern bool g_showPreferences;
+extern int g_prefsCategory;
+void DrawImGuiPreferencesWindow();
+
 } // namespace ui

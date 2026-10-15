@@ -1,0 +1,376 @@
+// ui_preferences.cpp: the Preferences window, split out of ui.cpp.
+#include "ui_internal.hpp"
+#include <map>
+#include <set>
+#include "../../../include/Engine/ExportManager.hpp"
+#include "../../../include/Engine/Backend/VisualScript.hpp"
+#include "../../../include/Engine/Platform/Platform.hpp"
+#include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Terrain/Water/WaterBody.hpp"
+#include "../../../include/Terrain/BasicTerrain.hpp"
+#include "../../../include/Engine/Scripts/CommandConsole.hpp"
+#include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
+#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Engine/LoadingScreen.hpp"
+#include "../include/Engine/Scripts/ScriptLauncher.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
+#include "../include/Engine/Backend/PhysicsSimulation.hpp"
+#include "../../../include/Engine/Backend/TextureManager.hpp"
+#include "../include/Engine/Frontend/ProjectManager.hpp"
+#include "../../../include/Engine/Backend/ModelImport.hpp"
+#include "../include/Terrain/Terrain.hpp"
+#include "../../../include/Terrain/TerrainEditor.hpp"
+#include "../../../include/Terrain/TerrainRegistry.hpp"
+#include "../../../include/CityGen/CityEditor.hpp"
+#include "raymath.h"
+#include "imgui.h"
+#include "rlimgui.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstdarg>
+#include <string>
+#include <unordered_map>
+#include <filesystem>
+#include <algorithm>
+
+namespace ui {
+
+bool g_showPreferences = false;
+int  g_prefsCategory = 0; // 0=General 1=API Keys 2=Scripting 3=Plugins 4=Rendering 5=Appearance 6=Loading
+
+// ---- Preferences panel ----
+// Editor/workflow settings only (font, autosave cadence, external tools,
+// panel layout, etc. as they get added later) - never game or scene data.
+// That belongs in the Terrain/Object/World property panels instead.
+
+static void DrawPrefsSidebarButton(const char* label, int index, bool enabled = true) {
+    bool selected = (g_prefsCategory == index);
+    ImVec4 selColor    = theme::AccentVec();
+    ImVec4 plainColor  = ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
+    ImVec4 plainHover  = ImVec4(0.62f, 0.62f, 0.66f, 1.0f);
+    ImVec4 bg = selected ? selColor : plainColor;
+
+    ImGui::PushStyleColor(ImGuiCol_Button, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? selColor : plainHover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, selColor);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::BeginDisabled(!enabled);
+    if (ImGui::Button(label, ImVec2(-1.0f, 30.0f)) && enabled) {
+        g_prefsCategory = index;
+    }
+    ImGui::EndDisabled();
+    ImGui::PopStyleColor(4);
+}
+
+// A full-width accent-colored row: label on the left, a control on the right.
+// Returns the screen position just past the row so callers can keep stacking.
+static void DrawPrefsSettingRowBegin(const char* label) {
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec2 rowPos = ImGui::GetCursorScreenPos();
+    float rowHeight = 30.0f;
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        rowPos, ImVec2(rowPos.x + avail.x, rowPos.y + rowHeight),
+        theme::AccentU32());
+    ImGui::SetCursorScreenPos(ImVec2(rowPos.x + 8.0f, rowPos.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(avail.x - 150.0f);
+    ImGui::SetCursorScreenPos(ImVec2(rowPos.x + avail.x - 150.0f, rowPos.y + 3.0f));
+}
+
+static void DrawPreferencesGeneralTab() {
+    DrawPrefsSettingRowBegin("Language");
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.5f, 0.54f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.5f, 0.5f, 0.54f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.5f, 0.5f, 0.54f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::Button("English (US)", ImVec2(140.0f, 24.0f)); // only option for now
+    ImGui::PopStyleColor(4);
+}
+
+// How much of the machine the picture may use (gfx::RenderQuality). Kept per machine, not per scene.
+static void DrawPreferencesRenderingTab() {
+    gfx::RenderQuality& q = gfx::Quality();
+    bool changed = false;
+    const auto combo = [&](const char* label, const char* id, int* value, const char* const* items, int count) {
+        DrawPrefsSettingRowBegin(label);
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::Combo(id, value, items, count)) changed = true;
+    };
+
+    {
+        DrawPrefsSettingRowBegin("Quality");
+        ImGui::SetNextItemWidth(140.0f);
+        const char* tiers[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+        int tier = (q.tier >= 0 && q.tier <= 3) ? q.tier : 4;
+        if (ImGui::Combo("##quality", &tier, tiers, 5) && tier <= 3) {
+            gfx::SetQualityTier(tier);
+            gfx::SaveQualitySettings();
+        }
+    }
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+
+    DrawPrefsSettingRowBegin("Render scale");
+    ImGui::SetNextItemWidth(140.0f);
+    float scale = q.renderScale * 100.0f;
+    if (ImGui::SliderFloat("##renderscale", &scale, 50.0f, 100.0f, "%.0f%%")) { q.renderScale = scale / 100.0f; changed = true; }
+
+    const char* aa[] = { "Off", "FXAA", "Temporal" };
+    combo("Anti-aliasing", "##aa", &q.antiAliasing, aa, 3);
+
+    DrawPrefsSettingRowBegin("Bloom");
+    if (ImGui::Checkbox("##bloom", &q.bloom)) changed = true;
+    DrawPrefsSettingRowBegin("Ambient occlusion");
+    if (ImGui::Checkbox("##ao", &q.ambientOcclusion)) changed = true;
+
+    const char* clouds[] = { "Low", "Medium", "High", "Ultra" };
+    combo("Clouds", "##clouds", &q.clouds, clouds, 4);
+    const char* fog[] = { "Plain", "Light shafts", "Fine light shafts" };
+    combo("Air and fog", "##volumetrics", &q.volumetrics, fog, 3);
+
+    DrawPrefsSettingRowBegin("Shadow distance steps");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderInt("##cascades", &q.shadowCascades, 1, 4)) changed = true;
+
+    if (changed) {
+        q.tier = -1;        // no longer one of the presets
+        gfx::SaveQualitySettings();
+    }
+
+    // The editor's frame-rate limit. Not part of the quality presets, so changing it leaves the tier alone.
+    DrawPrefsSettingRowBegin("FPS cap");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::DragInt("##fpscap", &q.fpsCap, 1.0f, 0, 1000, q.fpsCap == 0 ? "Unlimited" : "%d")) {
+        q.fpsCap = std::clamp(q.fpsCap, 0, 1000);
+        gfx::ApplyFpsCap();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) gfx::SaveQualitySettings();
+    ImGui::SameLine();
+    ImGui::TextDisabled("0 = unlimited");
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    ImGui::Indent(8.0f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 16.0f);
+    ImGui::TextDisabled("These are kept for this machine, not saved with a scene. What a scene looks like (its sky, clouds, fog and picture) is in the Explorer's Lighting section. Press F2 in the viewport to see what each pass costs.");
+    ImGui::PopTextWrapPos();
+    ImGui::Unindent(8.0f);
+}
+
+// The loading screens of the editor and the player (src/Engine/LoadingScreen.cpp): on or off, what they show, how
+// they look. Kept per machine; the player's look can also be saved into the project.
+static void DrawLoadingLookEditor(const char* id, loading::Look& l, bool& changed) {
+    ImGui::PushID(id);
+    const auto row = [&](const char* label, bool& v) {
+        DrawPrefsSettingRowBegin(label);
+        if (ImGui::Checkbox("##v", &v)) changed = true;
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + 2.0f));
+    };
+    ImGui::PushID("enabled"); row("Show a loading screen", l.enabled); ImGui::PopID();
+    ImGui::BeginDisabled(!l.enabled);
+    ImGui::PushID("percent"); row("Percentage", l.showPercent); ImGui::PopID();
+    ImGui::PushID("bar"); row("Progress bar", l.showBar); ImGui::PopID();
+    ImGui::PushID("stage"); row("What it is doing now", l.showStage); ImGui::PopID();
+    ImGui::PushID("logs"); row("Log lines", l.showLogs); ImGui::PopID();
+    if (l.showLogs) {
+        DrawPrefsSettingRowBegin("Log lines shown");
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::SliderInt("##loglines", &l.logLines, 3, 16)) changed = true;
+    }
+    DrawPrefsSettingRowBegin("Title ({name} = the project)");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::InputText("##title", l.title, sizeof l.title)) changed = true;
+    float bg[3] = { l.background.r / 255.0f, l.background.g / 255.0f, l.background.b / 255.0f };
+    float ac[3] = { l.accent.r / 255.0f, l.accent.g / 255.0f, l.accent.b / 255.0f };
+    DrawPrefsSettingRowBegin("Background colour");
+    if (ImGui::ColorEdit3("##bg", bg, ImGuiColorEditFlags_NoInputs)) {
+        l.background = Color{ (unsigned char)(bg[0] * 255.0f + 0.5f), (unsigned char)(bg[1] * 255.0f + 0.5f), (unsigned char)(bg[2] * 255.0f + 0.5f), 255 };
+        changed = true;
+    }
+    DrawPrefsSettingRowBegin("Accent colour (bar, percentage)");
+    if (ImGui::ColorEdit3("##ac", ac, ImGuiColorEditFlags_NoInputs)) {
+        l.accent = Color{ (unsigned char)(ac[0] * 255.0f + 0.5f), (unsigned char)(ac[1] * 255.0f + 0.5f), (unsigned char)(ac[2] * 255.0f + 0.5f), 255 };
+        changed = true;
+    }
+    ImGui::EndDisabled();
+
+    // A small picture of the result.
+    {
+        const ImVec2 size(360.0f, 150.0f);
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+        ImGui::Indent(8.0f);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(size);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const auto col = [](Color c) { return IM_COL32(c.r, c.g, c.b, 255); };
+        dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), col(l.background), 6.0f);
+        if (!l.enabled) {
+            dl->AddText(ImVec2(p.x + 12.0f, p.y + 12.0f), IM_COL32(150, 150, 150, 255), "(no loading screen)");
+        } else {
+            const bool light = (l.background.r * 0.3f + l.background.g * 0.59f + l.background.b * 0.11f) > 140.0f;
+            const ImU32 ink = light ? IM_COL32(20, 22, 26, 255) : IM_COL32(235, 240, 245, 255);
+            std::string title = l.title;
+            if (const size_t at = title.find("{name}"); at != std::string::npos) title.replace(at, 6, "MyProject");
+            float y = p.y + (l.showLogs ? 10.0f : 28.0f);
+            const auto centred = [&](const std::string& s, ImU32 c) {
+                dl->AddText(ImVec2(p.x + (size.x - ImGui::CalcTextSize(s.c_str()).x) * 0.5f, y), c, s.c_str());
+                y += ImGui::GetTextLineHeight() + 6.0f;
+            };
+            centred(title, ink);
+            if (l.showPercent) centred("64%", col(l.accent));
+            if (l.showBar) {
+                dl->AddRectFilled(ImVec2(p.x + 60.0f, y), ImVec2(p.x + size.x - 60.0f, y + 5.0f), IM_COL32(128, 128, 128, 60), 3.0f);
+                dl->AddRectFilled(ImVec2(p.x + 60.0f, y), ImVec2(p.x + 60.0f + (size.x - 120.0f) * 0.64f, y + 5.0f), col(l.accent), 3.0f);
+                y += 13.0f;
+            }
+            if (l.showStage) centred("Loading objects (256 / 400)", IM_COL32(150, 150, 150, 255));
+            if (l.showLogs) {
+                const float ly = std::max(y + 4.0f, p.y + size.y - 50.0f);
+                dl->AddRectFilled(ImVec2(p.x + 20.0f, ly), ImVec2(p.x + size.x - 20.0f, p.y + size.y - 8.0f), IM_COL32(0, 0, 0, 70), 4.0f);
+                dl->AddText(ImVec2(p.x + 28.0f, ly + 4.0f), IM_COL32(150, 150, 150, 255), "[terrain] loaded 1 terrain(s)");
+                dl->AddText(ImVec2(p.x + 28.0f, ly + 20.0f), ink, "[city] loaded 1 city(ies)");
+            }
+        }
+        ImGui::Unindent(8.0f);
+    }
+    ImGui::PopID();
+}
+
+static void DrawPreferencesLoadingTab() {
+    loading::Settings& s = loading::GetSettings();
+    bool changed = false;
+    static int which = 0;       // 0 = the editor's, 1 = the player's
+    ImGui::Indent(8.0f);
+    if (ImGui::RadioButton("Editor", which == 0)) which = 0;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Player", which == 1)) which = 1;
+    ImGui::Unindent(8.0f);
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    DrawLoadingLookEditor(which == 0 ? "editor" : "player", which == 0 ? s.editor : s.player, changed);
+    if (changed) loading::Save();
+
+    if (which == 1) {
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::Indent(8.0f);
+        const std::string folder = project::GetCurrentProject().path;
+        if (!folder.empty()) {
+            const bool has = loading::HasProjectOverride(folder);
+            if (ImGui::Button("Use this look for this project only")) loading::SaveProjectOverride(folder);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!has);
+            if (ImGui::Button("Remove the project's own look")) loading::RemoveProjectOverride(folder);
+            ImGui::EndDisabled();
+            ImGui::TextDisabled(has ? "This project has its own player loading screen (loading.cfg in its folder); it wins over these settings."
+                                    : "The player uses these settings. Saving them for the project makes the game carry its own loading screen.");
+        }
+        ImGui::TextDisabled("Command line: --noloading, --loading, --loadinglogs");
+        ImGui::Unindent(8.0f);
+    }
+}
+
+void DrawImGuiPreferencesWindow() {
+    if (!g_showPreferences) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Dim everything behind the panel so it reads as an actual dialog instead
+    // of a rectangle floating over the viewport.
+    ImGui::GetBackgroundDrawList()->AddRectFilled(
+        ImVec2(0.0f, 0.0f), io.DisplaySize, IM_COL32(0, 0, 0, 140));
+
+    ImVec2 winSize(std::min(1000.0f, io.DisplaySize.x - 80.0f), std::min(560.0f, io.DisplaySize.y - 80.0f));
+    ImVec2 winPos((io.DisplaySize.x - winSize.x) * 0.5f, (io.DisplaySize.y - winSize.y) * 0.5f);
+
+    ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
+    ImGui::SetNextWindowPos(winPos, ImGuiCond_Always);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::AccentVec(0.35f));
+    if (!ImGui::Begin("##Preferences", nullptr, flags)) {
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(3);
+        return;
+    }
+
+    // Header strip - its own filled background + bottom separator so it reads
+    // as a title bar rather than a bare gap with a stray X in it.
+    const float headerHeight = 40.0f;
+    ImVec2 headerP0 = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(headerP0, ImVec2(headerP0.x + winSize.x, headerP0.y + headerHeight),
+                       IM_COL32(20, 22, 27, 255), 8.0f, ImDrawFlags_RoundCornersTop);
+    dl->AddLine(ImVec2(headerP0.x, headerP0.y + headerHeight), ImVec2(headerP0.x + winSize.x, headerP0.y + headerHeight),
+                IM_COL32(255, 255, 255, 20));
+
+    ImGui::BeginChild("##PrefsHeader", ImVec2(0.0f, headerHeight), false);
+    ImGui::SetCursorPos(ImVec2(14.0f, (headerHeight - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::TextUnformatted("Preferences");
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - headerHeight, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.2f, 0.2f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.88f, 1.0f));
+    if (ImGui::Button("X", ImVec2(headerHeight, headerHeight))) {
+        g_showPreferences = false;
+    }
+    ImGui::PopStyleColor(4);
+    ImGui::EndChild();
+
+    // Left sidebar
+    ImGui::BeginChild("##PrefsSidebar", ImVec2(200.0f, 0.0f), false);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::Indent(10.0f);
+
+    DrawPrefsSidebarButton("General", 0);
+    DrawPrefsSidebarButton("API Keys (Coming Soon)", 1, /*enabled=*/false);
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    DrawPrefsSidebarButton("Scripting", 2);
+    DrawPrefsSidebarButton("Plugins", 3);
+    DrawPrefsSidebarButton("Rendering", 4);
+    DrawPrefsSidebarButton("Loading", 6);
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    DrawPrefsSidebarButton("Appearance", 5);
+
+    ImGui::Unindent(10.0f);
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0f, 0.0f);
+
+    // Vertical divider between sidebar and content
+    {
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(p0, ImVec2(p0.x, p0.y + ImGui::GetContentRegionAvail().y),
+                                            IM_COL32(255, 255, 255, 20));
+        ImGui::Dummy(ImVec2(1.0f, 0.0f));
+        ImGui::SameLine(0.0f, 0.0f);
+    }
+
+    // Right content area
+    ImGui::BeginChild("##PrefsContent", ImVec2(0.0f, 0.0f), false);
+    ImGui::Dummy(ImVec2(0.0f, 16.0f));
+    switch (g_prefsCategory) {
+        case 0: DrawPreferencesGeneralTab(); break;
+        case 4: DrawPreferencesRenderingTab(); break;
+        case 6: DrawPreferencesLoadingTab(); break;
+        default: ImGui::TextDisabled("Nothing to configure here yet."); break;
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+    ImGui::PopStyleColor(); // border
+    ImGui::PopStyleVar(3); // rounding, border size, outer padding
+}
+
+void ShowPreferences(bool show, int category) {
+    g_showPreferences = show;
+    if (show) g_prefsCategory = category;
+}
+
+} // namespace ui
