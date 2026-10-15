@@ -84,6 +84,11 @@ add_executable(audio_test audio_test.cpp)
 target_link_libraries(audio_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME audio COMMAND audio_test)
 
+# Imported sounds: copied into assets/Audio once (deduplicated by content), garbage-collected on save. No window.
+add_executable(audio_assets_test audio_assets_test.cpp)
+target_link_libraries(audio_assets_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME audio_assets COMMAND audio_assets_test)
+
 # Export for Windows from a prebuilt player (stand-in PE executable). No window.
 add_executable(export_windows_test export_windows_test.cpp)
 target_link_libraries(export_windows_test PRIVATE FlyEngineCore FlyRL)

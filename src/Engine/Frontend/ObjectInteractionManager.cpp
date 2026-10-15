@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/AudioAssets.hpp"
 #include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
 #include <unordered_set>
 #include "../../../include/Engine/Frontend/ObjectInteractionManager.hpp"
@@ -2043,4 +2044,5 @@ void ObjectInteractionManager::CleanupPendingImports() {
     // Imports are temporary until saved: anything not committed is discarded.
     textureManager::DiscardPendingImports();
     scriptLauncher::DiscardPendingScripts();
+    audioassets::DiscardPending(project::GetCurrentProject().path);
 }

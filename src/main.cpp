@@ -21,6 +21,7 @@
 
 #include <array>
 #include <exception>
+#include "../include/Engine/Backend/AudioAssets.hpp"
 #include <memory>
 #include <vector>
 #include <filesystem>
@@ -163,6 +164,7 @@ void RunEditor(const project::Info& info) {
     textureManager::Init(info.path);
     textureManager::DiscardPendingImports();   // imports left over from a session that never saved
     scriptLauncher::DiscardPendingScripts();   // so are new script files
+    audioassets::DiscardPending(info.path);    // ...and sounds imported into the project
 
     loading::Range(0.42f, 0.92f);
     terrain::Terrain* loadedTerrain = nullptr;
@@ -213,6 +215,7 @@ void RunEditor(const project::Info& info) {
     // project directory is still known (Shutdown forgets it).
     textureManager::DiscardPendingImports();
     scriptLauncher::DiscardPendingScripts();
+    audioassets::DiscardPending(info.path);
     textureManager::Shutdown();
 }
 

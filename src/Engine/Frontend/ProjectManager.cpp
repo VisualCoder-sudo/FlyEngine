@@ -13,6 +13,7 @@
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Vfs.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
+#include "../../../include/Engine/Backend/AudioAssets.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/Graphics.hpp"
@@ -748,7 +749,14 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     std::ofstream out(projectFile, std::ios::trunc);
     if (!out.is_open()) return false;
     WriteProjectHeader(out, fields);
-    return SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
+    const bool saved = SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
+    out.close();
+    if (saved) {
+        // The scene is on disk, so what it refers to is settled: imported sounds are permanent now, and the ones
+        // nothing mentions any more go.
+        for (const std::string& gone : audioassets::Commit(projectFolder)) ui::LogAlways("[audio] removed unused %s", gone.c_str());
+    }
+    return saved;
 }
 
 std::string SaveProjectFileTemp(const std::string& projectFolder, const std::vector<ScatteredObject*>& objects,

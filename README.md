@@ -328,6 +328,12 @@ The engine side is `include/Engine/Audio.hpp` (`audio::Play`, `PlayAt` for a sou
 pitch, pan), mixed by [miniaudio](https://github.com/mackron/miniaudio). The sound device opens on the first sound; a
 machine without one just plays nothing. Exported games read their sounds from the archive.
 
+Choosing a sound from outside the project in a Play Sound node copies it into `assets/Audio/` (`audioassets` in
+`include/Engine/Backend/AudioAssets.hpp`). The same sound is stored once: importing identical content again, under any
+name, reuses the copy. Like model imports, a new copy is pending until you save the project; closing without saving
+deletes it. Every save also deletes imported sounds that nothing in the project (the scene, your C++ scripts) mentions any
+more. Only files the engine imported itself are ever deleted; sounds you put in the folder by hand are left alone.
+
 ## Shaders
 
 `shaders/*.glsl` are written in sokol-shdc's annotated GLSL and compiled at

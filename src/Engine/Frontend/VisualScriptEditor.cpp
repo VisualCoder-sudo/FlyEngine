@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/AudioAssets.hpp"
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
@@ -783,8 +784,20 @@ void DrawEditor(const SceneListing& scene) {
     }
     std::string pickedSound;   // the system file dialog answers some frames after it was opened
     if (g_soundNode && platform::PollDialogResult({ platform::DialogPurpose::PickSound }, pickedSound)) {
-        if (!pickedSound.empty())
-            if (Node* sn = Find(g_soundNode)) sn->target = RelativeToProject(scene.projectDir, pickedSound);
+        if (!pickedSound.empty()) {
+            if (Node* sn = Find(g_soundNode)) {
+                // A sound from outside the project is copied in (once: the same file again reuses the copy).
+                const audioassets::ImportResult imp = audioassets::Import(scene.projectDir, pickedSound);
+                if (imp.ok) {
+                    sn->target = imp.rel;
+                    if (imp.reused) ui::LogAlways("[audio] using %s (already in the project)", imp.rel.c_str());
+                    else ui::LogAlways("[audio] imported %s", imp.rel.c_str());
+                } else {
+                    if (!scene.projectDir.empty()) ui::LogAlways("[audio] import failed: %s", imp.error.c_str());
+                    sn->target = RelativeToProject(scene.projectDir, pickedSound);
+                }
+            }
+        }
         g_soundNode = 0;
     }
     if (Count() == 0) {
