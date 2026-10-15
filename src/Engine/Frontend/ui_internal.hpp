@@ -139,4 +139,118 @@ void DrawTerrainToolIcon(int kind, Rectangle ir, Color col);
 Rectangle GetTerrainPanelBounds();
 void DrawTerrainToolPanel();
 
+// ui.cpp / ui_properties.cpp
+enum FieldID {
+    FIELD_NONE = 0,
+    FIELD_POS_X, FIELD_POS_Y, FIELD_POS_Z,
+    FIELD_SIZE_W, FIELD_SIZE_H, FIELD_SIZE_L,
+    FIELD_ROT_X, FIELD_ROT_Y, FIELD_ROT_Z,
+    FIELD_ORIGIN_X, FIELD_ORIGIN_Y, FIELD_ORIGIN_Z,
+    FIELD_VEL_X, FIELD_VEL_Y, FIELD_VEL_Z,
+    FIELD_ANG_X, FIELD_ANG_Y, FIELD_ANG_Z,
+    FIELD_MASS,
+    FIELD_TRANSPARENCY,
+    FIELD_OCEAN_SPECTRUM_RESOLUTION,
+    FIELD_OCEAN_SHALLOW_R, FIELD_OCEAN_SHALLOW_G, FIELD_OCEAN_SHALLOW_B,
+    FIELD_OCEAN_DEEP_R, FIELD_OCEAN_DEEP_G, FIELD_OCEAN_DEEP_B,
+    FIELD_OCEAN_FOG_R, FIELD_OCEAN_FOG_G, FIELD_OCEAN_FOG_B,
+    FIELD_OCEAN_FRESNEL,
+    FIELD_OCEAN_FOG_DENSITY,
+    FIELD_OCEAN_SPECULAR,
+    FIELD_OCEAN_REFRACT_EN,
+    FIELD_OCEAN_REFRACT_STR,
+    FIELD_OCEAN_AUTO_RES,
+    FIELD_OCEAN_BASE_RES,
+    FIELD_OCEAN_WAVE_SPACING,
+    // Wave-collision tuning
+    FIELD_OCEAN_REFLECT,
+    FIELD_OCEAN_PILEUP,
+    FIELD_OCEAN_FORCE_GAIN,
+    FIELD_OCEAN_FORCE_BAND,
+    // Water body fields
+    FIELD_WATER_POS_X, FIELD_WATER_WATER_H, FIELD_WATER_POS_Z,
+    FIELD_WATER_SIZE_W, FIELD_WATER_SIZE_D,
+    FIELD_WATER_TRANSPARENCY,
+    FIELD_WATER_AMPLITUDE, FIELD_WATER_FREQUENCY, FIELD_WATER_SPEED, FIELD_WATER_OCTAVES,
+    FIELD_WATER_FOAM_INTENSITY, FIELD_WATER_FOAM_SCALE, FIELD_WATER_FOAM_THRESHOLD,
+    FIELD_WATER_DETAIL_INTENSITY, FIELD_WATER_DETAIL_SCALE,
+    FIELD_WATER_REFLECT_STRENGTH, FIELD_WATER_REFLECT_DISTORTION,
+    FIELD_WATER_WAKE_STRENGTH, FIELD_WATER_SPLASH_STRENGTH, FIELD_WATER_FOAM_LIFE, FIELD_WATER_SPRAY_AMOUNT
+};
+
+constexpr float kScriptPanelHeaderH = 26.0f;
+constexpr float kScriptPanelRowH = 19.0f;
+constexpr int kScriptPanelMaxRows = 7;
+
+extern FieldID g_activeField;
+extern Rectangle g_activeFieldRect;
+extern int g_activeSlider;
+extern bool g_angularVelocityOpen;
+extern Rectangle g_collisionPopupAnchor;
+extern bool g_collisionPopupOpen;
+extern double g_collisionPopupOpenTime;
+extern Color* g_color;
+extern float g_colorPickerAnchorY;
+extern int g_cursorPos;
+extern Texture2D g_deleteIcon;
+extern bool g_generalOpen;
+extern Vector3 g_hsv;
+extern bool g_linearVelocityOpen;
+extern bool g_mouseDrag;
+extern Vector3* g_origin;
+extern bool g_originOpen;
+extern bool g_playActive;
+extern Vector3* g_pos;
+extern bool g_positionOpen;
+extern Rectangle g_presetDropdownHeaderRect;
+extern std::vector<std::string> g_presetDropdownItems;
+extern bool g_presetDropdownItemsCached;
+extern double g_presetDropdownLastRefresh;
+extern std::vector<std::string> g_presetDropdownListItems;
+extern bool g_presetDropdownListPending;
+extern std::vector<std::string> g_presetDropdownListPresets;
+extern std::string g_presetDropdownListProjectDir;
+extern Rectangle g_presetDropdownListRect;
+extern bool g_presetDropdownOpen;
+extern std::string g_presetDropdownProjectDir;
+extern int g_presetDropdownSelected;
+extern float g_propertiesScrollY;
+extern Vector3* g_rotation;
+extern bool g_rotationOpen;
+extern ScatteredObject* g_selectedObject;
+extern WaterBody* g_selectedWater;
+extern int g_selStart;
+extern bool g_showColorPickerWindow;
+extern phys::Simulation* g_simulation;
+extern Vector3* g_size;
+extern bool g_sizeOpen;
+extern char g_textBuffer[32];
+extern bool g_waterDetailOpen;
+extern bool g_waterFoamOpen;
+extern bool g_waterInteractOpen;
+extern bool g_waterNoiseOpen;
+extern bool g_waterReflectOpen;
+extern bool g_waterWakeOpen;
+extern ScriptBuildState g_scriptBuildState;
+extern std::vector<ScriptDiagnostic> g_scriptDiagnostics;
+extern double g_scriptBuildStarted;
+extern bool g_scriptPanelDismissed;
+extern int g_scriptPanelScroll;
+
+void DrawCenteredTextArial(const char* text, const Rectangle& rec, float fontSize, Color color);
+void GetColorPickerWindowBounds(Rectangle& popupRec);
+Rectangle GetPropertiesPanelBounds();
+Rectangle GetScriptPanelBounds();
+void MarkIbeam();
+bool TextEditKeys(char* buf, int bufSize, int& cursor, int& sel, bool& commit);
+void TextEditMouse(const char* buf, int& cursor, int& sel, Rectangle rec,
+                   float textStartX, float fontSize, bool active);
+void DrawTextSel(const char* buf, int cursor, int sel, float textStartX,
+                 float y, float height, float fontSize, Color color);
+std::string FitTextToWidth(const std::string& text, float fontSize, float maxWidth);
+void DrawCollisionPopup();
+void DrawColorPickerPopupWindow();
+void DrawPropertiesPanel();
+void DrawScriptErrorPanel();
+
 } // namespace ui
