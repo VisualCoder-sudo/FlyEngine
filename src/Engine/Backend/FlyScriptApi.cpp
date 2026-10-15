@@ -7,6 +7,7 @@
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Backend/VisualScript.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -413,6 +414,53 @@ void FlyNative_SnippetSetOutput_Impl(const char* snippet, int pin, const char* v
     if (ScriptRuntime* rt = ActiveRuntime(); rt && snippet) rt->SetSnippetOutput(snippet, pin, value ? value : "");
 }
 
+// ---- what the Visual Script nodes do ----
+
+namespace {
+std::string VecText(float x, float y, float z) {
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "(%.9g, %.9g, %.9g)", x, y, z);
+    return buf;
+}
+}
+
+void FlyNative_DestroyObject_Impl(unsigned long long h) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (auto* obj = Resolve(h); obj && rt) rt->DestroyObject(obj);
+}
+unsigned long long FlyNative_CloneObject_Impl(unsigned long long h) {
+    ScriptRuntime* rt = ActiveRuntime();
+    auto* obj = Resolve(h);
+    return (rt && obj) ? MakeHandle(rt->CloneObject(obj)) : 0;
+}
+const char* FlyNative_GetName_Impl(unsigned long long h) {
+    static thread_local std::string name;
+    auto* obj = Resolve(h);
+    name = obj ? obj->GetName() : std::string();
+    return name.c_str();
+}
+void FlyNative_SetName_Impl(unsigned long long h, const char* name) {
+    if (auto* obj = Resolve(h); obj && name) obj->SetName(name);
+}
+short FlyNative_AddForce_Impl(unsigned long long h, float x, float y, float z, bool impulse) {
+    ScriptRuntime* rt = ActiveRuntime();
+    auto* obj = Resolve(h);
+    std::string err;
+    return (rt && obj && rt->AddForce(obj, VecText(x, y, z), impulse, err)) ? 1 : 0;
+}
+const char* FlyNative_Raycast_Impl(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance) {
+    static thread_local std::string hit;
+    hit.clear();
+    if (ScriptRuntime* rt = ActiveRuntime()) {
+        std::string err;
+        hit = rt->RayCastName(VecText(ox, oy, oz), VecText(dx, dy, dz), maxDistance, err);
+    }
+    return hit.c_str();
+}
+void FlyNative_PlaySound_Impl(const char* file, float volume) {
+    if (ScriptRuntime* rt = ActiveRuntime(); rt && file) vscript::PlaySoundFile(*rt, file, volume);
+}
+
 } // namespace impl
 
 extern "C" {
@@ -564,6 +612,24 @@ FLY_API const char* FlyNative_SnippetGetInput(const char* snippet, int pin) {
 FLY_API void FlyNative_SnippetSetOutput(const char* snippet, int pin, const char* value) {
     FLY_TRY { impl::FlyNative_SnippetSetOutput_Impl(snippet, pin, value); } FLY_CATCH()
 }
+
+FLY_API void FlyNative_DestroyObject(unsigned long long h) { FLY_TRY { impl::FlyNative_DestroyObject_Impl(h); } FLY_CATCH() }
+FLY_API unsigned long long FlyNative_CloneObject(unsigned long long h) { FLY_TRY { return impl::FlyNative_CloneObject_Impl(h); } FLY_CATCH(return 0;) }
+FLY_API const char* FlyNative_GetName(unsigned long long h) { FLY_TRY { return impl::FlyNative_GetName_Impl(h); } FLY_CATCH(return "";) }
+FLY_API void FlyNative_SetName(unsigned long long h, const char* name) { FLY_TRY { impl::FlyNative_SetName_Impl(h, name); } FLY_CATCH() }
+FLY_API short FlyNative_AddForce(unsigned long long h, float x, float y, float z) { FLY_TRY { return impl::FlyNative_AddForce_Impl(h, x, y, z, false); } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_AddImpulse(unsigned long long h, float x, float y, float z) { FLY_TRY { return impl::FlyNative_AddForce_Impl(h, x, y, z, true); } FLY_CATCH(return 0;) }
+FLY_API const char* FlyNative_Raycast(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance) {
+    FLY_TRY { return impl::FlyNative_Raycast_Impl(ox, oy, oz, dx, dy, dz, maxDistance); } FLY_CATCH(return "";)
+}
+FLY_API short FlyNative_KeyDown(const char* keyName) { FLY_TRY { return keyName && vscript::IsKeyHeld(keyName) ? 1 : 0; } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_KeyPressed(const char* keyName) { FLY_TRY { return keyName && vscript::WasKeyPressed(keyName) ? 1 : 0; } FLY_CATCH(return 0;) }
+FLY_API void FlyNative_PlaySound(const char* file, float volume) { FLY_TRY { impl::FlyNative_PlaySound_Impl(file, volume); } FLY_CATCH() }
+FLY_API void FlyNative_SetMasterVolume(float volume) { FLY_TRY { vscript::SetMasterVolumeLevel(volume); } FLY_CATCH() }
+FLY_API void FlyNative_ShowText(const char* text, const char* position, float seconds) {
+    FLY_TRY { vscript::ShowText(text ? text : "", position ? position : "", seconds); } FLY_CATCH()
+}
+FLY_API float FlyNative_TimeSincePlay(void) { FLY_TRY { return vscript::TimeSincePlay(); } FLY_CATCH(return 0.0f;) }
 
 // FindObject and GetSelf
 FLY_API unsigned long long FlyNative_FindObject(const char* name) {

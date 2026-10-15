@@ -50,6 +50,48 @@ void BeginChooseSceneOpenPath(const std::string& startDir) {
                                   startDir, SceneFilters());
 }
 
+namespace {
+// One object's record, exactly as the scene file stores it. The undo/play snapshots use it too, so a property
+// added to the scene file is in every snapshot automatically.
+void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::string& baseDir) {
+    const Vector3& pos = *object->GetPosPtr();
+    const Vector3& size = *object->GetSizePtr();
+    const Vector3& rotation = *object->GetRotationPtr();
+    const Vector3& origin = *object->GetOriginPtr();
+    const Color& color = *object->GetColorPtr();
+    const Vector3& velocity = object->GetVelocity();
+    const Vector3& angularVelocity = object->GetAngularVelocity();
+    file << static_cast<int>(object->GetShapeType()) << ' ' << std::quoted(object->GetName()) << ' '
+         << pos.x << ' ' << pos.y << ' ' << pos.z << ' ' << size.x << ' ' << size.y << ' ' << size.z << ' '
+         << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
+         << origin.x << ' ' << origin.y << ' ' << origin.z << ' '
+         << static_cast<int>(color.r) << ' ' << static_cast<int>(color.g) << ' ' << static_cast<int>(color.b) << ' ' << static_cast<int>(color.a) << ' '
+         << (int)object->anchored << ' '
+         << velocity.x << ' ' << velocity.y << ' ' << velocity.z << ' '
+         << angularVelocity.x << ' ' << angularVelocity.y << ' ' << angularVelocity.z << ' '
+         << object->GetStoredMass() << ' '
+         << (int)object->runOnPlay << ' ' << object->script.size() << '\n';
+    if (!object->script.empty()) {
+        file.write(object->script.data(), (std::streamsize)object->script.size());
+    }
+    file << '\n';
+
+    // v8: imported mesh, stored relative to the project folder (or
+    // absolute when the scene was never saved inside one).
+    file << std::quoted(PathRelativeTo(object->GetModelPath(), baseDir)) << '\n';
+
+    // v9: collision settings.
+    // v10: transparency (0 = visible, 1 = invisible).
+    // v11: texture path (project-relative).
+    file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath());
+    {   // v22: water interactions
+        const auto& wi = object->waterInteraction;
+        file << ' ' << (int)wi.floats << ' ' << (int)wi.foam << ' ' << (int)wi.splash;
+    }
+    file << '\n';
+}
+} // namespace
+
 bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& objects,
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
@@ -57,41 +99,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
     file << "SIMPLE_ENGINE_BUILD 24\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
-        const Vector3& pos = *object->GetPosPtr();
-        const Vector3& size = *object->GetSizePtr();
-        const Vector3& rotation = *object->GetRotationPtr();
-        const Vector3& origin = *object->GetOriginPtr();
-        const Color& color = *object->GetColorPtr();
-        const Vector3& velocity = object->GetVelocity();
-        const Vector3& angularVelocity = object->GetAngularVelocity();
-        file << static_cast<int>(object->GetShapeType()) << ' ' << std::quoted(object->GetName()) << ' '
-             << pos.x << ' ' << pos.y << ' ' << pos.z << ' ' << size.x << ' ' << size.y << ' ' << size.z << ' '
-             << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
-             << origin.x << ' ' << origin.y << ' ' << origin.z << ' '
-             << static_cast<int>(color.r) << ' ' << static_cast<int>(color.g) << ' ' << static_cast<int>(color.b) << ' ' << static_cast<int>(color.a) << ' '
-             << (int)object->anchored << ' '
-             << velocity.x << ' ' << velocity.y << ' ' << velocity.z << ' '
-             << angularVelocity.x << ' ' << angularVelocity.y << ' ' << angularVelocity.z << ' '
-             << object->GetStoredMass() << ' '
-             << (int)object->runOnPlay << ' ' << object->script.size() << '\n';
-        if (!object->script.empty()) {
-            file.write(object->script.data(), (std::streamsize)object->script.size());
-        }
-        file << '\n';
-
-        // v8: imported mesh, stored relative to the project folder (or
-        // absolute when the scene was never saved inside one).
-        file << std::quoted(PathRelativeTo(object->GetModelPath(), baseDir)) << '\n';
-
-        // v9: collision settings.
-        // v10: transparency (0 = visible, 1 = invisible).
-        // v11: texture path (project-relative).
-        file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath());
-        {   // v22: water interactions
-            const auto& wi = object->waterInteraction;
-            file << ' ' << (int)wi.floats << ' ' << (int)wi.foam << ' ' << (int)wi.splash;
-        }
-        file << '\n';
+        WriteObjectRecord(file, object, baseDir);
     }
 
     // Standalone scripts (the explorer "Scripts" group). Each entry carries a
@@ -247,6 +255,10 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
                      const std::vector<std::unique_ptr<ModelGroup>>& models,
                      const std::string& path,
                      terrain::Terrain* terrain) {
+    if (ui::IsPlayActive()) {   // see SaveProjectFile
+        ui::LogAlways("[Play] Not saving: the project is read-only while Play is running.");
+        return false;
+    }
     textureManager::CommitAssets(objects);   // see SaveProjectFile
     scriptLauncher::CommitPendingScripts();
     std::ofstream file(path, std::ios::trunc);
@@ -277,6 +289,135 @@ void AttachDeferredModels(std::vector<DeferredModel>& deferred) {
     }
     deferred.clear();
 }
+
+// Reads one object record written by WriteObjectRecord. Meshes are queued in `deferred`, attached by the caller.
+bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDir,
+                      std::unique_ptr<ScatteredObject>& out, std::vector<DeferredModel>& deferredModels) {
+    int shapeValue, red, green, blue, alpha;
+    std::string name;
+    Vector3 pos, size, rotation;
+    if (!(file >> shapeValue >> std::quoted(name) >> pos.x >> pos.y >> pos.z >> size.x >> size.y >> size.z
+          >> rotation.x >> rotation.y >> rotation.z)) return false;
+    if (shapeValue < static_cast<int>(ShapeType::Cube) || shapeValue > static_cast<int>(ShapeType::Wedge)) return false;
+
+    // v5 added the Origin (pivot) offset; earlier files pivot from the center.
+    Vector3 origin = { 0.0f, 0.0f, 0.0f };
+    if (version >= 5) {
+        if (!(file >> origin.x >> origin.y >> origin.z)) return false;
+    }
+
+    if (!(file >> red >> green >> blue >> alpha)) return false;
+    auto object = std::make_unique<ScatteredObject>(pos, size, Color{(unsigned char)red, (unsigned char)green, (unsigned char)blue, (unsigned char)alpha}, static_cast<ShapeType>(shapeValue));
+    object->SetName(name);
+    *object->GetRotationPtr() = rotation;
+    *object->GetOriginPtr() = origin;
+
+    // v1/v2 files predate the Anchored flag, so objects load unanchored
+    // (the physics behavior those scenes were saved with).
+    if (version >= 3) {
+        int anchored = 0;
+        if (!(file >> anchored)) return false;
+        object->anchored = (anchored != 0);
+    } else {
+        object->anchored = false;
+    }
+
+    if (version >= 4) {
+        Vector3 velocity, angularVelocity;
+        if (!(file >> velocity.x >> velocity.y >> velocity.z
+              >> angularVelocity.x >> angularVelocity.y >> angularVelocity.z)) return false;
+        object->SetVelocity(velocity);
+        object->SetAngularVelocity(angularVelocity);
+    }
+
+    // v6 added the Mass override (0 = auto, derived from size).
+    if (version >= 6) {
+        float mass = 0.0f;
+        if (!(file >> mass)) return false;
+        if (mass > 0.0f) object->SetMass(mass);
+    }
+
+    if (version >= 2) {
+        int runOnPlay = 1;
+        size_t scriptLen = 0;
+        if (!(file >> runOnPlay >> scriptLen)) return false;
+        object->runOnPlay = (runOnPlay != 0);
+        file.ignore(); // newline after the length
+        std::string script;
+        if (scriptLen > 0) {
+            script.resize(scriptLen);
+            file.read(&script[0], (std::streamsize)scriptLen);
+            if (!file) return false;
+        }
+        object->script = std::move(script);
+    }
+
+    // v8 added the imported-mesh path (a quoted token after the script
+    // block). Old scenes simply have no such token and load as primitives.
+    if (version >= 8) {
+        std::string storedModel;
+        if (!(file >> std::quoted(storedModel))) return false;
+        if (!storedModel.empty()) {
+            std::string resolved = ResolveStoredAssetPath(storedModel, baseDir);
+            ScatteredObject::PrefetchModel(resolved);
+            deferredModels.push_back({ object.get(), resolved, false, 0 });
+        }
+    }
+
+    // v9 added the collision settings (canCollide + accuracy). Older files
+    // default to full collisions with the Default accuracy.
+    if (version >= 9) {
+        int canCollide = 1, accuracy = static_cast<int>(pcoll::CollisionAccuracy::Default);
+        if (!(file >> canCollide >> accuracy)) return false;
+        if (canCollide < 0 || canCollide > 1) return false;
+        if (accuracy < static_cast<int>(pcoll::CollisionAccuracy::Box) ||
+            accuracy > static_cast<int>(pcoll::CollisionAccuracy::Precise)) return false;
+        object->canCollide = (canCollide != 0);
+        if (!deferredModels.empty() && deferredModels.back().object == object.get()) {
+            deferredModels.back().hasAccuracy = true;   // applied after the mesh is attached
+            deferredModels.back().accuracy = accuracy;
+        } else {
+            object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
+        }
+    }
+
+    // v10 added transparency (0 = visible, 1 = invisible). Default 0 for older scenes.
+    if (version >= 10) {
+        float transparency = 0.0f;
+        if (!(file >> transparency)) return false;
+        if (transparency < 0.0f) transparency = 0.0f;
+        if (transparency > 1.0f) transparency = 1.0f;
+        object->SetTransparency(transparency);
+    }
+
+    // v11 added texture path (project-relative). Default empty for older scenes.
+    if (version >= 11) {
+        std::string texturePath;
+        if (!(file >> std::quoted(texturePath))) return false;
+        if (!texturePath.empty()) {
+            object->SetTexturePath(texturePath, baseDir);
+        }
+    }
+
+    // v21 stored boat parameters (feature removed): read and discard.
+    if (version == 21) {
+        int en = 0, pc = 1;
+        float thrust, steering, keel, planeSpeed;
+        if (!(file >> en >> pc >> thrust >> steering >> keel >> planeSpeed)) return false;
+    }
+    // v22 added water interactions.
+    if (version >= 22) {
+        int fl = 1, fo = 1, sp = 1;
+        if (!(file >> fl >> fo >> sp)) return false;
+        object->waterInteraction.floats = (fl != 0);
+        object->waterInteraction.foam   = (fo != 0);
+        object->waterInteraction.splash = (sp != 0);
+    }
+
+    out = std::move(object);
+    return true;
+}
+
 } // namespace
 
 bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<ScatteredObject*>& objects,
@@ -304,127 +445,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             std::snprintf(stage, sizeof stage, "Loading objects (%zu / %zu)", i, count);
             loading::Progress(0.55f * (float)i / (float)std::max<size_t>(count, 1), stage);
         }
-        int shapeValue, red, green, blue, alpha;
-        std::string name;
-        Vector3 pos, size, rotation;
-        if (!(file >> shapeValue >> std::quoted(name) >> pos.x >> pos.y >> pos.z >> size.x >> size.y >> size.z
-              >> rotation.x >> rotation.y >> rotation.z)) return false;
-        if (shapeValue < static_cast<int>(ShapeType::Cube) || shapeValue > static_cast<int>(ShapeType::Wedge)) return false;
-
-        // v5 added the Origin (pivot) offset; earlier files pivot from the center.
-        Vector3 origin = { 0.0f, 0.0f, 0.0f };
-        if (version >= 5) {
-            if (!(file >> origin.x >> origin.y >> origin.z)) return false;
-        }
-
-        if (!(file >> red >> green >> blue >> alpha)) return false;
-        auto object = std::make_unique<ScatteredObject>(pos, size, Color{(unsigned char)red, (unsigned char)green, (unsigned char)blue, (unsigned char)alpha}, static_cast<ShapeType>(shapeValue));
-        object->SetName(name);
-        *object->GetRotationPtr() = rotation;
-        *object->GetOriginPtr() = origin;
-
-        // v1/v2 files predate the Anchored flag, so objects load unanchored
-        // (the physics behavior those scenes were saved with).
-        if (version >= 3) {
-            int anchored = 0;
-            if (!(file >> anchored)) return false;
-            object->anchored = (anchored != 0);
-        } else {
-            object->anchored = false;
-        }
-
-        if (version >= 4) {
-            Vector3 velocity, angularVelocity;
-            if (!(file >> velocity.x >> velocity.y >> velocity.z
-                  >> angularVelocity.x >> angularVelocity.y >> angularVelocity.z)) return false;
-            object->SetVelocity(velocity);
-            object->SetAngularVelocity(angularVelocity);
-        }
-
-        // v6 added the Mass override (0 = auto, derived from size).
-        if (version >= 6) {
-            float mass = 0.0f;
-            if (!(file >> mass)) return false;
-            if (mass > 0.0f) object->SetMass(mass);
-        }
-
-        if (version >= 2) {
-            int runOnPlay = 1;
-            size_t scriptLen = 0;
-            if (!(file >> runOnPlay >> scriptLen)) return false;
-            object->runOnPlay = (runOnPlay != 0);
-            file.ignore(); // newline after the length
-            std::string script;
-            if (scriptLen > 0) {
-                script.resize(scriptLen);
-                file.read(&script[0], (std::streamsize)scriptLen);
-                if (!file) return false;
-            }
-            object->script = std::move(script);
-        }
-
-        // v8 added the imported-mesh path (a quoted token after the script
-        // block). Old scenes simply have no such token and load as primitives.
-        if (version >= 8) {
-            std::string storedModel;
-            if (!(file >> std::quoted(storedModel))) return false;
-            if (!storedModel.empty()) {
-                std::string resolved = ResolveStoredAssetPath(storedModel, baseDir);
-                ScatteredObject::PrefetchModel(resolved);
-                deferredModels.push_back({ object.get(), resolved, false, 0 });
-            }
-        }
-
-        // v9 added the collision settings (canCollide + accuracy). Older files
-        // default to full collisions with the Default accuracy.
-        if (version >= 9) {
-            int canCollide = 1, accuracy = static_cast<int>(pcoll::CollisionAccuracy::Default);
-            if (!(file >> canCollide >> accuracy)) return false;
-            if (canCollide < 0 || canCollide > 1) return false;
-            if (accuracy < static_cast<int>(pcoll::CollisionAccuracy::Box) ||
-                accuracy > static_cast<int>(pcoll::CollisionAccuracy::Precise)) return false;
-            object->canCollide = (canCollide != 0);
-            if (!deferredModels.empty() && deferredModels.back().object == object.get()) {
-                deferredModels.back().hasAccuracy = true;   // applied after the mesh is attached
-                deferredModels.back().accuracy = accuracy;
-            } else {
-                object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
-            }
-        }
-
-        // v10 added transparency (0 = visible, 1 = invisible). Default 0 for older scenes.
-        if (version >= 10) {
-            float transparency = 0.0f;
-            if (!(file >> transparency)) return false;
-            if (transparency < 0.0f) transparency = 0.0f;
-            if (transparency > 1.0f) transparency = 1.0f;
-            object->SetTransparency(transparency);
-        }
-
-        // v11 added texture path (project-relative). Default empty for older scenes.
-        if (version >= 11) {
-            std::string texturePath;
-            if (!(file >> std::quoted(texturePath))) return false;
-            if (!texturePath.empty()) {
-                object->SetTexturePath(texturePath, baseDir);
-            }
-        }
-
-        // v21 stored boat parameters (feature removed): read and discard.
-        if (version == 21) {
-            int en = 0, pc = 1;
-            float thrust, steering, keel, planeSpeed;
-            if (!(file >> en >> pc >> thrust >> steering >> keel >> planeSpeed)) return false;
-        }
-        // v22 added water interactions.
-        if (version >= 22) {
-            int fl = 1, fo = 1, sp = 1;
-            if (!(file >> fl >> fo >> sp)) return false;
-            object->waterInteraction.floats = (fl != 0);
-            object->waterInteraction.foam   = (fo != 0);
-            object->waterInteraction.splash = (sp != 0);
-        }
-
+        std::unique_ptr<ScatteredObject> object;
+        if (!ReadObjectRecord(file, version, baseDir, object, deferredModels)) return false;
         loaded.push_back(std::move(object));
     }
 
@@ -844,32 +866,10 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 15\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 24\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
-        const Vector3& pos = *object->GetPosPtr();
-        const Vector3& size = *object->GetSizePtr();
-        const Vector3& rotation = *object->GetRotationPtr();
-        const Vector3& origin = *object->GetOriginPtr();
-        const Color& color = *object->GetColorPtr();
-        const Vector3& velocity = object->GetVelocity();
-        const Vector3& angularVelocity = object->GetAngularVelocity();
-        file << static_cast<int>(object->GetShapeType()) << ' ' << std::quoted(object->GetName()) << ' '
-             << pos.x << ' ' << pos.y << ' ' << pos.z << ' ' << size.x << ' ' << size.y << ' ' << size.z << ' '
-             << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
-             << origin.x << ' ' << origin.y << ' ' << origin.z << ' '
-             << static_cast<int>(color.r) << ' ' << static_cast<int>(color.g) << ' ' << static_cast<int>(color.b) << ' ' << static_cast<int>(color.a) << ' '
-             << (int)object->anchored << ' '
-             << velocity.x << ' ' << velocity.y << ' ' << velocity.z << ' '
-             << angularVelocity.x << ' ' << angularVelocity.y << ' ' << angularVelocity.z << ' '
-             << object->GetStoredMass() << ' '
-             << (int)object->runOnPlay << ' ' << object->script.size() << '\n';
-        if (!object->script.empty()) {
-            file.write(object->script.data(), (std::streamsize)object->script.size());
-        }
-        file << '\n';
-        file << std::quoted(PathRelativeTo(object->GetModelPath(), baseDir)) << '\n';
-        file << (int)object->canCollide << ' ' << static_cast<int>(object->GetCollisionAccuracy()) << ' ' << object->GetTransparency() << ' ' << std::quoted(object->GetTexturePath()) << '\n';
+        WriteObjectRecord(file, object, baseDir);
     }
 
     // Model groups, same member-index convention as the scene file.
@@ -893,6 +893,39 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
     return true;
 }
 
+std::vector<std::pair<std::string, std::string>> SnapshotObjectRecords(const std::vector<ScatteredObject*>& objects,
+                                                                        const std::string& baseDir) {
+    std::vector<std::pair<std::string, std::string>> out;
+    out.reserve(objects.size());
+    for (auto* object : objects) {
+        if (!object) continue;
+        std::ostringstream rec;
+        rec << std::setprecision(9);
+        WriteObjectRecord(rec, object, baseDir);
+        out.emplace_back(object->GetName(), rec.str());
+    }
+    return out;
+}
+
+std::vector<std::string> DiffObjectRecords(const std::vector<std::pair<std::string, std::string>>& before,
+                                           const std::vector<std::pair<std::string, std::string>>& after) {
+    // Objects are paired by name (first unused one of that name), so a created or destroyed object does not make
+    // every later one look changed.
+    std::vector<std::string> out;
+    std::vector<bool> used(after.size(), false);
+    for (const auto& b : before) {
+        size_t match = after.size();
+        for (size_t i = 0; i < after.size(); ++i)
+            if (!used[i] && after[i].first == b.first) { match = i; break; }
+        if (match == after.size()) { out.push_back("'" + b.first + "' removed"); continue; }
+        used[match] = true;
+        if (after[match].second != b.second) out.push_back("'" + b.first + "' changed");
+    }
+    for (size_t i = 0; i < after.size(); ++i)
+        if (!used[i]) out.push_back("'" + after[i].first + "' added");
+    return out;
+}
+
 bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
                             std::vector<ScatteredObject*>& objects,
                             std::vector<std::unique_ptr<ModelGroup>>& models,
@@ -900,7 +933,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 15) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 24) return false;
 
     models.clear();
 
@@ -908,102 +941,8 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
     loaded.reserve(count);
     std::vector<DeferredModel> deferredModels;
     for (size_t i = 0; i < count; ++i) {
-        int shapeValue, red, green, blue, alpha;
-        std::string name;
-        Vector3 pos, size, rotation;
-        if (!(file >> shapeValue >> std::quoted(name) >> pos.x >> pos.y >> pos.z >> size.x >> size.y >> size.z
-              >> rotation.x >> rotation.y >> rotation.z)) return false;
-        if (shapeValue < static_cast<int>(ShapeType::Cube) || shapeValue > static_cast<int>(ShapeType::Wedge)) return false;
-
-        Vector3 origin = { 0.0f, 0.0f, 0.0f };
-        if (version >= 5) {
-            if (!(file >> origin.x >> origin.y >> origin.z)) return false;
-        }
-
-        if (!(file >> red >> green >> blue >> alpha)) return false;
-        auto object = std::make_unique<ScatteredObject>(pos, size, Color{(unsigned char)red, (unsigned char)green, (unsigned char)blue, (unsigned char)alpha}, static_cast<ShapeType>(shapeValue));
-        object->SetName(name);
-        *object->GetRotationPtr() = rotation;
-        *object->GetOriginPtr() = origin;
-
-        if (version >= 3) {
-            int anchored = 0;
-            if (!(file >> anchored)) return false;
-            object->anchored = (anchored != 0);
-        } else {
-            object->anchored = false;
-        }
-
-        if (version >= 4) {
-            Vector3 velocity, angularVelocity;
-            if (!(file >> velocity.x >> velocity.y >> velocity.z
-                  >> angularVelocity.x >> angularVelocity.y >> angularVelocity.z)) return false;
-            object->SetVelocity(velocity);
-            object->SetAngularVelocity(angularVelocity);
-        }
-
-        if (version >= 6) {
-            float mass = 0.0f;
-            if (!(file >> mass)) return false;
-            if (mass > 0.0f) object->SetMass(mass);
-        }
-
-        if (version >= 2) {
-            int runOnPlay = 1;
-            size_t scriptLen = 0;
-            if (!(file >> runOnPlay >> scriptLen)) return false;
-            object->runOnPlay = (runOnPlay != 0);
-            file.ignore();
-            std::string script;
-            if (scriptLen > 0) {
-                script.resize(scriptLen);
-                file.read(&script[0], (std::streamsize)scriptLen);
-                if (!file) return false;
-            }
-            object->script = std::move(script);
-        }
-
-        if (version >= 8) {
-            std::string storedModel;
-            if (!(file >> std::quoted(storedModel))) return false;
-            if (!storedModel.empty()) {
-                std::string resolved = ResolveStoredAssetPath(storedModel, baseDir);
-                ScatteredObject::PrefetchModel(resolved);
-                deferredModels.push_back({ object.get(), resolved, false, 0 });
-            }
-        }
-
-        if (version >= 9) {
-            int canCollide = 1, accuracy = static_cast<int>(pcoll::CollisionAccuracy::Default);
-            if (!(file >> canCollide >> accuracy)) return false;
-            if (canCollide < 0 || canCollide > 1) return false;
-            if (accuracy < static_cast<int>(pcoll::CollisionAccuracy::Box) ||
-                accuracy > static_cast<int>(pcoll::CollisionAccuracy::Precise)) return false;
-            object->canCollide = (canCollide != 0);
-            if (!deferredModels.empty() && deferredModels.back().object == object.get()) {
-                deferredModels.back().hasAccuracy = true;   // applied after the mesh is attached
-                deferredModels.back().accuracy = accuracy;
-            } else {
-                object->SetCollisionAccuracy(static_cast<pcoll::CollisionAccuracy>(accuracy));
-            }
-        }
-
-        if (version >= 10) {
-            float transparency = 0.0f;
-            if (!(file >> transparency)) return false;
-            if (transparency < 0.0f) transparency = 0.0f;
-            if (transparency > 1.0f) transparency = 1.0f;
-            object->SetTransparency(transparency);
-        }
-
-        if (version >= 11) {
-            std::string texturePath;
-            if (!(file >> std::quoted(texturePath))) return false;
-            if (!texturePath.empty()) {
-                object->SetTexturePath(texturePath, baseDir);
-            }
-        }
-
+        std::unique_ptr<ScatteredObject> object;
+        if (!ReadObjectRecord(file, version, baseDir, object, deferredModels)) return false;
         loaded.push_back(std::move(object));
     }
 

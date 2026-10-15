@@ -97,6 +97,7 @@ private:
     void CapturePlaySnapshot();
     void RestorePlaySnapshot();
     std::string playSnapshotBytes;
+    std::vector<std::pair<std::string, std::string>> playSnapshotRecords;   // per object, to report and verify the restore
     std::vector<std::string> playSnapshotSel;
     bool playSnapshotValid = false;
     bool wasPlaying = false;

@@ -155,6 +155,17 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::PlaySound) n.value = "1";
     else if (type == NodeType::SetVolume) n.value = "1";
     else if (type == NodeType::ShowText) { n.value = "Hello"; n.prop = "Top Center"; n.target = "3"; }
+    else if (type == NodeType::KeyDown) n.prop = "Space";
+    else if (type == NodeType::AddToVariable) { n.target = "flag"; n.value = "1"; }
+    else if (type == NodeType::EveryN) n.value = "1";
+    else if (type == NodeType::MakeVec3) { n.target = "0"; n.value = "0"; n.prop = "0"; }
+    else if (type == NodeType::VecPart) { n.target = "(0, 0, 0)"; n.prop = "X"; }
+    else if (type == NodeType::Distance) { n.target = "(0, 0, 0)"; n.value = "(0, 0, 0)"; }
+    else if (type == NodeType::Normalize) n.target = "(0, 1, 0)";
+    else if (type == NodeType::VecMath) { n.target = "(0, 0, 0)"; n.value = "(0, 0, 0)"; n.prop = "+"; }
+    else if (type == NodeType::MathFunc) { n.target = "0"; n.value = "0"; n.prop = "Min"; }
+    else if (type == NodeType::Clamp) { n.target = "0"; n.value = "0"; n.prop = "1"; }   // value, min, max
+    else if (type == NodeType::Time) n.prop = "Delta Time";
     else if (type == NodeType::CodeSnippet) {
         n.value = "fly::Print(\"Hello from a snippet\");\n";
         n.target = "0"; n.prop = "0";   // value inputs / value outputs
@@ -177,14 +188,35 @@ void RemoveNode(int id) {
 }
 
 namespace {
-bool IsEvent(NodeType t) { return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey; }
+bool IsEvent(NodeType t) {
+    return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey || t == NodeType::EveryN;
+}
 }
 
-bool IsPure(NodeType t) { return (t >= NodeType::GetVariable && t <= NodeType::Raycast); }
+bool IsPure(NodeType t) {
+    return (t >= NodeType::GetVariable && t <= NodeType::Raycast) ||
+           (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN);
+}
 
 int SnippetInputs(const Node& n) { return std::clamp(std::atoi(n.target.c_str()), 0, 6); }
 int SnippetOutputs(const Node& n) { return std::clamp(std::atoi(n.prop.c_str()), 0, 6); }
-int DataInputCount(const Node& n) { return n.type == NodeType::CodeSnippet ? SnippetInputs(n) : DataInputCount(n.type); }
+int DataInputCount(const Node& n) {
+    if (n.type == NodeType::CodeSnippet) return SnippetInputs(n);
+    if (n.type == NodeType::Change) return 1 + static_cast<int>(n.extra.size());   // the value, then one per extra property
+    return DataInputCount(n.type);
+}
+
+void RemoveExtraProperty(int nodeId, int index) {
+    Graph& g = Active();
+    Node* n = nullptr;
+    for (Node& c : g.nodes) if (c.id == nodeId) n = &c;
+    if (!n || index < 0 || index >= static_cast<int>(n->extra.size())) return;
+    n->extra.erase(n->extra.begin() + index);
+    const int pin = index + 1;                                   // its value pin goes, the ones above it move down
+    g.dataLinks.erase(std::remove_if(g.dataLinks.begin(), g.dataLinks.end(),
+        [&](const DataLink& l) { return l.to == nodeId && l.toPin == pin; }), g.dataLinks.end());
+    for (DataLink& l : g.dataLinks) if (l.to == nodeId && l.toPin > pin) --l.toPin;
+}
 
 int DataInputCount(NodeType t) {
     switch (t) {
@@ -192,7 +224,9 @@ int DataInputCount(NodeType t) {
         case NodeType::Change: case NodeType::Not: return 1;
         case NodeType::Compare: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
         case NodeType::Mul: case NodeType::Div: case NodeType::Random: return 2;
-        case NodeType::Lerp: case NodeType::Raycast: return 3;
+        case NodeType::Lerp: case NodeType::Raycast: case NodeType::Concat: case NodeType::MakeVec3: case NodeType::Clamp: return 3;
+        case NodeType::Distance: case NodeType::VecMath: case NodeType::MathFunc: return 2;
+        case NodeType::VecPart: case NodeType::Normalize: case NodeType::AddToVariable: return 1;
         case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport:
         case NodeType::PlaySound: case NodeType::SetVolume: case NodeType::ShowText: case NodeType::SetWorld: return 1;
         default: return 0;
@@ -209,6 +243,11 @@ const char* DataInputLabel(NodeType t, int pin) {
         case NodeType::Lerp: return pin == 0 ? "A" : pin == 1 ? "B" : "T";
         case NodeType::Not: return "In";
         case NodeType::Raycast: return pin == 0 ? "Origin" : pin == 1 ? "Direction" : "Distance";
+        case NodeType::Concat: return pin == 0 ? "A" : pin == 1 ? "B" : "C";
+        case NodeType::MakeVec3: return pin == 0 ? "X" : pin == 1 ? "Y" : "Z";
+        case NodeType::Clamp: return pin == 0 ? "Value" : pin == 1 ? "Min" : "Max";
+        case NodeType::VecPart: case NodeType::Normalize: return "Vec";
+        case NodeType::AddToVariable: return "Amount";
         case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: return "Vector";
         case NodeType::PlaySound: case NodeType::SetVolume: return "Volume";
         case NodeType::ShowText: return "Text";
@@ -220,7 +259,7 @@ int OutputCount(NodeType t, const Node* n) {
     if (IsPure(t)) return 0;
     switch (t) {
         case NodeType::End: return 0;
-        case NodeType::Branch: case NodeType::Repeat: return 2;
+        case NodeType::Branch: case NodeType::Repeat: case NodeType::CreateObject: case NodeType::Clone: return 2;
         case NodeType::Sequence: return n ? std::clamp(std::atoi(n->value.c_str()), 1, 8) : 2;
         default: return 1;
     }
@@ -231,6 +270,7 @@ const char* OutputLabel(const Node& n, int pin) {
     switch (n.type) {
         case NodeType::Branch: return pin == 0 ? "True" : "False";
         case NodeType::Repeat: return pin == 0 ? "Loop" : "Done";
+        case NodeType::CreateObject: case NodeType::Clone: return pin == 0 ? "Then" : "Setup";
         case NodeType::Sequence: return kSeq[std::clamp(pin, 0, 7)];
         default: return "";
     }
@@ -281,6 +321,19 @@ const std::vector<std::string>& KeyNames() {
     static const std::vector<std::string> k = { "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right",
                                                 "1", "2", "3", "4", "Shift", "Ctrl" };
     return k;
+}
+
+const std::vector<std::string>& MathFuncNames() {
+    static const std::vector<std::string> f = { "Min", "Max", "Abs", "Round", "Floor", "Ceil", "Sqrt", "Pow", "Modulo", "Sin", "Cos" };
+    return f;
+}
+const std::vector<std::string>& VecMathOps() {
+    static const std::vector<std::string> o = { "+", "-", "scale" };
+    return o;
+}
+const std::vector<std::string>& TimeModes() {
+    static const std::vector<std::string> t = { "Delta Time", "Time Since Play" };
+    return t;
 }
 
 const std::vector<std::string>& HudPositions() {
@@ -334,9 +387,81 @@ const char* TypeName(NodeType t) {
         case NodeType::ShowText: return "Show Text";
         case NodeType::SetWorld: return "Set World Property";
         case NodeType::CodeSnippet: return "Code Snippet";
+        case NodeType::KeyDown: return "Is Key Down";
+        case NodeType::AddToVariable: return "Add To Variable";
+        case NodeType::EveryN: return "Every N Seconds";
+        case NodeType::Concat: return "Join Text";
+        case NodeType::MakeVec3: return "Make Vec3";
+        case NodeType::VecPart: return "Vec3 Part";
+        case NodeType::Distance: return "Distance";
+        case NodeType::Normalize: return "Normalize";
+        case NodeType::VecMath: return "Vec3 Math";
+        case NodeType::MathFunc: return "Math Function";
+        case NodeType::Clamp: return "Clamp";
+        case NodeType::Time: return "Time";
+        case NodeType::ObjectExists: return "Object Exists";
         default: break;
     }
     return "?";
+}
+
+const char* NodeHelp(NodeType t) {
+    switch (t) {
+        case NodeType::Start: return "Runs once when Play starts. Connect the first node of the script here.";
+        case NodeType::OnUpdate: return "Runs every frame while playing. Use it for things that must keep happening, like movement.";
+        case NodeType::OnStop: return "Runs once when Play stops, just before everything is put back.";
+        case NodeType::OnKey: return "Runs once each time the chosen key is pressed (not while it is held).";
+        case NodeType::EveryN: return "Runs again and again, every N seconds while playing. Set the seconds on the node.";
+        case NodeType::KeyDown: return "True while the chosen key is held down, false otherwise. Wire it into Branch or any true/false input.";
+        case NodeType::Branch: return "Picks a path: True runs when the condition is true, False when it is not. The condition can be wired or a variable name.";
+        case NodeType::Sequence: return "Runs its outputs one after another, top to bottom. Use it to do several things from one point.";
+        case NodeType::Delay: return "Waits the given number of seconds, then continues.";
+        case NodeType::Repeat: return "Runs the loop output the given number of times, then continues from Done.";
+        case NodeType::DoOnce: return "Lets the flow through the first time only. Later arrivals are ignored.";
+        case NodeType::End: return "Ends this chain. Several chains can end here.";
+        case NodeType::Change: return "Sets properties of an object (colour, position, size and more). Use + New Property to set several in one node.";
+        case NodeType::SetWorld: return "Sets a world setting: lighting, environment, rendering, camera or physics. Put back when Play stops.";
+        case NodeType::Print: return "Writes a message to the console log, tagged [script]. Good for checking what your script does.";
+        case NodeType::ShowText: return "Shows text on the game screen at a chosen spot, for a number of seconds (0 = until replaced). Empty text clears it.";
+        case NodeType::PlaySound: return "Plays a sound file from your project at the chosen volume (0 to 1). Needs audio support in the engine.";
+        case NodeType::SetVolume: return "Sets the master volume, 0 to 1.";
+        case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
+        case NodeType::Destroy: return "Removes an object from the scene.";
+        case NodeType::Clone: return "Makes a copy of an object. The Setup output configures the copy before it appears.";
+        case NodeType::Teleport: return "Moves an object straight to a position, as (x, y, z).";
+        case NodeType::RunScript: return "Starts the script that is attached to an object.";
+        case NodeType::ObjectExists: return "True if an object with that name is in the scene. Use it before acting on an object that may be gone.";
+        case NodeType::SetVelocity: return "Sets how fast and in which direction an object is moving, as (x, y, z).";
+        case NodeType::AddForce: return "Pushes an object gradually. Use it every frame for a steady push, like an engine.";
+        case NodeType::AddImpulse: return "Gives an object a sudden kick, once. Good for jumps and explosions.";
+        case NodeType::Raycast: return "Shoots an invisible line and gives the name of the first object it hits (empty if none).";
+        case NodeType::SetVariable: return "Stores a value under a name so other nodes can read it later.";
+        case NodeType::AddToVariable: return "Adds an amount to a variable (variable = variable + amount). A variable never set counts as 0.";
+        case NodeType::GetVariable: return "Gives the value stored under a variable name.";
+        case NodeType::GetProperty: return "Reads a property of an object, such as its position or colour.";
+        case NodeType::Add: return "A + B. Works on numbers.";
+        case NodeType::Sub: return "A - B.";
+        case NodeType::Mul: return "A x B.";
+        case NodeType::Div: return "A / B. Dividing by zero gives 0.";
+        case NodeType::MathFunc: return "A maths function: Min, Max, Abs, Round, Floor, Ceil, Sqrt, Pow, Modulo, Sin or Cos (degrees).";
+        case NodeType::Clamp: return "Keeps a value between a minimum and a maximum.";
+        case NodeType::Random: return "A random number between Min and Max, picked each time it is read.";
+        case NodeType::Lerp: return "Blends from A to B. T = 0 gives A, T = 1 gives B, 0.5 is halfway.";
+        case NodeType::Time: return "Delta Time (seconds since the last frame) or Time Since Play (seconds since Play started).";
+        case NodeType::MakeVec3: return "Builds a position/direction (x, y, z) from three numbers.";
+        case NodeType::VecPart: return "Takes the X, Y or Z number out of a (x, y, z) value.";
+        case NodeType::VecMath: return "Adds or subtracts two (x, y, z) values, or scales one by a number.";
+        case NodeType::Distance: return "How far apart two (x, y, z) positions are.";
+        case NodeType::Normalize: return "Turns a direction into one of length 1. A zero direction stays zero.";
+        case NodeType::Concat: return "Joins A, B and C into one piece of text, e.g. \"Score: \" + a number.";
+        case NodeType::Compare: return "Compares A and B (equal, not equal, less, greater...). Gives true or false.";
+        case NodeType::And: return "True only when both inputs are true.";
+        case NodeType::Or: return "True when at least one input is true.";
+        case NodeType::Not: return "Flips true to false and false to true.";
+        case NodeType::CodeSnippet: return "Your own C++ code, run when the flow reaches it. Add value inputs and outputs to pass data in and out.";
+        default: break;
+    }
+    return "";
 }
 
 const std::vector<std::string>& ObjectProperties() {
@@ -363,6 +488,13 @@ void SaveGraph(std::ostream& out, const Graph& g) {
     for (const Node& n : g.nodes)
         out << "VNODE " << n.id << ' ' << static_cast<int>(n.type) << ' ' << n.x << ' ' << n.y << ' '
             << std::quoted(n.target) << ' ' << std::quoted(n.prop) << ' ' << std::quoted(n.value) << "\n";
+    size_t extras = 0;
+    for (const Node& n : g.nodes) extras += n.extra.size();
+    if (extras) {   // optional block: extra Change properties
+        out << "VPROPS " << extras << "\n";
+        for (const Node& n : g.nodes)
+            for (const auto& [prop, value] : n.extra) out << "VPROP " << n.id << ' ' << std::quoted(prop) << ' ' << std::quoted(value) << "\n";
+    }
     if (!g.dataLinks.empty()) {
         out << "VDLINKS " << g.dataLinks.size() << "\n";
         for (const DataLink& l : g.dataLinks) {   // pin-0 sources keep the original line
@@ -388,17 +520,24 @@ bool LoadGraph(std::istream& in, Graph& g) {
         g.nextId = std::max(g.nextId, n.id + 1);
         g.nodes.push_back(n);
     }
-    {   // optional value wires, written only when the graph has any
+    for (;;) {   // optional blocks, written only when the graph has any: extra Change properties, value wires
         const auto mark = in.tellg();
-        size_t nd = 0;
-        if (in >> tag && tag == "VDLINKS" && in >> nd && nd <= 100000) {
-            for (size_t i = 0; i < nd; ++i) {
+        size_t count = 0;
+        if (!(in >> tag)) { in.clear(); in.seekg(mark); break; }
+        if (tag == "VPROPS" && in >> count && count <= 100000) {
+            for (size_t i = 0; i < count; ++i) {
+                int id = 0; std::string prop, value;
+                if (!(in >> tag >> id >> std::quoted(prop) >> std::quoted(value)) || tag != "VPROP") return false;
+                for (Node& n : g.nodes) if (n.id == id) n.extra.emplace_back(prop, value);
+            }
+        } else if (tag == "VDLINKS" && in >> count && count <= 100000) {
+            for (size_t i = 0; i < count; ++i) {
                 DataLink d;
                 if (!(in >> tag >> d.from >> d.to >> d.toPin) || (tag != "VDLINK" && tag != "VDLINKP")) return false;
                 if (tag == "VDLINKP" && !(in >> d.fromPin)) return false;
                 g.dataLinks.push_back(d);
             }
-        } else { in.clear(); in.seekg(mark); }
+        } else { in.clear(); in.seekg(mark); break; }
     }
     for (size_t i = 0; i < nl; ++i) {
         Link l;
@@ -448,6 +587,14 @@ struct Pending { int graph; int node; float left; };
 std::vector<Pending> g_delays;
 std::map<std::string, std::string> g_vars;       // Set Variable / Branch
 std::set<std::pair<int, int>> g_once;            // (graph, node) Do Once nodes already passed
+std::map<std::pair<int, int>, float> g_every;    // (graph, node) Every N Seconds: time since it last fired
+float g_dt = 0.0f, g_time = 0.0f;                // the last frame's length, and seconds since Play began
+ScatteredObject* g_newObject = nullptr;          // the object a Create Object / Clone is setting up while its Setup chain runs
+
+// How an error names a target.
+std::string TargetName(const std::string& path) {
+    return path == kNewObjectTarget ? std::string("New Object (only inside a Create Object / Clone Setup)") : path;
+}
 
 struct HudLine { std::string text; float left = -1.0f; };   // left < 0: stays until replaced
 std::map<std::string, HudLine> g_hud;                     // keyed by screen position
@@ -457,6 +604,8 @@ bool Truthy(const std::string& v) { return !v.empty() && v != "0" && v != "false
 
 // "Workspace/Group/Cube#2": the second object named Cube.
 ScatteredObject* FindTarget(ScriptRuntime& rt, const std::string& path) {
+    // Inside a Setup chain a node with no target works on the object being made; a target that was picked still wins.
+    if (path == kNewObjectTarget || (path.empty() && g_newObject)) return g_newObject;
     std::string name = LastSegment(path);
     int occurrence = 1;
     const size_t hash = name.find_last_of('#');
@@ -466,6 +615,29 @@ ScatteredObject* FindTarget(ScriptRuntime& rt, const std::string& path) {
         name.erase(hash);
     }
     return rt.FindByNameNth(name, occurrence);
+}
+
+int KeyCodeFor(const std::string& name) {
+    static const std::map<std::string, int> codes = {
+        { "Space", KEY_SPACE }, { "Enter", KEY_ENTER }, { "W", KEY_W }, { "A", KEY_A }, { "S", KEY_S }, { "D", KEY_D },
+        { "Q", KEY_Q }, { "E", KEY_E }, { "R", KEY_R }, { "F", KEY_F }, { "Up", KEY_UP }, { "Down", KEY_DOWN },
+        { "Left", KEY_LEFT }, { "Right", KEY_RIGHT }, { "1", KEY_ONE }, { "2", KEY_TWO }, { "3", KEY_THREE }, { "4", KEY_FOUR },
+        { "Shift", KEY_LEFT_SHIFT }, { "Ctrl", KEY_LEFT_CONTROL } };
+    const auto it = codes.find(name);
+    return it == codes.end() ? -1 : it->second;
+}
+
+bool ParseVec(const std::string& s, double v[3]) {
+    float x = 0, y = 0, z = 0;
+    if (std::sscanf(s.c_str(), " ( %f , %f , %f", &x, &y, &z) != 3) { v[0] = v[1] = v[2] = 0.0; return false; }
+    v[0] = x; v[1] = y; v[2] = z;
+    return true;
+}
+
+std::string VecStr(double x, double y, double z) {
+    char b[96];
+    std::snprintf(b, sizeof(b), "(%.7g, %.7g, %.7g)", x, y, z);
+    return b;
 }
 
 bool ToNumber(const std::string& s, double& out) {
@@ -497,6 +669,7 @@ std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) 
             break;
         }
     if (n.type == NodeType::CodeSnippet) return {};   // an unwired snippet input is empty (its `value` is the code)
+    if (n.type == NodeType::Change && pin >= 1 && pin <= static_cast<int>(n.extra.size())) return n.extra[pin - 1].second;
     if (IsPure(n.type)) return pin == 0 ? n.target : pin == 1 ? n.value : n.prop;
     if (n.type == NodeType::Branch) {   // unwired Branch tests the variable named in its field
         const auto it = g_vars.find(n.target);
@@ -540,6 +713,52 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
             return NumStr(lo == hi ? lo : std::uniform_real_distribution<double>(lo, hi)(rng));
         }
         case NodeType::Lerp: { const double a = num(0); return NumStr(a + (num(1) - a) * num(2)); }
+        case NodeType::KeyDown: { const int k = KeyCodeFor(n.prop); return k >= 0 && IsKeyDown(k) ? "true" : "false"; }
+        case NodeType::Concat: return in(0) + in(1) + in(2);
+        case NodeType::MakeVec3: return VecStr(num(0), num(1), num(2));
+        case NodeType::VecPart: {
+            double v[3]; ParseVec(in(0), v);
+            return NumStr(n.prop == "Y" ? v[1] : n.prop == "Z" ? v[2] : v[0]);
+        }
+        case NodeType::Distance: {
+            double a[3], b[3]; ParseVec(in(0), a); ParseVec(in(1), b);
+            return NumStr(std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])));
+        }
+        case NodeType::Normalize: {
+            double v[3]; ParseVec(in(0), v);
+            const double len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return len > 0.0 ? VecStr(v[0] / len, v[1] / len, v[2] / len) : VecStr(0, 0, 0);
+        }
+        case NodeType::VecMath: {
+            double a[3], b[3]; ParseVec(in(0), a);
+            if (n.prop == "scale") { const double k = num(1); return VecStr(a[0] * k, a[1] * k, a[2] * k); }
+            ParseVec(in(1), b);
+            const double sign = n.prop == "-" ? -1.0 : 1.0;
+            return VecStr(a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2]);
+        }
+        case NodeType::MathFunc: {
+            const double a = num(0), b = num(1), rad = 3.14159265358979323846 / 180.0;
+            const std::string& f = n.prop;
+            if (f == "Min") return NumStr(std::min(a, b));
+            if (f == "Max") return NumStr(std::max(a, b));
+            if (f == "Abs") return NumStr(std::fabs(a));
+            if (f == "Round") return NumStr(std::round(a));
+            if (f == "Floor") return NumStr(std::floor(a));
+            if (f == "Ceil") return NumStr(std::ceil(a));
+            if (f == "Sqrt") return NumStr(a < 0.0 ? 0.0 : std::sqrt(a));
+            if (f == "Pow") { const double r = std::pow(a, b); return NumStr(std::isfinite(r) ? r : 0.0); }
+            if (f == "Modulo") return NumStr(b == 0.0 ? 0.0 : std::fmod(a, b));
+            if (f == "Sin") return NumStr(std::sin(a * rad));
+            if (f == "Cos") return NumStr(std::cos(a * rad));
+            return NumStr(a);
+        }
+        case NodeType::Clamp: {
+            double lo = num(1), hi = num(2);
+            if (lo > hi) std::swap(lo, hi);
+            return NumStr(std::min(std::max(num(0), lo), hi));
+        }
+        case NodeType::Time: return NumStr(n.prop == "Time Since Play" ? g_time : g_dt);
+        case NodeType::ObjectExists: return FindTarget(rt, n.target) ? "true" : "false";
         case NodeType::Raycast: {
             std::string error;
             std::string hit = rt.RayCastName(in(0), in(1), static_cast<float>(num(2)), error);
@@ -549,7 +768,7 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
         case NodeType::GetProperty: {
             ScatteredObject* obj = FindTarget(rt, n.target);
             std::string out;
-            if (!obj) ui::Log("[script] No object '%s'", n.target.c_str());
+            if (!obj) ui::Log("[script] No object '%s'", TargetName(n.target).c_str());
             else if (!rt.GetObjectProperty(obj, n.prop, out)) ui::Log("[script] Can't read '%s'", n.prop.c_str());
             return out;
         }
@@ -557,18 +776,36 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
     }
 }
 
-void ApplyChange(ScriptRuntime& rt, const Node& n) {
-    if (n.target.empty() || n.prop.empty()) return;
+void ApplyProperty(ScriptRuntime& rt, const std::string& target, const std::string& prop, const std::string& value) {
+    if (prop.empty()) return;
     std::string result;
-    if (IsWorldGroup(n.target)) {
-        if (!console::RunLine("game." + n.target + "." + n.prop + " = " + n.value, &result))
+    if (IsWorldGroup(target)) {
+        if (!console::RunLine("game." + target + "." + prop + " = " + value, &result))
             ui::Log("[script] %s", result.c_str());
         return;
     }
-    ScatteredObject* obj = FindTarget(rt, n.target);
+    ScatteredObject* obj = FindTarget(rt, target);
     std::string error;
-    if (!obj) ui::Log("[script] No object '%s'", n.target.c_str());
-    else if (!rt.SetObjectProperty(obj, n.prop, n.value, error)) ui::Log("[script] %s", error.c_str());
+    if (!obj) ui::Log("[script] No object '%s'", TargetName(target).c_str());
+    else if (!rt.SetObjectProperty(obj, prop, value, error)) ui::Log("[script] %s", error.c_str());
+}
+
+// A Change node sets its main property, then each extra one, in order.
+void ApplyChange(ScriptRuntime& rt, const Node& n) {
+    if (n.target.empty() && !g_newObject) return;
+    ApplyProperty(rt, n.target, n.prop, n.value);
+    for (const auto& [prop, value] : n.extra) ApplyProperty(rt, n.target, prop, value);
+}
+
+void Emit(ScriptRuntime& rt, int gi, int fromId, int pin);
+
+// Create Object / Clone: runs the chain on out 1 with target-less nodes working on `obj`, then gives it its physics body.
+void RunSetup(ScriptRuntime& rt, int gi, int nodeId, ScatteredObject* obj) {
+    ScatteredObject* outer = g_newObject;
+    g_newObject = obj;
+    Emit(rt, gi, nodeId, 1);
+    g_newObject = outer;
+    rt.FinishCreate(obj);
 }
 
 // Follows the wire leaving (`fromId`, `pin`) and everything after it. Branching nodes push several continuations;
@@ -602,11 +839,21 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
             case NodeType::Change: {
                 Node applied = *n;
                 applied.value = Input(rt, gi, *n, 0, 0);
+                for (size_t i = 0; i < applied.extra.size(); ++i) applied.extra[i].second = Input(rt, gi, *n, static_cast<int>(i) + 1, 0);
                 ApplyChange(rt, applied);
                 stack.push_back({ n->id, 0 });
                 break;
             }
             case NodeType::Print: ui::Log("[script] %s", Input(rt, gi, *n, 0, 0).c_str()); stack.push_back({ n->id, 0 }); break;
+            case NodeType::AddToVariable:
+                if (!n->target.empty()) {
+                    double current = 0.0, amount = 0.0;
+                    ToNumber(g_vars[n->target], current);
+                    ToNumber(Input(rt, gi, *n, 0, 0), amount);
+                    g_vars[n->target] = NumStr(current + amount);
+                }
+                stack.push_back({ n->id, 0 });
+                break;
             case NodeType::SetVariable:
                 if (!n->target.empty()) g_vars[n->target] = Input(rt, gi, *n, 0, 0);
                 stack.push_back({ n->id, 0 });
@@ -632,34 +879,27 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 break;
             }
             case NodeType::ShowText: {
-                const std::string text = Input(rt, gi, *n, 0, 0);
-                if (text.empty()) g_hud.erase(n->prop);
-                else {
-                    const float secs = static_cast<float>(std::atof(n->target.c_str()));
-                    g_hud[n->prop] = { text, secs > 0.0f ? secs : -1.0f };
-                }
+                ShowText(Input(rt, gi, *n, 0, 0), n->prop, static_cast<float>(std::atof(n->target.c_str())));
                 stack.push_back({ n->id, 0 });
                 break;
             }
             case NodeType::SetVolume:
-                SetMasterVolume(std::clamp(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())), 0.0f, 1.0f));
+                SetMasterVolumeLevel(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())));
                 stack.push_back({ n->id, 0 });
                 break;
             case NodeType::PlaySound: {
-                if (!g_soundPlayer) ui::Log("[script] Play Sound: this build has no audio backend");
-                else {
-                    std::string path = n->target;
-                    if (!std::filesystem::path(path).is_absolute() && !rt.GetProjectPath().empty())
-                        path = (std::filesystem::path(rt.GetProjectPath()) / path).string();
-                    g_soundPlayer(path, std::clamp(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())), 0.0f, 1.0f));
-                }
+                PlaySoundFile(rt, n->target, static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())));
                 stack.push_back({ n->id, 0 });
                 break;
             }
             case NodeType::CreateObject: {
-                ScatteredObject* obj = rt.CreateObject(n->prop);
+                // Born without a physics body: the Setup chain (out 1) changes it first, then it is spawned as configured.
+                ScatteredObject* obj = rt.CreateObject(n->prop, true);
                 if (!obj) ui::Log("[script] Can't create '%s'", n->prop.c_str());
-                else if (!n->value.empty()) obj->SetName(n->value);
+                else {
+                    if (!n->value.empty()) obj->SetName(n->value);
+                    RunSetup(rt, gi, n->id, obj);
+                }
                 stack.push_back({ n->id, 0 });
                 break;
             }
@@ -667,13 +907,16 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
             case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: {
                 ScatteredObject* obj = FindTarget(rt, n->target);
                 std::string error;
-                if (!obj) { ui::Log("[script] No object '%s'", n->target.c_str()); stack.push_back({ n->id, 0 }); break; }
+                if (!obj) { ui::Log("[script] No object '%s'", TargetName(n->target).c_str()); stack.push_back({ n->id, 0 }); break; }
                 if (n->type == NodeType::Destroy) rt.DestroyObject(obj);
                 else if (n->type == NodeType::RunScript) rt.StartObjectScript(obj);
                 else if (n->type == NodeType::Clone) {
-                    ScatteredObject* copy = rt.CloneObject(obj);
+                    ScatteredObject* copy = rt.CloneObject(obj, true);
                     if (!copy) ui::Log("[script] Can't clone '%s'", n->target.c_str());
-                    else if (!n->value.empty()) copy->SetName(n->value);
+                    else {
+                        if (!n->value.empty()) copy->SetName(n->value);
+                        RunSetup(rt, gi, n->id, copy);
+                    }
                 } else {
                     const std::string vec = Input(rt, gi, *n, 0, 0);
                     if (n->type == NodeType::AddForce || n->type == NodeType::AddImpulse) rt.AddForce(obj, vec, n->type == NodeType::AddImpulse, error);
@@ -706,13 +949,8 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
 }
 
 bool KeyPressed(const std::string& name) {
-    static const std::map<std::string, int> codes = {
-        { "Space", KEY_SPACE }, { "Enter", KEY_ENTER }, { "W", KEY_W }, { "A", KEY_A }, { "S", KEY_S }, { "D", KEY_D },
-        { "Q", KEY_Q }, { "E", KEY_E }, { "R", KEY_R }, { "F", KEY_F }, { "Up", KEY_UP }, { "Down", KEY_DOWN },
-        { "Left", KEY_LEFT }, { "Right", KEY_RIGHT }, { "1", KEY_ONE }, { "2", KEY_TWO }, { "3", KEY_THREE }, { "4", KEY_FOUR },
-        { "Shift", KEY_LEFT_SHIFT }, { "Ctrl", KEY_LEFT_CONTROL } };
-    const auto it = codes.find(name);
-    return it != codes.end() && IsKeyPressed(it->second);
+    const int k = KeyCodeFor(name);
+    return k >= 0 && IsKeyPressed(k);
 }
 
 void FireEvents(ScriptRuntime& rt, NodeType type) {
@@ -725,11 +963,14 @@ void FireEvents(ScriptRuntime& rt, NodeType type) {
 }
 
 void Run(ScriptRuntime& rt) {
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_every.clear();
+    g_dt = 0.0f; g_time = 0.0f;
     FireEvents(rt, NodeType::Start);
 }
 
 void Tick(ScriptRuntime& rt, float dt) {
+    g_dt = dt;
+    g_time += dt;
     std::vector<Pending> due;
     for (auto it = g_delays.begin(); it != g_delays.end();) {
         it->left -= dt;
@@ -742,6 +983,17 @@ void Tick(ScriptRuntime& rt, float dt) {
     }
     for (const Pending& d : due) Emit(rt, d.graph, d.node, 0);
     FireEvents(rt, NodeType::OnUpdate);
+    for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {   // Every N Seconds
+        std::vector<std::pair<int, float>> timers;
+        for (const Node& n : g_scripts[gi].nodes)
+            if (n.type == NodeType::EveryN) timers.push_back({ n.id, std::max(0.01f, static_cast<float>(std::atof(n.value.c_str()))) });
+        for (const auto& [id, interval] : timers) {
+            float& acc = g_every[{ gi, id }];
+            acc += dt;
+            for (int fired = 0; acc >= interval && fired < 4; ++fired) { acc -= interval; Emit(rt, gi, id, 0); }
+            if (acc >= interval) acc = 0.0f;   // far behind (a long hitch): drop the backlog rather than spiral
+        }
+    }
     for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
         std::vector<std::pair<int, std::string>> keys;
         for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnKey) keys.push_back({ n.id, n.prop });
@@ -751,7 +1003,24 @@ void Tick(ScriptRuntime& rt, float dt) {
 
 void Stop(ScriptRuntime& rt) {
     FireEvents(rt, NodeType::OnStop);
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_every.clear();
+}
+
+std::vector<int> SetupChainNodes() {
+    const Graph& g = Active();
+    std::vector<int> found, todo;
+    for (const Link& l : g.links) {
+        const Node* a = FindIn(g, l.from);
+        if (a && (a->type == NodeType::CreateObject || a->type == NodeType::Clone) && l.fromPin == 1) todo.push_back(l.to);
+    }
+    while (!todo.empty()) {
+        const int id = todo.back();
+        todo.pop_back();
+        if (std::find(found.begin(), found.end(), id) != found.end()) continue;
+        found.push_back(id);
+        for (const Link& l : g.links) if (l.from == id) todo.push_back(l.to);
+    }
+    return found;
 }
 
 std::string SnippetClassName(const std::string& graphName, int nodeId) {
@@ -857,6 +1126,25 @@ size_t SnippetFingerprint() {
 }
 
 void SetSoundPlayer(SoundPlayer player) { g_soundPlayer = std::move(player); }
+
+bool IsKeyHeld(const std::string& keyName) {
+    const int k = KeyCodeFor(keyName);
+    return k >= 0 && IsKeyDown(k);
+}
+bool WasKeyPressed(const std::string& keyName) { return KeyPressed(keyName); }
+void ShowText(const std::string& text, const std::string& position, float seconds) {
+    if (text.empty()) g_hud.erase(position);
+    else g_hud[position] = { text, seconds > 0.0f ? seconds : -1.0f };
+}
+void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume) {
+    if (!g_soundPlayer) { ui::Log("[script] Play Sound: this build has no audio backend"); return; }
+    std::string path = file;
+    if (!std::filesystem::path(path).is_absolute() && !rt.GetProjectPath().empty())
+        path = (std::filesystem::path(rt.GetProjectPath()) / path).string();
+    g_soundPlayer(path, std::clamp(volume, 0.0f, 1.0f));
+}
+void SetMasterVolumeLevel(float volume) { SetMasterVolume(std::clamp(volume, 0.0f, 1.0f)); }
+float TimeSincePlay() { return g_time; }
 
 void DrawHud(float x, float y, float w, float h) {
     if (g_hud.empty()) return;

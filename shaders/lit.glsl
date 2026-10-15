@@ -220,11 +220,14 @@ float CloudLight() {
 // baseColor is the surface's sRGB colour; the result is linear light.
 vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     vec3 normal = normalize(fragNormal);
-    float diffuse = max(dot(normal, -sunDir.xyz), 0.0);
+    // Shadows off (sunDir.w = 0): no side of anything is shaded either, so a face turned from the sun is not left dark
+    // while the ground shows no shadow. Every side gets the same even light.
+    bool shadowsOff = sunDir.w < 0.5;
+    float diffuse = shadowsOff ? 0.65 : max(dot(normal, -sunDir.xyz), 0.0);
     float shadow = ShadowCalculation(normal);
 
     // Light from the sky on what faces up, light bounced off the ground on what faces down.
-    vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, normal.y * 0.5 + 0.5);
+    vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, shadowsOff ? 0.5 : normal.y * 0.5 + 0.5);
     vec3 lit = (amb + (1.0 - shadow) * diffuse * CloudLight() * sunColor.rgb) * fly_srgb_to_linear(baseColor * colDiffuse.rgb);
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;

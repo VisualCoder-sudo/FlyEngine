@@ -224,3 +224,18 @@ target_include_directories(visual_script_test PRIVATE
 target_compile_features(visual_script_test PRIVATE cxx_std_20)
 
 add_test(NAME visual_script COMMAND visual_script_test)
+
+# Play/undo snapshots keep every property the scene file stores, and report what differs. Opens a window, so it is not
+# registered with ctest: build/tests/play_snapshot_test
+add_executable(play_snapshot_test play_snapshot_test.cpp)
+target_link_libraries(play_snapshot_test PRIVATE FlyEngineCore FlyRL)
+
+# The C++ scripting API (fly.hpp) offers what the Visual Script nodes do. Header-only, runs against a fake engine table.
+add_executable(fly_actions_test fly_actions_test.cpp)
+target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
+add_test(NAME fly_actions COMMAND fly_actions_test)
+
+# The scripting API (FlyNative_*) against the real engine: create, clone, rename, destroy, forces, raycast, keys, text.
+# Opens a window, so it is not registered with ctest: build/tests/script_actions_engine_test
+add_executable(script_actions_engine_test script_actions_engine_test.cpp)
+target_link_libraries(script_actions_engine_test PRIVATE FlyEngineCore FlyRL)

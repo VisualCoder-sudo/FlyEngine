@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <utility>
 #include <string>
 #include <vector>
@@ -39,7 +40,7 @@ std::string MakeClassName(const std::string& name) {
 
 namespace {
 
-enum class EditorKind { None, VSCode, VisualStudio, Rider, Notepad };
+enum class EditorKind { None, VSCode, VisualStudio, Rider, Notepad, CLion, QtCreator, CodeBlocks };
 constexpr const char* kScriptDirName = "Scripts";
 
 // Builds the source of a C++ script stub with the given class name. The class
@@ -167,10 +168,29 @@ std::string FindVisualStudio() {
 #endif
 }
 
-std::string FindRider() {
-    // The JetBrains Toolbox and the standalone tarball both drop a launcher on
-    // PATH; fall back to a scan of the conventional install roots.
-    if (const std::string onPath = FindOnPath({"rider"}); !onPath.empty()) {
+#if !defined(_WIN32)
+// <product>.sh in `dir`/bin, or in a folder up to `depth` levels below it (Toolbox: apps/<product>/<channel>/<build>/).
+std::string FindLauncherUnder(const fs::path& dir, const std::string& product, int depth) {
+    for (const std::string& launcher : {"bin/" + product + ".sh", product + ".sh"}) {
+        const fs::path candidate = dir / launcher;
+        if (FileIsExecutable(candidate.string())) return candidate.string();
+    }
+    if (depth <= 0) return {};
+    std::error_code ec;
+    for (const auto& child : fs::directory_iterator(dir, ec)) {
+        const std::string name = child.path().filename().string();
+        if (!child.is_directory(ec) || name == "bin" || name == "jbr" || name == "lib" || name == "plugins") continue;
+        const std::string found = FindLauncherUnder(child.path(), product, depth - 1);
+        if (!found.empty()) return found;
+    }
+    return {};
+}
+#endif
+
+// A JetBrains IDE ("rider", "clion"): the launcher on PATH (the Toolbox's generated scripts live there too), else a scan
+// of the conventional install roots.
+std::string FindJetBrainsIde(const std::string& product) {
+    if (const std::string onPath = FindOnPath({product}); !onPath.empty()) {
         return onPath;
     }
 
@@ -188,15 +208,15 @@ std::string FindRider() {
         std::string best;
         for (const auto& entry : fs::directory_iterator(root, ec)) {
             if (!entry.is_directory(ec)) continue;
-            std::string candidate = (entry.path() / "bin" / "rider64.exe").string();
+            std::string candidate = (entry.path() / "bin" / (product + "64.exe")).string();
             if (FileIsExecutable(candidate)) best = candidate;
         }
         if (!best.empty()) return best;
     }
     return {};
 #else
-    // Toolbox installs land in ~/.local/share/JetBrains/Toolbox/apps/*/*/;
-    // tarballs in /opt/JetBrains/*/ or ~/opt/JetBrains/*/.
+    // Toolbox installs land in ~/.local/share/JetBrains/Toolbox/apps/<product>/[channel/[build/]];
+    // tarballs in /opt/JetBrains/*/ or ~/opt/JetBrains/*/, and distro packages in /opt/<product>.
     std::vector<fs::path> roots;
     const std::string home = platform::UserHomeDir();
     if (!home.empty()) {
@@ -205,31 +225,55 @@ std::string FindRider() {
     }
     roots.emplace_back("/opt/JetBrains");
     roots.emplace_back("/usr/local/JetBrains");
+    roots.emplace_back("/opt");
 
-    std::string best;
     for (const fs::path& root : roots) {
         std::error_code ec;
         if (!fs::is_directory(root, ec)) continue;
         for (const auto& entry : fs::directory_iterator(root, ec)) {
             if (!entry.is_directory(ec)) continue;
-            // Toolbox nests one extra level: apps/<vendor>/<product>/<build>/.
-            std::vector<fs::path> dirs{entry.path()};
-            for (const auto& child : fs::directory_iterator(entry.path(), ec)) {
-                if (child.is_directory(ec)) dirs.push_back(child.path());
-            }
-            for (const fs::path& dir : dirs) {
-                for (const char* launcher : {"bin/rider.sh", "bin/rider64.exe", "rider.sh"}) {
-                    const fs::path candidate = dir / launcher;
-                    if (FileIsExecutable(candidate.string())) {
-                        best = candidate.string();
-                        break;
-                    }
-                }
-            }
+            // /opt holds everything: only look into folders named for the product.
+            std::string folder = entry.path().filename().string();
+            std::transform(folder.begin(), folder.end(), folder.begin(), [](unsigned char c) { return std::tolower(c); });
+            if (root == "/opt" && folder.find(product) == std::string::npos) continue;
+            const std::string found = FindLauncherUnder(entry.path(), product, 3);
+            if (!found.empty()) return found;
         }
-        if (!best.empty()) return best;
     }
     return {};
+#endif
+}
+
+std::string FindRider() { return FindJetBrainsIde("rider"); }
+std::string FindCLion() { return FindJetBrainsIde("clion"); }
+
+// Other C/C++ IDEs: the launcher on PATH, or the usual install spot.
+std::string FindQtCreator() {
+    if (const std::string onPath = FindOnPath({"qtcreator"}); !onPath.empty()) return onPath;
+#if defined(_WIN32)
+    const char* programFiles = std::getenv("ProgramFiles");
+    if (programFiles) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(fs::path(programFiles) / "Qt", ec)) {
+            for (const auto& v : fs::directory_iterator(e.path(), ec)) {
+                const std::string c = (v.path() / "bin" / "qtcreator.exe").string();
+                if (FileIsExecutable(c)) return c;
+            }
+        }
+    }
+    return {};
+#else
+    return FindKnownExe({"/usr/bin/qtcreator", "/opt/Qt/Tools/QtCreator/bin/qtcreator", "/var/lib/flatpak/exports/bin/org.qt_project.qtcreator"});
+#endif
+}
+
+std::string FindCodeBlocks() {
+    if (const std::string onPath = FindOnPath({"codeblocks"}); !onPath.empty()) return onPath;
+#if defined(_WIN32)
+    const char* programFiles = std::getenv("ProgramFiles");
+    return programFiles ? FindKnownExe({std::string(programFiles) + "\\CodeBlocks\\codeblocks.exe"}) : std::string{};
+#else
+    return FindKnownExe({"/usr/bin/codeblocks"});
 #endif
 }
 
@@ -256,6 +300,9 @@ std::string ResolveEditorPath(EditorKind kind) {
         case EditorKind::VSCode:        return FindVSCode();
         case EditorKind::VisualStudio:  return FindVisualStudio();
         case EditorKind::Rider:         return FindRider();
+        case EditorKind::CLion:         return FindCLion();
+        case EditorKind::QtCreator:     return FindQtCreator();
+        case EditorKind::CodeBlocks:    return FindCodeBlocks();
         case EditorKind::Notepad:       return FindTextEditor();
         default:                        return {};   // Auto-Detect
     }
@@ -273,6 +320,9 @@ bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string
 
     if (kind == EditorKind::VSCode ||
         kind == EditorKind::Rider ||
+        kind == EditorKind::CLion ||
+        kind == EditorKind::QtCreator ||
+        kind == EditorKind::CodeBlocks ||
         kind == EditorKind::VisualStudio ||
         kind == EditorKind::Notepad) {
         std::vector<std::string> args;
@@ -280,8 +330,11 @@ bool LaunchEditor(EditorKind kind, const std::string& exePath, const std::string
             // code -g <file>:<line>:<column>
             args.push_back("-g");
             args.push_back(file + ":" + std::to_string(line) + ":" + std::to_string(std::max(column, 1)));
-        } else if (kind == EditorKind::Rider && line > 0) {
-            // rider --line <n> --column <n> <file>
+        } else if (kind == EditorKind::QtCreator && line > 0) {
+            // qtcreator <file>:<line>:<column>
+            args.push_back(file + ":" + std::to_string(line) + ":" + std::to_string(std::max(column, 1)));
+        } else if ((kind == EditorKind::Rider || kind == EditorKind::CLion) && line > 0) {
+            // rider / clion --line <n> --column <n> <file>
             args.push_back("--line");
             args.push_back(std::to_string(line));
             if (column > 0) {
@@ -314,11 +367,26 @@ bool        g_editorSet = false;    // a remembered editor is available
 EditorKind  g_editorKind = EditorKind::None;
 std::string g_editorPath;           // cached resolved exe (empty for notepad/default)
 
+// Which editors are installed, looked up when the picker opens (the scans touch the disk, so not every frame).
+std::map<EditorKind, std::string> g_detected;
+bool g_detectedValid = false;
+
+bool EditorInstalled(EditorKind kind) {
+    if (kind == EditorKind::None || kind == EditorKind::Notepad) return true;   // nothing to find
+    if (!g_detectedValid) { g_detected.clear(); g_detectedValid = true; }
+    auto it = g_detected.find(kind);
+    if (it == g_detected.end()) it = g_detected.emplace(kind, ResolveEditorPath(kind)).first;
+    return !it->second.empty();
+}
+
 const char* EditorKindLabel(EditorKind k) {
     switch (k) {
         case EditorKind::VSCode:       return "VS Code";
         case EditorKind::VisualStudio: return "Visual Studio";
         case EditorKind::Rider:        return "Rider";
+        case EditorKind::CLion:        return "CLion";
+        case EditorKind::QtCreator:    return "Qt Creator";
+        case EditorKind::CodeBlocks:   return "Code::Blocks";
         case EditorKind::Notepad:      return "Notepad";
         default:                       return "Auto-Detect";
     }
@@ -328,6 +396,9 @@ const char* EditorKindLabel(EditorKind k) {
 
 struct IdeIcons {
     Texture2D rider;
+    Texture2D clion;
+    Texture2D qtCreator;
+    Texture2D codeBlocks;
     Texture2D vscode;
     Texture2D visualStudio;
     Texture2D notepad;
@@ -349,7 +420,10 @@ Texture2D LoadIconOrNull(const char* fileName) {
 const IdeIcons& GetIdeIcons() {
     static IdeIcons icons = [] {
         IdeIcons v{};
-        v.rider          = LoadIconOrNull("jbrider.png");
+        v.rider          = LoadIconOrNull("rider.png");
+        v.clion          = LoadIconOrNull("clion.png");
+        v.qtCreator      = LoadIconOrNull("qtc.png");
+        v.codeBlocks     = LoadIconOrNull("codeblocks.png");
         v.vscode         = LoadIconOrNull("vscode.png");
         v.visualStudio   = LoadIconOrNull("vstudio.png");
         v.notepad        = LoadIconOrNull("npad.png");
@@ -474,6 +548,7 @@ void RequestOpenAt(const std::string& file, int line, int column) {
     g_pendingFile = file;
     g_pendingLine = line;
     g_pendingColumn = column;
+    g_detectedValid = false;
 }
 
 void RequestOpen(const std::string& file) {
@@ -488,6 +563,7 @@ void RequestChooseEditor(const std::string& file) {
     g_pendingFile = file;
     g_pendingLine = 0;
     g_pendingColumn = 0;
+    g_detectedValid = false;
 }
 
 bool HasPending() {
@@ -511,6 +587,7 @@ bool DrawImGuiModal() {
         const IdeIcons& icons = GetIdeIcons();
         struct Option { const char* label; EditorKind kind; const Texture2D* icon; };
         const Option options[] = {
+            { "CLion",          EditorKind::CLion,        &icons.clion },
             { "Rider",          EditorKind::Rider,        &icons.rider },
             { "VS Code",        EditorKind::VSCode,       &icons.vscode },
 #if defined(_WIN32)
@@ -521,21 +598,35 @@ bool DrawImGuiModal() {
 #else
             { "Text Editor",    EditorKind::Notepad,      &icons.notepad },
 #endif
+            { "Qt Creator",     EditorKind::QtCreator,    &icons.qtCreator },
+            { "Code::Blocks",   EditorKind::CodeBlocks,   &icons.codeBlocks },
             { "Auto-Detect",    EditorKind::None,         nullptr },
         };
 
         const float iconSize = 22.0f;
         for (const Option& o : options) {
+            const bool installed = EditorInstalled(o.kind);
             ImGui::PushID(o.label);
+            ImGui::BeginDisabled(!installed);   // an editor that isn't on this machine can't be picked
             bool clicked = false;
-            if (o.icon) {
-                clicked = ImGui::ImageButton("##ide", TexId(*o.icon), ImVec2(iconSize, iconSize));
+            if (o.icon && o.icon->width > 0 && o.icon->height > 0) {
+                // Fit the picture into the square without stretching it (not every icon is square).
+                const float fit = std::min(iconSize / o.icon->width, iconSize / o.icon->height);
+                const ImVec2 shown(o.icon->width * fit, o.icon->height * fit);
+                const ImVec2 pad((iconSize - shown.x) * 0.5f, (iconSize - shown.y) * 0.5f);
+                const ImVec2 cursor = ImGui::GetCursorScreenPos();
+                const ImVec2 framePad = ImGui::GetStyle().FramePadding;
+                clicked = ImGui::Button("##ide", ImVec2(iconSize + framePad.x * 2.0f, iconSize + framePad.y * 2.0f));
+                ImGui::GetWindowDrawList()->AddImage(TexId(*o.icon),
+                    ImVec2(cursor.x + framePad.x + pad.x, cursor.y + framePad.y + pad.y),
+                    ImVec2(cursor.x + framePad.x + pad.x + shown.x, cursor.y + framePad.y + pad.y + shown.y));
             } else {
                 clicked = ImGui::Button("##ide", ImVec2(iconSize + 22.0f, iconSize + 5.0f));
             }
             ImGui::SameLine();
-            clicked = ImGui::Selectable(o.label) || clicked;
-            if (clicked) {
+            clicked = ImGui::Selectable(installed ? o.label : (std::string(o.label) + "  (not installed)").c_str()) || clicked;
+            ImGui::EndDisabled();
+            if (clicked && installed) {
                 std::string file = g_pendingFile;
                 std::string exePath = ResolveEditorPath(o.kind);
                 // Only remember a choice that actually launched successfully.

@@ -1,6 +1,7 @@
 #pragma once
 #include "../Backend/Entity.hpp"
 #include "raylib.h"
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -80,7 +81,9 @@ public:
     ScatteredObject* FindByName(const std::string& name) const;
     // The `occurrence`-th (1-based) object with that name, in scene order. Lets same-named objects be told apart.
     ScatteredObject* FindByNameNth(const std::string& name, int occurrence) const;
-    ScatteredObject* CreateObject(const std::string& shapeName);
+    // With `deferSpawn` the object is created but gets no physics body until FinishCreate(): a Visual Script's Setup
+    // chain can change it first, so it appears already configured.
+    ScatteredObject* CreateObject(const std::string& shapeName, bool deferSpawn = false);
     bool IsSimPlaying() const { return isPlaying; }
     void SetSimPlaying(bool playing);
 
@@ -100,7 +103,8 @@ public:
 
     // Visual-script object actions. Vectors use console syntax "(x, y, z)"; failures fill outError.
     void DestroyObject(ScatteredObject* obj);                 // scene list, physics body and engine entity
-    ScatteredObject* CloneObject(ScatteredObject* source);    // copy added to the scene; null if impossible
+    ScatteredObject* CloneObject(ScatteredObject* source, bool deferSpawn = false);   // copy added to the scene; null if impossible
+    void FinishCreate(ScatteredObject* obj);                  // gives an object made with deferSpawn its physics body
     bool AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError);
     // Name of the first object a ray hits ("" for none). Needs the simulation.
     std::string RayCastName(const std::string& origin, const std::string& dir, float maxDistance, std::string& outError);
@@ -189,6 +193,12 @@ private:
 // Global play-state hook: phys::Simulation calls it (with the new play state)
 // whenever the user toggles play/stop, so the active NativeScriptHost can
 // start/stop runOnPlay scripts. NativeScriptHost registers itself here.
+// A playtest never keeps what it changed. The editor takes a snapshot of the scene (PrePlay: before any script, visual
+// or C++, has run) and puts it back (PostPlay: after every script has stopped, On Stop chains included).
+using PlayEdgeHook = std::function<void()>;
+void SetPrePlayHook(PlayEdgeHook hook);
+void SetPostPlayHook(PlayEdgeHook hook);
+
 using PlayStateHook = void(*)(bool playing);
 void SetPlayStateHook(PlayStateHook hook);
 PlayStateHook GetPlayStateHook();

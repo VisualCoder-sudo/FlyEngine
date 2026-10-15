@@ -63,6 +63,12 @@ inline void SnippetOutput(const char* snippet, int pin, const std::string& value
 }
 }
 
+// The actions Visual Script nodes also have (destroy, clone, force, raycast, keys, sound, text). An engine from before
+// they existed has a shorter function table: reads give 0 / "", actions do nothing.
+namespace detail {
+inline bool HaveActions() { return Api()->size >= offsetof(FlyApi, TimeSincePlay) + sizeof(void*); }
+}
+
 // Seconds since the previous frame.
 inline float DeltaTime() { return detail::Dt(); }
 
@@ -158,6 +164,20 @@ public:
         detail::Api()->SetCollisionAccuracy(m_handle, static_cast<int>(a));
     }
 
+    // Visual Script's object actions.
+    void Destroy() { if (detail::HaveActions()) detail::Api()->DestroyObject(m_handle); m_handle = 0; }   // the handle is invalid afterwards
+    Object Clone() const { return detail::HaveActions() ? Object(detail::Api()->CloneObject(m_handle)) : Object(); }
+    std::string Name() const { return detail::HaveActions() ? std::string(detail::Api()->GetName(m_handle)) : std::string(); }
+    void SetName(const std::string& name) { if (detail::HaveActions()) detail::Api()->SetName(m_handle, name.c_str()); }
+    // A push; call it every frame for a steady one. AddImpulse is a sudden kick, once.
+    void AddForce(Vec3 v)   { if (detail::HaveActions()) detail::Api()->AddForce(m_handle, v.x, v.y, v.z); }
+    void AddImpulse(Vec3 v) { if (detail::HaveActions()) detail::Api()->AddImpulse(m_handle, v.x, v.y, v.z); }
+    // Starts the script attached to the object (or the named script class), like the Run Script node.
+    bool StartScript(const char* typeName = nullptr) {
+        return detail::HaveActions() && detail::Api()->StartObjectScript(m_handle, typeName) != 0;
+    }
+    void StopScript() { if (detail::HaveActions()) detail::Api()->StopObjectScript(m_handle); }
+
     friend bool operator==(Object a, Object b) { return a.m_handle == b.m_handle; }
 
 private:
@@ -244,6 +264,31 @@ inline void SetRestitution(float r)    { detail::Api()->SetRestitution(r); }
 }
 
 } // namespace Game
+
+// ---- input, sound, screen text, raycast, time ------------------------------
+
+// Name of the first object a ray hits, "" for none. Directions need not be normalised.
+inline std::string Raycast(Vec3 origin, Vec3 direction, float maxDistance = 100.0f) {
+    if (!detail::HaveActions()) return {};
+    return detail::Api()->Raycast(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, maxDistance);
+}
+
+// Keys by name: "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right", "1".."4", "Shift", "Ctrl".
+inline bool KeyDown(const char* key)    { return detail::HaveActions() && detail::Api()->KeyDown(key) != 0; }      // held
+inline bool KeyPressed(const char* key) { return detail::HaveActions() && detail::Api()->KeyPressed(key) != 0; }   // went down this frame
+
+// Sound: a file in the project, volume 0..1. SetVolume is the master volume.
+inline void PlaySound(const std::string& file, float volume = 1.0f) { if (detail::HaveActions()) detail::Api()->PlaySound(file.c_str(), volume); }
+inline void SetVolume(float volume) { if (detail::HaveActions()) detail::Api()->SetMasterVolume(volume); }
+
+// Text on the game screen. `position` is "Top Left", "Top Center", "Top Right", "Center", "Bottom Left", "Bottom Center"
+// or "Bottom Right"; seconds 0 keeps it until replaced; empty text clears that spot.
+inline void ShowText(const std::string& text, const std::string& position = "Top Center", float seconds = 0.0f) {
+    if (detail::HaveActions()) detail::Api()->ShowText(text.c_str(), position.c_str(), seconds);
+}
+
+// Seconds since Play started.
+inline float TimeSincePlay() { return detail::HaveActions() ? detail::Api()->TimeSincePlay() : 0.0f; }
 
 // ---- coroutines ------------------------------------------------------------
 

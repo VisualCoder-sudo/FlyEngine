@@ -17,6 +17,7 @@
 
 namespace {
 PlayStateHook g_playStateHook = nullptr;
+PlayEdgeHook g_prePlayHook, g_postPlayHook;
 ScriptRuntime* g_activeRuntime = nullptr;
 
 bool ParseBool(const std::string& s, bool& out) {
@@ -56,6 +57,8 @@ bool ParseColor(const std::string& s, Color& out) {
 } // namespace
 
 void SetPlayStateHook(PlayStateHook hook) { g_playStateHook = hook; }
+void SetPrePlayHook(PlayEdgeHook hook) { g_prePlayHook = std::move(hook); }
+void SetPostPlayHook(PlayEdgeHook hook) { g_postPlayHook = std::move(hook); }
 PlayStateHook GetPlayStateHook() { return g_playStateHook; }
 
 void SetActiveRuntime(ScriptRuntime* rt) { g_activeRuntime = rt; }
@@ -106,7 +109,7 @@ ScatteredObject* ScriptRuntime::FindByNameNth(const std::string& name, int occur
     return nullptr;
 }
 
-ScatteredObject* ScriptRuntime::CreateObject(const std::string& shapeName)
+ScatteredObject* ScriptRuntime::CreateObject(const std::string& shapeName, bool deferSpawn)
 {
     if (!objectsPtr || !engine) return nullptr;
 
@@ -125,9 +128,17 @@ ScatteredObject* ScriptRuntime::CreateObject(const std::string& shapeName)
     engine->AddEntity(std::move(newObj));
     if (isPlaying) {
         playCreatedObjects.push_back(raw);
-        if (sim) sim->SpawnBodyForObject(raw);
+        if (sim && !deferSpawn) sim->SpawnBodyForObject(raw);
     }
     return raw;
+}
+
+void ScriptRuntime::FinishCreate(ScatteredObject* obj)
+{
+    if (!obj || !isPlaying || !sim) return;
+    sim->SpawnBodyForObject(obj);
+    // Anything the Setup chain set before the body existed (velocity) is handed to it now.
+    sim->SetBodyVelocity(obj, obj->GetVelocity());
 }
 
 void ScriptRuntime::DestroyObject(ScatteredObject* obj)
@@ -141,7 +152,7 @@ void ScriptRuntime::DestroyObject(ScatteredObject* obj)
     if (engine) engine->RemoveEntity(obj);
 }
 
-ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source)
+ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source, bool deferSpawn)
 {
     if (!source || !objectsPtr || !engine) return nullptr;
     std::unique_ptr<ScatteredObject> copy = source->Clone();
@@ -151,7 +162,7 @@ ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source)
     engine->AddEntity(std::move(copy));
     if (isPlaying) {
         playCreatedObjects.push_back(raw);
-        if (sim) sim->SpawnBodyForObject(raw);
+        if (sim && !deferSpawn) sim->SpawnBodyForObject(raw);
     }
     return raw;
 }
@@ -384,10 +395,15 @@ void ScriptRuntime::StopAllScripts()
 void ScriptRuntime::OnPlayStarted()
 {
     ClearSnippetValues();
+    // Everything that will be put back when play stops is recorded BEFORE any script runs. The visual script's Start
+    // chain runs below, and what it changes (or creates) must count as a change, not as how the scene started.
+    if (hostPtr) {
+        playCreatedObjects.clear();
+        CaptureWorldSettings();
+    }
+    if (g_prePlayHook) g_prePlayHook();
     vscript::Run(*this);
     if (!hostPtr) return;
-    playCreatedObjects.clear();
-    CaptureWorldSettings();
 
     // Start every runOnPlay object script and standalone script.
     if (objectsPtr) {
@@ -463,6 +479,7 @@ void ScriptRuntime::OnPlayStopped()
     if (hostPtr) hostPtr->ClearAllScripts();
     RollbackCreatedObjects();
     RestoreWorldSettings();
+    if (g_postPlayHook) g_postPlayHook();   // last: the editor puts the scene back once nothing can change it any more
 }
 
 void ScriptRuntime::LogCreatedObject(ScatteredObject* obj)

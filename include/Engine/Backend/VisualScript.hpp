@@ -3,6 +3,7 @@
 #include <istream>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Node-graph scripting. The graph lives in the scene file and runs on play, in the editor and in exported players.
@@ -32,9 +33,11 @@ enum class NodeType {
     GetProperty = 23,   // target = object path, prop = property
     Raycast = 24,       // Origin, Direction, Distance -> name of the first object hit ("" = none)
     // Object actions (target = object path like Change). Vector actions take their "(x, y, z)" from value / data input 0.
-    CreateObject = 25,  // prop = shape, value = optional name
+    CreateObject = 25,  // prop = shape, value = optional name. Out 0 = Then, out 1 = Setup: a chain run on the new object
+                        // before it gets its physics body, so it appears configured. Nodes in it that have no target
+                        // apply to the new object automatically (a target that was picked still wins)
     Destroy = 26,
-    Clone = 27,         // value = optional name for the copy
+    Clone = 27,         // value = optional name for the copy; out 1 = Setup, like Create Object
     SetVelocity = 28,
     AddForce = 29,
     AddImpulse = 30,
@@ -47,6 +50,20 @@ enum class NodeType {
     SetWorld = 37,      // target = world group, prop = property, value = value (like Change, world groups only)
     CodeSnippet = 38,   // value = C++ (the body of a fly::Script::Run coroutine), started when the flow reaches it;
                         // target = number of value inputs, prop = number of value outputs (0..6 each)
+    // Added later. Value nodes (no exec pins) unless noted; literals of unwired pins as for the other value nodes.
+    KeyDown = 39,       // prop = key (see KeyNames): true while it is held
+    AddToVariable = 40, // exec: target = variable name, value / data input 0 = amount; the variable becomes variable + amount
+    EveryN = 41,        // event: value = seconds between firings
+    Concat = 42,        // A, B, C joined as text
+    MakeVec3 = 43,      // X, Y, Z -> "(x, y, z)"
+    VecPart = 44,       // Vec (pin 0), prop = X / Y / Z
+    Distance = 45,      // A, B vectors
+    Normalize = 46,     // Vec
+    VecMath = 47,       // A, B; prop = "+", "-" or "scale" (B is then a number)
+    MathFunc = 48,      // A, B; prop = a name from MathFuncNames()
+    Clamp = 49,         // Value, Min, Max
+    Time = 50,          // prop = "Delta Time" or "Time Since Play"
+    ObjectExists = 51,  // target = object path: true if it is in the scene
     Count_
 };
 
@@ -57,6 +74,9 @@ struct Node {
     std::string target;         // Change: "Workspace/Group1/Cube" or a world group such as "Lighting"
     std::string prop;           // Change: property name
     std::string value;          // Change: console-syntax value, e.g. "(255, 0, 0)" or "true"
+    // Change: more (property, value) pairs applied after the main one, so a single node can set several properties.
+    // Each has its own value pin (data pin i + 1 is extra[i]).
+    std::vector<std::pair<std::string, std::string>> extra;
 };
 
 // exec wire: node `from` output pin `fromPin` -> node `to` (single exec input)
@@ -98,6 +118,7 @@ void Connect(int from, int to, int fromPin = 0);   // replaces any wire already 
 bool AllowsFanOut(NodeType t);                     // event nodes: one output pin may feed several nodes
 bool AllowsFanIn(NodeType t);                      // End: its input may take several wires
 void ConnectData(int from, int to, int toPin, int fromPin = 0);   // replaces any wire already entering that input pin
+void RemoveExtraProperty(int nodeId, int index);  // drops a Change node's extra property and re-numbers its value wires
 void SanitizeDataLinks();                        // drops value wires whose pins no longer exist (a snippet lost a pin)
 int SnippetInputs(const Node& n);                // Code Snippet pin counts, clamped to 0..6
 int SnippetOutputs(const Node& n);
@@ -116,9 +137,18 @@ void Run(ScriptRuntime& rt);   // needs the world's script runtime to find objec
 void Tick(ScriptRuntime& rt, float dt);   // each frame while playing: OnUpdate chains, pending Delays
 void Stop(ScriptRuntime& rt);             // Play stopped: OnStop chains, then pending state is dropped
 
+// What older scenes stored as the target for "the object being made". Still understood; the editor no longer offers it,
+// since an empty target does the same inside a Setup chain.
+inline constexpr const char* kNewObjectTarget = "@new";
+// Nodes reachable from a Create Object / Clone's Setup output (the ones whose empty target means the new object).
+std::vector<int> SetupChainNodes();
 const char* TypeName(NodeType t);
+const char* NodeHelp(NodeType t);             // one or two sentences on what the node does (the Insert Node tooltip); "" if unknown
 const std::vector<std::string>& KeyNames();   // keys offered by On Key Pressed
 const std::vector<std::string>& ShapeNames(); // shapes offered by Create Object
+const std::vector<std::string>& MathFuncNames();   // functions offered by the Math Function node (Sin/Cos take degrees)
+const std::vector<std::string>& VecMathOps();
+const std::vector<std::string>& TimeModes();
 const std::vector<std::string>& HudPositions();   // screen spots offered by Show Text
 
 // Code Snippet nodes. Inside the snippet: In(i) / InNum(i) / InBool(i) / InVec3(i) read what was wired into input pin i
@@ -137,6 +167,15 @@ size_t SnippetFingerprint();                                  // changes wheneve
 // until one is installed the node logs that there is no audio and carries on.
 using SoundPlayer = std::function<void(const std::string& path, float volume)>;
 void SetSoundPlayer(SoundPlayer player);
+
+// What Input / Audio / Show Text / Time nodes do, as plain calls: native scripts (fly.hpp) use the same ones, so a node and
+// its C++ equivalent behave identically.
+bool IsKeyHeld(const std::string& keyName);       // a name from KeyNames()
+bool WasKeyPressed(const std::string& keyName);   // went down this frame
+void ShowText(const std::string& text, const std::string& position, float seconds);   // position from HudPositions(); seconds 0 = until replaced; "" clears
+void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume);        // file relative to the project (or absolute)
+void SetMasterVolumeLevel(float volume);                                              // 0..1
+float TimeSincePlay();
 
 // Draws the Show Text messages inside the given screen rectangle (the game view). No-op when none are showing.
 void DrawHud(float x, float y, float w, float h);

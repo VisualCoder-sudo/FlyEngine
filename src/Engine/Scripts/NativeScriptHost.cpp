@@ -180,6 +180,21 @@ FlyApi MakeScriptApi() {
     a.SetEnvironment = FlyNative_SetEnvironment;
     a.SnippetGetInput = FlyNative_SnippetGetInput;
     a.SnippetSetOutput = FlyNative_SnippetSetOutput;
+    a.DestroyObject = FlyNative_DestroyObject;
+    a.CloneObject = FlyNative_CloneObject;
+    a.GetName = FlyNative_GetName;
+    a.SetName = FlyNative_SetName;
+    a.AddForce = FlyNative_AddForce;
+    a.AddImpulse = FlyNative_AddImpulse;
+    a.Raycast = FlyNative_Raycast;
+    a.StartObjectScript = FlyNative_StartObjectScript;
+    a.StopObjectScript = FlyNative_StopObjectScript;
+    a.KeyDown = FlyNative_KeyDown;
+    a.KeyPressed = FlyNative_KeyPressed;
+    a.PlaySound = FlyNative_PlaySound;
+    a.SetMasterVolume = FlyNative_SetMasterVolume;
+    a.ShowText = FlyNative_ShowText;
+    a.TimeSincePlay = FlyNative_TimeSincePlay;
     return a;
 }
 

@@ -567,6 +567,7 @@ void Simulation::SpawnBodyForObject(ScatteredObject* obj, b3BodyType type) {
     rec.startAngVel = Vector3Zero();
     rec.wasAnchored = anchored;
     bodyMap[obj] = rec;
+    bodyToObject.push_back({ bodyId, obj });   // raycasts and contacts name objects made during play, too
 }
 
 void Simulation::SetBodyType(ScatteredObject* obj, b3BodyType type) {

@@ -5,6 +5,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 class Engine;
@@ -63,3 +64,10 @@ bool RestoreSceneFromMemory(std::istringstream& in, Engine& engine,
                             std::vector<ScatteredObject*>& objects,
                             std::vector<std::unique_ptr<ModelGroup>>& models,
                             const std::string& baseDir);
+
+// One text record per object, exactly what the scene file stores for it (the snapshot above is made of them).
+// DiffObjectRecords lists what differs between two such lists, for checking that a restore really put everything back.
+std::vector<std::pair<std::string, std::string>> SnapshotObjectRecords(const std::vector<ScatteredObject*>& objects,
+                                                                       const std::string& baseDir);
+std::vector<std::string> DiffObjectRecords(const std::vector<std::pair<std::string, std::string>>& before,
+                                           const std::vector<std::pair<std::string, std::string>>& after);

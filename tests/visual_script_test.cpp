@@ -13,6 +13,7 @@
 #include "Engine/Scripts/ScriptRuntime.hpp"
 #include "Engine/Frontend/ui.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdlib>
 #include <filesystem>
@@ -40,6 +41,10 @@ struct SetCall { std::string object, prop, value; };
 std::vector<SetCall> g_sets;                    // ScriptRuntime::SetObjectProperty
 std::vector<std::string> g_forces;              // "force|impulse <vec>"
 std::vector<std::string> g_created;             // CreateObject shapes
+std::vector<bool> g_createDeferred;             // ...and whether each asked for its physics body to wait
+std::vector<std::string> g_finished;            // FinishCreate calls (the object's fake name)
+std::vector<size_t> g_logAtFinish;              // how many log lines existed when each FinishCreate came
+bool g_cloneDeferred = false;
 int g_destroyed = 0, g_cloned = 0, g_scriptsStarted = 0;
 std::map<const void*, std::string> g_names;     // SetName on the fake objects
 std::string g_rayHit;                           // what RayCastName returns
@@ -51,10 +56,11 @@ std::map<std::string, std::vector<std::string>> g_snippetOutputs;   // what the 
 
 struct alignas(16) FakeObject { char c; };
 FakeObject g_objects[3];                        // fake objects: only their addresses matter
-const char* ObjectName(const void* p) { return p == &g_objects[0] ? "Cube" : p == &g_objects[1] ? "Ball" : "?"; }
+const char* ObjectName(const void* p) { return p == &g_objects[0] ? "Cube" : p == &g_objects[1] ? "Ball" : p == &g_objects[2] ? "New" : "?"; }
 
 // raylib stand-ins
 int g_keyPressed = -1;
+int g_keyHeld = -1;
 float g_masterVolume = -1.0f;
 std::vector<std::string> g_played;              // "path|volume" from the sound player hook
 std::vector<std::string> g_drawn;               // DrawText strings that are not the shadow pass
@@ -62,10 +68,11 @@ int g_drawTextCalls = 0;
 
 void ResetStubs() {
     g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear();
+    g_createDeferred.clear(); g_finished.clear(); g_logAtFinish.clear(); g_cloneDeferred = false;
     g_destroyed = g_cloned = g_scriptsStarted = 0;
     g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
     g_names.clear(); g_rayHit.clear();
-    g_keyPressed = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear();
+    g_keyPressed = -1; g_keyHeld = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear();
     vscript::SetSoundPlayer(nullptr);
 }
 }
@@ -102,12 +109,18 @@ bool ScriptRuntime::GetObjectProperty(ScatteredObject*, const std::string& prop,
     if (prop == "Mass") { out = "4"; return true; }
     return false;
 }
-ScatteredObject* ScriptRuntime::CreateObject(const std::string& shape) {
+ScatteredObject* ScriptRuntime::CreateObject(const std::string& shape, bool defer) {
     g_created.push_back(shape);
-    return reinterpret_cast<ScatteredObject*>(&g_objects[2]);
+    g_createDeferred.push_back(defer);
+    // Alternate between two fake objects so nested creates can be told apart: "New" first, then "Ball".
+    return reinterpret_cast<ScatteredObject*>(&g_objects[(g_created.size() % 2) ? 2 : 1]);
 }
+void ScriptRuntime::FinishCreate(ScatteredObject* o) { g_finished.push_back(ObjectName(o)); g_logAtFinish.push_back(g_log.size()); }
 void ScriptRuntime::DestroyObject(ScatteredObject*) { ++g_destroyed; }
-ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject*) { ++g_cloned; return reinterpret_cast<ScatteredObject*>(&g_objects[1]); }
+ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject*, bool defer) {
+    ++g_cloned; g_cloneDeferred = defer;
+    return reinterpret_cast<ScatteredObject*>(&g_objects[1]);
+}
 bool ScriptRuntime::AddForce(ScatteredObject*, const std::string& vec, bool impulse, std::string&) {
     g_forces.push_back(std::string(impulse ? "impulse " : "force ") + vec);
     return true;
@@ -131,6 +144,7 @@ void ScatteredObject::SetName(const std::string& n) { g_names[this] = n; }
 
 extern "C" {
 bool IsKeyPressed(int key) { return key == g_keyPressed; }
+bool IsKeyDown(int key) { return key == g_keyHeld; }
 void SetMasterVolume(float v) { g_masterVolume = v; }
 int MeasureText(const char* text, int) { return static_cast<int>(std::strlen(text)) * 10; }
 void DrawText(const char* text, int, int, int, Color c) {
@@ -499,6 +513,114 @@ static void TestChangeObjectAndWorld() {
     CHECK(g_console.size() == 1 && g_console[0] == "game.Lighting.GlobalShadows = false");
 }
 
+// ---------------------------------------------------------------- Change with several properties
+
+static void TestChangeManyProperties() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change);
+    N(c).target = "Workspace/Cube"; N(c).prop = "Mass"; N(c).value = "7";
+    N(c).extra = { { "Color", "(1, 2, 3)" }, { "Anchored", "true" } };
+    Link_(s, c);
+    Run(RT());
+    CHECK(g_sets.size() == 3);                                 // the main property, then each extra one, in order
+    if (g_sets.size() == 3) {
+        CHECK(g_sets[0].prop == "Mass" && g_sets[0].value == "7");
+        CHECK(g_sets[1].prop == "Color" && g_sets[1].value == "(1, 2, 3)");
+        CHECK(g_sets[2].prop == "Anchored" && g_sets[2].value == "true");
+        CHECK(g_sets[0].object == "Cube" && g_sets[1].object == "Cube" && g_sets[2].object == "Cube");
+    }
+
+    Fresh();                                                   // world groups too
+    const int s2 = Add(NodeType::Start), w = Add(NodeType::Change);
+    N(w).target = "Lighting"; N(w).prop = "GlobalShadows"; N(w).value = "false";
+    N(w).extra = { { "ShadowQuality", "50" } };
+    Link_(s2, w);
+    Run(RT());
+    CHECK(g_console.size() == 2 && g_console[0] == "game.Lighting.GlobalShadows = false" &&
+          g_console[1] == "game.Lighting.ShadowQuality = 50");
+
+    Fresh();                                                   // a missing object is reported once per property, and the chain goes on
+    const int s3 = Add(NodeType::Start), m = Add(NodeType::Change), p = Add(NodeType::Print);
+    N(m).target = "Workspace/Ghost"; N(m).prop = "Mass"; N(m).extra = { { "Anchored", "true" } };
+    N(p).value = "carried on";
+    Link_(s3, m); Link_(m, p);
+    Run(RT());
+    CHECK(LogCount("No object") == 2 && Logged("carried on"));
+}
+
+static void TestChangeExtraWires() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change), add = Add(NodeType::Add), get = Add(NodeType::GetProperty);
+    N(c).target = "Workspace/Cube"; N(c).prop = "Mass"; N(c).value = "1";
+    N(c).extra = { { "Transparency", "0" }, { "Position", "(0, 0, 0)" } };
+    N(add).target = "2"; N(add).value = "3";
+    N(get).target = "Workspace/Ball"; N(get).prop = "Position";
+    CHECK(DataInputCount(N(c)) == 3);                          // the value, plus one pin per extra property
+    ConnectData(add, c, 1); ConnectData(get, c, 2);
+    ConnectData(add, c, 3); CHECK(Active().dataLinks.size() == 2);   // there is no pin 3
+    Link_(s, c);
+    Run(RT());
+    CHECK(g_sets.size() == 3);
+    if (g_sets.size() == 3) {
+        CHECK(g_sets[0].value == "1");                         // main value untouched
+        CHECK(g_sets[1].value == "5");                         // wired from Add
+        CHECK(g_sets[2].value == "(1, 2, 3)");                 // wired from Get Property
+    }
+}
+
+static void TestRemoveExtraProperty() {
+    Fresh();
+    const int c = Add(NodeType::Change), a = Add(NodeType::Add), b = Add(NodeType::Add), d = Add(NodeType::Add);
+    N(c).extra = { { "Mass", "1" }, { "Transparency", "0" }, { "Color", "(1, 1, 1)" } };   // pins 1, 2, 3
+    ConnectData(a, c, 1); ConnectData(b, c, 2); ConnectData(d, c, 3);
+    RemoveExtraProperty(c, 1);                                 // drop "Transparency" (pin 2)
+    CHECK(N(c).extra.size() == 2 && N(c).extra[0].first == "Mass" && N(c).extra[1].first == "Color");
+    CHECK(Active().dataLinks.size() == 2);                     // b's wire went with it
+    bool aOn1 = false, dOn2 = false;
+    for (const DataLink& l : Active().dataLinks) { if (l.from == a && l.toPin == 1) aOn1 = true; if (l.from == d && l.toPin == 2) dOn2 = true; }
+    CHECK(aOn1 && dOn2);                                       // the Color wire moved down to follow its property
+    RemoveExtraProperty(c, 9);                                 // out of range: nothing happens
+    CHECK(N(c).extra.size() == 2);
+}
+
+static void TestChangePropertiesSaveLoad() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change), add = Add(NodeType::Add), plain = Add(NodeType::Change);
+    N(c).target = "Workspace/Cube"; N(c).prop = "Mass"; N(c).value = "2";
+    N(c).extra = { { "Color", "(10, 20, 30)" }, { "Position", "(1.5, 0, -2)" } };
+    N(add).target = "4";
+    ConnectData(add, c, 2);
+    Link_(s, c); Link_(c, plain);
+    const std::string saved = SaveAll() + "AFTER 5\n";
+    CHECK(saved.find("VPROPS 2") != std::string::npos);
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    const Node* back = nullptr;
+    for (const Node& n : Active().nodes) if (n.type == NodeType::Change && !n.extra.empty()) back = &n;
+    CHECK(back && back->extra.size() == 2 && back->extra[0].first == "Color" && back->extra[1].second == "(1.5, 0, -2)");
+    CHECK(Active().dataLinks.size() == 1 && Active().dataLinks[0].toPin == 2);
+    std::string tag; int v = 0; in >> tag >> v;
+    CHECK(tag == "AFTER" && v == 5);                           // both optional blocks read, then it stops at the right place
+    Run(RT());
+    CHECK(g_sets.size() == 3 && g_sets[2].value == "4");       // and the loaded node still runs, wire included
+
+    Fresh();                                                   // no extras: no block, and the file is the old format
+    Add(NodeType::Change);
+    CHECK(SaveAll().find("VPROPS") == std::string::npos);
+}
+
+static void TestChangeExtrasInSetup() {
+    Fresh();
+    const int s = Add(NodeType::Start), cr = Add(NodeType::CreateObject), ch = Add(NodeType::Change);
+    N(ch).prop = "Color"; N(ch).value = "(9, 9, 9)"; N(ch).extra = { { "Mass", "3" }, { "Anchored", "true" } };
+    Link_(s, cr); Link_(cr, ch, 1);
+    Run(RT());
+    CHECK(g_sets.size() == 3);                                 // every property lands on the new object, before it spawns
+    for (const SetCall& c : g_sets) CHECK(c.object == "New");
+    CHECK(g_finished.size() == 1);
+}
+
 static void TestChangeValueFromWire() {
     Fresh();
     const int s = Add(NodeType::Start), c = Add(NodeType::Change), add = Add(NodeType::Add);
@@ -564,6 +686,125 @@ static void TestObjectActions() {
         CHECK_STR(g_sets[1].prop, "Velocity"); CHECK_STR(g_sets[1].value, "(0, 9, 0)");
     }
     CHECK(g_forces.size() == 2 && g_forces[0] == "force (5, 0, 0)" && g_forces[1] == "impulse (0, 0, 5)");
+}
+
+// ---------------------------------------------------------------- create with setup
+
+static void TestCreateObjectSetup() {
+    Fresh();
+    const int s = Add(NodeType::Start), cr = Add(NodeType::CreateObject);
+    const int ch = Add(NodeType::Change), tp = Add(NodeType::Teleport), inSetup = Add(NodeType::Print), after = Add(NodeType::Print);
+    N(cr).prop = "Sphere";
+    N(ch).prop = "Color"; N(ch).value = "(1, 2, 3)";           // no target: inside Setup they work on the new object
+    N(tp).value = "(0, 9, 0)";
+    N(inSetup).value = "setup done"; N(after).value = "then";
+    Link_(s, cr);
+    Link_(cr, ch, 1); Link_(ch, tp); Link_(tp, inSetup);   // out 1: Setup
+    Link_(cr, after, 0);                                    // out 0: Then
+    Run(RT());
+
+    CHECK(g_created.size() == 1 && g_createDeferred.size() == 1 && g_createDeferred[0]);   // born without a physics body
+    CHECK(g_sets.size() == 2);                              // the Change and the Teleport both hit the new object
+    if (g_sets.size() == 2) {
+        CHECK_STR(g_sets[0].object, "New"); CHECK_STR(g_sets[0].prop, "Color");
+        CHECK_STR(g_sets[1].object, "New"); CHECK_STR(g_sets[1].prop, "Position");
+    }
+    CHECK(g_finished.size() == 1 && g_finished[0] == "New");
+    CHECK(g_logAtFinish.size() == 1 && g_logAtFinish[0] == 1);   // finished after "setup done" and before "then"
+    CHECK(g_log.size() == 2 && g_log[0].find("setup done") != std::string::npos && g_log[1].find("then") != std::string::npos);
+}
+
+static void TestCreateObjectWithoutSetup() {
+    Fresh();                                                // nothing on Setup: still finished, and Then still runs
+    const int s = Add(NodeType::Start), cr = Add(NodeType::CreateObject), p = Add(NodeType::Print);
+    N(p).value = "next";
+    Link_(s, cr); Link_(cr, p, 0);
+    Run(RT());
+    CHECK(g_finished.size() == 1 && Logged("next"));
+
+    Fresh();                                                // old graphs wired Create Object's only output: that is "Then"
+    const int s2 = Add(NodeType::Start), cr2 = Add(NodeType::CreateObject), p2 = Add(NodeType::Print);
+    N(p2).value = "legacy";
+    Link_(s2, cr2); Link_(cr2, p2);
+    Run(RT());
+    CHECK(Logged("legacy"));
+}
+
+static void TestAutoApplyRules() {
+    // A target that was picked still wins inside Setup.
+    Fresh();
+    const int s = Add(NodeType::Start), cr = Add(NodeType::CreateObject), ch = Add(NodeType::Change);
+    N(ch).target = "Workspace/Cube"; N(ch).prop = "Mass"; N(ch).value = "5";
+    Link_(s, cr); Link_(cr, ch, 1);
+    Run(RT());
+    CHECK(g_sets.size() == 1 && g_sets[0].object == "Cube");
+
+    // With no target and no Setup there is nothing to apply to: silent, and the chain goes on.
+    Fresh();
+    const int s2 = Add(NodeType::Start), c2 = Add(NodeType::Change), p2 = Add(NodeType::Print);
+    N(c2).prop = "Mass"; N(c2).value = "1"; N(p2).value = "went on";
+    Link_(s2, c2); Link_(c2, p2);
+    Run(RT());
+    CHECK(g_sets.empty() && Logged("went on"));
+
+    // The same Change, once it is under a Create Object's Setup, applies; and the editor can find such nodes.
+    Fresh();
+    const int s3 = Add(NodeType::Start), cr3 = Add(NodeType::CreateObject), c3 = Add(NodeType::Change), p3 = Add(NodeType::Print);
+    const int other = Add(NodeType::Print);
+    N(c3).prop = "Mass"; N(c3).value = "1";
+    Link_(s3, cr3); Link_(cr3, c3, 1); Link_(c3, p3); Link_(cr3, other, 0);
+    const std::vector<int> chain = SetupChainNodes();
+    CHECK(chain.size() == 2);                                 // the Change and what follows it, not the Then side
+    CHECK(std::find(chain.begin(), chain.end(), c3) != chain.end() && std::find(chain.begin(), chain.end(), p3) != chain.end());
+    CHECK(std::find(chain.begin(), chain.end(), other) == chain.end());
+    Run(RT());
+    CHECK(g_sets.size() == 1 && g_sets[0].object == "New");
+
+    // Auto-apply ends with the Setup: a later target-less Change on the Then side has no object again.
+    Fresh();
+    const int s4 = Add(NodeType::Start), cr4 = Add(NodeType::CreateObject), after = Add(NodeType::Change);
+    N(after).prop = "Mass"; N(after).value = "1";
+    Link_(s4, cr4); Link_(cr4, after, 0);
+    Run(RT());
+    CHECK(g_sets.empty());
+}
+
+static void TestNewObjectOutsideSetup() {
+    // Older scenes stored an explicit "new object" target; it is still understood.
+    Fresh();
+    const int s = Add(NodeType::Start), ch = Add(NodeType::Change), p = Add(NodeType::Print);
+    N(ch).target = kNewObjectTarget; N(ch).prop = "Mass"; N(ch).value = "1"; N(p).value = "after";
+    Link_(s, ch); Link_(ch, p);
+    Run(RT());
+    CHECK(g_sets.empty());                                  // nothing to change
+    CHECK(Logged("New Object") && Logged("after"));         // says why, and carries on
+}
+
+static void TestNestedSetup() {
+    Fresh();
+    const int s = Add(NodeType::Start), a = Add(NodeType::CreateObject), b = Add(NodeType::CreateObject);
+    const int onB = Add(NodeType::Change), onA = Add(NodeType::Change);
+    N(onB).prop = "Mass"; N(onB).value = "1";
+    N(onA).prop = "Mass"; N(onA).value = "2";
+    Link_(s, a); Link_(a, b, 1);                            // A's Setup creates B ...
+    Link_(b, onB, 1);                                       // ... whose own Setup changes B
+    Link_(b, onA, 0);                                       // and after B, "New Object" is A again
+    Run(RT());
+    CHECK(g_sets.size() == 2);
+    if (g_sets.size() == 2) { CHECK_STR(g_sets[0].object, "Ball"); CHECK_STR(g_sets[1].object, "New"); }
+    CHECK(g_finished.size() == 2 && g_finished[0] == "Ball" && g_finished[1] == "New");   // B is done before A
+}
+
+static void TestCloneSetup() {
+    Fresh();
+    const int s = Add(NodeType::Start), cl = Add(NodeType::Clone), ch = Add(NodeType::Change), p = Add(NodeType::Print);
+    N(cl).target = "Workspace/Cube"; N(ch).prop = "Anchored"; N(ch).value = "true";
+    N(p).value = "cloned";
+    Link_(s, cl); Link_(cl, ch, 1); Link_(cl, p, 0);
+    Run(RT());
+    CHECK(g_cloneDeferred && g_cloned == 1);
+    CHECK(g_sets.size() == 1 && g_sets[0].object == "Ball" && g_sets[0].prop == "Anchored");   // the copy, not the original
+    CHECK(g_finished.size() == 1 && Logged("cloned"));
 }
 
 static void TestObjectActionOnMissingTarget() {
@@ -716,6 +957,273 @@ static void TestConnectRules() {
     CHECK(Active().dataLinks.size() == 1 && Active().dataLinks[0].from == a2);
     ConnectData(a2, a2, 0);  CHECK(Active().dataLinks.size() == 1);     // no self link
     ConnectData(a1, a2, 1);  CHECK(Active().dataLinks.size() == 2);     // value nodes chain
+}
+
+// ---------------------------------------------------------------- first batch of extra nodes
+
+// Print(value node) result, with the "[script] " prefix removed.
+static std::string Evaluate(int valueNode) {
+    const int s = Add(NodeType::Start), p = Add(NodeType::Print);
+    Link_(s, p);
+    ConnectData(valueNode, p, 0);
+    g_log.clear();
+    Run(RT());
+    if (g_log.empty()) return "<no output>";
+    const std::string prefix = "[script] ";
+    return g_log[0].substr(prefix.size());
+}
+
+static void TestIsKeyDown() {
+    Fresh();
+    const int k = Add(NodeType::KeyDown);
+    N(k).prop = "W";
+    CHECK_STR(Evaluate(k), "false");
+    g_keyHeld = KEY_W;
+    CHECK_STR(Evaluate(k), "true");
+    g_keyHeld = KEY_S;
+    CHECK_STR(Evaluate(k), "false");                 // another key held
+    g_keyHeld = KEY_W; g_keyPressed = -1;
+    N(k).prop = "Nonsense";
+    CHECK_STR(Evaluate(k), "false");                 // an unknown key is just never down
+
+    Fresh();                                         // drives a Branch: while held, one thing, otherwise the other
+    const int s = Add(NodeType::OnUpdate), br = Add(NodeType::Branch), key = Add(NodeType::KeyDown);
+    const int held = Add(NodeType::Print), free_ = Add(NodeType::Print);
+    N(key).prop = "Space"; N(held).value = "held"; N(free_).value = "free";
+    Link_(s, br); Link_(br, held, 0); Link_(br, free_, 1); ConnectData(key, br, 0);
+    Run(RT());
+    Tick(RT(), 0.01f);
+    g_keyHeld = KEY_SPACE;
+    Tick(RT(), 0.01f); Tick(RT(), 0.01f);
+    CHECK(LogCount("free") == 1 && LogCount("held") == 2);
+}
+
+static void TestAddToVariable() {
+    Fresh();
+    const int s = Add(NodeType::Start), a1 = Add(NodeType::AddToVariable), a2 = Add(NodeType::AddToVariable), a3 = Add(NodeType::AddToVariable);
+    const int get = Add(NodeType::GetVariable), p = Add(NodeType::Print), plus = Add(NodeType::Add);
+    N(a1).target = "score"; N(a1).value = "5";        // never set before: starts from 0
+    N(a2).target = "score"; N(a2).value = "2.5";
+    N(a3).target = "score";                           // amount from a wire
+    N(plus).target = "10"; N(plus).value = "10";
+    ConnectData(plus, a3, 0);
+    N(get).target = "score";
+    ConnectData(get, p, 0);
+    Link_(s, a1); Link_(a1, a2); Link_(a2, a3); Link_(a3, p);
+    Run(RT());
+    CHECK(g_log.size() == 1 && g_log[0].find("27.5") != std::string::npos);
+
+    Fresh();                                          // a non-number amount adds nothing, and a bad variable counts as 0
+    const int s2 = Add(NodeType::Start), b = Add(NodeType::AddToVariable), set = Add(NodeType::SetVariable);
+    const int get2 = Add(NodeType::GetVariable), p2 = Add(NodeType::Print);
+    N(set).target = "v"; N(set).value = "word";
+    N(b).target = "v"; N(b).value = "oops";
+    N(get2).target = "v";
+    ConnectData(get2, p2, 0);
+    Link_(s2, set); Link_(set, b); Link_(b, p2);
+    Run(RT());
+    CHECK(g_log.size() == 1 && g_log[0].find("[script] 0") == 0);
+}
+
+static void TestEveryNSeconds() {
+    Fresh();
+    const int e = Add(NodeType::EveryN), p = Add(NodeType::Print);
+    N(e).value = "0.5"; N(p).value = "tick";
+    Link_(e, p);
+    Run(RT());
+    for (int i = 0; i < 10; ++i) Tick(RT(), 0.1f);   // one second
+    CHECK(LogCount("tick") == 2);
+    for (int i = 0; i < 5; ++i) Tick(RT(), 0.1f);
+    CHECK(LogCount("tick") == 3);
+
+    Run(RT());                                       // a new Play starts the clock again
+    Tick(RT(), 0.4f);
+    CHECK(LogCount("tick") == 3);
+    Tick(RT(), 0.2f);
+    CHECK(LogCount("tick") == 4);
+
+    Fresh();                                         // a long hitch fires a few times, not hundreds
+    const int e2 = Add(NodeType::EveryN), q = Add(NodeType::Print);
+    N(e2).value = "0.1";
+    Link_(e2, q);
+    Run(RT());
+    Tick(RT(), 30.0f);
+    CHECK(LogCount("[script]") + 0 <= 4);
+
+    Fresh();                                         // fans out like other events
+    const int e3 = Add(NodeType::EveryN), x = Add(NodeType::Print), y = Add(NodeType::Print);
+    N(e3).value = "1"; N(x).value = "x"; N(y).value = "y";
+    Link_(e3, x); Link_(e3, y);
+    Run(RT());
+    Tick(RT(), 1.0f);
+    CHECK(LogCount("x") == 1 && LogCount("y") == 1);
+}
+
+static void TestJoinText() {
+    Fresh();
+    const int c = Add(NodeType::Concat);
+    N(c).target = "Score: "; N(c).value = "5"; N(c).prop = " pts";
+    CHECK_STR(Evaluate(c), "Score: 5 pts");
+
+    Fresh();                                          // wired values mix with typed ones
+    const int c2 = Add(NodeType::Concat), add = Add(NodeType::Add);
+    N(c2).target = "Total "; N(c2).prop = "!";
+    N(add).target = "2"; N(add).value = "3";
+    ConnectData(add, c2, 1);
+    CHECK_STR(Evaluate(c2), "Total 5!");
+}
+
+static void TestVectorNodes() {
+    Fresh();
+    const int m = Add(NodeType::MakeVec3);
+    N(m).target = "1"; N(m).value = "2.5"; N(m).prop = "-3";
+    CHECK_STR(Evaluate(m), "(1, 2.5, -3)");
+
+    Fresh();
+    const int part = Add(NodeType::VecPart);
+    N(part).target = "(4, 5, 6)";
+    N(part).prop = "X"; CHECK_STR(Evaluate(part), "4");
+    N(part).prop = "Y"; CHECK_STR(Evaluate(part), "5");
+    N(part).prop = "Z"; CHECK_STR(Evaluate(part), "6");
+
+    Fresh();
+    const int d = Add(NodeType::Distance);
+    N(d).target = "(0, 0, 0)"; N(d).value = "(3, 4, 0)";
+    CHECK_STR(Evaluate(d), "5");
+
+    Fresh();
+    const int n = Add(NodeType::Normalize);
+    N(n).target = "(0, 3, 4)";
+    CHECK_STR(Evaluate(n), "(0, 0.6, 0.8)");
+    N(n).target = "(0, 0, 0)";
+    CHECK_STR(Evaluate(n), "(0, 0, 0)");              // no direction: zero, not NaN
+
+    Fresh();
+    const int v = Add(NodeType::VecMath);
+    N(v).target = "(1, 2, 3)"; N(v).value = "(10, 20, 30)";
+    N(v).prop = "+"; CHECK_STR(Evaluate(v), "(11, 22, 33)");
+    N(v).prop = "-"; CHECK_STR(Evaluate(v), "(-9, -18, -27)");
+    N(v).value = "2"; N(v).prop = "scale"; CHECK_STR(Evaluate(v), "(2, 4, 6)");
+
+    Fresh();                                          // a vector from Get Property flows through the nodes
+    const int g = Add(NodeType::GetProperty), pt = Add(NodeType::VecPart);
+    N(g).target = "Workspace/Cube"; N(g).prop = "Position";
+    N(pt).prop = "Z";
+    ConnectData(g, pt, 0);
+    CHECK_STR(Evaluate(pt), "3");                     // the stub's Position is (1, 2, 3)
+}
+
+static void TestMathFunctions() {
+    struct Case { const char* fn; const char* a; const char* b; const char* want; };
+    const Case cases[] = {
+        { "Min", "3", "5", "3" }, { "Max", "3", "5", "5" }, { "Abs", "-4.5", "0", "4.5" },
+        { "Round", "2.5", "0", "3" }, { "Round", "-1.2", "0", "-1" }, { "Floor", "2.9", "0", "2" }, { "Ceil", "2.1", "0", "3" },
+        { "Sqrt", "16", "0", "4" }, { "Sqrt", "-4", "0", "0" }, { "Pow", "2", "10", "1024" },
+        { "Modulo", "7", "3", "1" }, { "Modulo", "7", "0", "0" },
+        { "Sin", "90", "0", "1" }, { "Cos", "0", "0", "1" },
+    };
+    for (const Case& c : cases) {
+        Fresh();
+        const int f = Add(NodeType::MathFunc);
+        N(f).prop = c.fn; N(f).target = c.a; N(f).value = c.b;
+        CHECK_STR(Evaluate(f), c.want);
+    }
+    Fresh();                                          // Sin(0) is exactly 0, and Cos(90) is (almost) 0
+    const int sn = Add(NodeType::MathFunc);
+    N(sn).prop = "Sin"; N(sn).target = "0";
+    CHECK_STR(Evaluate(sn), "0");
+    Fresh();
+    const int ps = Add(NodeType::MathFunc);
+    N(ps).prop = "Pow"; N(ps).target = "0"; N(ps).value = "-1";   // infinity is not a number the graph can use
+    CHECK_STR(Evaluate(ps), "0");
+}
+
+static void TestClampNode() {
+    struct Case { const char* v; const char* lo; const char* hi; const char* want; };
+    const Case cases[] = { { "5", "0", "10", "5" }, { "-3", "0", "10", "0" }, { "42", "0", "10", "10" }, { "5", "10", "0", "5" } };
+    for (const Case& c : cases) {
+        Fresh();
+        const int k = Add(NodeType::Clamp);
+        N(k).target = c.v; N(k).value = c.lo; N(k).prop = c.hi;
+        CHECK_STR(Evaluate(k), c.want);               // the last case has min and max swapped: still sensible
+    }
+}
+
+static void TestTimeNode() {
+    Fresh();
+    const int t = Add(NodeType::Time);
+    N(t).prop = "Delta Time";
+    const int s = Add(NodeType::OnUpdate), p = Add(NodeType::Print), t2 = Add(NodeType::Time);
+    N(t2).prop = "Time Since Play";
+    Link_(s, p);
+    const int p2 = Add(NodeType::Print);
+    Link_(p, p2);
+    ConnectData(t, p, 0); ConnectData(t2, p2, 0);
+    Run(RT());
+    Tick(RT(), 0.25f);
+    Tick(RT(), 0.5f);
+    CHECK(g_log.size() == 4);
+    if (g_log.size() == 4) {
+        CHECK(g_log[0].find("0.25") != std::string::npos && g_log[1].find("0.25") != std::string::npos);
+        CHECK(g_log[2].find("0.5") != std::string::npos && g_log[3].find("0.75") != std::string::npos);
+    }
+    Run(RT());                                        // a new Play restarts the clock
+    g_log.clear();
+    Tick(RT(), 0.125f);
+    CHECK(g_log.size() == 2 && g_log[1].find("0.125") != std::string::npos);
+}
+
+static void TestObjectExists() {
+    Fresh();
+    const int e = Add(NodeType::ObjectExists);
+    N(e).target = "Workspace/Cube";
+    CHECK_STR(Evaluate(e), "true");
+    N(e).target = "Workspace/Ghost";
+    CHECK_STR(Evaluate(e), "false");
+
+    Fresh();                                          // the usual guard: only act when it is there
+    const int s = Add(NodeType::Start), br = Add(NodeType::Branch), ex = Add(NodeType::ObjectExists);
+    const int yes = Add(NodeType::Print), no = Add(NodeType::Print);
+    N(ex).target = "Workspace/Ball"; N(yes).value = "found"; N(no).value = "missing";
+    Link_(s, br); Link_(br, yes, 0); Link_(br, no, 1); ConnectData(ex, br, 0);
+    Run(RT());
+    CHECK(Logged("found") && !Logged("missing"));
+}
+
+static void TestNewNodePins() {
+    // Counts and connection rules for the new nodes.
+    Fresh();
+    const int k = Add(NodeType::KeyDown), c = Add(NodeType::Concat), pr = Add(NodeType::Print), ev = Add(NodeType::EveryN);
+    CHECK(IsPure(NodeType::KeyDown) && IsPure(NodeType::Concat) && IsPure(NodeType::Clamp) && IsPure(NodeType::ObjectExists));
+    CHECK(!IsPure(NodeType::AddToVariable) && !IsPure(NodeType::EveryN));
+    CHECK(DataInputCount(NodeType::Concat) == 3 && DataInputCount(NodeType::Clamp) == 3 && DataInputCount(NodeType::MakeVec3) == 3);
+    CHECK(DataInputCount(NodeType::VecMath) == 2 && DataInputCount(NodeType::Normalize) == 1 && DataInputCount(NodeType::KeyDown) == 0);
+    CHECK(OutputCount(NodeType::EveryN) == 1 && OutputCount(NodeType::KeyDown) == 0);
+    Connect(pr, ev); CHECK(Active().links.empty());                 // an event takes no input
+    Connect(k, pr);  CHECK(Active().links.empty());                 // a value node has no flow pins
+    ConnectData(k, c, 3); CHECK(Active().dataLinks.empty());        // Join Text has pins 0..2
+    ConnectData(k, c, 2); CHECK(Active().dataLinks.size() == 1);
+    Connect(ev, pr); Connect(ev, Add(NodeType::Print));
+    CHECK(Active().links.size() == 2);                              // Every N Seconds fans out like the other events
+    CHECK(MathFuncNames().size() == 11 && VecMathOps().size() == 3 && TimeModes().size() == 2);
+}
+
+static void TestNewNodesSaveLoad() {
+    Fresh();
+    const int s = Add(NodeType::Start), a = Add(NodeType::AddToVariable), m = Add(NodeType::MathFunc), e = Add(NodeType::EveryN);
+    N(a).target = "n"; N(a).value = "2";
+    N(m).prop = "Pow"; N(m).target = "2"; N(m).value = "5";
+    N(e).value = "0.25";
+    Link_(s, a); ConnectData(m, a, 0);
+    const std::string saved = SaveAll();
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    CHECK(Count() == 1 && Active().nodes.size() == 4 && Active().dataLinks.size() == 1);
+    int types = 0;
+    for (const Node& n : Active().nodes) if (n.type == NodeType::AddToVariable || n.type == NodeType::MathFunc || n.type == NodeType::EveryN) ++types;
+    CHECK(types == 3);                                              // they survive a round trip with their types
+    CHECK(SaveAll() == saved);
 }
 
 // ---------------------------------------------------------------- code snippets
@@ -1024,6 +1532,14 @@ static void TestRemoveNodeDropsWires() {
 // ---------------------------------------------------------------- save / load
 
 
+static void TestEveryNodeHasHelp() {
+    for (int i = 0; i < static_cast<int>(NodeType::Count_); ++i) {
+        const NodeType t = static_cast<NodeType>(i);
+        CHECK(NodeHelp(t) && NodeHelp(t)[0]);   // the Insert Node tooltip: no node is left unexplained
+        CHECK(std::string(TypeName(t)) != "?");
+    }
+}
+
 static void TestSaveLoadRoundTrip() {
     Fresh();
     const int s = Add(NodeType::Start), br = Add(NodeType::Branch), cmp = Add(NodeType::Compare);
@@ -1124,7 +1640,7 @@ static void TestLoadBadInput() {
 int main() {
     struct T { const char* name; void (*fn)(); };
     const T tests[] = {
-        { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder },
+        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder },
         { "BranchOnVariable", TestBranchOnVariable }, { "RepeatAndDone", TestRepeatAndDone },
         { "DoOnce", TestDoOnce }, { "DelayWaitsForTicks", TestDelayWaitsForTicks },
         { "StopCancelsDelayAndFiresOnStop", TestStopCancelsDelayAndFiresOnStop },
@@ -1135,12 +1651,20 @@ int main() {
         { "BranchWiredToCompare", TestBranchWiredToCompare }, { "GetVariableSeesLaterSets", TestGetVariableSeesLaterSets },
         { "SetVariableFromWireAndDefault", TestSetVariableFromWireAndDefault },
         { "VariablesResetOnRun", TestVariablesResetOnRun }, { "ValueWireLoopStops", TestValueWireLoopStops },
-        { "ChangeObjectAndWorld", TestChangeObjectAndWorld }, { "ChangeValueFromWire", TestChangeValueFromWire },
+        { "ChangeObjectAndWorld", TestChangeObjectAndWorld }, { "ChangeManyProperties", TestChangeManyProperties }, { "ChangeExtraWires", TestChangeExtraWires },
+        { "RemoveExtraProperty", TestRemoveExtraProperty }, { "ChangePropertiesSaveLoad", TestChangePropertiesSaveLoad },
+        { "ChangeExtrasInSetup", TestChangeExtrasInSetup }, { "ChangeValueFromWire", TestChangeValueFromWire },
         { "SetWorld", TestSetWorld }, { "GetProperty", TestGetProperty }, { "ObjectActions", TestObjectActions },
+        { "CreateObjectSetup", TestCreateObjectSetup }, { "CreateObjectWithoutSetup", TestCreateObjectWithoutSetup },
+        { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup },
         { "ObjectActionOnMissingTarget", TestObjectActionOnMissingTarget }, { "VectorFromWire", TestVectorFromWire },
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
         { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundWithoutBackend", TestSoundWithoutBackend },
-        { "ConnectRules", TestConnectRules }, { "SnippetStartsClass", TestSnippetStartsClass }, { "SnippetFanOutFromEvent", TestSnippetFanOutFromEvent },
+        { "ConnectRules", TestConnectRules }, { "IsKeyDown", TestIsKeyDown }, { "AddToVariable", TestAddToVariable }, { "EveryNSeconds", TestEveryNSeconds },
+        { "JoinText", TestJoinText }, { "VectorNodes", TestVectorNodes }, { "MathFunctions", TestMathFunctions },
+        { "ClampNode", TestClampNode }, { "TimeNode", TestTimeNode }, { "ObjectExists", TestObjectExists },
+        { "NewNodePins", TestNewNodePins }, { "NewNodesSaveLoad", TestNewNodesSaveLoad },
+        { "SnippetStartsClass", TestSnippetStartsClass }, { "SnippetFanOutFromEvent", TestSnippetFanOutFromEvent },
         { "SnippetInputs", TestSnippetInputs }, { "SnippetOutputs", TestSnippetOutputs },
         { "SnippetPinRules", TestSnippetPinRules }, { "SnippetWiresSaveLoad", TestSnippetWiresSaveLoad },
         { "SnippetGeneratorHelpers", TestSnippetGeneratorHelpers },

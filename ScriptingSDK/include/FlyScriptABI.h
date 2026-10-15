@@ -112,6 +112,25 @@ typedef struct FlyApi {
      * from the same thread. Added after the first releases: check `size` first (fly.hpp does). */
     const char* (*SnippetGetInput)(const char* snippet, int pin);
     void        (*SnippetSetOutput)(const char* snippet, int pin, const char* value);
+
+    /* Everything a Visual Script node can do, for C++ scripts too. Added after the first releases: fly.hpp checks
+     * `size` before calling these (an older engine ignores them). Returned strings stay valid until the next call from
+     * the same thread. */
+    void      (*DestroyObject)(FlyHandle h);
+    FlyHandle (*CloneObject)(FlyHandle h);
+    const char* (*GetName)(FlyHandle h);
+    void      (*SetName)(FlyHandle h, const char* name);
+    short     (*AddForce)(FlyHandle h, float x, float y, float z);      /* a push; call every frame for a steady one */
+    short     (*AddImpulse)(FlyHandle h, float x, float y, float z);    /* a sudden kick */
+    const char* (*Raycast)(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance); /* name of the first object hit, "" for none */
+    FlyHandle (*StartObjectScript)(FlyHandle h, const char* typeName);  /* typeName may be NULL: use the script attached to the object */
+    void      (*StopObjectScript)(FlyHandle h);
+    short     (*KeyDown)(const char* keyName);       /* true while held */
+    short     (*KeyPressed)(const char* keyName);    /* true on the frame it went down */
+    void      (*PlaySound)(const char* file, float volume);   /* file relative to the project */
+    void      (*SetMasterVolume)(float volume);
+    void      (*ShowText)(const char* text, const char* position, float seconds);   /* seconds 0 = until replaced; "" clears */
+    float     (*TimeSincePlay)(void);
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

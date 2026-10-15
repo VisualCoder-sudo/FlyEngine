@@ -13,6 +13,7 @@
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Vfs.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
+#include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
@@ -713,6 +714,11 @@ bool OpenProjectFile(const std::string& projectFolder, Engine& engine,
 bool SaveProjectFile(const std::string& projectFolder, const std::vector<ScatteredObject*>& objects,
                      const std::vector<std::unique_ptr<ModelGroup>>& models,
                      terrain::Terrain* terrain) {
+    // Play never writes the project: whatever scripts do while it runs stays in the running copy.
+    if (ui::IsPlayActive()) {
+        ui::LogAlways("[Play] Not saving: the project is read-only while Play is running.");
+        return false;
+    }
     // Saving makes imports permanent: dedupe textures into assets/shared and
     // drop unused imported folders *before* the scene records their paths.
     textureManager::CommitAssets(objects);

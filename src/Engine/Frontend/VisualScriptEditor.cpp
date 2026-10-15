@@ -1,5 +1,6 @@
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
+#include "../../../include/Engine/Frontend/ui.hpp"
 #include "imgui.h"
 #include <algorithm>
 #include <cfloat>
@@ -39,7 +40,8 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Branch: case NodeType::Sequence: case NodeType::Delay:
         case NodeType::Repeat: case NodeType::DoOnce: return IM_COL32(150, 110, 30, 255);
         case NodeType::Print: return IM_COL32(110, 70, 160, 255);
-        case NodeType::OnKey: return IM_COL32(40, 130, 60, 255);
+        case NodeType::OnKey: case NodeType::EveryN: return IM_COL32(40, 130, 60, 255);
+        case NodeType::AddToVariable: return IM_COL32(40, 130, 140, 255);
         case NodeType::PlaySound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
         case NodeType::ShowText: return IM_COL32(110, 70, 160, 255);
         case NodeType::SetWorld: return IM_COL32(40, 95, 170, 255);
@@ -53,7 +55,14 @@ ImU32 HeaderColor(NodeType t) {
     return IM_COL32(80, 80, 80, 255);
 }
 
-std::string TargetLabel(const Node& n) { return n.target.empty() ? std::string("Game...") : "Game/" + n.target; }
+std::vector<int> g_setupNodes;   // nodes in a Create Object / Clone Setup chain, refreshed each frame
+
+std::string TargetLabel(const Node& n) {
+    if (n.target == kNewObjectTarget) return "New Object";   // an older scene's explicit "new object" target
+    if (n.target.empty() && std::find(g_setupNodes.begin(), g_setupNodes.end(), n.id) != g_setupNodes.end())
+        return "New Object (auto)";                          // nothing picked, inside a Setup chain: works on the new object
+    return n.target.empty() ? std::string("Game...") : "Game/" + n.target;
+}
 
 // The Target button grows with its text, and the node grows with the button.
 float TargetButtonW(const Node& n) {
@@ -73,6 +82,10 @@ int BodyRows(NodeType t) {
         case NodeType::PlaySound: return 2;
         case NodeType::ShowText: case NodeType::SetWorld: return 3;
         case NodeType::CodeSnippet: return 9;   // Inputs, Outputs, then the code box (7 rows)
+        case NodeType::KeyDown: case NodeType::Normalize: case NodeType::Time: case NodeType::ObjectExists:
+        case NodeType::EveryN: return 1;
+        case NodeType::VecPart: case NodeType::Distance: case NodeType::AddToVariable: return 2;
+        case NodeType::Concat: case NodeType::MakeVec3: case NodeType::VecMath: case NodeType::MathFunc: case NodeType::Clamp: return 3;
         case NodeType::CreateObject: case NodeType::Clone: case NodeType::SetVelocity: case NodeType::AddForce:
         case NodeType::AddImpulse: case NodeType::Teleport: return 2;
         case NodeType::GetProperty: case NodeType::And: case NodeType::Or: case NodeType::Add: case NodeType::Sub:
@@ -82,6 +95,11 @@ int BodyRows(NodeType t) {
     }
 }
 
+// A Change node grows by two rows (property, value) per extra property, plus a row for the "+ New Property" button.
+int BodyRows(const Node& n) {
+    return n.type == NodeType::Change ? 3 + 2 * static_cast<int>(n.extra.size()) + 1 : BodyRows(n.type);
+}
+
 // Body row that holds data input pin `pin`, or -1.
 int DataPinRow(const Node& n, int pin) {
     if (pin < 0 || pin >= DataInputCount(n)) return -1;
@@ -89,7 +107,10 @@ int DataPinRow(const Node& n, int pin) {
         case NodeType::CodeSnippet: return 2 + pin;   // pins run down the sides of the code box
         case NodeType::SetVariable: case NodeType::SetVelocity: case NodeType::AddForce:
         case NodeType::AddImpulse: case NodeType::Teleport: return 1;
-        case NodeType::Change: case NodeType::SetWorld: return 2;
+        case NodeType::Change: return pin == 0 ? 2 : 4 + 2 * (pin - 1);   // the value, then each extra property's value
+        case NodeType::SetWorld: return 2;
+        case NodeType::AddToVariable: return 1;
+        case NodeType::VecPart: case NodeType::VecMath: case NodeType::MathFunc: return pin + 1;   // a mode row comes first
         case NodeType::PlaySound: return 1;
         case NodeType::Compare: return pin == 0 ? 0 : 2;
         default: return pin;
@@ -107,11 +128,11 @@ bool MultiOut(const Node& n) { return OutputCount(n.type, &n) > 1; }
 float NodeWidth(const Node& n) {
     if (n.type == NodeType::CodeSnippet) return 400.0f;
     if (n.type == NodeType::Change) return 10.0f + 60.0f + TargetButtonW(n) + 14.0f;
-    return BodyRows(n.type) ? 190.0f : 130.0f;
+    return BodyRows(n) ? 190.0f : 130.0f;
 }
 
 float NodeHeight(const Node& n) {
-    const int rows = BodyRows(n.type) + (MultiOut(n) ? OutputCount(n.type, &n) : 0);
+    const int rows = BodyRows(n) + (MultiOut(n) ? OutputCount(n.type, &n) : 0);
     if (!rows) return kHeaderH + 12.0f;
     return kHeaderH + 8.0f + rows * kRowH + 8.0f;
 }
@@ -139,7 +160,7 @@ void DrawDataPin(ImDrawList* dl, ImVec2 c, bool connected) {
 
 ImVec2 InPin(const Node& n, ImVec2 o) { return ImVec2(o.x + n.x, o.y + n.y + kHeaderH * 0.5f); }
 ImVec2 OutPin(const Node& n, ImVec2 o, int pin = 0) {
-    const float y = MultiOut(n) ? kHeaderH + 8.0f + (BodyRows(n.type) + pin) * kRowH + kRowH * 0.5f : kHeaderH * 0.5f;
+    const float y = MultiOut(n) ? kHeaderH + 8.0f + (BodyRows(n) + pin) * kRowH + kRowH * 0.5f : kHeaderH * 0.5f;
     return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + y);
 }
 
@@ -177,7 +198,9 @@ std::string FormatVec(const float v[3]) {
     return b;
 }
 
-void DrawValueWidget(Node& n) {
+// The value editor that suits `prop` (colour picker, vector, checkbox, number); edits `value` in place.
+void DrawValueWidgetFor(const std::string& prop, std::string& value) {
+    struct { const std::string& prop; std::string& value; } n{ prop, value };
     ImGui::SetNextItemWidth(170.0f);
     if (n.prop == "Color") {
         int r = 255, g = 0, b = 0;
@@ -203,6 +226,12 @@ void DrawValueWidget(Node& n) {
             n.value = s;
         }
     }
+}
+
+void DrawValueWidget(Node& n) { DrawValueWidgetFor(n.prop, n.value); }
+
+std::string DefaultValue(const std::string& p) {
+    return IsBoolProp(p) ? "true" : IsVecProp(p) ? "(0, 0, 0)" : p == "Color" ? "(255, 0, 0)" : "0";
 }
 
 // Places the next popup under `anchor` (a button's rect), or above it when there is more room there, and caps its
@@ -392,7 +421,7 @@ void ObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Object");
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
-    const std::string label = n.target.empty() ? std::string("Game...") : "Game/" + n.target;
+    const std::string label = TargetLabel(n);
     if (ImGui::Button((label + "##t").c_str(), ImVec2(NodeWidth(n) - 80.0f, 0))) {
         g_browsePath.clear();
         g_pickerNode = n.id;
@@ -459,6 +488,50 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             break;
         }
         case NodeType::OnKey: ComboRow(n, o, 0, "Key", n.prop, KeyNames()); break;
+        case NodeType::KeyDown: ComboRow(n, o, 0, "Key", n.prop, KeyNames()); break;
+        case NodeType::EveryN: NumRow(n, o, 0, "Seconds", n.value, false); break;
+        case NodeType::AddToVariable:
+            StrRow(n, o, 0, "Name", n.target, "##var");
+            StrRow(n, o, 1, "Amount", n.value, "##amt", wired(0));
+            break;
+        case NodeType::Concat:
+            StrRow(n, o, 0, "A", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "B", n.value, "##b", wired(1));
+            StrRow(n, o, 2, "C", n.prop, "##c", wired(2));
+            break;
+        case NodeType::MakeVec3:
+            StrRow(n, o, 0, "X", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "Y", n.value, "##b", wired(1));
+            StrRow(n, o, 2, "Z", n.prop, "##c", wired(2));
+            break;
+        case NodeType::Clamp:
+            StrRow(n, o, 0, "Value", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "Min", n.value, "##b", wired(1));
+            StrRow(n, o, 2, "Max", n.prop, "##c", wired(2));
+            break;
+        case NodeType::VecPart: {
+            static const std::vector<std::string> axes = { "X", "Y", "Z" };
+            ComboRow(n, o, 0, "Part", n.prop, axes);
+            StrRow(n, o, 1, "Vec", n.target, "##a", wired(0));
+            break;
+        }
+        case NodeType::Normalize: StrRow(n, o, 0, "Vec", n.target, "##a", wired(0)); break;
+        case NodeType::Distance:
+            StrRow(n, o, 0, "A", n.target, "##a", wired(0));
+            StrRow(n, o, 1, "B", n.value, "##b", wired(1));
+            break;
+        case NodeType::VecMath:
+            ComboRow(n, o, 0, "Op", n.prop, VecMathOps());
+            StrRow(n, o, 1, "A", n.target, "##a", wired(0));
+            StrRow(n, o, 2, n.prop == "scale" ? "By" : "B", n.value, "##b", wired(1));
+            break;
+        case NodeType::MathFunc:
+            ComboRow(n, o, 0, "Function", n.prop, MathFuncNames());
+            StrRow(n, o, 1, "A", n.target, "##a", wired(0));
+            StrRow(n, o, 2, "B", n.value, "##b", wired(1));
+            break;
+        case NodeType::Time: ComboRow(n, o, 0, "Value", n.prop, TimeModes()); break;
+        case NodeType::ObjectExists: ObjectRow(n, o, 0, scene); break;
         case NodeType::PlaySound:
             SoundRow(n, o, 0, scene);
             StrRow(n, o, 1, "Volume", n.value, "##vol", wired(0));
@@ -555,11 +628,16 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
     ImGui::SetNextItemWidth(TargetButtonW(n));
     const std::vector<std::string> props = world ? WorldProperties(n.target) : ObjectProperties();
+    // Switching between an object and a world group changes which properties exist: keep only the valid ones.
+    const auto valid = [&](const std::string& p) { return std::find(props.begin(), props.end(), p) != props.end(); };
+    if (!props.empty() && !valid(n.prop)) { n.prop = props.front(); n.value = DefaultValue(n.prop); }
+    for (int k = static_cast<int>(n.extra.size()) - 1; k >= 0; --k)
+        if (!valid(n.extra[k].first)) RemoveExtraProperty(n.id, k);
     if (ImGui::BeginCombo("##p", n.prop.c_str())) {
         for (const auto& p : props)
             if (ImGui::Selectable(p.c_str(), p == n.prop)) {
                 n.prop = p;
-                n.value = IsBoolProp(p) ? "true" : IsVecProp(p) ? "(0, 0, 0)" : p == "Color" ? "(255, 0, 0)" : "0";
+                n.value = DefaultValue(p);
             }
         ImGui::EndCombo();
     }
@@ -571,6 +649,49 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
     if (IsWired(g, n.id, 0)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
     else DrawValueWidget(n);
+
+    // More properties on the same target, each a Property row and a Value row with its own value pin.
+    int removeExtra = -1;
+    for (int k = 0; k < static_cast<int>(n.extra.size()); ++k) {
+        auto& [prop, value] = n.extra[k];
+        ImGui::PushID(1000 + k);
+        y += 26.0f;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Property");
+        ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+        ImGui::SetNextItemWidth(TargetButtonW(n) - 28.0f);
+        if (ImGui::BeginCombo("##p", prop.c_str())) {
+            for (const auto& p : props)
+                if (ImGui::Selectable(p.c_str(), p == prop)) { prop = p; value = DefaultValue(p); }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine(0.0f, 4.0f);
+        if (ImGui::Button("x", ImVec2(24.0f, 0.0f))) removeExtra = k;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this property");
+
+        y += 26.0f;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(prop == "Color" ? "Colour" : "Value");
+        ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+        if (IsWired(g, n.id, k + 1)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
+        else DrawValueWidgetFor(prop, value);
+        ImGui::PopID();
+    }
+    if (removeExtra >= 0) RemoveExtraProperty(n.id, removeExtra);
+
+    y += 26.0f;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    if (!props.empty() && ImGui::Button("+ New Property", ImVec2(NodeWidth(n) - 20.0f, 0.0f))) {
+        std::string pick = props.front();                           // the first property this node isn't setting yet
+        for (const auto& p : props) {
+            bool used = p == n.prop;
+            for (const auto& e : n.extra) used = used || e.first == p;
+            if (!used) { pick = p; break; }
+        }
+        n.extra.emplace_back(pick, DefaultValue(pick));
+    }
     ImGui::PopID();
 }
 
@@ -655,7 +776,7 @@ void DrawEditor(const SceneListing& scene) {
         static double s_changedAt = -1.0;
         const size_t fp = SnippetFingerprint();
         if (fp != s_lastFingerprint) { s_lastFingerprint = fp; s_changedAt = ImGui::GetTime(); }
-        if (s_changedAt >= 0.0 && ImGui::GetTime() - s_changedAt > 0.8) {
+        if (s_changedAt >= 0.0 && ImGui::GetTime() - s_changedAt > 0.8 && !ui::IsPlayActive()) {   // the project is read-only during Play
             WriteSnippetSources(scene.projectDir);
             s_changedAt = -1.0;
         }
@@ -673,6 +794,7 @@ void DrawEditor(const SceneListing& scene) {
         return;
     }
     Graph& g = Active();
+    g_setupNodes = SetupChainNodes();
     ImGui::BeginChild("##vsCanvas", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 cp = ImGui::GetCursorScreenPos();
@@ -863,14 +985,18 @@ void DrawEditor(const SceneListing& scene) {
         ImGui::Separator();
         struct Category { const char* name; std::vector<NodeType> types; };
         const std::vector<Category> categories = {
-            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop, NodeType::OnKey } },
+            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop, NodeType::OnKey, NodeType::EveryN } },
+            { "Input", { NodeType::KeyDown } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
-            { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText } },
+            { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText, NodeType::CodeSnippet } },
             { "Audio", { NodeType::PlaySound, NodeType::SetVolume } },
-            { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript } },
+            { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
             { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },
-            { "Variables", { NodeType::SetVariable, NodeType::GetVariable, NodeType::GetProperty } },
-            { "Math", { NodeType::Add, NodeType::Sub, NodeType::Mul, NodeType::Div, NodeType::Random, NodeType::Lerp } },
+            { "Variables", { NodeType::SetVariable, NodeType::AddToVariable, NodeType::GetVariable, NodeType::GetProperty } },
+            { "Math", { NodeType::Add, NodeType::Sub, NodeType::Mul, NodeType::Div, NodeType::MathFunc, NodeType::Clamp,
+                        NodeType::Random, NodeType::Lerp, NodeType::Time } },
+            { "Vectors", { NodeType::MakeVec3, NodeType::VecPart, NodeType::VecMath, NodeType::Distance, NodeType::Normalize } },
+            { "Text", { NodeType::Concat } },
             { "Logic", { NodeType::Compare, NodeType::And, NodeType::Or, NodeType::Not } },
         };
         auto matches = [](const char* name) {
@@ -881,13 +1007,25 @@ void DrawEditor(const SceneListing& scene) {
             return a.find(b) != std::string::npos;
         };
         auto add = [&](NodeType t) { AddNode(t, g_menuCanvasPos.x, g_menuCanvasPos.y); ImGui::CloseCurrentPopup(); };
+        // A menu entry that explains itself while the mouse is over it.
+        auto item = [&](NodeType t) {
+            const bool clicked = ImGui::MenuItem(TypeName(t));
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup) && NodeHelp(t)[0]) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 22.0f);
+                ImGui::TextUnformatted(NodeHelp(t));
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            return clicked;
+        };
         if (g_search[0]) {
             for (const auto& c : categories)
-                for (NodeType t : c.types) if (matches(TypeName(t)) && ImGui::MenuItem(TypeName(t))) add(t);
+                for (NodeType t : c.types) if (matches(TypeName(t)) && item(t)) add(t);
         } else if (ImGui::BeginMenu("Insert Node")) {
             for (const auto& c : categories) {
                 if (!ImGui::BeginMenu(c.name)) continue;
-                for (NodeType t : c.types) if (ImGui::MenuItem(TypeName(t))) add(t);
+                for (NodeType t : c.types) if (item(t)) add(t);
                 ImGui::EndMenu();
             }
             ImGui::EndMenu();

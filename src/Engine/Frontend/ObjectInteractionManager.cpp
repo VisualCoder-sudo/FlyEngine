@@ -91,9 +91,15 @@ ObjectInteractionManager::ObjectInteractionManager(Engine& engine, Camera3D& cam
     : engine(engine), camera(camera), cameraController(cameraController), objects(objects), models(models), physicsSim(physicsSim) {
     // City editor commits (node drags, regens, deletions) become undo steps.
     city::SetCityEditCallback([this]() { PushUndoNow(); });
+    // A playtest can never leave a change in the scene: it is snapshotted before play's scripts run and put back after
+    // they have all stopped (see the hooks in ScriptRuntime.hpp).
+    SetPrePlayHook([this]() { CapturePlaySnapshot(); });
+    SetPostPlayHook([this]() { RestorePlaySnapshot(); });
 }
 
 ObjectInteractionManager::~ObjectInteractionManager() {
+    SetPrePlayHook(nullptr);
+    SetPostPlayHook(nullptr);
     CleanupPendingImports();
 }
 
@@ -499,6 +505,7 @@ void ObjectInteractionManager::CapturePlaySnapshot() {
     playSnapshotValid = false;
     playSnapshotSel.clear();
     if (!SnapshotSceneToMemory(objects, models, project::GetCurrentProject().path, playSnapshotBytes)) return;
+    playSnapshotRecords = SnapshotObjectRecords(objects, project::GetCurrentProject().path);
     for (auto* o : ui::GetSelection()) {
         if (o) playSnapshotSel.push_back(o->GetName());
     }
@@ -513,17 +520,31 @@ void ObjectInteractionManager::RestorePlaySnapshot() {
     // does, once their entities are freed below).
     if (ScriptRuntime* rt = GetActiveRuntime()) rt->ForgetCreatedObjects();
 
-    // Unchanged scene: leave it alone rather than rebuild every object.
+    // What Play changed, for the log. Unchanged scene: leave it alone rather than rebuild every object.
+    const std::string& baseDir = project::GetCurrentProject().path;
+    const std::vector<std::string> changed = DiffObjectRecords(playSnapshotRecords, SnapshotObjectRecords(objects, baseDir));
     std::string now;
-    if (SnapshotSceneToMemory(objects, models, project::GetCurrentProject().path, now) &&
-        now == playSnapshotBytes) {
+    if (changed.empty() && SnapshotSceneToMemory(objects, models, baseDir, now) && now == playSnapshotBytes) {
+        playSnapshotBytes.clear();
+        playSnapshotRecords.clear();
         return;
     }
 
     const size_t before = objects.size();
     RestoreFromSnapshot(playSnapshotBytes, playSnapshotSel);
-    ui::LogAlways("[Play] Scene restored to how it was before Play (%zu object(s) in the scene during play).", before);
+    ui::LogAlways("[Play] Scene restored to how it was before Play (%zu object(s) in the scene during play, %zu changed).",
+                  before, changed.size());
+    for (size_t i = 0; i < changed.size() && i < 8; ++i) ui::LogAlways("[Play]   %s", changed[i].c_str());
+    if (changed.size() > 8) ui::LogAlways("[Play]   ... and %zu more", changed.size() - 8);
+
+    // The restore has to put back everything the scene file stores; if a record still differs, say so.
+    const std::vector<std::string> stuck = DiffObjectRecords(playSnapshotRecords, SnapshotObjectRecords(objects, baseDir));
+    if (!stuck.empty()) {
+        ui::LogAlways("[Play] WARNING: %zu object(s) still differ from before Play after the restore:", stuck.size());
+        for (size_t i = 0; i < stuck.size() && i < 8; ++i) ui::LogAlways("[Play]   %s", stuck[i].c_str());
+    }
     playSnapshotBytes.clear();
+    playSnapshotRecords.clear();
 }
 
 void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, const std::vector<std::string>& selNames) {
@@ -914,7 +935,8 @@ void ObjectInteractionManager::Update(float dt) {
     const bool playing = ui::IsPlayActive();
     if (playing != wasPlaying) {
         wasPlaying = playing;
-        if (playing) CapturePlaySnapshot();
+        // Normally the hooks already did both, around the scripts. This catches play with no script runtime.
+        if (playing) { if (!playSnapshotValid) CapturePlaySnapshot(); }
         else RestorePlaySnapshot();
     }
 

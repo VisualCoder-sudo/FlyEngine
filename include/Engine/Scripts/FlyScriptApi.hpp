@@ -104,6 +104,21 @@ FLY_API void  FlyNative_SetEnvironment(int what, float value);
 FLY_API const char* FlyNative_SnippetGetInput(const char* snippet, int pin);
 FLY_API void FlyNative_SnippetSetOutput(const char* snippet, int pin, const char* value);
 
+// Everything the Visual Script nodes do (see FlyApi in FlyScriptABI.h).
+FLY_API void FlyNative_DestroyObject(unsigned long long h);
+FLY_API unsigned long long FlyNative_CloneObject(unsigned long long h);
+FLY_API const char* FlyNative_GetName(unsigned long long h);
+FLY_API void FlyNative_SetName(unsigned long long h, const char* name);
+FLY_API short FlyNative_AddForce(unsigned long long h, float x, float y, float z);
+FLY_API short FlyNative_AddImpulse(unsigned long long h, float x, float y, float z);
+FLY_API const char* FlyNative_Raycast(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance);
+FLY_API short FlyNative_KeyDown(const char* keyName);
+FLY_API short FlyNative_KeyPressed(const char* keyName);
+FLY_API void FlyNative_PlaySound(const char* file, float volume);
+FLY_API void FlyNative_SetMasterVolume(float volume);
+FLY_API void FlyNative_ShowText(const char* text, const char* position, float seconds);
+FLY_API float FlyNative_TimeSincePlay(void);
+
 // Physics (game.Physics.* - routed to the simulation).
 FLY_API float FlyNative_GetGravity(void);
 FLY_API void  FlyNative_SetGravity(float g);
