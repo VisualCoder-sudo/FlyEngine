@@ -17,7 +17,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#ifdef _WIN32
+#include <process.h>
+#define vs_getpid _getpid
+#else
 #include <unistd.h>
+#define vs_getpid getpid
+#endif
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -873,7 +879,7 @@ static void TestSnippetGenerator() {
 
 static void TestSnippetWriteFile() {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / ("vs_snippet_test_" + std::to_string(::getpid()));
+    const fs::path dir = fs::temp_directory_path() / ("vs_snippet_test_" + std::to_string(vs_getpid()));
     fs::remove_all(dir);
     fs::create_directories(dir);
     const fs::path file = dir / "Scripts" / ".visualscript" / "snippets.cpp";

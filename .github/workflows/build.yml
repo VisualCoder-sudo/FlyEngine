@@ -127,6 +127,35 @@ jobs:
           fi
           echo "installed build loaded its data and shaders"
 
+  tests:
+    name: Unit tests (Linux)
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config git ca-certificates \
+            libasound2-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libxkbcommon-dev libgl1-mesa-dev libglib2.0-dev libvulkan-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFLYENGINE_ENABLE_FLYCLOUD=OFF
+          -DFLYENGINE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
   wayland:
     name: Linux (Wayland / X11 compatibility)
     runs-on: ubuntu-latest
@@ -167,6 +196,30 @@ jobs:
           fi
           grep -E "DISPLAY: Window created" wayland.log \
             || { echo "::error::the engine did not initialise a display"; cat wayland.log; exit 1; }
+
+  tests-windows:
+    name: Unit tests (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFLYENGINE_ENABLE_FLYCLOUD=OFF
+          -DFLYENGINE_ENABLE_DESKTOP_VALIDATION=OFF
+          -DFLYENGINE_GRAPHICS_BACKEND=D3D11
+          -DFLYENGINE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
 
   windows:
     name: Windows (MSVC)
