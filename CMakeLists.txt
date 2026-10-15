@@ -244,6 +244,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Export/PeIcon.cpp
         src/Engine/Export/ExportManager.cpp
         src/Engine/Frontend/ui.cpp
+        src/Engine/Frontend/ui_assets.cpp
         src/Engine/Frontend/ExportDialog.cpp
         src/Engine/Platform/Platform.cpp
         src/Engine/Platform/FileDialog.cpp
