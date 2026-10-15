@@ -5,6 +5,7 @@
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
+#include "../../include/Engine/Audio.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../include/Terrain/Terrain.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
@@ -28,6 +29,13 @@ Engine::Engine(int width, int height, const std::string& title, int targetFPS) {
     camera.projection = CAMERA_PERSPECTIVE;
 
     console::AttachCamera(camera);
+
+    // Visual Script's Play Sound node and fly::PlaySound() end here. The sound device opens on the first sound.
+    vscript::SetSoundPlayer([](const std::string& path, float volume) {
+        audio::PlayParams p;
+        p.volume = volume;
+        audio::Play(path, p);
+    });
 }
 
 Engine::~Engine() {
@@ -37,6 +45,8 @@ Engine::~Engine() {
     // crashed the Player on exit.
     while (!pendingEntities.empty()) pendingEntities.pop_back();
     while (!entities.empty()) entities.pop_back();
+    audio::Shutdown();
+    vscript::SetSoundPlayer(nullptr);
     gfx::Shutdown();
     CloseWindow();
 }
@@ -69,8 +79,16 @@ void Engine::Update(float deltaTime) {
         const bool playing = isPlayerBuild || ui::IsPlayActive();
         if (playing && !wasPlaying) timeBeforePlay = gfx::Lighting().timeOfDay;
         if (!playing && wasPlaying) gfx::Lighting().timeOfDay = timeBeforePlay;
+        if (!playing && wasPlaying) audio::StopAll();   // Play ended: cut the sounds off
         wasPlaying = playing;
         if (playing) gfx::TickLighting(deltaTime);
+    }
+    {
+        // Sound follows the master volume (SetMasterVolume / fly::SetVolume) and hears from the camera.
+        audio::SetMasterVolume(GetMasterVolume());
+        const Vector3 f = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+        audio::SetListener(camera.position.x, camera.position.y, camera.position.z, f.x, f.y, f.z, camera.up.x, camera.up.y, camera.up.z);
+        audio::Update();
     }
     if (!isPlayerBuild) ui::UpdateInput();
 

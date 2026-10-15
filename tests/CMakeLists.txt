@@ -79,6 +79,11 @@ add_executable(vfs_pack_test vfs_pack_test.cpp)
 target_link_libraries(vfs_pack_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME vfs_pack COMMAND vfs_pack_test)
 
+# Sound: decode a WAV and mix it through a device-less engine (src/Engine/Audio.cpp). No window, no sound card.
+add_executable(audio_test audio_test.cpp)
+target_link_libraries(audio_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME audio COMMAND audio_test)
+
 # Export for Windows from a prebuilt player (stand-in PE executable). No window.
 add_executable(export_windows_test export_windows_test.cpp)
 target_link_libraries(export_windows_test PRIVATE FlyEngineCore FlyRL)

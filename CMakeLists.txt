@@ -267,6 +267,9 @@ add_library(FlyEngineCore STATIC
         src/Terrain/Water/WaterNoise.cpp
         src/Terrain/Water/WaterRipple.cpp
         src/Engine/Frontend/UndoSystem.cpp
+        src/Engine/Audio.cpp
+        src/Engine/Backend/miniaudio_impl.c
+        src/Engine/Backend/stb/stb_vorbis.c
         src/Engine/Backend/FbxModel.cpp
         src/CityGen/City.cpp
         src/CityGen/CityGeometry.cpp
@@ -355,6 +358,13 @@ target_precompile_headers(FlyEngineCore PRIVATE
 set_source_files_properties(
         extern/ufbx/ufbx.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+# Third-party C for sound: miniaudio (mixer, WAV/MP3/FLAC decoders, the audio device) and stb_vorbis (OGG).
+# Built without our warning flags; they are not ours to fix.
+set_source_files_properties(
+        src/Engine/Backend/miniaudio_impl.c
+        src/Engine/Backend/stb/stb_vorbis.c
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "$<IF:$<C_COMPILER_ID:MSVC>,/w,-w>")
 
 # --- Executables ------------------------------------------------------------
 # The editor and the player, once per graphics layer: the primary backend

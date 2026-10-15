@@ -318,6 +318,16 @@ exits cleanly, has no library dependencies beyond the system's, and writes nothi
 
 ---
 
+## Sound
+
+`fly::PlaySound("sounds/boom.ogg", 0.8f)` and the Visual Script **Play Sound** node play a file from the project
+(WAV, MP3, FLAC or OGG Vorbis). `fly::SetVolume` is the master volume. Clips are decoded once and cached; up to 64
+sounds play at once, the oldest giving way. Sound stops when Play ends.
+
+The engine side is `include/Engine/Audio.hpp` (`audio::Play`, `PlayAt` for a sound placed in the world, `Stop`, loop,
+pitch, pan), mixed by [miniaudio](https://github.com/mackron/miniaudio). The sound device opens on the first sound; a
+machine without one just plays nothing. Exported games read their sounds from the archive.
+
 ## Shaders
 
 `shaders/*.glsl` are written in sokol-shdc's annotated GLSL and compiled at
