@@ -346,11 +346,14 @@ node, the object's destruction, or the end of Play stops it. Two switches use *s
 while the game is playing):
 
 - **Muffle**: rays from the object to you. The share a wall blocks, and how thick it is, close a low-pass filter and lower the
-  volume, smoothly, so a fan behind a wall sounds dull and comes back clear when you step out.
+  volume, smoothly, so a fan behind a wall sounds dull and comes back clear when you step out. Close to the object (about two
+  of its sizes, at least 1.5 m) nothing muffles it, fading in over the next 3 m. Things right at either end (your own body,
+  the floor under the object, its mount) are not walls. If the straight line is blocked, a few ways round it are tried (a door,
+  a corner, over a low wall); an open one leaves the sound clearer than the wall alone.
 - **Echo**: rays out of the object in every direction. How near the walls are and how enclosed the room is set the echo's delay,
   how long it rings and how loud it is; open ground has none. The delay is fixed when the sound starts.
 
-`FLY_SOUND_DEBUG=1` logs what the rays measure, once a second per sound. Water and anything without a collider do not block rays.
+`FLY_SOUND_DEBUG=1` logs what the rays measure once a second per sound, including what is blocking it. Water and anything without a collider do not block rays.
 
 ## Shaders
 

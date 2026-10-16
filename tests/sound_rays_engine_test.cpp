@@ -107,6 +107,49 @@ int main() {
     std::printf("behind the wall: %.4f   in the open: %.4f\n", behindWall, inTheOpen);
     CHECK(inTheOpen > behindWall * 3.0f);
 
+    // Standing next to the fan with your own body around the listener and a floor under the fan: turning round must not change how
+    // loud it is, and neither the body nor the floor counts as a wall.
+    {
+        std::string err;
+        ScatteredObject* floorSlab = rt.CreateObject("Cube");
+        rt.SetObjectProperty(floorSlab, "Position", "(12, -0.5, 0)", err);
+        rt.SetObjectProperty(floorSlab, "Size", "(30, 1, 30)", err);
+        rt.SetObjectProperty(floorSlab, "Anchored", "true", err);
+        ScatteredObject* body = rt.CreateObject("Cube");   // stands in for the player's capsule
+        rt.SetObjectProperty(body, "Position", "(10.9, 1, 0)", err);
+        rt.SetObjectProperty(body, "Size", "(0.8, 1.8, 0.8)", err);
+        rt.SetObjectProperty(body, "Anchored", "true", err);
+        for (int i = 0; i < 5; ++i) sim.Update(1.0f / 60.0f);
+
+        auto loud = [&](float lx, float fx, bool rays) {
+            audio::StopAll(); soundrays::Clear();
+            audio::SetListener(lx, 1.4f, 0, fx, 0, 0, 0, 1, 0);
+            vscript::Node* n = vscript::Find(play.id);
+            vscript::SoundOptionRef(*n, "muffle") = rays ? "true" : "false";
+            vscript::SoundOptionRef(*n, "echo") = "false";
+            vscript::Run(rt);
+            float r = 0.0f;
+            for (int i = 0; i < 40; ++i) r = frame();
+            return r;
+        };
+        const float facing = loud(10.9f, 1.0f, true), away = loud(10.9f, -1.0f, true);
+        const float flat = loud(10.9f, 1.0f, false);
+        std::printf("1.1 m from the fan, body around the listener, floor under the fan: facing %.4f, away %.4f, rays off %.4f\n", facing, away, flat);
+        CHECK(facing > flat * 0.9f && away > flat * 0.9f);   // no muffling at all up close
+        // A few metres off, the body and the floor still do not muffle: only the wall would (there is none now).
+        const float farFacing = loud(7.0f, 1.0f, true), farAway = loud(7.0f, -1.0f, true), farFlat = loud(7.0f, 1.0f, false);
+        std::printf("5 m from the fan: facing %.4f, away %.4f, rays off %.4f\n", farFacing, farAway, farFlat);
+        CHECK(farFacing > farFlat * 0.8f && farAway > farFlat * 0.8f);
+        rt.DestroyObject(floorSlab);
+        rt.DestroyObject(body);
+        audio::StopAll(); soundrays::Clear();
+        audio::SetListener(0, 1, 0, 1, 0, 0, 0, 1, 0);
+        vscript::SoundOptionRef(*vscript::Find(play.id), "muffle") = "true";
+        vscript::SoundOptionRef(*vscript::Find(play.id), "echo") = "true";
+        vscript::Run(rt);
+        for (int i = 0; i < 10; ++i) frame();
+    }
+
     rt.DestroyObject(fan);                            // its object is gone: the sound stops
     frame();
     CHECK(soundrays::ActiveEmitters() == 0 && audio::ActiveVoices() == 0);

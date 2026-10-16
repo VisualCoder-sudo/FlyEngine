@@ -18,19 +18,33 @@ class ScriptRuntime;
 namespace soundrays {
 
 struct Vec3 { float x = 0, y = 0, z = 0; };
-struct RayHit { bool hit = false; float distance = 0; };
+struct RayHit { bool hit = false; float distance = 0; const char* name = nullptr; };   // name: what was hit, for the debug log
 // Casts a ray from `origin` along the unit vector `dir`, at most `maxDistance` long; the closest thing it meets.
 using RayFn = std::function<RayHit(const Vec3& origin, const Vec3& dir, float maxDistance)>;
 
 struct Occlusion {
-    float openness = 1.0f;       // 1 = clear path, 0 = fully shut in behind thick walls
+    float openness = 1.0f;       // 1 = clear path, 0 = fully shut in behind thick walls (after nearness and detours)
     float cutoffHz = 22000.0f;   // low-pass cutoff to apply
     float gain = 1.0f;           // volume factor to apply
-    float blockedShare = 0.0f;   // fraction of the rays that hit something
+    float blockedShare = 0.0f;   // fraction of the direct rays that hit something
     float thickness = 0.0f;      // average thickness (m) of what blocked them
+    float direct = 1.0f;         // openness of the straight line alone
+    float detour = 0.0f;         // openness of the best way round the blocker (0 = none found); see MeasureOcclusion
+    float nearness = 0.0f;       // 1 = so close to the source that nothing muffles it, fading to 0 farther out
+    const char* blocker = nullptr;   // what the first blocked ray hit, for the debug log
 };
+// How the muffling is judged:
+//  * The straight line source -> listener is probed with 5 rays (centre, left, right, above, higher above; never below the source,
+//    so a floor under it does not count).
+//  * A hit within 0.5 m of the source's surface, or within ~0.8 m of the listener (your own body, the floor under a fan, its mount)
+//    is not a wall: the ray carries on past it.
+//  * Within `nearA` of the source (about 2 object sizes, at least 1.5 m) nothing muffles, fading in over the next 3 m.
+//  * When the line is blocked, a few detours round the blocker are tried (sideways, over it); an open one (a door, a corner)
+//    leaves the sound clearer than the wall alone would. Detours cost more rays, so they are only redone when `refreshDetour`;
+//    otherwise `*detourCache` (the last result, 0 = none) is used.
 // `sourceRadius`: rays start just outside the source's own bounds, so it never blocks itself.
-Occlusion MeasureOcclusion(const RayFn& ray, const Vec3& source, const Vec3& listener, float sourceRadius);
+Occlusion MeasureOcclusion(const RayFn& ray, const Vec3& source, const Vec3& listener, float sourceRadius,
+                           float* detourCache = nullptr, bool refreshDetour = true);
 
 constexpr int kEchoRays = 12;
 constexpr float kEchoMaxDistance = 40.0f;

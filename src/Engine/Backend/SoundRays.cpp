@@ -30,41 +30,118 @@ constexpr float kSpeedOfSound = 343.0f;
 
 } // namespace
 
-Occlusion MeasureOcclusion(const RayFn& ray, const Vec3& source, const Vec3& listener, float sourceRadius) {
+namespace {
+
+constexpr float kSourceZone = 0.5f;     // hits this close to the source's surface are the source's own surroundings
+constexpr float kListenerZone = 0.2f;   // ...and this much nearer the listener than kListenerClear: the listener's surroundings
+constexpr float kNearMin = 1.5f;        // nothing muffles within this far, or twice the object's size
+constexpr float kNearFade = 3.0f;       // ...and the muffling fades in over this much more
+constexpr float kDetourBest = 0.8f;     // a perfect detour (no extra length) leaves this much of the sound open
+
+float Smooth(float a, float b, float x) {
+    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+struct Cast { bool hit = false; float distance = 0; const char* name = nullptr; };
+
+// Casts from `a` along `dir` for `span`, carrying on past hits that lie in the ends' zones (line coordinate `s` along source->listener
+// outside [sMin, sMax]): they are the source's or listener's surroundings, not a wall between them.
+Cast CastPath(const RayFn& ray, const Vec3& a, const Vec3& dir, float span, const Vec3& source, const Vec3& d, float sMin, float sMax) {
+    float travelled = 0.0f;
+    for (int i = 0; i < 4 && travelled < span; ++i) {
+        const RayHit h = ray(a + dir * travelled, dir, span - travelled);
+        if (!h.hit) return {};
+        const float dist = travelled + h.distance;
+        const float s = Dot((a + dir * dist) - source, d);
+        if (s < sMin || s > sMax) { travelled = dist + 0.03f; continue; }
+        return { true, dist, h.name };
+    }
+    return {};
+}
+
+float DirectOpenness(float share, float thickness) {
+    // A thin pane still muffles a little; half a metre of wall (or more) is the full effect for the rays it blocks.
+    return 1.0f - share * (0.5f + 0.5f * std::min(thickness / 0.5f, 1.0f));
+}
+
+} // namespace
+
+Occlusion MeasureOcclusion(const RayFn& ray, const Vec3& source, const Vec3& listener, float sourceRadius,
+                           float* detourCache, bool refreshDetour) {
     Occlusion out;
     const Vec3 line = listener - source;
     const float length = Length(line);
     const float start = std::max(0.0f, sourceRadius) + kSourceClear;   // along the line, where the rays leave the source
     const float stop = length - kListenerClear;                        // ...and where they end, short of the listener
-    if (stop - start < 0.2f) return out;                               // too close for anything to be in between
+    const float nearA = std::max(kNearMin, sourceRadius * 2.0f);
+    out.nearness = 1.0f - Smooth(nearA, nearA + kNearFade, length);
+    if (stop - start < 0.2f || out.nearness >= 0.999f) {               // too close for anything to be in between
+        out.direct = out.openness = 1.0f;
+        if (detourCache) *detourCache = 0.0f;
+        return out;
+    }
     const Vec3 d = line * (1.0f / length);
     const Vec3 up = std::fabs(d.y) > 0.95f ? Vec3{ 1, 0, 0 } : Vec3{ 0, 1, 0 };
     const Vec3 u = Normalized(Cross(d, up));
-    const Vec3 v = Cross(d, u);
+    Vec3 v = Cross(d, u);
+    if (v.y < 0.0f) v = v * -1.0f;                                     // "v" points up: sample points never go below the source
     const float r = std::clamp(sourceRadius * 0.6f, 0.15f, 0.8f);
-    const Vec3 offsets[5] = { {}, u * r, u * -r, v * r, v * -r };
+    const Vec3 offsets[5] = { {}, u * r, u * -r, v * r, v * (r * 1.8f) };
     const Vec3 end = source + d * stop;
+    const float sMin = start + kSourceZone, sMax = stop - kListenerZone;
 
     int blocked = 0;
     float thickness = 0.0f;
+    Vec3 pivot = end;
     for (const Vec3& off : offsets) {
         const Vec3 a = source + off + d * start;           // leaves the source
         const Vec3 toEnd = end - a;
         const float span = Length(toEnd);
         if (span < 0.05f) continue;
         const Vec3 dir = toEnd * (1.0f / span);
-        const RayHit fwd = ray(a, dir, span);
+        const Cast fwd = CastPath(ray, a, dir, span, source, d, sMin, sMax);
         if (!fwd.hit) continue;
+        if (!blocked) { pivot = a + dir * fwd.distance; out.blocker = fwd.name; }
         ++blocked;
         // From the listener's side: where is the wall's far face? What lies between the two hits is the wall.
-        const RayHit back = ray(end, dir * -1.0f, span);
-        const float t = back.hit ? std::max(0.0f, span - fwd.distance - back.distance) : 0.0f;
-        thickness += t;
+        const Cast back = CastPath(ray, end, dir * -1.0f, span, source, d, sMin, sMax);
+        thickness += back.hit ? std::max(0.0f, span - fwd.distance - back.distance) : 0.0f;
     }
     out.blockedShare = (float)blocked / 5.0f;
     out.thickness = blocked ? thickness / (float)blocked : 0.0f;
-    // A thin pane still muffles a little; half a metre of wall (or more) is the full effect for the rays it blocks.
-    out.openness = 1.0f - out.blockedShare * (0.5f + 0.5f * std::min(out.thickness / 0.5f, 1.0f));
+    out.direct = DirectOpenness(out.blockedShare, out.thickness);
+
+    // Round the blocker: waypoints beside and above where the line was stopped; a clear path through one is a detour.
+    float detour = 0.0f;
+    if (blocked && out.direct < 0.95f) {
+        if (refreshDetour || !detourCache) {
+            const Vec3 from = source + d * start;
+            const Vec3 offs[7] = { u * 2.0f, u * -2.0f, u * 5.0f, u * -5.0f, v * 3.0f, u * 3.0f + v * 3.0f, u * -3.0f + v * 3.0f };
+            for (const Vec3& o : offs) {
+                const Vec3 w = pivot + o;
+                const Vec3 leg1 = w - from, leg2 = end - w;
+                const float l1 = Length(leg1), l2 = Length(leg2);
+                if (l1 < 0.1f || l2 < 0.1f) continue;
+                const float extra = l1 + l2 - Length(end - from);
+                const float openness = kDetourBest / (1.0f + std::max(0.0f, extra) / 6.0f);
+                if (openness <= detour) continue;               // cannot beat the best so far: skip its rays
+                if (CastPath(ray, from, leg1 * (1.0f / l1), l1, source, d, sMin, sMax).hit) continue;
+                if (CastPath(ray, w, leg2 * (1.0f / l2), l2, source, d, sMin, sMax).hit) continue;
+                detour = openness;
+            }
+            if (detourCache) *detourCache = detour;
+        } else {
+            detour = *detourCache;
+        }
+    } else if (detourCache) {
+        *detourCache = 0.0f;
+    }
+    out.detour = detour;
+
+    // Nearness blends everything toward open; a detour can only help.
+    out.openness = std::max(out.direct, detour);
+    out.openness = out.openness + (1.0f - out.openness) * out.nearness;
     out.cutoffHz = kOpenHz * std::pow(kShutHz / kOpenHz, 1.0f - out.openness);
     out.gain = kBlockedGain + (1.0f - kBlockedGain) * out.openness;
     return out;
@@ -110,6 +187,8 @@ struct Emitter {
     bool muffle = false, echo = false;
     float range = 30.0f;
     float openness = 1.0f;                 // smoothed
+    float detourCache = 0.0f;              // last detour result (re-measured every kDetourEvery seconds)
+    float detourTimer = 0.0f;
     float room[kEchoRays];                 // latest echo ray distances
     int nextRay = 0;
     float debugTimer = 0.0f;
@@ -135,7 +214,7 @@ RayFn MakeRayFn(ScriptRuntime& rt, ScatteredObject* source) {
     return [sim, source](const Vec3& o, const Vec3& d, float maxDistance) -> RayHit {
         if (!sim || maxDistance <= 0.0f) return {};
         const phys::RaycastHit h = sim->RayCast(Vector3{ o.x, o.y, o.z }, Vector3{ d.x, d.y, d.z }, maxDistance, source);
-        return { h.hit, h.fraction * maxDistance };
+        return { h.hit, h.fraction * maxDistance, h.object ? h.object->GetName().c_str() : "terrain/ground" };
     };
 }
 
@@ -160,7 +239,7 @@ void Start(ScriptRuntime& rt, const vscript::SoundRequest& req) {
     p.maxDistance = req.range;
     // Measure before the first sample plays, so the sound never starts unmuffled behind a wall.
     if (req.muffle) {
-        const Occlusion o = MeasureOcclusion(ray, pos, listener, radius);
+        const Occlusion o = MeasureOcclusion(ray, pos, listener, radius, &e.detourCache, true);
         e.openness = o.openness;
         p.muffle = true;
         p.muffleCutoff = o.cutoffHz;
@@ -209,14 +288,17 @@ void Update(ScriptRuntime& rt, float dt) {
         if (dist <= e.range) {   // out of earshot there is nothing to shape
             const RayFn ray = MakeRayFn(rt, obj);
             if (e.muffle) {
-                const Occlusion o = MeasureOcclusion(ray, pos, listener, radius);
+                const bool refresh = (e.detourTimer -= dt) <= 0.0f;
+                if (refresh) e.detourTimer = 0.25f;
+                const Occlusion o = MeasureOcclusion(ray, pos, listener, radius, &e.detourCache, refresh);
                 e.openness += (o.openness - e.openness) * smoothing;
                 const float cutoff = kOpenHz * std::pow(kShutHz / kOpenHz, 1.0f - e.openness);
                 audio::SetMuffle(e.handle, cutoff, kBlockedGain + (1.0f - kBlockedGain) * e.openness);
                 if (DebugOn() && (e.debugTimer -= dt) <= 0.0f) {
                     e.debugTimer = 1.0f;
-                    ui::LogAlways("[soundrays] %s: distance %.1f m, blocked %.0f%%, wall %.2f m, openness %.2f, cutoff %.0f Hz",
-                                  e.objectPath.c_str(), dist, o.blockedShare * 100.0f, o.thickness, e.openness, cutoff);
+                    ui::LogAlways("[soundrays] %s: %.1f m away, near %.0f%%, blocked %.0f%% by %s, wall %.2f m, direct %.2f, detour %.2f -> openness %.2f, cutoff %.0f Hz",
+                                  e.objectPath.c_str(), dist, o.nearness * 100.0f, o.blockedShare * 100.0f, o.blocker ? o.blocker : "nothing",
+                                  o.thickness, o.direct, o.detour, e.openness, cutoff);
                 }
             }
             if (e.echo) {
