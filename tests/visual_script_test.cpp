@@ -962,7 +962,66 @@ static void TestSoundOptions() {
     CHECK(!SoundFlag(N(plain), "loop") && SoundOption(N(plain), "object").empty() && SoundOption(N(plain), "range", "30") == "30");
     CHECK(SaveAll().find("VPROPS") == std::string::npos);  // a plain Play Sound writes nothing extra: old readers see the old format
     CHECK(DataInputCount(NodeType::PlaySound) == 1 && DataInputCount(N(plain)) == 1);   // the options add no value pins
-    CHECK(OutputCount(NodeType::StopSound) == 1 && !IsPure(NodeType::StopSound) && DataInputCount(NodeType::StopSound) == 0);
+    CHECK(OutputCount(NodeType::StopSound) == 1 && !IsPure(NodeType::StopSound) && DataInputCount(NodeType::StopSound) == 1);   // its one input is the "Sound" wire
+}
+
+// Stop Sound wired to a Play Sound's "Sound" output stops exactly that sound, whatever its own fields say; only that pairing may be
+// wired; the wire survives a save and goes with the Play Sound node.
+static void TestStopSoundLink() {
+    Fresh();
+    SetSoundPlayer([](const SoundRequest& r) { g_requests.push_back(r); });
+    SetSoundStopper([](const std::string& path, const std::string& obj) { g_stopped.push_back(path + "|" + obj); });
+    const int s = Add(NodeType::Start), play = Add(NodeType::PlaySound), stop = Add(NodeType::StopSound), loose = Add(NodeType::StopSound);
+    const int pr = Add(NodeType::Print), add = Add(NodeType::Add);
+    N(play).target = "assets/audio/fan.wav";
+    SoundOptionRef(N(play), "object") = "Workspace/Cube";
+    N(stop).target = "assets/audio/other.wav";            // its own fields are overridden by the wire
+    SoundOptionRef(N(stop), "object") = "Workspace/Ball";
+    N(loose).target = "assets/audio/loose.wav";
+    CHECK(DataOutputCount(N(play)) == 1 && DataOutputCount(N(stop)) == 0 && DataOutputCount(N(add)) == 1 && DataOutputCount(N(pr)) == 0);
+
+    ConnectData(play, stop, 0, 0);
+    CHECK(Active().dataLinks.size() == 1);
+    CHECK(LinkedSoundSource(Active(), stop) == &N(play) && LinkedSoundSource(Active(), loose) == nullptr);
+
+    // Nothing else may use these pins.
+    ConnectData(play, pr, 0, 0);       CHECK(Active().dataLinks.size() == 1);   // a Play Sound's output goes only to Stop Sound
+    ConnectData(play, add, 0, 0);      CHECK(Active().dataLinks.size() == 1);
+    ConnectData(add, stop, 0, 0);      CHECK(Active().dataLinks.size() == 1);   // and Stop Sound's input takes nothing else
+    ConnectData(pr, stop, 0, 0);       CHECK(Active().dataLinks.size() == 1);
+    ConnectData(play, loose, 1, 0);    CHECK(Active().dataLinks.size() == 1);   // it has just the one input pin
+    ConnectData(play, loose, 0, 1);    CHECK(Active().dataLinks.size() == 1);   // and Play Sound just the one output
+    SanitizeDataLinks();               CHECK(Active().dataLinks.size() == 1);   // a good wire is kept
+
+    Link_(s, play); Link_(play, stop); Link_(stop, loose);
+    Run(RT());
+    CHECK(g_stopped.size() == 2);
+    if (g_stopped.size() == 2) {
+        CHECK(g_stopped[0] == "assets/audio/fan.wav|Workspace/Cube");           // the linked Play Sound's file and object
+        CHECK(g_stopped[1] == "assets/audio/loose.wav|");                        // unwired: its own
+    }
+
+    // The link follows later edits of the Play Sound, and is saved.
+    N(play).target = "assets/audio/fan2.wav";
+    SoundOptionRef(N(play), "object") = "Workspace/Ball";
+    g_stopped.clear();
+    Run(RT());
+    CHECK(g_stopped.size() == 2 && g_stopped[0] == "assets/audio/fan2.wav|Workspace/Ball");
+    const std::string saved = SaveAll();
+    Clear(); ResetStubs();
+    SetSoundStopper([](const std::string& path, const std::string& obj) { g_stopped.push_back(path + "|" + obj); });
+    std::istringstream in(saved);
+    Load(in);
+    SanitizeDataLinks();
+    CHECK(Active().dataLinks.size() == 1);
+    Run(RT());
+    CHECK(g_stopped.size() == 2 && g_stopped[0] == "assets/audio/fan2.wav|Workspace/Ball");
+
+    // Deleting the Play Sound takes the wire with it; the Stop Sound goes back to its own fields.
+    int playId = 0, stopId = 0;
+    for (const Node& n : Active().nodes) { if (n.type == NodeType::PlaySound) playId = n.id; if (n.type == NodeType::StopSound && !n.target.empty() && n.target.find("other") != std::string::npos) stopId = n.id; }
+    RemoveNode(playId);
+    CHECK(Active().dataLinks.empty() && LinkedSoundSource(Active(), stopId) == nullptr);
 }
 
 static void TestSoundWithoutBackend() {
@@ -1713,7 +1772,7 @@ int main() {
         { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup },
         { "ObjectActionOnMissingTarget", TestObjectActionOnMissingTarget }, { "VectorFromWire", TestVectorFromWire },
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
-        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "SoundWithoutBackend", TestSoundWithoutBackend },
+        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "StopSoundLink", TestStopSoundLink }, { "SoundWithoutBackend", TestSoundWithoutBackend },
         { "ConnectRules", TestConnectRules }, { "IsKeyDown", TestIsKeyDown }, { "AddToVariable", TestAddToVariable }, { "EveryNSeconds", TestEveryNSeconds },
         { "JoinText", TestJoinText }, { "VectorNodes", TestVectorNodes }, { "MathFunctions", TestMathFunctions },
         { "ClampNode", TestClampNode }, { "TimeNode", TestTimeNode }, { "ObjectExists", TestObjectExists },

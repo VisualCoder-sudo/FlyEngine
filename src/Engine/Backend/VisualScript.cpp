@@ -198,6 +198,28 @@ bool IsPure(NodeType t) {
            (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN);
 }
 
+int DataOutputCount(const Node& n) {
+    if (n.type == NodeType::CodeSnippet) return SnippetOutputs(n);
+    if (n.type == NodeType::PlaySound) return 1;
+    return IsPure(n.type) ? 1 : 0;
+}
+
+namespace {
+// Which wires may be drawn: Play Sound's "Sound" output goes only to Stop Sound's "Sound" input, and that input takes nothing else.
+bool SoundWireAllowed(const Node& from, const Node& to) {
+    return (from.type == NodeType::PlaySound) == (to.type == NodeType::StopSound);
+}
+}
+
+const Node* LinkedSoundSource(const Graph& g, int stopSoundNodeId) {
+    for (const DataLink& d : g.dataLinks) {
+        if (d.to != stopSoundNodeId || d.toPin != 0) continue;
+        const Node* src = FindIn(g, d.from);
+        if (src && src->type == NodeType::PlaySound) return src;
+    }
+    return nullptr;
+}
+
 int SnippetInputs(const Node& n) { return std::clamp(std::atoi(n.target.c_str()), 0, 6); }
 int SnippetOutputs(const Node& n) { return std::clamp(std::atoi(n.prop.c_str()), 0, 6); }
 int DataInputCount(const Node& n) {
@@ -228,7 +250,8 @@ int DataInputCount(NodeType t) {
         case NodeType::Distance: case NodeType::VecMath: case NodeType::MathFunc: return 2;
         case NodeType::VecPart: case NodeType::Normalize: case NodeType::AddToVariable: return 1;
         case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport:
-        case NodeType::PlaySound: case NodeType::SetVolume: case NodeType::ShowText: case NodeType::SetWorld: return 1;
+        case NodeType::PlaySound: case NodeType::SetVolume: case NodeType::ShowText: case NodeType::SetWorld:
+        case NodeType::StopSound: return 1;   // Stop Sound's one is its "Sound" input
         default: return 0;
     }
 }
@@ -249,7 +272,8 @@ const char* DataInputLabel(NodeType t, int pin) {
         case NodeType::VecPart: case NodeType::Normalize: return "Vec";
         case NodeType::AddToVariable: return "Amount";
         case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: return "Vector";
-        case NodeType::PlaySound: case NodeType::SetVolume: return "Volume";
+        case NodeType::PlaySound: case NodeType::SetVolume: return pin == 0 ? "Volume" : "";
+        case NodeType::StopSound: return "Sound";
         case NodeType::ShowText: return "Text";
         default: return pin == 0 ? "A" : "B";
     }
@@ -299,9 +323,8 @@ void ConnectData(int from, int to, int toPin, int fromPin) {
     if (from == to) return;
     Node* a = Find(from); Node* b = Find(to);
     if (!a || !b || toPin < 0 || toPin >= DataInputCount(*b)) return;
-    const bool snippet = a->type == NodeType::CodeSnippet;
-    if (!IsPure(a->type) && !snippet) return;
-    if (fromPin < 0 || fromPin >= (snippet ? SnippetOutputs(*a) : 1)) return;
+    if (fromPin < 0 || fromPin >= DataOutputCount(*a)) return;
+    if (!SoundWireAllowed(*a, *b)) return;
     auto& L = Active().dataLinks;
     L.erase(std::remove_if(L.begin(), L.end(), [&](const DataLink& l) { return l.to == to && l.toPin == toPin; }), L.end());
     L.push_back({ from, to, toPin, fromPin });
@@ -313,7 +336,7 @@ void SanitizeDataLinks() {
         const Node* a = FindIn(g, l.from); const Node* b = FindIn(g, l.to);
         if (!a || !b) return true;
         if (l.toPin >= DataInputCount(*b)) return true;
-        return l.fromPin >= (a->type == NodeType::CodeSnippet ? SnippetOutputs(*a) : 1);
+        return l.fromPin >= DataOutputCount(*a) || !SoundWireAllowed(*a, *b);
     }), g.dataLinks.end());
 }
 
@@ -425,7 +448,7 @@ const char* NodeHelp(NodeType t) {
         case NodeType::Print: return "Writes a message to the console log, tagged [script]. Good for checking what your script does.";
         case NodeType::ShowText: return "Shows text on the game screen at a chosen spot, for a number of seconds (0 = until replaced). Empty text clears it.";
         case NodeType::PlaySound: return "Plays a sound file from your project at the chosen volume (0 to 1). Pick an object to make the sound come from it, fading out over its Range. Muffle makes walls between it and you muffle it; Echo adds the room's echo (these need an object).";
-        case NodeType::StopSound: return "Stops a sound that is playing. Pick the object to stop only the sound coming from it.";
+        case NodeType::StopSound: return "Stops a sound that is playing. Wire a Play Sound's Sound output into its Sound input to stop exactly that sound (same file, same object), or pick a file and an object yourself.";
         case NodeType::SetVolume: return "Sets the master volume, 0 to 1.";
         case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
         case NodeType::Destroy: return "Removes an object from the scene.";
@@ -895,10 +918,17 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 stack.push_back({ n->id, 0 });
                 break;
             }
-            case NodeType::StopSound:
-                StopSoundNode(rt, *n);
+            case NodeType::StopSound: {
+                // Wired to a Play Sound's "Sound" output: stop that sound. Otherwise the node's own file and object.
+                Node eff = *n;
+                if (const Node* src = LinkedSoundSource(g_scripts[gi], n->id)) {
+                    eff.target = src->target;
+                    SoundOptionRef(eff, "object") = SoundOption(*src, "object");
+                }
+                StopSoundNode(rt, eff);
                 stack.push_back({ n->id, 0 });
                 break;
+            }
             case NodeType::CreateObject: {
                 // Born without a physics body: the Setup chain (out 1) changes it first, then it is spawned as configured.
                 ScatteredObject* obj = rt.CreateObject(n->prop, true);

@@ -150,6 +150,8 @@ ImVec2 InData(const Node& n, ImVec2 o, int pin) {
 
 // A value node's one output sits on the header; a Code Snippet's run down its right edge beside the code box.
 ImVec2 OutData(const Node& n, ImVec2 o, int pin) {
+    // Play Sound already has its exec output on the header, so its "Sound" output sits on the first row (beside the file).
+    if (n.type == NodeType::PlaySound) return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH + 6.0f + kRowH * 0.5f + 5.0f);
     if (n.type != NodeType::CodeSnippet) return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH * 0.5f);
     return ImVec2(o.x + n.x + NodeWidth(n), o.y + n.y + kHeaderH + 6.0f + (2 + pin) * kRowH + 11.0f);
 }
@@ -604,8 +606,24 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             break;
         }
         case NodeType::StopSound:
-            SoundRow(n, o, 0, scene);
-            SoundObjectRow(n, o, 1, scene);
+            if (const Node* src = LinkedSoundSource(g, n.id)) {
+                // Wired to a Play Sound: it stops that sound, so show what it will stop instead of letting the fields be edited.
+                const std::string obj = SoundOption(*src, "object");
+                const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f;
+                ImGui::SetCursorScreenPos(ImVec2(x, y));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("File");
+                ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+                ImGui::TextDisabled("%s", src->target.empty() ? "(none)" : src->target.substr(src->target.find_last_of('/') == std::string::npos ? 0 : src->target.find_last_of('/') + 1).c_str());
+                ImGui::SetCursorScreenPos(ImVec2(x, y + kRowH));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("Object");
+                ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y + kRowH));
+                ImGui::TextDisabled("%s", obj.empty() ? "(any)" : obj.substr(obj.find_last_of('/') == std::string::npos ? 0 : obj.find_last_of('/') + 1).c_str());
+            } else {
+                SoundRow(n, o, 0, scene);
+                SoundObjectRow(n, o, 1, scene);
+            }
             break;
         case NodeType::SetVolume: StrRow(n, o, 0, "Volume", n.value, "##vol", wired(0)); break;
         case NodeType::ShowText:
@@ -985,7 +1003,7 @@ void DrawEditor(const SceneListing& scene) {
             if (g_dragData && std::abs(mouse.x - c.x) < 16 && std::abs(mouse.y - c.y) < 14) { dropDataNode = n.id; dropDataPin = pin; }
         }
         // Value outputs: a value node has one on the header's right edge, a Code Snippet has its own down the side.
-        const int valueOuts = n.type == NodeType::CodeSnippet ? SnippetOutputs(n) : IsPure(n.type) ? 1 : 0;
+        const int valueOuts = DataOutputCount(n);
         for (int pin = 0; pin < valueOuts; ++pin) {
             const ImVec2 c = OutData(n, o, pin);
             bool linked = false;

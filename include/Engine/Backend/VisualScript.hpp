@@ -127,6 +127,10 @@ int SnippetOutputs(const Node& n);
 int DataInputCount(const Node& n);               // the node's own count: DataInputCount(type), or the snippet's pins
 bool IsPure(NodeType t);                         // value node (no exec pins)
 int DataInputCount(NodeType t);                  // value input pins (Branch condition, Print text, Math A/B, ...)
+int DataOutputCount(const Node& n);              // value output pins: 1 for a value node, the snippet's own, 1 for Play Sound (its "Sound")
+// Stop Sound's "Sound" input takes a wire from a Play Sound node's "Sound" output: it then stops exactly that sound (same file, same
+// object) and shows those values instead of its own. Null when nothing is wired to it.
+const Node* LinkedSoundSource(const Graph& g, int stopSoundNodeId);
 const char* DataInputLabel(NodeType t, int pin);
 int OutputCount(NodeType t, const Node* n = nullptr);   // exec output pins (0 for End and events' none)
 const char* OutputLabel(const Node& n, int pin);        // "" for a plain single output
