@@ -96,7 +96,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 24\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 25\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -205,6 +205,12 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                  << (ripple.spray ? 1 : 0) << ' ' << ripple.sprayAmount << '\n';
             // v23: player collision (buoyancy for the player)
             file << (water->GetPlayerCollision() ? 1 : 0) << '\n';
+            // v25: surface detail, reflections and the ripple height clamp
+            const auto& detail = water->GetDetailParams();
+            const auto& refl = water->GetReflectionParams();
+            file << detail.intensity << ' ' << detail.scale << ' ' << detail.speed << ' '
+                 << refl.strength << ' ' << refl.distortion << ' ' << refl.distanceFade << ' '
+                 << ripple.maxDisplacement << '\n';
         }
     }
 
@@ -428,7 +434,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 24) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 25) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -689,6 +695,14 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 if (!(file >> playerCol)) return false;
             }
 
+            WaterBody::DetailParams dp;      // defaults for scenes older than v25
+            WaterBody::ReflectionParams rfp;
+            if (version >= 25) {
+                if (!(file >> dp.intensity >> dp.scale >> dp.speed
+                           >> rfp.strength >> rfp.distortion >> rfp.distanceFade
+                           >> rpp.maxDisplacement)) return false;
+            }
+
             auto water = std::make_unique<WaterBody>(pos, wsize, height,
                 Color{ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
             water->SetName(wname);
@@ -711,6 +725,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             gp.densityThreshold = densityThreshold; gp.adaptive = (adaptive != 0);
             water->SetGridParams(gp);
             water->SetRippleParams(rpp);
+            water->SetDetailParams(dp);
+            water->SetReflectionParams(rfp);
 
             engine.AddEntity(std::move(water));
         }
@@ -866,7 +882,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 24\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 25\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -933,7 +949,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 24) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 25) return false;
 
     models.clear();
 
