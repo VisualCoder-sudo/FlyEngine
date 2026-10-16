@@ -63,6 +63,8 @@ int g_keyPressed = -1;
 int g_keyHeld = -1;
 float g_masterVolume = -1.0f;
 std::vector<std::string> g_played;              // "path|volume" from the sound player hook
+std::vector<vscript::SoundRequest> g_requests;   // the whole request, as the sound player hook got it
+std::vector<std::string> g_stopped;              // "path|object" from the sound stopper hook
 std::vector<std::string> g_drawn;               // DrawText strings that are not the shadow pass
 int g_drawTextCalls = 0;
 
@@ -72,8 +74,9 @@ void ResetStubs() {
     g_destroyed = g_cloned = g_scriptsStarted = 0;
     g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
     g_names.clear(); g_rayHit.clear();
-    g_keyPressed = -1; g_keyHeld = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear();
+    g_keyPressed = -1; g_keyHeld = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear(); g_requests.clear(); g_stopped.clear();
     vscript::SetSoundPlayer(nullptr);
+    vscript::SetSoundStopper(nullptr);
 }
 }
 
@@ -891,7 +894,7 @@ static void TestShowTextReplaceClearAndStop() {
 
 static void TestSound() {
     Fresh();
-    SetSoundPlayer([](const std::string& path, float vol) { char b[32]; std::snprintf(b, sizeof(b), "%g", vol); g_played.push_back(path + "|" + b); });
+    SetSoundPlayer([](const SoundRequest& r) { char b[32]; std::snprintf(b, sizeof(b), "%g", r.volume); g_played.push_back(r.path + "|" + b); });
     const int s = Add(NodeType::Start), v = Add(NodeType::SetVolume), p = Add(NodeType::PlaySound), p2 = Add(NodeType::PlaySound);
     N(v).value = "0.5"; N(p).target = "boom.wav"; N(p).value = "3"; N(p2).target = "/abs/hit.wav"; N(p2).value = "0.25";
     Link_(s, v); Link_(v, p); Link_(p, p2);
@@ -909,6 +912,57 @@ static void TestSound() {
     Link_(s2, v2);
     Run(RT());
     CHECK(g_masterVolume == 1.0f);
+}
+
+// Play Sound from an object: the object, Loop, Range, Muffle and Echo reach the player; Muffle/Echo need an object; a missing
+// object plays nothing; Stop Sound reaches the stopper; the options survive a save, and old nodes load with the defaults.
+static void TestSoundOptions() {
+    Fresh();
+    SetSoundPlayer([](const SoundRequest& r) { g_requests.push_back(r); });
+    SetSoundStopper([](const std::string& path, const std::string& obj) { g_stopped.push_back(path + "|" + obj); });
+    const int s = Add(NodeType::Start), fan = Add(NodeType::PlaySound), flat = Add(NodeType::PlaySound), gone = Add(NodeType::PlaySound),
+              stop = Add(NodeType::StopSound), stopAll = Add(NodeType::StopSound);
+    N(fan).target = "assets/audio/fan.wav"; N(fan).value = "0.8";
+    SoundOptionRef(N(fan), "object") = "Workspace/Cube";
+    SoundOptionRef(N(fan), "loop") = "true";
+    SoundOptionRef(N(fan), "range") = "12";
+    SoundOptionRef(N(fan), "muffle") = "true";
+    SoundOptionRef(N(fan), "echo") = "true";
+    N(flat).target = "assets/audio/beep.wav";
+    SoundOptionRef(N(flat), "muffle") = "true";            // no object: rays have nowhere to start, so it is a plain sound
+    SoundOptionRef(N(flat), "echo") = "true";
+    N(gone).target = "assets/audio/x.wav";
+    SoundOptionRef(N(gone), "object") = "Workspace/Nothing";
+    N(stop).target = "assets/audio/fan.wav";
+    SoundOptionRef(N(stop), "object") = "Workspace/Cube";
+    N(stopAll).target = "assets/audio/beep.wav";
+    Link_(s, fan); Link_(fan, flat); Link_(flat, gone); Link_(gone, stop); Link_(stop, stopAll);
+    Run(RT());
+    CHECK(g_requests.size() == 2);                         // the one with a missing object played nothing
+    CHECK(Logged("no object") || Logged("Nothing"));
+    if (g_requests.size() == 2) {
+        const SoundRequest& r = g_requests[0];
+        CHECK(r.path == "assets/audio/fan.wav" && r.objectPath == "Workspace/Cube");
+        CHECK(r.volume == 0.8f && r.loop && r.range == 12.0f && r.muffle && r.echo);
+        const SoundRequest& f = g_requests[1];
+        CHECK(f.objectPath.empty() && !f.muffle && !f.echo && !f.loop && f.range == 30.0f);
+    }
+    CHECK(g_stopped.size() == 2 && g_stopped[0] == "assets/audio/fan.wav|Workspace/Cube" && g_stopped[1] == "assets/audio/beep.wav|");
+
+    // The options are saved with the node, and a scene from before they existed loads with everything off.
+    const std::string saved = SaveAll();
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    const Node* back = nullptr;
+    for (const Node& n : Active().nodes) if (n.type == NodeType::PlaySound && SoundOption(n, "object") == "Workspace/Cube") back = &n;
+    CHECK(back && SoundFlag(*back, "loop") && SoundFlag(*back, "muffle") && SoundFlag(*back, "echo") && SoundOption(*back, "range") == "12");
+    Fresh();
+    const int plain = Add(NodeType::PlaySound);
+    CHECK(!SoundFlag(N(plain), "loop") && SoundOption(N(plain), "object").empty() && SoundOption(N(plain), "range", "30") == "30");
+    CHECK(SaveAll().find("VPROPS") == std::string::npos);  // a plain Play Sound writes nothing extra: old readers see the old format
+    CHECK(DataInputCount(NodeType::PlaySound) == 1 && DataInputCount(N(plain)) == 1);   // the options add no value pins
+    CHECK(OutputCount(NodeType::StopSound) == 1 && !IsPure(NodeType::StopSound) && DataInputCount(NodeType::StopSound) == 0);
 }
 
 static void TestSoundWithoutBackend() {
@@ -1659,7 +1713,7 @@ int main() {
         { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup },
         { "ObjectActionOnMissingTarget", TestObjectActionOnMissingTarget }, { "VectorFromWire", TestVectorFromWire },
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
-        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundWithoutBackend", TestSoundWithoutBackend },
+        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "SoundWithoutBackend", TestSoundWithoutBackend },
         { "ConnectRules", TestConnectRules }, { "IsKeyDown", TestIsKeyDown }, { "AddToVariable", TestAddToVariable }, { "EveryNSeconds", TestEveryNSeconds },
         { "JoinText", TestJoinText }, { "VectorNodes", TestVectorNodes }, { "MathFunctions", TestMathFunctions },
         { "ClampNode", TestClampNode }, { "TimeNode", TestTimeNode }, { "ObjectExists", TestObjectExists },

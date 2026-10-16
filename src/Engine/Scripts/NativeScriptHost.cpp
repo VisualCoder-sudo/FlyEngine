@@ -1,3 +1,4 @@
+#include "../../../include/Engine/Backend/SoundRays.hpp"
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 /*
  * NativeScriptHost.cpp - Native plugin loading, C++ game scripts, hot-reload.
@@ -337,7 +338,10 @@ void NativeScriptHost::Update(float dt) {
     }
 
     TickScripts(dt);
-    if (m_runtime->IsSimPlaying()) vscript::Tick(*m_runtime, dt);
+    if (m_runtime->IsSimPlaying()) {
+        vscript::Tick(*m_runtime, dt);
+        soundrays::Update(*m_runtime, dt);   // object sounds: start, follow, muffle, echo
+    }
 
     if (!m_engine) return;
 

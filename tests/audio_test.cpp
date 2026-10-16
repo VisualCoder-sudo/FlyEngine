@@ -142,6 +142,72 @@ int main(int argc, char** argv) {
     // The world is right-handed (like the camera): facing +Z, +X is on the listener's left.
     CHECK(rightSide < -0.05f);                       // the +X sound is louder in the left ear
     CHECK(leftSide < -0.05f);                        // the -X sound is louder in the right ear
+    // Sound rays' effects: a low-pass filter (muffle), an echo, and a range that fades to silence.
+    {
+        audio::StopAll();
+        audio::SetListener(0, 0, 0, 0, 0, 1, 0, 1, 0);
+        auto rms = [](uint32_t frames) {
+            std::vector<float> buf(static_cast<size_t>(frames) * 2, 0.0f);
+            const uint32_t got = audio::Pump(frames, buf.data());
+            double sum = 0.0;
+            for (uint32_t i = 0; i < got * 2; ++i) sum += (double)buf[i] * buf[i];
+            return got ? static_cast<float>(std::sqrt(sum / (got * 2))) : 0.0f;
+        };
+        const std::string hi = WriteSine(dir / "hi.wav", 48000, 1.0f, 8000.0f);   // a high tone: what a wall takes away
+
+        audio::PlayParams open; open.maxDistance = 50.0f;
+        audio::PlayAt(hi, 0, 0, 3, open);
+        const float openRms = rms(4800);
+        audio::StopAll();
+        audio::PlayParams muffled = open; muffled.muffle = true; muffled.muffleCutoff = 500.0f;
+        audio::PlayAt(hi, 0, 0, 3, muffled);
+        const float mufRms = rms(4800);
+        audio::StopAll();
+        CHECK(openRms > 0.02f && mufRms < openRms * 0.2f);                    // muffled behind a wall
+
+        audio::PlayParams live = open; live.muffle = true;                    // and it can change while playing
+        const audio::Handle lh = audio::PlayAt(hi, 0, 0, 3, live);
+        const float before = rms(4800);
+        audio::SetMuffle(lh, 500.0f, 1.0f);
+        rms(4800);                                                            // let the filter settle
+        const float after = rms(4800);
+        CHECK(before > 0.02f && after < before * 0.2f);
+        audio::StopAll();
+
+        // Range: full volume near, quieter farther, silent past the range.
+        audio::PlayParams ranged; ranged.maxDistance = 10.0f; ranged.minDistance = 1.0f;
+        audio::PlayAt(hi, 0, 0, 1, ranged);   const float near1 = rms(2400);   audio::StopAll();
+        audio::PlayAt(hi, 0, 0, 5, ranged);   const float mid5 = rms(2400);    audio::StopAll();
+        audio::PlayAt(hi, 0, 0, 12, ranged);  const float far12 = rms(2400);   audio::StopAll();
+        CHECK(near1 > mid5 && mid5 > 0.0f && far12 < 0.001f);
+
+        // Echo: after a short clip ends, its delayed copy is still heard; without echo there is silence.
+        const std::string blip = WriteSine(dir / "blip.wav", 48000, 0.2f, 440.0f);
+        audio::PlayParams plain = open;
+        audio::PlayAt(blip, 0, 0, 2, plain);
+        rms(10080);                                                           // 0.21 s: the clip is over
+        const float dry = rms(2880);
+        audio::StopAll();
+        audio::PlayParams echo = open; echo.echoDelay = 0.1f; echo.echoWet = 0.8f; echo.echoFeedback = 0.5f;
+        const audio::Handle eh = audio::PlayAt(blip, 0, 0, 2, echo);
+        CHECK(eh != 0 && audio::HasEcho(eh));
+        rms(10080);
+        const float wet = rms(2880);
+        CHECK(dry < 0.0005f && wet > 0.01f);                                  // the echo is there, the plain sound is gone
+        audio::Update();
+        CHECK(audio::ActiveVoices() == 1);                                    // the delay line is kept while it rings
+        for (int i = 0; i < 12; ++i) { rms(24000); audio::Update(); }         // 6 s later
+        CHECK(audio::ActiveVoices() == 0);                                    // and let go afterwards
+        audio::StopAll();
+
+        // Only so many sounds get an echo chain (it costs memory).
+        int withEcho = 0;
+        for (int i = 0; i < 20; ++i) { const audio::Handle h = audio::PlayAt(blip, 0, 0, 2, echo); if (h && audio::HasEcho(h)) ++withEcho; }
+        CHECK(withEcho > 0 && withEcho <= 16);
+        audio::StopAll();
+        audio::StopByPath(blip);                                              // safe with nothing playing
+    }
+
     // More sounds than voices: the oldest give way, the count stays capped.
     for (int i = 0; i < 100; ++i) audio::Play(wav);
     CHECK(audio::ActiveVoices() <= 64);

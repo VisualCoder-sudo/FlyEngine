@@ -340,6 +340,18 @@ deletes it. Every save also deletes imported sounds that nothing in the project 
 more. Typing a full path into the node, or dropping a sound onto the Asset Browser, imports it the same way. Only files the engine
 imported itself are ever deleted; sounds you put in the folder by hand are left alone.
 
+**Sounds from objects and sound rays.** A Play Sound node can name an **Object**: the sound then comes from that object, follows
+it as it moves, and fades out over the node's **Range** (metres). **Loop** keeps it going (a fan's hum) until a **Stop Sound**
+node, the object's destruction, or the end of Play stops it. Two switches use *sound rays* (they need an object, and only run
+while the game is playing):
+
+- **Muffle**: rays from the object to you. The share a wall blocks, and how thick it is, close a low-pass filter and lower the
+  volume, smoothly, so a fan behind a wall sounds dull and comes back clear when you step out.
+- **Echo**: rays out of the object in every direction. How near the walls are and how enclosed the room is set the echo's delay,
+  how long it rings and how loud it is; open ground has none. The delay is fixed when the sound starts.
+
+`FLY_SOUND_DEBUG=1` logs what the rays measure, once a second per sound. Water and anything without a collider do not block rays.
+
 ## Shaders
 
 `shaders/*.glsl` are written in sokol-shdc's annotated GLSL and compiled at

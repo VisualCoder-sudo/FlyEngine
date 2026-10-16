@@ -152,7 +152,7 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::SetVelocity || type == NodeType::AddForce || type == NodeType::AddImpulse) n.value = "(0, 5, 0)";
     else if (type == NodeType::Teleport) n.value = "(0, 5, 0)";
     else if (type == NodeType::OnKey) n.prop = "Space";
-    else if (type == NodeType::PlaySound) n.value = "1";
+    else if (type == NodeType::PlaySound) n.value = "1";   // the sound options default to off (see SoundOption)
     else if (type == NodeType::SetVolume) n.value = "1";
     else if (type == NodeType::ShowText) { n.value = "Hello"; n.prop = "Top Center"; n.target = "3"; }
     else if (type == NodeType::KeyDown) n.prop = "Space";
@@ -400,6 +400,7 @@ const char* TypeName(NodeType t) {
         case NodeType::Clamp: return "Clamp";
         case NodeType::Time: return "Time";
         case NodeType::ObjectExists: return "Object Exists";
+        case NodeType::StopSound: return "Stop Sound";
         default: break;
     }
     return "?";
@@ -423,7 +424,8 @@ const char* NodeHelp(NodeType t) {
         case NodeType::SetWorld: return "Sets a world setting: lighting, environment, rendering, camera or physics. Put back when Play stops.";
         case NodeType::Print: return "Writes a message to the console log, tagged [script]. Good for checking what your script does.";
         case NodeType::ShowText: return "Shows text on the game screen at a chosen spot, for a number of seconds (0 = until replaced). Empty text clears it.";
-        case NodeType::PlaySound: return "Plays a sound file from your project at the chosen volume (0 to 1). Needs audio support in the engine.";
+        case NodeType::PlaySound: return "Plays a sound file from your project at the chosen volume (0 to 1). Pick an object to make the sound come from it, fading out over its Range. Muffle makes walls between it and you muffle it; Echo adds the room's echo (these need an object).";
+        case NodeType::StopSound: return "Stops a sound that is playing. Pick the object to stop only the sound coming from it.";
         case NodeType::SetVolume: return "Sets the master volume, 0 to 1.";
         case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
         case NodeType::Destroy: return "Removes an object from the scene.";
@@ -599,6 +601,7 @@ std::string TargetName(const std::string& path) {
 struct HudLine { std::string text; float left = -1.0f; };   // left < 0: stays until replaced
 std::map<std::string, HudLine> g_hud;                     // keyed by screen position
 SoundPlayer g_soundPlayer;
+SoundStopper g_soundStopper;
 
 bool Truthy(const std::string& v) { return !v.empty() && v != "0" && v != "false"; }
 
@@ -888,10 +891,14 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 stack.push_back({ n->id, 0 });
                 break;
             case NodeType::PlaySound: {
-                PlaySoundFile(rt, n->target, static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())));
+                PlaySoundNode(rt, *n, static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())));
                 stack.push_back({ n->id, 0 });
                 break;
             }
+            case NodeType::StopSound:
+                StopSoundNode(rt, *n);
+                stack.push_back({ n->id, 0 });
+                break;
             case NodeType::CreateObject: {
                 // Born without a physics body: the Setup chain (out 1) changes it first, then it is spawned as configured.
                 ScatteredObject* obj = rt.CreateObject(n->prop, true);
@@ -1126,6 +1133,19 @@ size_t SnippetFingerprint() {
 }
 
 void SetSoundPlayer(SoundPlayer player) { g_soundPlayer = std::move(player); }
+void SetSoundStopper(SoundStopper stopper) { g_soundStopper = std::move(stopper); }
+
+std::string SoundOption(const Node& n, const std::string& key, const std::string& fallback) {
+    for (const auto& [k, v] : n.extra) if (k == key) return v;
+    return fallback;
+}
+std::string& SoundOptionRef(Node& n, const std::string& key, const std::string& fallback) {
+    for (auto& kv : n.extra) if (kv.first == key) return kv.second;
+    n.extra.emplace_back(key, fallback);
+    return n.extra.back().second;
+}
+bool SoundFlag(const Node& n, const std::string& key) { return SoundOption(n, key) == "true"; }
+ScatteredObject* ResolveObject(ScriptRuntime& rt, const std::string& path) { return FindTarget(rt, path); }
 
 bool IsKeyHeld(const std::string& keyName) {
     const int k = KeyCodeFor(keyName);
@@ -1136,12 +1156,39 @@ void ShowText(const std::string& text, const std::string& position, float second
     if (text.empty()) g_hud.erase(position);
     else g_hud[position] = { text, seconds > 0.0f ? seconds : -1.0f };
 }
-void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume) {
-    if (!g_soundPlayer) { ui::Log("[script] Play Sound: this build has no audio backend"); return; }
+namespace {
+std::string SoundPath(ScriptRuntime& rt, const std::string& file) {
     std::string path = file;
     if (!std::filesystem::path(path).is_absolute() && !rt.GetProjectPath().empty())
         path = (std::filesystem::path(rt.GetProjectPath()) / path).string();
-    g_soundPlayer(path, std::clamp(volume, 0.0f, 1.0f));
+    return path;
+}
+}
+void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume) {
+    if (!g_soundPlayer) { ui::Log("[script] Play Sound: this build has no audio backend"); return; }
+    SoundRequest req;
+    req.path = SoundPath(rt, file);
+    req.volume = std::clamp(volume, 0.0f, 1.0f);
+    g_soundPlayer(req);
+}
+void PlaySoundNode(ScriptRuntime& rt, const Node& n, float volume) {
+    if (!g_soundPlayer) { ui::Log("[script] Play Sound: this build has no audio backend"); return; }
+    SoundRequest req;
+    req.path = SoundPath(rt, n.target);
+    req.volume = std::clamp(volume, 0.0f, 1.0f);
+    req.objectPath = SoundOption(n, "object");
+    if (!req.objectPath.empty() && !FindTarget(rt, req.objectPath)) {
+        ui::Log("[script] Play Sound: no object '%s'", TargetName(req.objectPath).c_str());
+        return;
+    }
+    req.loop = SoundFlag(n, "loop");
+    req.range = std::clamp(static_cast<float>(std::atof(SoundOption(n, "range", "30").c_str())), 1.0f, 1000.0f);
+    req.muffle = !req.objectPath.empty() && SoundFlag(n, "muffle");   // rays need somewhere to start from
+    req.echo = !req.objectPath.empty() && SoundFlag(n, "echo");
+    g_soundPlayer(req);
+}
+void StopSoundNode(ScriptRuntime& rt, const Node& n) {
+    if (g_soundStopper) g_soundStopper(SoundPath(rt, n.target), SoundOption(n, "object"));
 }
 void SetMasterVolumeLevel(float volume) { SetMasterVolume(std::clamp(volume, 0.0f, 1.0f)); }
 float TimeSincePlay() { return g_time; }

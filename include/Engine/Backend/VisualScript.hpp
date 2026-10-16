@@ -8,6 +8,7 @@
 
 // Node-graph scripting. The graph lives in the scene file and runs on play, in the editor and in exported players.
 class ScriptRuntime;
+class ScatteredObject;
 
 namespace vscript {
 
@@ -64,6 +65,7 @@ enum class NodeType {
     Clamp = 49,         // Value, Min, Max
     Time = 50,          // prop = "Delta Time" or "Time Since Play"
     ObjectExists = 51,  // target = object path: true if it is in the scene
+    StopSound = 52,     // target = file; the "object" sound option limits it to that object's sound (see SoundOption)
     Count_
 };
 
@@ -163,10 +165,30 @@ std::string GenerateSnippetSource();                          // "" when no grap
 bool WriteSnippetSources(const std::string& projectDir, bool createFolders = true);
 size_t SnippetFingerprint();                                  // changes whenever any snippet's text or identity does
 
-// The engine has no audio backend yet. Play Sound hands the resolved file path and a 0..1 volume to this hook;
-// until one is installed the node logs that there is no audio and carries on.
-using SoundPlayer = std::function<void(const std::string& path, float volume)>;
+// Play Sound hands what to play to this hook (the engine installs one that mixes it, see Audio.hpp); until one is
+// installed the node logs that there is no audio and carries on.
+struct SoundRequest {
+    std::string path;           // resolved against the project
+    float volume = 1.0f;        // 0..1
+    std::string objectPath;     // "" = a flat sound; else the sound comes from that object ("Workspace/Fan#1") and follows it
+    bool loop = false;
+    float range = 30.0f;        // metres: full volume close up, silent at this distance (objects only)
+    bool muffle = false;        // sound rays: walls between the object and the listener muffle it
+    bool echo = false;          // sound rays: the room around the object adds an echo
+};
+using SoundPlayer = std::function<void(const SoundRequest&)>;
 void SetSoundPlayer(SoundPlayer player);
+// Stop Sound: stops sounds of `path` (resolved like Play Sound), only those from `objectPath` when that is not empty.
+using SoundStopper = std::function<void(const std::string& path, const std::string& objectPath)>;
+void SetSoundStopper(SoundStopper stopper);
+
+// A Play Sound / Stop Sound node's settings live in Node::extra (so scenes saved before they existed still load, with the
+// defaults): "object", "loop", "range", "muffle", "echo".
+std::string SoundOption(const Node& n, const std::string& key, const std::string& fallback = "");
+std::string& SoundOptionRef(Node& n, const std::string& key, const std::string& fallback = "");   // creates it when absent
+bool SoundFlag(const Node& n, const std::string& key);                                          // "true"
+// The object a "Workspace/Group/Cube#2" path names, or null.
+ScatteredObject* ResolveObject(ScriptRuntime& rt, const std::string& path);
 
 // What Input / Audio / Show Text / Time nodes do, as plain calls: native scripts (fly.hpp) use the same ones, so a node and
 // its C++ equivalent behave identically.
@@ -174,6 +196,8 @@ bool IsKeyHeld(const std::string& keyName);       // a name from KeyNames()
 bool WasKeyPressed(const std::string& keyName);   // went down this frame
 void ShowText(const std::string& text, const std::string& position, float seconds);   // position from HudPositions(); seconds 0 = until replaced; "" clears
 void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume);        // file relative to the project (or absolute)
+void PlaySoundNode(ScriptRuntime& rt, const Node& n, float volume);                  // Play Sound with all its options
+void StopSoundNode(ScriptRuntime& rt, const Node& n);
 void SetMasterVolumeLevel(float volume);                                              // 0..1
 float TimeSincePlay();
 

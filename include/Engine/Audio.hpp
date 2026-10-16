@@ -16,6 +16,18 @@ struct PlayParams {
     float pitch  = 1.0f;               // 1 = as recorded; also changes the speed
     float pan    = 0.0f;               // -1 left .. 1 right (ignored for 3D sounds)
     bool  loop   = false;
+    // 3D sounds (PlayAt): full volume within minDistance; with maxDistance > 0 the volume falls off linearly to silence there.
+    float minDistance = 1.0f;
+    float maxDistance = 0.0f;
+    // Effects chain for sound rays (soundrays): a low-pass filter to muffle, and an echo (one delay line, `echoDelay` seconds
+    // long, fixed for the sound's life). The echo is limited to a few sounds at a time; beyond that Play leaves it out.
+    bool  muffle = false;
+    float echoDelay = 0.0f;
+    // Where those effects start, so a sound that starts behind a wall never plays its first moments unmuffled.
+    float muffleCutoff = 22000.0f;
+    float muffleGain = 1.0f;
+    float echoWet = 0.0f;
+    float echoFeedback = 0.0f;
 };
 
 // Where messages go ("[audio] ..."): no sound device, a file that can't be found or decoded. The default writes to stderr;
@@ -34,9 +46,14 @@ Handle PlayAt(const std::string& path, float x, float y, float z, const PlayPara
 
 void   Stop(Handle h);
 void   StopAll();
+void   StopByPath(const std::string& path);                 // every sound playing that file (the path as given to Play)
 bool   IsPlaying(Handle h);
 void   SetPosition(Handle h, float x, float y, float z);   // moves a 3D sound
 void   SetVolume(Handle h, float volume);
+void   SetMuffle(Handle h, float cutoffHz, float gain);     // low-pass cutoff (Hz) and a volume factor; needs PlayParams::muffle
+void   SetEcho(Handle h, float wet, float feedback);        // echo level 0..1 and how long it rings 0..0.9; needs echoDelay
+bool   HasEcho(Handle h);                                   // did the sound get its echo chain?
+void   GetListener(float& x, float& y, float& z);           // where SetListener last put the ears
 
 void   SetMasterVolume(float volume);  // 0..1
 float  MasterVolume();

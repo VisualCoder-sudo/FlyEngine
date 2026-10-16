@@ -43,7 +43,7 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Print: return IM_COL32(110, 70, 160, 255);
         case NodeType::OnKey: case NodeType::EveryN: return IM_COL32(40, 130, 60, 255);
         case NodeType::AddToVariable: return IM_COL32(40, 130, 140, 255);
-        case NodeType::PlaySound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
+        case NodeType::PlaySound: case NodeType::StopSound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
         case NodeType::ShowText: return IM_COL32(110, 70, 160, 255);
         case NodeType::SetWorld: return IM_COL32(40, 95, 170, 255);
         case NodeType::CodeSnippet: return IM_COL32(60, 60, 70, 255);
@@ -80,7 +80,8 @@ int BodyRows(NodeType t) {
         case NodeType::Sequence: case NodeType::Repeat:
         case NodeType::GetVariable: case NodeType::Not:
         case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: return 1;
-        case NodeType::PlaySound: return 2;
+        case NodeType::PlaySound: return 7;   // File, Volume, Object, Range, Loop, Muffle, Echo
+        case NodeType::StopSound: return 2;   // File, Object
         case NodeType::ShowText: case NodeType::SetWorld: return 3;
         case NodeType::CodeSnippet: return 9;   // Inputs, Outputs, then the code box (7 rows)
         case NodeType::KeyDown: case NodeType::Normalize: case NodeType::Time: case NodeType::ObjectExists:
@@ -251,7 +252,7 @@ void PlaceListPopup(ImVec2 anchorMin, ImVec2 anchorMax) {
 }
 
 // File-explorer style picker, rooted at "Game".
-void DrawTargetPopup(Node& n, const SceneListing& scene, bool objectsOnly) {
+void DrawTargetPopup(Node& n, const SceneListing& scene, bool objectsOnly, std::string* field = nullptr) {
     PlaceListPopup(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     if (!ImGui::BeginPopup("##vsTarget")) return;
     ImGui::TextDisabled("Game%s%s", g_browsePath.empty() ? "" : " / ", g_browsePath.c_str());
@@ -260,7 +261,7 @@ void DrawTargetPopup(Node& n, const SceneListing& scene, bool objectsOnly) {
         const size_t s = g_browsePath.find_last_of('/');
         g_browsePath = s == std::string::npos ? "" : g_browsePath.substr(0, s);
     }
-    auto pick = [&](const std::string& path) { n.target = path; ImGui::CloseCurrentPopup(); };
+    auto pick = [&](const std::string& path) { (field ? *field : n.target) = path; ImGui::CloseCurrentPopup(); };
     if (g_browsePath.empty()) {
         if (ImGui::Selectable("[folder] Workspace", false, ImGuiSelectableFlags_DontClosePopups)) g_browsePath = "Workspace";
         if (!objectsOnly) for (const auto& g : WorldGroups())
@@ -452,6 +453,43 @@ void ObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     if (g_pickerNode == n.id) DrawTargetPopup(n, scene, true);
 }
 
+// The object a sound comes from (the "object" option): a button that opens the scene picker, and a clear button. Empty = a flat sound.
+void SoundObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Object");
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    std::string& obj = SoundOptionRef(n, "object");
+    std::string label = obj.empty() ? "(none: plays flat)" : obj.substr(obj.find_last_of('/') == std::string::npos ? 0 : obj.find_last_of('/') + 1);
+    const bool hasObj = !obj.empty();
+    if (ImGui::Button((label + "##so").c_str(), ImVec2(NodeWidth(n) - 80.0f - (hasObj ? 28.0f : 0.0f), 0))) {
+        g_browsePath.clear();
+        g_pickerNode = n.id;
+        ImGui::OpenPopup("##vsTarget");
+    }
+    if (g_pickerNode == n.id) DrawTargetPopup(n, scene, true, &obj);
+    if (hasObj) {
+        ImGui::SameLine(0.0f, 4.0f);
+        if (ImGui::Button("x##so", ImVec2(24.0f, 0.0f))) obj.clear();
+    }
+}
+
+// A labelled checkbox stored as "true"/"false" in a sound option. `enabled` false greys it out (it does nothing yet).
+void SoundFlagRow(Node& n, ImVec2 o, int row, const char* label, const char* key, bool enabled, const char* hint) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    std::string& v = SoundOptionRef(n, key, "false");
+    bool b = v == "true";
+    if (!enabled) ImGui::BeginDisabled();
+    if (ImGui::Checkbox((std::string("##") + key).c_str(), &b)) v = b ? "true" : "false";
+    if (!enabled) ImGui::EndDisabled();
+    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+}
+
 void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     const Graph& g = Active();
     auto wired = [&](int pin) { return IsWired(g, n.id, pin); };
@@ -554,9 +592,20 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             break;
         case NodeType::Time: ComboRow(n, o, 0, "Value", n.prop, TimeModes()); break;
         case NodeType::ObjectExists: ObjectRow(n, o, 0, scene); break;
-        case NodeType::PlaySound:
+        case NodeType::PlaySound: {
             SoundRow(n, o, 0, scene);
             StrRow(n, o, 1, "Volume", n.value, "##vol", wired(0));
+            SoundObjectRow(n, o, 2, scene);
+            const bool hasObject = !SoundOption(n, "object").empty();
+            StrRow(n, o, 3, "Range m", SoundOptionRef(n, "range", "30"), "##range");
+            SoundFlagRow(n, o, 4, "Loop", "loop", true, "Keep playing until stopped, the object is destroyed, or Play ends.");
+            SoundFlagRow(n, o, 5, "Muffle", "muffle", hasObject, hasObject ? "Sound rays: walls between the object and you muffle the sound." : "Pick an object first: rays start from it.");
+            SoundFlagRow(n, o, 6, "Echo", "echo", hasObject, hasObject ? "Sound rays: the room around the object adds an echo." : "Pick an object first: rays start from it.");
+            break;
+        }
+        case NodeType::StopSound:
+            SoundRow(n, o, 0, scene);
+            SoundObjectRow(n, o, 1, scene);
             break;
         case NodeType::SetVolume: StrRow(n, o, 0, "Volume", n.value, "##vol", wired(0)); break;
         case NodeType::ShowText:
@@ -1011,7 +1060,7 @@ void DrawEditor(const SceneListing& scene) {
             { "Input", { NodeType::KeyDown } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
             { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText, NodeType::CodeSnippet } },
-            { "Audio", { NodeType::PlaySound, NodeType::SetVolume } },
+            { "Audio", { NodeType::PlaySound, NodeType::StopSound, NodeType::SetVolume } },
             { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
             { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },
             { "Variables", { NodeType::SetVariable, NodeType::AddToVariable, NodeType::GetVariable, NodeType::GetProperty } },

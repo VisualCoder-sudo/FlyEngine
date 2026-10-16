@@ -85,6 +85,7 @@ public:
     // chain can change it first, so it appears already configured.
     ScatteredObject* CreateObject(const std::string& shapeName, bool deferSpawn = false);
     bool IsSimPlaying() const { return isPlaying; }
+    phys::Simulation* GetSimulation() const { return sim; }
     void SetSimPlaying(bool playing);
 
     // The per-coroutine "self" object, bound by the host right before a

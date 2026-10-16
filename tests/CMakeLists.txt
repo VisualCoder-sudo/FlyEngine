@@ -84,6 +84,11 @@ add_executable(audio_test audio_test.cpp)
 target_link_libraries(audio_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME audio COMMAND audio_test)
 
+# Sound rays: muffling and echo measured over a fake world of walls and boxes. No window, no physics.
+add_executable(soundrays_test soundrays_test.cpp)
+target_link_libraries(soundrays_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME soundrays COMMAND soundrays_test)
+
 # Imported sounds: copied into assets/Audio once (deduplicated by content), garbage-collected on save. No window.
 add_executable(audio_assets_test audio_assets_test.cpp)
 target_link_libraries(audio_assets_test PRIVATE FlyEngineCore FlyRL)
@@ -246,6 +251,11 @@ target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/Scriptin
 add_test(NAME fly_actions COMMAND fly_actions_test)
 
 # The scripting API (FlyNative_*) against the real engine: create, clone, rename, destroy, forces, raycast, keys, text.
+# Sound rays against the real engine and physics (a wall muffles a fan, destroying it stops it). Opens a window, so it is not
+# registered with ctest: build/tests/sound_rays_engine_test
+add_executable(sound_rays_engine_test sound_rays_engine_test.cpp)
+target_link_libraries(sound_rays_engine_test PRIVATE FlyEngineCore FlyRL)
+
 # Opens a window, so it is not registered with ctest: build/tests/script_actions_engine_test
 add_executable(script_actions_engine_test script_actions_engine_test.cpp)
 target_link_libraries(script_actions_engine_test PRIVATE FlyEngineCore FlyRL)

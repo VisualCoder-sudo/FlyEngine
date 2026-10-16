@@ -6,6 +6,7 @@
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
 #include "../../include/Engine/Audio.hpp"
+#include "../../include/Engine/Backend/SoundRays.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../include/Terrain/Terrain.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
@@ -33,11 +34,14 @@ Engine::Engine(int width, int height, const std::string& title, int targetFPS) {
     audio::SetLogHandler([](const std::string& msg) { ui::LogAlways("%s", msg.c_str()); });
 
     // Visual Script's Play Sound node and fly::PlaySound() end here. The sound device opens on the first sound.
-    vscript::SetSoundPlayer([](const std::string& path, float volume) {
+    vscript::SetSoundPlayer([](const vscript::SoundRequest& r) {
+        if (!r.objectPath.empty()) { soundrays::Queue(r); return; }   // from an object: started by soundrays::Update, which has the world
         audio::PlayParams p;
-        p.volume = volume;
-        audio::Play(path, p);
+        p.volume = r.volume;
+        p.loop = r.loop;
+        audio::Play(r.path, p);
     });
+    vscript::SetSoundStopper([](const std::string& path, const std::string& objectPath) { soundrays::StopSounds(path, objectPath); });
 }
 
 Engine::~Engine() {
@@ -48,7 +52,9 @@ Engine::~Engine() {
     while (!pendingEntities.empty()) pendingEntities.pop_back();
     while (!entities.empty()) entities.pop_back();
     audio::Shutdown();
+    soundrays::Clear();
     vscript::SetSoundPlayer(nullptr);
+    vscript::SetSoundStopper(nullptr);
     gfx::Shutdown();
     CloseWindow();
 }
@@ -81,7 +87,7 @@ void Engine::Update(float deltaTime) {
         const bool playing = isPlayerBuild || ui::IsPlayActive();
         if (playing && !wasPlaying) timeBeforePlay = gfx::Lighting().timeOfDay;
         if (!playing && wasPlaying) gfx::Lighting().timeOfDay = timeBeforePlay;
-        if (!playing && wasPlaying) audio::StopAll();   // Play ended: cut the sounds off
+        if (!playing && wasPlaying) { audio::StopAll(); soundrays::Clear(); }   // Play ended: cut the sounds off
         wasPlaying = playing;
         if (playing) gfx::TickLighting(deltaTime);
     }

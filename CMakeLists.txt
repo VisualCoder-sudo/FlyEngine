@@ -269,6 +269,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/UndoSystem.cpp
         src/Engine/Audio.cpp
         src/Engine/Backend/AudioAssets.cpp
+        src/Engine/Backend/SoundRays.cpp
         src/Engine/Backend/miniaudio_impl.c
         src/Engine/Backend/stb/stb_vorbis.c
         src/Engine/Backend/FbxModel.cpp
