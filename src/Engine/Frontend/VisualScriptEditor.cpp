@@ -353,6 +353,21 @@ std::string RelativeToProject(const std::string& projectDir, const std::string& 
     return rel.generic_string();
 }
 
+// Points a Play Sound node at `path`. A sound from outside the project is imported into assets/audio first (once: the same
+// sound again reuses the copy); one that is already in the project is referred to where it is.
+void LinkSound(Node& n, const std::string& projectDir, const std::string& path) {
+    if (projectDir.empty()) { n.target = path; return; }
+    const audioassets::ImportResult imp = audioassets::Import(projectDir, path);
+    if (imp.ok) {
+        n.target = imp.rel;
+        if (imp.reused) ui::LogAlways("[audio] using %s (already in the project)", imp.rel.c_str());
+        else ui::LogAlways("[audio] imported %s", imp.rel.c_str());
+    } else {
+        ui::LogAlways("[audio] import failed: %s", imp.error.c_str());
+        n.target = RelativeToProject(projectDir, path);
+    }
+}
+
 // "File" row: the path, plus a "..." button offering the system file dialog or the project's own files.
 void SoundRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     namespace fs = std::filesystem;
@@ -365,6 +380,12 @@ void SoundRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     char buf[512];
     std::snprintf(buf, sizeof(buf), "%s", n.target.c_str());
     if (ImGui::InputText("##file", buf, sizeof(buf))) n.target = buf;
+    // A full path typed or pasted in that points at a sound outside the project is imported when you finish typing.
+    if (ImGui::IsItemDeactivatedAfterEdit() && !scene.projectDir.empty()) {
+        std::error_code ec;
+        if (fs::path(n.target).is_absolute() && fs::is_regular_file(n.target, ec) && audioassets::IsSoundFile(n.target))
+            LinkSound(n, scene.projectDir, n.target);
+    }
     ImGui::SameLine(0.0f, 4.0f);
     if (ImGui::Button("...", ImVec2(26.0f, 0.0f))) {
         g_soundBrowse.clear();
@@ -784,20 +805,8 @@ void DrawEditor(const SceneListing& scene) {
     }
     std::string pickedSound;   // the system file dialog answers some frames after it was opened
     if (g_soundNode && platform::PollDialogResult({ platform::DialogPurpose::PickSound }, pickedSound)) {
-        if (!pickedSound.empty()) {
-            if (Node* sn = Find(g_soundNode)) {
-                // A sound from outside the project is copied in (once: the same file again reuses the copy).
-                const audioassets::ImportResult imp = audioassets::Import(scene.projectDir, pickedSound);
-                if (imp.ok) {
-                    sn->target = imp.rel;
-                    if (imp.reused) ui::LogAlways("[audio] using %s (already in the project)", imp.rel.c_str());
-                    else ui::LogAlways("[audio] imported %s", imp.rel.c_str());
-                } else {
-                    if (!scene.projectDir.empty()) ui::LogAlways("[audio] import failed: %s", imp.error.c_str());
-                    sn->target = RelativeToProject(scene.projectDir, pickedSound);
-                }
-            }
-        }
+        if (!pickedSound.empty())
+            if (Node* sn = Find(g_soundNode)) LinkSound(*sn, scene.projectDir, pickedSound);
         g_soundNode = 0;
     }
     if (Count() == 0) {

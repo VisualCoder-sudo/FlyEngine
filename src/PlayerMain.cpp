@@ -738,6 +738,17 @@ static std::string AssetsFolderPath() {
 static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::string& folder) {
     if (const char* auto_ = std::getenv("FLY_CONTENT_PROMPT")) return std::string(auto_) == "continue";
 
+    // The system's UI font (as the loading screen does), smooth at any size; raylib's built-in bitmap font is the fallback.
+    Font font = GetFontDefault();
+    bool ownFont = false;
+    if (const std::string& path = platform::ResolveFontPath(); !path.empty()) {
+        std::vector<int> codepoints;   // Basic Latin through Latin Extended-B, so accented folder names draw
+        for (int c = 32; c < 592; ++c) codepoints.push_back(c);
+        Font f = LoadFontEx(path.c_str(), 64, codepoints.data(), (int)codepoints.size());
+        if (f.texture.id != 0) { font = f; ownFont = true; SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR); }
+    }
+    struct FontGuard { Font f; bool own; ~FontGuard() { if (own) UnloadFont(f); } } fontGuard{ font, ownFont };
+
     std::string detail;
     if (!report.folderFound) detail = "The Assets folder was not found next to the game.";
     else detail = std::to_string(report.missing.size()) + " of " + std::to_string(report.expected) + " content files are missing from the Assets folder.";
@@ -745,6 +756,10 @@ static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::
     std::string example;
     if (!report.missing.empty()) example = "For example: " + report.missing.front();
 
+    // Test hook, as in the run loop: FLY_EXIT_AFTER_FRAMES=<n> leaves after n frames (FLY_SCREENSHOT=<file> saves the last one).
+    const char* exitAfterEnv = std::getenv("FLY_EXIT_AFTER_FRAMES");
+    const int exitAfterFrames = exitAfterEnv ? std::atoi(exitAfterEnv) : 0;
+    int frames = 0;
     while (!WindowShouldClose()) {
         const float w = (float)GetScreenWidth(), h = (float)GetScreenHeight();
         const Rectangle yes = { w * 0.5f - 230.0f, h * 0.5f + 70.0f, 220.0f, 44.0f };
@@ -758,8 +773,8 @@ static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::
         BeginDrawing();
         ClearBackground(Color{ 24, 26, 31, 255 });
         auto centered = [&](const std::string& text, float y, int size, Color c) {
-            const int tw = MeasureText(text.c_str(), size);
-            DrawText(text.c_str(), (int)(w * 0.5f) - tw / 2, (int)y, size, c);
+            const float tw = MeasureTextEx(font, text.c_str(), (float)size, 0.5f).x;
+            DrawTextEx(font, text.c_str(), Vector2{ w * 0.5f - tw * 0.5f, y }, (float)size, 0.5f, c);
         };
         centered("All content not present, Continue Playing?", h * 0.5f - 90.0f, 30, Color{ 240, 240, 245, 255 });
         centered(detail, h * 0.5f - 40.0f, 18, Color{ 200, 200, 210, 255 });
@@ -768,13 +783,17 @@ static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::
         DrawRectangleRec(yes, overYes ? Color{ 60, 150, 200, 255 } : Color{ 45, 120, 170, 255 });
         DrawRectangleRec(no, overNo ? Color{ 90, 94, 105, 255 } : Color{ 66, 70, 80, 255 });
         auto onButton = [&](const Rectangle& r, const char* text) {
-            const int tw = MeasureText(text, 18);
-            DrawText(text, (int)(r.x + r.width * 0.5f) - tw / 2, (int)(r.y + 13.0f), 18, WHITE);
+            const float tw = MeasureTextEx(font, text, 18.0f, 0.5f).x;
+            DrawTextEx(font, text, Vector2{ r.x + r.width * 0.5f - tw * 0.5f, r.y + 12.0f }, 18.0f, 0.5f, WHITE);
         };
         onButton(yes, "Continue Playing  (Enter)");
         onButton(no, "Quit  (Esc)");
         EndDrawing();
         if (decided) return result;
+        if (exitAfterFrames > 0 && ++frames >= exitAfterFrames) {
+            if (const char* shot = std::getenv("FLY_SCREENSHOT")) TakeScreenshot(shot);
+            return false;
+        }
     }
     return false;
 }

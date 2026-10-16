@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <filesystem>
 #include <algorithm>
+#include "../../../include/Engine/Backend/AudioAssets.hpp"
 #include "ui_internal.hpp"
 
 namespace ui {
@@ -367,6 +368,14 @@ static void ImportModelIntoCurrentFolder(const std::string& sourcePath) {
 // Anything dropped that ImportModel doesn't handle (not a recognized 3D
 // format) is just copied straight into the folder currently open.
 static void CopyFileIntoCurrentFolder(const std::string& sourcePath) {
+    // Sounds go to assets/audio, stored once however often they are added (see AudioAssets.hpp).
+    if (audioassets::IsSoundFile(sourcePath)) {
+        const audioassets::ImportResult imp = audioassets::Import(::project::GetCurrentProject().path, sourcePath);
+        if (imp.ok) LogAlways(imp.reused ? "[audio] using %s (already in the project)" : "[audio] imported %s", imp.rel.c_str());
+        else LogAlways("[audio] import failed: %s", imp.error.c_str());
+        g_assetEntriesDirty = true;
+        return;
+    }
     std::string dir = CurrentAssetDir();
     if (dir.empty()) return;
     std::error_code ec;

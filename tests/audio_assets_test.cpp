@@ -1,4 +1,4 @@
-// Imported sounds (include/Engine/Backend/AudioAssets.hpp): copied into assets/Audio once, deduplicated by content,
+// Imported sounds (include/Engine/Backend/AudioAssets.hpp): copied into assets/audio once, deduplicated by content,
 // kept while the saved project mentions them, deleted when nothing does or when they were never saved. No window.
 #include "Engine/Backend/AudioAssets.hpp"
 
@@ -38,7 +38,7 @@ int main() {
     const fs::path proj = root / "proj", outside = root / "outside";
     fs::create_directories(proj);
     const std::string P = proj.string();
-    const fs::path audio = proj / "assets" / "Audio";
+    const fs::path audio = proj / "assets" / "audio";
 
     Write(outside / "boom.wav", Fake("A"));
     Write(outside / "Other Name (2).WAV", Fake("A"));          // the same bytes under another name
@@ -52,7 +52,7 @@ int main() {
 
     // First import: copied, pending.
     auto a = audioassets::Import(P, (outside / "boom.wav").string());
-    CHECK(a.ok && !a.reused && a.rel == "assets/Audio/boom.wav");
+    CHECK(a.ok && !a.reused && a.rel == "assets/audio/boom.wav");
     CHECK(fs::exists(proj / a.rel));
     CHECK(fs::exists(audio / ".pending") && fs::exists(audio / ".managed"));
 
@@ -67,13 +67,13 @@ int main() {
 
     // Same name, different sound: kept apart.
     auto b = audioassets::Import(P, (outside / "sub" / "boom.wav").string());
-    CHECK(b.ok && !b.reused && b.rel != a.rel && b.rel.rfind("assets/Audio/boom_", 0) == 0);
+    CHECK(b.ok && !b.reused && b.rel != a.rel && b.rel.rfind("assets/audio/boom_", 0) == 0);
     CHECK(FilesIn(audio) == 2);
 
     // Names are made safe to write into a scene file.
     Write(outside / "Big Bang (final).mp3", Fake("C"));
     auto c = audioassets::Import(P, (outside / "Big Bang (final).mp3").string());
-    CHECK(c.ok && c.rel == "assets/Audio/Big_Bang_final.mp3");
+    CHECK(c.ok && c.rel == "assets/audio/Big_Bang_final.mp3");
 
     // A sound already in the project is referred to, not copied.
     Write(proj / "assets" / "Sounds" / "mine.ogg", Fake("D"));
@@ -112,6 +112,21 @@ int main() {
     auto f = audioassets::Import(P, (outside / "Big Bang (final).mp3").string());
     CHECK(f.ok && f.reused && f.rel == c.rel);
     CHECK(audioassets::DiscardPending(P).empty() && fs::exists(proj / c.rel));
+
+    // Sounds an earlier version put in assets/Audio are still found (no second copy) and still cleaned up.
+    {
+        const fs::path legacy = proj / "assets" / "Audio";
+        Write(legacy / "old.wav", Fake("L"));
+        Write(legacy / ".managed", "old.wav\n");
+        Write(outside / "again.wav", Fake("L"));
+        const bool sameDir = fs::equivalent(legacy, audio, ec);   // one folder on a case-insensitive file system
+        auto g = audioassets::Import(P, (outside / "again.wav").string());
+        CHECK(g.ok && g.reused && g.rel.size() > 14 && g.rel.substr(g.rel.size() - 7) == "old.wav");
+        CHECK(sameDir || g.rel == "assets/Audio/old.wav");
+        auto cleaned = audioassets::Commit(P);                 // nothing mentions old.wav
+        CHECK(cleaned.size() == 1 && !fs::exists(legacy / "old.wav"));
+        CHECK(fs::exists(proj / c.rel));
+    }
 
     fs::remove_all(root, ec);
     std::printf("%d checks, %d failed\n", g_checks, g_failed);

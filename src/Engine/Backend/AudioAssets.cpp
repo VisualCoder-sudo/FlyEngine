@@ -24,6 +24,23 @@ std::string Lower(std::string s) {
 
 fs::path Folder(const std::string& projectDir) { return fs::path(projectDir) / kFolder; }
 
+// Projects imported before the folder was renamed keep their sounds in assets/Audio; those stay managed. Where the two names
+// are one folder (a case-insensitive file system) it is listed once.
+struct Place { fs::path dir; std::string rel; };   // rel: project-relative folder, no trailing slash
+std::vector<Place> Places(const std::string& projectDir, bool onlyExisting) {
+    std::vector<Place> out;
+    std::error_code ec;
+    for (const char* rel : { kFolder, kLegacyFolder }) {
+        const fs::path dir = fs::path(projectDir) / rel;
+        const bool exists = fs::is_directory(dir, ec);
+        if (onlyExisting && !exists) continue;
+        bool same = false;
+        for (const Place& p : out) if (exists && fs::is_directory(p.dir, ec) && fs::equivalent(p.dir, dir, ec)) same = true;
+        if (!same) out.push_back({ dir, rel });
+    }
+    return out;
+}
+
 std::set<std::string> ReadList(const fs::path& file) {
     std::set<std::string> out;
     std::ifstream in(file);
@@ -124,19 +141,22 @@ ImportResult Import(const std::string& projectDir, const std::string& source) {
     }
 
     const fs::path folder = Folder(projectDir);
-    fs::create_directories(folder, ec);
-    if (ec) { res.error = "can't create " + std::string(kFolder) + ": " + ec.message(); return res; }
 
     const uintmax_t size = fs::file_size(source, ec);
     const std::string hash = textureManager::ComputeSHA256(source);
     if (ec || hash.empty()) { res.error = "can't read the file"; return res; }
 
-    if (const std::string same = FindIdentical(folder, source, size, hash); !same.empty()) {
-        res.ok = true;
-        res.reused = true;
-        res.rel = std::string(kFolder) + "/" + same;
-        return res;
+    for (const Place& place : Places(projectDir, true)) {
+        if (const std::string same = FindIdentical(place.dir, source, size, hash); !same.empty()) {
+            res.ok = true;
+            res.reused = true;
+            res.rel = place.rel + "/" + same;
+            return res;
+        }
     }
+
+    fs::create_directories(folder, ec);
+    if (ec) { res.error = "can't create " + std::string(kFolder) + ": " + ec.message(); return res; }
 
     const std::string ext = Lower(fs::path(source).extension().string());
     const std::string stem = SafeStem(fs::path(source).stem().string());
@@ -159,44 +179,46 @@ ImportResult Import(const std::string& projectDir, const std::string& source) {
 std::vector<std::string> Commit(const std::string& projectDir) {
     std::vector<std::string> deleted;
     if (projectDir.empty()) return deleted;
-    const fs::path folder = Folder(projectDir);
     std::error_code ec;
-    if (!fs::is_directory(folder, ec)) return deleted;
 
-    std::set<std::string> managed = ReadList(folder / kManagedFile);
-    if (managed.empty()) { fs::remove(folder / kPendingFile, ec); return deleted; }
-
-    const std::string text = ProjectText(projectDir);
-    for (auto it = managed.begin(); it != managed.end();) {
-        const std::string rel = std::string(kFolder) + "/" + *it;
-        const bool exists = fs::exists(folder / *it, ec);
-        if (exists && text.find(rel) != std::string::npos) { ++it; continue; }
-        if (exists) {
-            fs::remove(folder / *it, ec);
-            if (!ec) deleted.push_back(rel);
+    std::string text;   // read once, and only if some folder has anything managed
+    bool haveText = false;
+    for (const Place& place : Places(projectDir, true)) {
+        std::set<std::string> managed = ReadList(place.dir / kManagedFile);
+        if (managed.empty()) { fs::remove(place.dir / kPendingFile, ec); continue; }
+        if (!haveText) { text = ProjectText(projectDir); haveText = true; }
+        for (auto it = managed.begin(); it != managed.end();) {
+            const std::string rel = place.rel + "/" + *it;
+            const bool exists = fs::exists(place.dir / *it, ec);
+            if (exists && text.find(rel) != std::string::npos) { ++it; continue; }
+            if (exists) {
+                fs::remove(place.dir / *it, ec);
+                if (!ec) deleted.push_back(rel);
+            }
+            it = managed.erase(it);
         }
-        it = managed.erase(it);
+        WriteList(place.dir / kManagedFile, managed);
+        fs::remove(place.dir / kPendingFile, ec);   // everything that survived is saved now
     }
-    WriteList(folder / kManagedFile, managed);
-    fs::remove(folder / kPendingFile, ec);   // everything that survived is saved now
     return deleted;
 }
 
 std::vector<std::string> DiscardPending(const std::string& projectDir) {
     std::vector<std::string> deleted;
     if (projectDir.empty()) return deleted;
-    const fs::path folder = Folder(projectDir);
     std::error_code ec;
-    const std::set<std::string> pending = ReadList(folder / kPendingFile);
-    if (pending.empty()) return deleted;
-    std::set<std::string> managed = ReadList(folder / kManagedFile);
-    for (const std::string& name : pending) {
-        if (!managed.count(name)) continue;   // only ever delete what we imported
-        if (fs::remove(folder / name, ec)) deleted.push_back(std::string(kFolder) + "/" + name);
-        managed.erase(name);
+    for (const Place& place : Places(projectDir, true)) {
+        const std::set<std::string> pending = ReadList(place.dir / kPendingFile);
+        if (pending.empty()) continue;
+        std::set<std::string> managed = ReadList(place.dir / kManagedFile);
+        for (const std::string& name : pending) {
+            if (!managed.count(name)) continue;   // only ever delete what we imported
+            if (fs::remove(place.dir / name, ec)) deleted.push_back(place.rel + "/" + name);
+            managed.erase(name);
+        }
+        WriteList(place.dir / kManagedFile, managed);
+        fs::remove(place.dir / kPendingFile, ec);
     }
-    WriteList(folder / kManagedFile, managed);
-    fs::remove(folder / kPendingFile, ec);
     return deleted;
 }
 
