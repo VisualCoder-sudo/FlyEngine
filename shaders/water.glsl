@@ -484,7 +484,10 @@ void main() {
 
     // Lighting (linear light; the sun's glints are far brighter than the water, and bloom)
     vec3 diffuse = vec3(vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * vsSceneB.xyz;
-    float spec = pow(NdotH, 160.0) * 9.0 + pow(NdotH, 48.0) * 0.5;
+    // A tight lobe, soft-capped: the sun's reflection path stays a field of glints
+    // instead of flooding to flat white once the bloom spreads it.
+    float spec = pow(NdotH, 400.0) * 6.0 + pow(NdotH, 64.0) * 0.25;
+    spec = 3.0 * (1.0 - exp(-spec / 3.0));
 
     // Fresnel-Schlick: water gets more reflective (and visually more opaque)
     // at grazing angles instead of always showing the flat base color.
