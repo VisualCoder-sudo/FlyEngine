@@ -30,6 +30,8 @@ Engine::Engine(int width, int height, const std::string& title, int targetFPS) {
 
     console::AttachCamera(camera);
 
+    audio::SetLogHandler([](const std::string& msg) { ui::LogAlways("%s", msg.c_str()); });
+
     // Visual Script's Play Sound node and fly::PlaySound() end here. The sound device opens on the first sound.
     vscript::SetSoundPlayer([](const std::string& path, float volume) {
         audio::PlayParams p;

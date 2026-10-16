@@ -260,7 +260,17 @@ NativeScriptHost::~NativeScriptHost() {
     if (GetActiveRuntime() == m_runtime.get()) SetActiveRuntime(nullptr);
 }
 
+// The scripting runtime has to know where the project is: Play Sound resolves "assets/audio/x.wav" against it, and plugins ask
+// for it through the API. A .flyproj file stands for its folder. (An exported game passes the archive's virtual root.)
+void NativeScriptHost::BindProjectFolder(const std::string& projectPath) {
+    if (!m_runtime || projectPath.empty()) return;
+    fs::path p = fs::u8path(projectPath);
+    if (p.extension() == ".flyproj") p = p.parent_path();
+    m_runtime->SetProjectPath(p.generic_string());
+}
+
 bool NativeScriptHost::Initialize(const std::string& projectPath) {
+    BindProjectFolder(projectPath);
     m_projectPath = projectPath;
     m_lastError.clear();
     
@@ -603,6 +613,7 @@ int CallScriptTick(const FlyScriptClass* cls, void* instance, float dt) {
 } // namespace
 
 bool NativeScriptHost::InitializeScripts(const std::string& projectPath) {
+    BindProjectFolder(projectPath);
     if (g_staticScriptEntry) {
         m_projectPath.clear();   // nothing to build, watch or hot-reload: the scripts are part of this executable
         return LoadStaticScripts();

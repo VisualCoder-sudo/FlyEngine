@@ -107,6 +107,7 @@ public:
 
     // The world context FlyNative_* and the editor UI read and mutate.
     ScriptRuntime* GetRuntime() { return m_runtime.get(); }
+    void BindProjectFolder(const std::string& projectPath);   // tells the runtime where the project is (Initialize* do it)
     void BindWorld(std::vector<ScatteredObject*>& objects,
                    std::vector<std::unique_ptr<ModelGroup>>& models,
                    Camera3D& camera, phys::Simulation& sim, Engine& engine);

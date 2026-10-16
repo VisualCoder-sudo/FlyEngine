@@ -975,6 +975,7 @@ int main(int argc, char* argv[]) {
     auto nativeScriptHost = std::make_unique<NativeScript::NativeScriptHost>();
     NativeScript::NativeScriptHost* nativeScriptHostPtr = nativeScriptHost.get();
     nativeScriptHost->SetScriptHotReload(opts.hotReload);
+    nativeScriptHost->BindProjectFolder(info.path);   // even when no scripts load: Play Sound needs the project folder
     loading::Range(0.05f, 0.30f);
     if (!opts.noScripts) {
         loading::Progress(0.0f, "Loading game scripts");

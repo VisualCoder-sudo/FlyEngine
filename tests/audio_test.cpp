@@ -4,7 +4,9 @@
 #include "Engine/PackArchive.hpp"
 #include "Engine/Vfs.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -47,7 +49,25 @@ static void Peaks(uint32_t frames, float& left, float& right) {
     }
 }
 
-int main() {
+// `audio_test --device`: plays a short tone through the real sound device, to check that this machine can make sound.
+static int PlayOnDevice() {
+    const fs::path dir = fs::temp_directory_path() / "fly_audio_device";
+    fs::create_directories(dir);
+    const std::string wav = WriteSine(dir / "tone.wav", 44100, 1.0f, 440.0f);
+    if (!audio::Init()) { std::printf("no sound device\n"); return 1; }
+    audio::PlayParams p; p.volume = 0.3f;
+    const audio::Handle h = audio::Play(wav, p);
+    std::printf("playing a 1 s 440 Hz tone: handle %u, playing %d\n", h, audio::IsPlaying(h) ? 1 : 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+    audio::Update();
+    std::printf("finished: %s\n", audio::IsPlaying(h) ? "no" : "yes");
+    audio::Shutdown();
+    std::error_code ec; fs::remove_all(dir, ec);
+    return h != 0 ? 0 : 1;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--device") == 0) return PlayOnDevice();
     const fs::path dir = fs::temp_directory_path() / "fly_audio_test";
     fs::create_directories(dir);
     const std::string wav = WriteSine(dir / "tone.wav", 8000, 0.5f, 440.0f);

@@ -3,7 +3,9 @@
 #include "../../include/Engine/Backend/audio.h"   // miniaudio; the implementation is in Backend/miniaudio_impl.c
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -55,6 +57,13 @@ struct State {
 };
 
 State& S() { static State s; return s; }
+
+std::function<void(const std::string&)>& LogHandler() { static std::function<void(const std::string&)> h; return h; }
+void Log(const std::string& msg) {
+    if (auto& h = LogHandler()) h(msg);
+    else std::fprintf(stderr, "%s\n", msg.c_str());
+}
+std::set<std::string> g_warned;   // a file that can't be played is reported once, not on every attempt
 
 bool ReadFile(const std::string& path, std::vector<uint8_t>& out) {
     if (vfs::Handles(path)) return vfs::Read(path, out);
@@ -112,9 +121,13 @@ std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes) {
 std::shared_ptr<Clip> LoadClipLocked(State& s, const std::string& path) {
     if (auto it = s.clips.find(path); it != s.clips.end()) return it->second;
     std::vector<uint8_t> bytes;
-    if (!ReadFile(path, bytes)) return nullptr;
+    if (!ReadFile(path, bytes)) {
+        if (g_warned.insert(path).second) Log("[audio] can't find sound file: " + path);
+        return nullptr;
+    }
     auto clip = Decode(bytes);
     if (clip) s.clips[path] = clip;
+    else if (g_warned.insert(path).second) Log("[audio] can't decode " + path + " (not a valid WAV, MP3, FLAC or OGG file?)");
     return clip;
 }
 
@@ -163,6 +176,8 @@ Handle StartLocked(State& s, const std::string& path, const PlayParams& p, bool 
 
 } // namespace
 
+void SetLogHandler(std::function<void(const std::string&)> handler) { LogHandler() = std::move(handler); }
+
 bool Init(bool noDevice) {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -170,8 +185,17 @@ bool Init(bool noDevice) {
     if (s.failed) return false;
     ma_engine_config cfg = ma_engine_config_init();
     if (noDevice) { cfg.noDevice = MA_TRUE; cfg.channels = 2; cfg.sampleRate = 48000; }
-    if (ma_engine_init(&cfg, &s.engine) != MA_SUCCESS) { s.failed = true; return false; }
+    const ma_result initResult = ma_engine_init(&cfg, &s.engine);
+    if (initResult != MA_SUCCESS) {
+        s.failed = true;
+        Log(std::string("[audio] no sound device, sounds will not play (") + ma_result_description(initResult) + ")");
+        return false;
+    }
     s.open = true;
+    if (!noDevice) {
+        Log("[audio] sound device ready: " + std::to_string(ma_engine_get_sample_rate(&s.engine)) + " Hz, " +
+            std::to_string(ma_engine_get_channels(&s.engine)) + " channels");
+    }
     s.noDevice = noDevice;
     ma_engine_set_volume(&s.engine, s.master);
     return true;
@@ -182,6 +206,7 @@ void Shutdown() {
     std::lock_guard<std::mutex> lock(s.mutex);
     s.voices.clear();
     s.clips.clear();
+    g_warned.clear();
     if (s.open) ma_engine_uninit(&s.engine);
     s.open = false;
     s.failed = false;

@@ -4,6 +4,7 @@
 // archive (Vfs.hpp). The audio device is opened on the first Play, so a run that never plays a sound never
 // touches the sound system; if there is no device (a CI box, a headless server) every call is a quiet no-op.
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace audio {
@@ -16,6 +17,10 @@ struct PlayParams {
     float pan    = 0.0f;               // -1 left .. 1 right (ignored for 3D sounds)
     bool  loop   = false;
 };
+
+// Where messages go ("[audio] ..."): no sound device, a file that can't be found or decoded. The default writes to stderr;
+// the engine routes them to the editor's Output tab.
+void SetLogHandler(std::function<void(const std::string&)> handler);
 
 // Opens the sound system. Called by the first Play; call it earlier only to pay the start-up cost up front.
 // `noDevice` mixes without a sound card: nothing is audible, and Pump() drives the mixer (tests).
