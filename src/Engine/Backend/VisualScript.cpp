@@ -303,6 +303,45 @@ const char* OutputLabel(const Node& n, int pin) {
 bool AllowsFanOut(NodeType t) { return IsEvent(t); }
 bool AllowsFanIn(NodeType t) { return t == NodeType::End; }
 
+namespace {
+// The nearest Play Sound above `id` along the exec wires (fewest hops), or null. Event nodes are the top of a chain.
+const Node* NearestPlaySoundAbove(const Graph& g, int id) {
+    std::vector<int> queue = { id };
+    std::set<int> seen = { id };
+    for (size_t i = 0; i < queue.size() && queue.size() < 512; ++i) {
+        for (const Link& l : g.links) {
+            if (l.to != queue[i] || !seen.insert(l.from).second) continue;
+            const Node* n = FindIn(g, l.from);
+            if (n && n->type == NodeType::PlaySound) return n;
+            queue.push_back(l.from);
+        }
+    }
+    return nullptr;
+}
+}
+
+// Stop Sound nodes at or below `startId` (down the exec wires) that no Play Sound is wired to are linked to the nearest Play Sound above
+// them, and take its file and object: wiring Play Sound -> (Delay ->) Stop Sound is enough to say which sound to stop.
+void AutoLinkSounds(int startId) {
+    Graph& g = Active();
+    std::vector<int> queue = { startId };
+    std::set<int> seen = { startId };
+    for (size_t i = 0; i < queue.size() && queue.size() < 512; ++i) {
+        for (const Link& l : g.links) if (l.from == queue[i] && seen.insert(l.to).second) queue.push_back(l.to);
+    }
+    for (int id : queue) {
+        Node* stop = Find(id);
+        if (!stop || stop->type != NodeType::StopSound || LinkedSoundSource(g, id)) continue;
+        const Node* play = NearestPlaySoundAbove(g, id);
+        if (!play) continue;
+        const int playId = play->id;
+        const std::string file = play->target, object = SoundOption(*play, "object");
+        ConnectData(playId, id, 0, 0);
+        stop->target = file;                       // its own fields keep what it was linked to, should the wire be removed
+        SoundOptionRef(*stop, "object") = object;
+    }
+}
+
 void Connect(int from, int to, int fromPin) {
     if (from == to) return;
     Node* a = Find(from); Node* b = Find(to);
@@ -317,6 +356,7 @@ void Connect(int from, int to, int fromPin) {
         return (!fanOut && l.from == from && l.fromPin == fromPin) || (!fanIn && l.to == to);
     }), L.end());
     L.push_back({ from, to, fromPin });
+    AutoLinkSounds(to);
 }
 
 void ConnectData(int from, int to, int toPin, int fromPin) {

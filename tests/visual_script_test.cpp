@@ -937,6 +937,9 @@ static void TestSoundOptions() {
     SoundOptionRef(N(stop), "object") = "Workspace/Cube";
     N(stopAll).target = "assets/audio/beep.wav";
     Link_(s, fan); Link_(fan, flat); Link_(flat, gone); Link_(gone, stop); Link_(stop, stopAll);
+    Active().dataLinks.clear();                            // wiring them in a chain auto-linked the Stop Sounds; this test is about their own fields
+    N(stop).target = "assets/audio/fan.wav"; SoundOptionRef(N(stop), "object") = "Workspace/Cube";   // (auto-linking also filled them in)
+    N(stopAll).target = "assets/audio/beep.wav"; SoundOptionRef(N(stopAll), "object") = "";
     Run(RT());
     CHECK(g_requests.size() == 2);                         // the one with a missing object played nothing
     CHECK(Logged("no object") || Logged("Nothing"));
@@ -994,6 +997,9 @@ static void TestStopSoundLink() {
     SanitizeDataLinks();               CHECK(Active().dataLinks.size() == 1);   // a good wire is kept
 
     Link_(s, play); Link_(play, stop); Link_(stop, loose);
+    Active().dataLinks.erase(std::remove_if(Active().dataLinks.begin(), Active().dataLinks.end(), [&](const DataLink& d) { return d.to == loose; }), Active().dataLinks.end());
+    N(loose).target = "assets/audio/loose.wav"; SoundOptionRef(N(loose), "object") = "";   // chaining it after `stop` auto-linked it too; undo that
+    N(stop).target = "assets/audio/other.wav"; SoundOptionRef(N(stop), "object") = "Workspace/Ball";
     Run(RT());
     CHECK(g_stopped.size() == 2);
     if (g_stopped.size() == 2) {
@@ -1022,6 +1028,56 @@ static void TestStopSoundLink() {
     for (const Node& n : Active().nodes) { if (n.type == NodeType::PlaySound) playId = n.id; if (n.type == NodeType::StopSound && !n.target.empty() && n.target.find("other") != std::string::npos) stopId = n.id; }
     RemoveNode(playId);
     CHECK(Active().dataLinks.empty() && LinkedSoundSource(Active(), stopId) == nullptr);
+}
+
+// Wiring Play Sound -> Stop Sound with ordinary exec wires is enough: the Stop Sound links itself to the Play Sound above it and takes its
+// file and object (also through nodes in between, and whichever wire is made last).
+static void TestStopSoundAutoLink() {
+    Fresh();
+    SetSoundPlayer([](const SoundRequest& r) { g_requests.push_back(r); });
+    SetSoundStopper([](const std::string& path, const std::string& obj) { g_stopped.push_back(path + "|" + obj); });
+    const int s = Add(NodeType::Start), play = Add(NodeType::PlaySound), del = Add(NodeType::Delay), stop = Add(NodeType::StopSound);
+    N(play).target = "assets/audio/fan.wav";
+    SoundOptionRef(N(play), "object") = "Workspace/Cube";
+    Link_(s, play);
+    Link_(play, stop);                                       // straight after it
+    CHECK(Active().dataLinks.size() == 1 && LinkedSoundSource(Active(), stop) == &N(play));
+    CHECK(N(stop).target == "assets/audio/fan.wav" && SoundOption(N(stop), "object") == "Workspace/Cube");   // its own fields were filled in too
+
+    Fresh();                                                 // through a Delay, wires made in either order
+    const int s2 = Add(NodeType::Start), p2 = Add(NodeType::PlaySound), d2 = Add(NodeType::Delay), st2 = Add(NodeType::StopSound);
+    N(p2).target = "a.wav";
+    Link_(s2, p2); Link_(d2, st2);
+    CHECK(Active().dataLinks.empty());                       // no Play Sound above the Delay yet
+    Link_(p2, d2);
+    CHECK(Active().dataLinks.size() == 1 && LinkedSoundSource(Active(), st2) == &N(p2));
+    N(p2).value = "1";
+    Run(RT());
+
+    Fresh();                                                 // an event-driven Stop Sound has nothing above it to link to
+    const int key = Add(NodeType::OnKey), pl = Add(NodeType::PlaySound), st = Add(NodeType::StopSound);
+    Link_(key, st);
+    CHECK(Active().dataLinks.empty());
+    (void)pl;
+
+    Fresh();                                                 // the nearest Play Sound wins, and a wire made by hand is never replaced
+    const int a = Add(NodeType::PlaySound), b = Add(NodeType::PlaySound), c = Add(NodeType::StopSound), d = Add(NodeType::StopSound);
+    N(a).target = "far.wav"; N(b).target = "near.wav";
+    Link_(a, b); Link_(b, c);
+    CHECK(LinkedSoundSource(Active(), c) == &N(b));
+    ConnectData(a, d, 0, 0);                                 // d is wired to `a` by hand ...
+    Link_(c, d);                                             // ... and linking c -> d does not change that
+    CHECK(LinkedSoundSource(Active(), d) == &N(a));
+
+    Fresh();                                                 // loading a saved scene does not re-link a Stop Sound whose wire was removed
+    const int s3 = Add(NodeType::Start), p3 = Add(NodeType::PlaySound), st3 = Add(NodeType::StopSound);
+    Link_(s3, p3); Link_(p3, st3);
+    Active().dataLinks.clear();
+    const std::string saved = SaveAll();
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    CHECK(Active().dataLinks.empty());
 }
 
 static void TestSoundWithoutBackend() {
@@ -1772,7 +1828,7 @@ int main() {
         { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup },
         { "ObjectActionOnMissingTarget", TestObjectActionOnMissingTarget }, { "VectorFromWire", TestVectorFromWire },
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
-        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "StopSoundLink", TestStopSoundLink }, { "SoundWithoutBackend", TestSoundWithoutBackend },
+        { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "StopSoundLink", TestStopSoundLink }, { "StopSoundAutoLink", TestStopSoundAutoLink }, { "SoundWithoutBackend", TestSoundWithoutBackend },
         { "ConnectRules", TestConnectRules }, { "IsKeyDown", TestIsKeyDown }, { "AddToVariable", TestAddToVariable }, { "EveryNSeconds", TestEveryNSeconds },
         { "JoinText", TestJoinText }, { "VectorNodes", TestVectorNodes }, { "MathFunctions", TestMathFunctions },
         { "ClampNode", TestClampNode }, { "TimeNode", TestTimeNode }, { "ObjectExists", TestObjectExists },

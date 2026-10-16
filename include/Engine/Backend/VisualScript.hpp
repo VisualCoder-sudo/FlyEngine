@@ -131,6 +131,9 @@ int DataOutputCount(const Node& n);              // value output pins: 1 for a v
 // Stop Sound's "Sound" input takes a wire from a Play Sound node's "Sound" output: it then stops exactly that sound (same file, same
 // object) and shows those values instead of its own. Null when nothing is wired to it.
 const Node* LinkedSoundSource(const Graph& g, int stopSoundNodeId);
+// Called after an exec wire is made: Stop Sound nodes below it that have no Play Sound wired in are linked to the nearest Play Sound
+// above them (and take its file and object), so Play Sound -> Delay -> Stop Sound stops that sound without any other wiring.
+void AutoLinkSounds(int startNodeId);
 const char* DataInputLabel(NodeType t, int pin);
 int OutputCount(NodeType t, const Node* n = nullptr);   // exec output pins (0 for End and events' none)
 const char* OutputLabel(const Node& n, int pin);        // "" for a plain single output

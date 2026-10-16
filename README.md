@@ -353,7 +353,9 @@ while the game is playing):
 - **Echo**: rays out of the object in every direction. How near the walls are and how enclosed the room is set the echo's delay,
   how long it rings and how loud it is; open ground has none. The delay is fixed when the sound starts.
 
-**Stop Sound** can be linked to the sound it stops: drag a wire from a Play Sound's *Sound* output (the dot on its File row) to a
+**Stop Sound** links itself: wire it after a Play Sound with ordinary flow wires (Play Sound -> Stop Sound, or Play Sound -> Delay -> Stop
+Sound) and it takes that sound's file and object, and follows later changes to it. You can also link it by hand to a different Play Sound:
+drag a wire from a Play Sound's *Sound* output (the dot on its File row) to a
 Stop Sound's *Sound* input. It then stops exactly that sound (same file, same object), shows them read-only, and follows any later
 change to the Play Sound. Unwired, it stops the file and object you pick in it. Only that pairing can be wired.
 
