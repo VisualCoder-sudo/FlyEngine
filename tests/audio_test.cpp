@@ -208,6 +208,34 @@ int main(int argc, char** argv) {
         audio::StopByPath(blip);                                              // safe with nothing playing
     }
 
+    // Turning on the spot: a sound 2 m away stays about as loud whichever way you face; only its left/right balance moves (it is
+    // louder in the ear on its side, never silent in the other).
+    {
+        audio::StopAll();
+        const std::string tone = WriteSine(dir / "turn.wav", 48000, 2.0f, 300.0f);
+        float quietest = 1e9f, loudest = 0.0f;
+        for (int deg = 0; deg < 360; deg += 30) {
+            audio::StopAll();
+            const float a = deg * 3.14159265f / 180.0f;
+            audio::SetListener(0, 0, 0, std::sin(a), 0, std::cos(a), 0, 1, 0);   // yaw `deg` from facing +Z
+            audio::PlayParams p; p.loop = true; p.maxDistance = 50.0f;
+            audio::PlayAt(tone, 2.0f, 0, 0, p);                                    // 2 m to the +X side
+            float lpk = 0, rpk = 0; Peaks(9600, lpk, rpk);
+            const float power = std::sqrt(lpk * lpk + rpk * rpk);
+            quietest = std::fmin(quietest, power); loudest = std::fmax(loudest, power);
+            CHECK(lpk > 0.35f * rpk && rpk > 0.35f * lpk);                          // both ears always hear it
+        }
+        std::printf("turning on the spot: loudest %.3f, quietest %.3f\n", loudest, quietest);
+        CHECK(quietest > loudest * 0.85f);
+        audio::StopAll();
+        audio::SetListener(0, 0, 0, 0, 0, 1, 0, 1, 0);   // facing +Z: +X is on the left (right-handed world)
+        audio::PlayParams p; p.loop = true; p.maxDistance = 50.0f;
+        audio::PlayAt(tone, 2.0f, 0, 0, p);
+        float lpk = 0, rpk = 0; Peaks(9600, lpk, rpk);
+        CHECK(lpk > rpk * 1.5f);
+        audio::StopAll();
+    }
+
     // More sounds than voices: the oldest give way, the count stays capped.
     for (int i = 0; i < 100; ++i) audio::Play(wav);
     CHECK(audio::ActiveVoices() <= 64);

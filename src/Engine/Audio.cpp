@@ -32,6 +32,11 @@ struct Clip {
 };
 
 constexpr int kMaxEchoVoices = 16;
+// Left/right placement of 3D sounds. miniaudio's own panning halves the gain of a sound straight ahead or behind and mutes the far
+// ear at the side, so turning on the spot swings a sound between loud and about 6 dB down. That is switched off for our sounds
+// (directional attenuation 0) and a gentler balance is applied here: the near ear stays at full volume, the far one drops at most
+// to 1 - kMaxPan, and a sound ahead or behind is not quieter at all.
+constexpr float kMaxPan = 0.55f;
 constexpr float kMuffleCutoffOpen = 22000.0f;
 
 struct Voice {
@@ -47,8 +52,10 @@ struct Voice {
     bool lpfInit = false;
     bool delayInit = false;
     bool spatial = false;
+    float pos[3] = { 0, 0, 0 };  // where a 3D sound is
     float volume = 1.0f;         // the sound's own volume; the muffle gain multiplies it
     float muffleGain = 1.0f;
+    float panGain = 1.0f;        // keeps the loudness the same as the sound moves from ahead to the side (see ApplyPanLocked)
     float cutoff = kMuffleCutoffOpen;
     float echoWet = 0.0f, echoFeedback = 0.0f;
     ma_uint32 delayFrames = 0;
@@ -69,6 +76,8 @@ struct State {
     bool noDevice = false;
     float master = 1.0f;
     float listener[3] = { 0, 0, 0 };
+    float listenerForward[3] = { 0, 0, -1 };
+    float listenerUp[3] = { 0, 1, 0 };
     Handle nextId = 1;
     std::vector<std::unique_ptr<Voice>> voices;
     std::unordered_map<std::string, std::shared_ptr<Clip>> clips;
@@ -161,6 +170,30 @@ void ReapLocked(State& s) {
     }), s.voices.end());
 }
 
+void ApplyVolume(Voice& v) { ma_sound_set_volume(&v.sound, v.volume * v.muffleGain * v.panGain); }
+
+// Where the sound is, relative to the way the listener faces: -1 left .. 1 right, scaled down close up (right at your head it is
+// centred) and by kMaxPan.
+void ApplyPanLocked(State& s, Voice& v) {
+    if (!v.spatial) return;
+    const float rx = v.pos[0] - s.listener[0], ry = v.pos[1] - s.listener[1], rz = v.pos[2] - s.listener[2];
+    const float dist = std::sqrt(rx * rx + ry * ry + rz * rz);
+    float pan = 0.0f;
+    if (dist > 1e-3f) {
+        const float* f = s.listenerForward; const float* u = s.listenerUp;
+        const float right[3] = { f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0] };   // forward x up
+        const float rl = std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+        if (rl > 1e-4f) pan = (rx * right[0] + ry * right[1] + rz * right[2]) / (dist * rl);
+        pan *= std::min(1.0f, dist);                       // inside a metre it drifts to the centre
+    }
+    const float p = std::fabs(std::clamp(pan, -1.0f, 1.0f)) * kMaxPan;
+    ma_sound_set_pan(&v.sound, std::clamp(pan, -1.0f, 1.0f) * kMaxPan);
+    // The balance leaves the near ear alone and lowers the far one, which would make a sound at the side quieter overall than one
+    // ahead; this keeps the total power the same (ahead: 0.71 in each ear, the usual equal-power centre).
+    const float gain = 1.0f / std::sqrt(1.0f + (1.0f - p) * (1.0f - p));
+    if (std::fabs(gain - v.panGain) > 0.002f) { v.panGain = gain; ApplyVolume(v); }
+}
+
 Voice* FindLocked(State& s, Handle h) {
     for (auto& v : s.voices) if (v->id == h) return v.get();
     return nullptr;
@@ -222,12 +255,15 @@ Handle StartLocked(State& s, const std::string& path, const PlayParams& p, bool 
     v->soundInit = true;
 
     v->volume = std::max(0.0f, p.volume);
-    ma_sound_set_volume(&v->sound, v->volume * v->muffleGain);
+    ApplyVolume(*v);
     ma_sound_set_pitch(&v->sound, std::clamp(p.pitch, 0.05f, 8.0f));
     if (!spatial) ma_sound_set_pan(&v->sound, std::clamp(p.pan, -1.0f, 1.0f));
     ma_sound_set_looping(&v->sound, p.loop ? MA_TRUE : MA_FALSE);
     if (spatial) {
+        v->pos[0] = x; v->pos[1] = y; v->pos[2] = z;
         ma_sound_set_position(&v->sound, x, y, z);
+        ma_sound_set_directional_attenuation_factor(&v->sound, 0.0f);   // our own, gentler left/right balance instead (kMaxPan)
+        ApplyPanLocked(s, *v);
         ma_sound_set_min_distance(&v->sound, std::max(0.01f, p.minDistance));
         if (p.maxDistance > 0.0f) {
             ma_sound_set_attenuation_model(&v->sound, ma_attenuation_model_linear);
@@ -323,13 +359,17 @@ bool IsPlaying(Handle h) {
 void SetPosition(Handle h, float x, float y, float z) {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
-    if (Voice* v = FindLocked(s, h); v && v->spatial) ma_sound_set_position(&v->sound, x, y, z);
+    if (Voice* v = FindLocked(s, h); v && v->spatial) {
+        v->pos[0] = x; v->pos[1] = y; v->pos[2] = z;
+        ma_sound_set_position(&v->sound, x, y, z);
+        ApplyPanLocked(s, *v);
+    }
 }
 
 void SetVolume(Handle h, float volume) {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
-    if (Voice* v = FindLocked(s, h)) { v->volume = std::max(0.0f, volume); ma_sound_set_volume(&v->sound, v->volume * v->muffleGain); }
+    if (Voice* v = FindLocked(s, h)) { v->volume = std::max(0.0f, volume); ApplyVolume(*v); }
 }
 
 void SetMuffle(Handle h, float cutoffHz, float gain) {
@@ -340,7 +380,7 @@ void SetMuffle(Handle h, float cutoffHz, float gain) {
     gain = std::clamp(gain, 0.0f, 1.0f);
     if (std::fabs(gain - v->muffleGain) > 0.01f) {
         v->muffleGain = gain;
-        ma_sound_set_volume(&v->sound, v->volume * gain);
+        ApplyVolume(*v);
     }
     if (!v->lpfInit) return;
     cutoffHz = std::clamp(cutoffHz, 200.0f, kMuffleCutoffOpen);
@@ -387,6 +427,8 @@ void SetListener(float px, float py, float pz, float fx, float fy, float fz, flo
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
     s.listener[0] = px; s.listener[1] = py; s.listener[2] = pz;
+    s.listenerForward[0] = fx; s.listenerForward[1] = fy; s.listenerForward[2] = fz;
+    s.listenerUp[0] = ux; s.listenerUp[1] = uy; s.listenerUp[2] = uz;
     if (!s.open) return;
     ma_engine_listener_set_position(&s.engine, 0, px, py, pz);
     ma_engine_listener_set_direction(&s.engine, 0, fx, fy, fz);
@@ -396,7 +438,9 @@ void SetListener(float px, float py, float pz, float fx, float fy, float fz, flo
 void Update() {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
-    if (s.open) ReapLocked(s);
+    if (!s.open) return;
+    ReapLocked(s);
+    for (auto& v : s.voices) ApplyPanLocked(s, *v);   // you moved or turned
 }
 
 bool Preload(const std::string& path) {

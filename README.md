@@ -353,7 +353,10 @@ while the game is playing):
 - **Echo**: rays out of the object in every direction. How near the walls are and how enclosed the room is set the echo's delay,
   how long it rings and how loud it is; open ground has none. The delay is fixed when the sound starts.
 
-`FLY_SOUND_DEBUG=1` logs what the rays measure once a second per sound, including what is blocking it. Water and anything without a collider do not block rays.
+`FLY_SOUND_DEBUG=1` logs what the rays measure once a second per sound, including what is blocking it.
+
+A 3D sound keeps the same loudness whichever way you face: it is balanced between your ears (the near ear louder, the far one never
+silent) rather than dropping when it is straight ahead or behind you. Water and anything without a collider do not block rays.
 
 ## Shaders
 
