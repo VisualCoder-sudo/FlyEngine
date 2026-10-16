@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#include "Engine/U8Path.hpp"
 
 #if defined(_WIN32)
     #include "../../../include/Engine/Platform/WinBegin.h"
@@ -265,7 +266,7 @@ NativeScriptHost::~NativeScriptHost() {
 // for it through the API. A .flyproj file stands for its folder. (An exported game passes the archive's virtual root.)
 void NativeScriptHost::BindProjectFolder(const std::string& projectPath) {
     if (!m_runtime || projectPath.empty()) return;
-    fs::path p = fs::u8path(projectPath);
+    fs::path p = U8Path(projectPath);
     if (p.extension() == ".flyproj") p = p.parent_path();
     m_runtime->SetProjectPath(p.generic_string());
 }
@@ -622,7 +623,7 @@ bool NativeScriptHost::InitializeScripts(const std::string& projectPath) {
         m_projectPath.clear();   // nothing to build, watch or hot-reload: the scripts are part of this executable
         return LoadStaticScripts();
     }
-    fs::path p = fs::u8path(projectPath);
+    fs::path p = U8Path(projectPath);
     if (p.extension() == ".flyproj") p = p.parent_path();
     m_projectPath = p.string();
 

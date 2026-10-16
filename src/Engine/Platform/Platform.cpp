@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <system_error>
+#include "Engine/U8Path.hpp"
 
 #if defined(_WIN32)
     #include "Engine/Platform/WinBegin.h"
@@ -38,7 +39,7 @@ std::string EnvOrEmpty(const char* name) {
 bool FileExists(const std::string& p) {
     if (p.empty()) return false;
     std::error_code ec;
-    return fs::exists(fs::u8path(p), ec);
+    return fs::exists(U8Path(p), ec);
 }
 
 // The XDG user-dirs file maps XDG_DOCUMENTS_DIR to $HOME/Documents and is
@@ -147,7 +148,7 @@ std::string ConfigDir() {
         }
     }
     if (appdata.empty()) return UserHomeDir();
-    return (fs::u8path(appdata) / "Flyengine").string();
+    return (U8Path(appdata) / "Flyengine").string();
 #else
     std::string xdg = EnvOrEmpty("XDG_CONFIG_HOME");
     if (xdg.empty()) {
@@ -155,7 +156,7 @@ std::string ConfigDir() {
         if (home.empty()) return std::string();
         xdg = home + "/.config";
     }
-    return (fs::u8path(xdg) / "flyengine").string();
+    return (U8Path(xdg) / "flyengine").string();
 #endif
 }
 
@@ -259,7 +260,7 @@ const std::vector<std::string>& CachedRoots() {
         //    how a packager relocates the data, and how the test harness
         //    points the engine at a fixture tree.
         const std::string env = EnvOrEmpty("FLYENGINE_DATA_DIR");
-        if (!env.empty()) AddRoot(out, fs::u8path(env));
+        if (!env.empty()) AddRoot(out, U8Path(env));
 
         // 2. The working directory and its parents. This is the "cd build &&
         //    ./Flyengine" and "cd build/Debug && ./Flyengine" developer case.
@@ -283,7 +284,7 @@ const std::vector<std::string>& CachedRoots() {
         //      <exe>/../../share/flyengine  the CMake build-tree bin/ layout
         const std::string exe = ExecutablePath();
         if (!exe.empty()) {
-            const fs::path exeDir = fs::u8path(exe).parent_path();
+            const fs::path exeDir = U8Path(exe).parent_path();
             AddRoot(out, exeDir);
             AddRoot(out, exeDir / ".." / "share" / "flyengine");
             AddRoot(out, exeDir / ".." / "share");
@@ -295,7 +296,7 @@ const std::vector<std::string>& CachedRoots() {
         //    a self-contained bundle or an explicit override should have
         //    already matched above.
 #if defined(FLYENGINE_DATA_DIR)
-        AddRoot(out, fs::u8path(FLYENGINE_DATA_DIR));
+        AddRoot(out, U8Path(FLYENGINE_DATA_DIR));
 #endif
         return out;
     }();
@@ -310,7 +311,7 @@ std::vector<std::string> DataSearchRoots() {
 
 std::string FoundDataRoot() {
     for (const std::string& r : CachedRoots()) {
-        if (LooksLikeDataRoot(fs::u8path(r))) return r;
+        if (LooksLikeDataRoot(U8Path(r))) return r;
     }
     return std::string();
 }
@@ -342,7 +343,7 @@ bool FileExistsAny(const std::string& path) {
 bool ReadAll(const std::string& path, std::vector<unsigned char>& out) {
     out.clear();
     if (vfs::Handles(path)) return vfs::Read(path, out);
-    std::ifstream in(fs::u8path(path), std::ios::binary | std::ios::ate);
+    std::ifstream in(U8Path(path), std::ios::binary | std::ios::ate);
     if (!in) return false;
     const std::streamsize size = in.tellg();
     in.seekg(0);
@@ -354,7 +355,7 @@ std::vector<std::string> ListDir(const std::string& dir) {
     if (vfs::Handles(dir)) return vfs::List(dir);
     std::vector<std::string> names;
     std::error_code ec;
-    for (auto it = fs::directory_iterator(fs::u8path(dir), ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    for (auto it = fs::directory_iterator(U8Path(dir), ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
         names.push_back(it->path().filename().string());
     }
     std::sort(names.begin(), names.end());
@@ -372,13 +373,13 @@ std::string ResolveAsset(const std::string& repoRelative) {
 
     // An absolute path is the caller telling us exactly where it is; respect
     // that instead of appending it to a search root.
-    const fs::path rel = fs::u8path(repoRelative);
+    const fs::path rel = U8Path(repoRelative);
     if (rel.is_absolute()) {
         return FileExists(repoRelative) ? repoRelative : std::string();
     }
 
     for (const std::string& r : CachedRoots()) {
-        const fs::path candidate = fs::u8path(r) / rel;
+        const fs::path candidate = U8Path(r) / rel;
         if (FileExists(candidate.string())) return candidate.string();
     }
     return std::string();
@@ -387,7 +388,7 @@ std::string ResolveAsset(const std::string& repoRelative) {
 std::string ResolveShader(const std::string& fileName) {
     if (fileName.empty()) return std::string();
 
-    if (fs::u8path(fileName).is_absolute()) {
+    if (U8Path(fileName).is_absolute()) {
         return FileExists(fileName) ? fileName : std::string();
     }
 
@@ -396,7 +397,7 @@ std::string ResolveShader(const std::string& fileName) {
     // then try the other, then the flattened build-directory copy.
     const bool looksQualified = fileName.find('/') != std::string::npos;
     for (const std::string& r : CachedRoots()) {
-        const fs::path root = fs::u8path(r);
+        const fs::path root = U8Path(r);
         if (looksQualified) {
             if (FileExists((root / fileName).string())) return (root / fileName).string();
         } else {
@@ -420,7 +421,7 @@ void RevealInFileManager(const std::string& path) {
     // No Linux file manager has a portable "reveal/select" verb, so open the
     // containing directory. `gio open` can select a file where available.
     std::error_code ec;
-    fs::path target = fs::u8path(path);
+    fs::path target = U8Path(path);
     fs::path dir = fs::is_directory(target, ec) ? target : target.parent_path();
     if (dir.empty()) return;
     RunProcessCapture("xdg-open", {dir.string()}, 10000);
@@ -439,7 +440,7 @@ void OpenWithDefaultApp(const std::string& path) {
 bool RemoveTree(const std::string& path) {
     if (path.empty()) return false;
     std::error_code ec;
-    return fs::remove_all(fs::u8path(path), ec) != static_cast<std::uintmax_t>(-1) && !ec;
+    return fs::remove_all(U8Path(path), ec) != static_cast<std::uintmax_t>(-1) && !ec;
 }
 
 // --- internal helpers -----------------------------------------------------

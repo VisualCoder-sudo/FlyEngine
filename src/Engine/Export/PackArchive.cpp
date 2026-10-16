@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include "Engine/U8Path.hpp"
 
 #if defined(_WIN32)
 #define FLY_FSEEK _fseeki64
@@ -36,7 +37,7 @@ bool AlreadyCompressed(const std::string& path) {
 }
 
 bool ReadWholeFile(const std::string& path, std::vector<uint8_t>& out) {
-    std::ifstream in(fs::u8path(path), std::ios::binary | std::ios::ate);
+    std::ifstream in(U8Path(path), std::ios::binary | std::ios::ate);
     if (!in) return false;
     const std::streamsize size = in.tellg();
     in.seekg(0);
@@ -56,8 +57,8 @@ struct IndexItem {
 bool BuildExecutable(const std::string& srcExe, const std::string& dstExe, const std::vector<Entry>& entries,
                      std::string& error, const std::function<bool(size_t, size_t)>& progress) {
     error.clear();
-    const fs::path src = fs::u8path(srcExe), dst = fs::u8path(dstExe);
-    const fs::path tmp = fs::u8path(dstExe + ".part");
+    const fs::path src = U8Path(srcExe), dst = U8Path(dstExe);
+    const fs::path tmp = U8Path(dstExe + ".part");
     std::error_code ec;
     fs::create_directories(dst.parent_path(), ec);
     fs::remove(tmp, ec);

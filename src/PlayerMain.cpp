@@ -45,6 +45,7 @@
 #include <chrono>
 #include <deque>
 #include <sstream>
+#include "Engine/U8Path.hpp"
 
 #if defined(_WIN32)
 #include "Engine/Platform/WinBegin.h"
@@ -730,7 +731,7 @@ static EmbeddedConfig ReadEmbeddedConfig() {
 static std::string AssetsFolderPath() {
     if (const char* env = std::getenv("FLY_ASSETS_DIR"); env && *env) return env;
     const std::string exe = platform::ExecutablePath();
-    return (std::filesystem::u8path(exe).parent_path() / exporter::kAssetsFolder).string();
+    return (U8Path(exe).parent_path() / exporter::kAssetsFolder).string();
 }
 
 // The game's content is missing: ask whether to carry on. Runs in the game's own window, so it needs no dialog toolkit.

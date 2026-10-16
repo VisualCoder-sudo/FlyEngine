@@ -425,11 +425,10 @@ void PluginSandbox_DestroyCgroup(const char* cgroup_path) {
             pid_t pid = atoi(line);
             if (pid > 0) {
                 char parent_path[512];
-                char* last_slash = strrchr(cgroup_path, '/');
+                const char* last_slash = strrchr(cgroup_path, '/');
                 if (last_slash) {
-                    *last_slash = '\0';
-                    snprintf(parent_path, sizeof(parent_path), "%s/cgroup.procs", cgroup_path);
-                    *last_slash = '/';
+                    snprintf(parent_path, sizeof(parent_path), "%.*s/cgroup.procs",
+                             (int)(last_slash - cgroup_path), cgroup_path);
                     
                     int fd = open(parent_path, O_WRONLY);
                     if (fd >= 0) {

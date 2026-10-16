@@ -13,6 +13,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include "Engine/U8Path.hpp"
 
 #if defined(_WIN32)
 #define FLY_FSEEK _fseeki64
@@ -206,7 +207,7 @@ bool Read(const std::string& path, std::vector<uint8_t>& out) {
     const IndexEntry& e = it->second;
 
     if (!e.external.empty()) {   // shipped beside the executable
-        std::ifstream in(std::filesystem::u8path(e.external), std::ios::binary);
+        std::ifstream in(U8Path(e.external), std::ios::binary);
         if (!in) return false;
         out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         if (out.size() != (size_t)e.original) { out.clear(); return false; }
@@ -248,11 +249,11 @@ ExternalReport MountExternal(const std::string& folder, const std::string& prefi
     ExternalReport report;
     report.expected = files.size();
     std::error_code ec;
-    report.folderFound = fs::is_directory(fs::u8path(folder), ec);
+    report.folderFound = fs::is_directory(U8Path(folder), ec);
     for (const ExternalFile& f : files) {
         std::string rel = Normalize(f.path);
         const std::string under = rel.compare(0, prefix.size(), prefix) == 0 ? rel.substr(prefix.size()) : rel;
-        const fs::path disk = fs::u8path(folder) / fs::u8path(under);
+        const fs::path disk = U8Path(folder) / U8Path(under);
         std::error_code e2;
         if (!g.active || !fs::is_regular_file(disk, e2) || fs::file_size(disk, e2) != f.size) {
             report.missing.push_back(rel);

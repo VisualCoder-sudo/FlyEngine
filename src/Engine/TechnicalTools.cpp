@@ -1944,7 +1944,7 @@ void CaptureSystem::CaptureScreenshot(bool includeUI, int superSample) {
 
 void CaptureSystem::CaptureScreenshotAsync(bool includeUI, int superSample) {
     // Run in background thread
-    std::thread([=]() {
+    std::thread([=, this]() {
         CaptureScreenshot(includeUI, superSample);
     }).detach();
 }

@@ -32,6 +32,8 @@
 #include "Engine/Platform/WinEnd.h"
 #endif
 
+#include "Engine/U8Path.hpp"
+
 namespace platform {
 namespace {
 
@@ -40,7 +42,7 @@ namespace fs = std::filesystem;
 bool IsDirectory(const std::string& p) {
     if (p.empty()) return false;
     std::error_code ec;
-    return fs::is_directory(fs::u8path(p), ec);
+    return fs::is_directory(U8Path(p), ec);
 }
 
 // A dialog in flight. Exactly one of these exists at a time.
@@ -123,7 +125,7 @@ std::string WinDialog(Kind kind, const std::string& title, const std::string& st
     std::string result;
 
     std::wstring wTitle = ToWide(title);
-    std::wstring wDir = IsDirectory(startDir) ? fs::u8path(startDir).make_preferred().wstring() : std::wstring();
+    std::wstring wDir = IsDirectory(startDir) ? U8Path(startDir).make_preferred().wstring() : std::wstring();
 
     if (kind == Kind::Folder) {
         BROWSEINFOW bi = {};

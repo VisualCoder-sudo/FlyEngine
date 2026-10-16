@@ -24,6 +24,10 @@
 
 namespace fs = std::filesystem;
 
+static fs::path RlU8Path(const char* s) {
+    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s)));
+}
+
 namespace rli {
 
 CoreState& Core() {
@@ -708,14 +712,14 @@ bool FileExists(const char* fileName) {
     if (!fileName || !*fileName) return false;
     if (VfsOwns(fileName)) return g_vfs->fileExists(fileName) != 0;
     std::error_code ec;
-    return fs::is_regular_file(fs::u8path(fileName), ec);
+    return fs::is_regular_file(RlU8Path(fileName), ec);
 }
 
 bool DirectoryExists(const char* dirPath) {
     if (!dirPath || !*dirPath) return false;
     if (VfsOwns(dirPath)) return g_vfs->dirExists(dirPath) != 0;
     std::error_code ec;
-    return fs::is_directory(fs::u8path(dirPath), ec);
+    return fs::is_directory(RlU8Path(dirPath), ec);
 }
 
 const char* GetDirectoryPath(const char* filePath) {

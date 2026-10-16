@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "Engine/U8Path.hpp"
 
 namespace fs = std::filesystem;
 
@@ -426,7 +427,7 @@ bool IsAbsolutePath(const std::string& p) {
     // is_absolute() is a pure query over the path grammar: it cannot
     // touch the filesystem, so there is no error_code overload and no
     // reason to want one.
-    return fs::path(fs::u8path(p)).is_absolute();
+    return fs::path(U8Path(p)).is_absolute();
 }
 
 std::string PathRelativeTo(const std::string& p, const std::string& base) {

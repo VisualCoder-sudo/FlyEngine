@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "Engine/U8Path.hpp"
 
 // Convert an Autodesk FBX file into a raylib Model using the ufbx library.
 //
@@ -36,12 +37,12 @@ static std::string FindFbxTextureFile(const ufbx_texture* tex, const std::filesy
     if (tex->type != UFBX_TEXTURE_FILE && tex->file_textures.count > 0) tex = tex->file_textures.data[0];
     std::vector<fs::path> candidates;
     if (tex->relative_filename.length) {
-        fs::path rel = fs::u8path(std::string(tex->relative_filename.data, tex->relative_filename.length));
+        fs::path rel = U8Path(std::string(tex->relative_filename.data, tex->relative_filename.length));
         candidates.push_back(fbxDir / rel);
         candidates.push_back(fbxDir / rel.filename());
     }
     if (tex->filename.length) {
-        fs::path abs = fs::u8path(std::string(tex->filename.data, tex->filename.length));
+        fs::path abs = U8Path(std::string(tex->filename.data, tex->filename.length));
         candidates.push_back(fbxDir / abs.filename());
         candidates.push_back(abs);
     }
@@ -164,7 +165,7 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
     if (materialCount == 0) materialCount = 1;
     result.materialColors.assign((size_t)materialCount, WHITE);
 
-    const std::filesystem::path fbxDir = std::filesystem::u8path(path).parent_path();
+    const std::filesystem::path fbxDir = U8Path(path).parent_path();
     for (size_t i = 0; i < scene->materials.count; ++i) {
         const int rlIdx = rlMaterialIndex[i];
         if (rlIdx < 0) continue;

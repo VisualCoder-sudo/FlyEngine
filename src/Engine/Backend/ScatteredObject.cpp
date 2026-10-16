@@ -13,6 +13,7 @@
 #include "rlgl.h"
 #include <cmath>
 #include <filesystem>
+#include "Engine/U8Path.hpp"
 
 namespace {
 
@@ -85,7 +86,7 @@ struct PrefetchResult {
 std::unordered_map<std::string, std::shared_future<PrefetchResult>> g_prefetched;
 
 std::string SharedModelKey(const std::string& path) {
-    return std::filesystem::u8path(path).lexically_normal().generic_string();
+    return U8Path(path).lexically_normal().generic_string();
 }
 
 BoundingBox ModelBounds(const Model& model) {

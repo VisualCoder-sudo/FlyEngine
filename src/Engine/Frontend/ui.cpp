@@ -37,6 +37,7 @@
 #include <sstream>
 #include <cctype>
 #include <cmath>
+#include "Engine/U8Path.hpp"
 
 namespace ui {
 
@@ -1421,14 +1422,14 @@ ImTextureID RowTex(RowIconType i) {
 // Launch the standalone player with the current project
 static void LaunchPlayer() {
     std::string playerExe = platform::ExecutablePath();
-    std::filesystem::path exePath = std::filesystem::u8path(playerExe);
+    std::filesystem::path exePath = U8Path(playerExe);
     
     // Try to find FlyPlayer in the same directory
     std::filesystem::path playerPath = exePath.parent_path() / "FlyPlayer";
     {
         // Knows the platform's file name too (FlyPlayer.exe on Windows).
         const std::string found = exporter::FindPlayerExecutable();
-        if (!found.empty()) playerPath = std::filesystem::u8path(found);
+        if (!found.empty()) playerPath = U8Path(found);
     }
     if (!std::filesystem::exists(playerPath)) {
         // Try case-insensitive search
@@ -1477,7 +1478,7 @@ static void LaunchPlayer() {
     
     // Final fallback to editor executable
     if (!std::filesystem::exists(playerPath)) {
-        playerPath = std::filesystem::u8path(platform::ExecutablePath());
+        playerPath = U8Path(platform::ExecutablePath());
     }
     
     // Use temp file if created, otherwise use main project

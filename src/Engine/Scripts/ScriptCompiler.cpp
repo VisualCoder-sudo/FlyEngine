@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "Engine/U8Path.hpp"
 
 namespace fs = std::filesystem;
 
@@ -43,14 +44,14 @@ struct Compiler {
 };
 
 bool IsMsvcStyleName(const std::string& exe) {
-    std::string stem = fs::u8path(exe).stem().string();
+    std::string stem = U8Path(exe).stem().string();
     std::transform(stem.begin(), stem.end(), stem.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return stem == "cl" || stem == "clang-cl";
 }
 
 bool IsGccName(const std::string& exe) {
-    const std::string name = fs::u8path(exe).filename().string();
+    const std::string name = U8Path(exe).filename().string();
     return name.find("g++") != std::string::npos && name.find("clang") == std::string::npos;
 }
 
@@ -69,7 +70,7 @@ std::string FindVcvars() {
     while (!path.empty() && (path.back() == '\r' || path.back() == '\n' || path.back() == ' '))
         path.pop_back();
     if (!r.launched || path.empty()) return {};
-    const fs::path bat = fs::u8path(path) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat";
+    const fs::path bat = U8Path(path) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat";
     return fs::is_regular_file(bat, ec) ? bat.string() : std::string();
 }
 #endif
@@ -147,7 +148,7 @@ std::vector<fs::path> CollectFiles(const fs::path& scriptsDir, bool includeHeade
 fs::path FindSdkRoot() {
     const std::string fly = platform::ResolveAsset("ScriptingSDK/include/fly.hpp");
     if (fly.empty()) return {};
-    return fs::u8path(fly).parent_path().parent_path();
+    return U8Path(fly).parent_path().parent_path();
 }
 
 // Lets clangd (VS Code, CLion, etc.) resolve "fly.hpp" in the user's scripts.
@@ -204,7 +205,7 @@ std::string CompilerDescription() {
 }
 
 bool HasSources(const std::string& projectFolder) {
-    return !CollectFiles(fs::u8path(projectFolder) / "Scripts", false).empty();
+    return !CollectFiles(U8Path(projectFolder) / "Scripts", false).empty();
 }
 
 uint64_t SourcesStamp(const std::string& projectFolder) {
@@ -212,7 +213,7 @@ uint64_t SourcesStamp(const std::string& projectFolder) {
     auto mix = [&h](uint64_t v) {
         for (int i = 0; i < 8; ++i) { h ^= (v >> (i * 8)) & 0xff; h *= 1099511628211ULL; }
     };
-    for (const fs::path& p : CollectFiles(fs::u8path(projectFolder) / "Scripts", true)) {
+    for (const fs::path& p : CollectFiles(U8Path(projectFolder) / "Scripts", true)) {
         std::error_code ec;
         for (char ch : p.string()) mix(static_cast<unsigned char>(ch));
         mix(static_cast<uint64_t>(fs::file_size(p, ec)));
@@ -222,7 +223,7 @@ uint64_t SourcesStamp(const std::string& projectFolder) {
 }
 
 std::string LatestBuiltLibrary(const std::string& projectFolder) {
-    const fs::path dir = fs::u8path(projectFolder) / "Scripts" / kBuildDirName;
+    const fs::path dir = U8Path(projectFolder) / "Scripts" / kBuildDirName;
     std::error_code ec;
     fs::path best;
     fs::file_time_type bestTime{};
@@ -236,13 +237,13 @@ std::string LatestBuiltLibrary(const std::string& projectFolder) {
 }
 
 void RemoveStaleLibraries(const std::string& projectFolder, const std::string& keep) {
-    const fs::path dir = fs::u8path(projectFolder) / "Scripts" / kBuildDirName;
+    const fs::path dir = U8Path(projectFolder) / "Scripts" / kBuildDirName;
     std::error_code ec;
     std::vector<fs::path> victims;
     for (const auto& e : fs::directory_iterator(dir, ec)) {
         const std::string name = e.path().filename().string();
         if (name.rfind(kLibPrefix, 0) != 0) continue;
-        if (!keep.empty() && e.path().stem() == fs::u8path(keep).stem()) continue;
+        if (!keep.empty() && e.path().stem() == U8Path(keep).stem()) continue;
         victims.push_back(e.path()); // .so/.dll plus MSVC's .lib/.exp/.pdb siblings
     }
     for (const auto& v : victims) {
@@ -253,7 +254,7 @@ void RemoveStaleLibraries(const std::string& projectFolder, const std::string& k
 
 Result Build(const std::string& projectFolder) {
     Result result;
-    const fs::path scriptsDir = fs::u8path(projectFolder) / "Scripts";
+    const fs::path scriptsDir = U8Path(projectFolder) / "Scripts";
     const fs::path buildDir = scriptsDir / kBuildDirName;
 
     const std::vector<fs::path> sources = CollectFiles(scriptsDir, false);

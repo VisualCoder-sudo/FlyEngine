@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include "Engine/U8Path.hpp"
 
 namespace loading {
 
@@ -40,10 +41,10 @@ const Look& CurrentLook() { return g_state.target == Target::Editor ? g_settings
 
 std::string ConfigFile() {
     const std::string dir = platform::ConfigDir();
-    return dir.empty() ? std::string() : (std::filesystem::u8path(dir) / "loading.cfg").string();
+    return dir.empty() ? std::string() : (U8Path(dir) / "loading.cfg").string();
 }
 std::string ProjectFile(const std::string& folder) {
-    return (std::filesystem::u8path(folder) / "loading.cfg").string();
+    return (U8Path(folder) / "loading.cfg").string();
 }
 
 // Writes one Look as "<prefix>.<key> value" lines.
@@ -206,7 +207,7 @@ void Save() {
     const std::string path = ConfigFile();
     if (path.empty()) return;
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::u8path(path).parent_path(), ec);
+    std::filesystem::create_directories(U8Path(path).parent_path(), ec);
     std::ofstream out(path, std::ios::trunc);
     if (!out) return;
     WriteLook(out, "editor", g_settings.editor);
@@ -224,12 +225,12 @@ bool SaveProjectOverride(const std::string& folder) {
 
 bool RemoveProjectOverride(const std::string& folder) {
     std::error_code ec;
-    return !folder.empty() && std::filesystem::remove(std::filesystem::u8path(ProjectFile(folder)), ec);
+    return !folder.empty() && std::filesystem::remove(U8Path(ProjectFile(folder)), ec);
 }
 
 bool HasProjectOverride(const std::string& folder) {
     std::error_code ec;
-    return !folder.empty() && std::filesystem::exists(std::filesystem::u8path(ProjectFile(folder)), ec);
+    return !folder.empty() && std::filesystem::exists(U8Path(ProjectFile(folder)), ec);
 }
 
 void Begin(Target target, const std::string& projectName) {

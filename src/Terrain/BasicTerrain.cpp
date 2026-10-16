@@ -14,6 +14,7 @@
 #include <cmath>
 #include <vector>
 #include <filesystem>
+#include "Engine/U8Path.hpp"
 
 // Forward decls for the file-local noise helpers (defined below); the Noise
 // brush in ApplyBrush() needs them before their definitions.
@@ -635,7 +636,7 @@ void BasicTerrain::LoadTerrainTextures() {
     for (const std::string& r : platform::DataSearchRoots()) {
         if (!dirPath.empty()) break;
         const std::string candidate =
-            (std::filesystem::u8path(r) / "assets" / "Textures" / "TerrainTextures").string();
+            (U8Path(r) / "assets" / "Textures" / "TerrainTextures").string();
         std::error_code ec;
         if (std::filesystem::is_directory(candidate, ec)) { dirPath = candidate; break; }
     }
@@ -645,10 +646,10 @@ void BasicTerrain::LoadTerrainTextures() {
     // Collect texture files
     std::vector<std::string> texFiles;
     for (const std::string& name : platform::ListDir(dirPath)) {
-        std::string ext = std::filesystem::u8path(name).extension().string();
+        std::string ext = U8Path(name).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".qoi" || ext == ".png") {
-            texFiles.push_back((std::filesystem::u8path(dirPath) / name).generic_string());
+            texFiles.push_back((U8Path(dirPath) / name).generic_string());
         }
     }
     std::sort(texFiles.begin(), texFiles.end());

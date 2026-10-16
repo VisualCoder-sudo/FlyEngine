@@ -11,26 +11,9 @@ namespace terrain {
 // Box3D Integration
 // ============================================================================
 
-// Forward declare Box3D types
-struct b3HeightField;
-struct b3MeshShape;
+// Note: the real Box3D API lives in extern/box3d (see TerrainCollider.cpp). This
+// legacy interface only forwards to an externally supplied PhysicsSimInterface.
 struct b3Body;
-struct b3ShapeDef;
-
-extern "C" {
-    // Box3D heightfield functions
-    b3HeightField* b3CreateHeightField(int width, int depth, const float* heights, float minHeight, float maxHeight);
-    void b3DestroyHeightField(b3HeightField* hf);
-    
-    // Box3D mesh shape functions
-    b3MeshShape* b3CreateMeshShape(const float* vertices, int vertexCount, const int* indices, int indexCount);
-    void b3DestroyMeshShape(b3MeshShape* shape);
-    
-    // Body functions
-    b3Body* b3CreateStaticBody(void* world, const void* shape);
-    void b3DestroyBody(void* world, b3Body* body);
-    void b3SetBodyTransform(b3Body* body, const float* position, const float* rotation);
-}
 
 // Physics simulation interface (from engine)
 static PhysicsSimInterface* g_physicsInterface = nullptr;
@@ -71,14 +54,8 @@ void CreatePhysicsHeightfield(Terrain& terrain) {
         }
     }
     
-    // Create heightfield
-    b3HeightField* hf = b3CreateHeightField(totalW, totalH, fullHeightmap.data(), terrain.minHeight, terrain.maxHeight);
-    
-    if (hf && g_physicsInterface->createStaticBody) {
-        terrain.physicsBody = g_physicsInterface->createStaticBody(g_physicsInterface->world, hf);
-        // Store heightfield pointer for cleanup
-        // In practice, you'd need a way to track this
-    }
+    // Heightfield bodies are created through TerrainCollider; nothing to do here.
+    (void)fullHeightmap;
 }
 
 void CreatePhysicsTriangleMesh(Terrain& terrain) {
@@ -113,11 +90,7 @@ void CreatePhysicsTriangleMesh(Terrain& terrain) {
     
     if (allVertices.empty()) return;
     
-    b3MeshShape* shape = b3CreateMeshShape(allVertices.data(), allVertices.size() / 3, allIndices.data(), allIndices.size());
-    
-    if (shape && g_physicsInterface->createStaticBody) {
-        terrain.physicsBody = g_physicsInterface->createStaticBody(g_physicsInterface->world, shape);
-    }
+    // Mesh bodies are created through the physics simulation; nothing to do here.
 }
 
 void DestroyPhysics(Terrain& terrain) {

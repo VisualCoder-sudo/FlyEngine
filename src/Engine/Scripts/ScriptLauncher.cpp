@@ -18,6 +18,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include "Engine/U8Path.hpp"
 
 namespace fs = std::filesystem;
 
@@ -220,8 +221,8 @@ std::string FindJetBrainsIde(const std::string& product) {
     std::vector<fs::path> roots;
     const std::string home = platform::UserHomeDir();
     if (!home.empty()) {
-        roots.emplace_back(fs::u8path(home) / ".local" / "share" / "JetBrains" / "Toolbox" / "apps");
-        roots.emplace_back(fs::u8path(home) / "opt" / "JetBrains");
+        roots.emplace_back(U8Path(home) / ".local" / "share" / "JetBrains" / "Toolbox" / "apps");
+        roots.emplace_back(U8Path(home) / "opt" / "JetBrains");
     }
     roots.emplace_back("/opt/JetBrains");
     roots.emplace_back("/usr/local/JetBrains");

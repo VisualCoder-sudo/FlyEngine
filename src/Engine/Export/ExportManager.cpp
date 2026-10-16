@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include "Engine/U8Path.hpp"
 
 namespace fs = std::filesystem;
 
@@ -86,7 +87,7 @@ struct IconFile {
 };
 
 bool LoadIconFile(const fs::path& project, const std::string& iconPath, IconFile& icon, std::string& error) {
-    fs::path file = fs::u8path(iconPath);
+    fs::path file = U8Path(iconPath);
     if (file.is_relative()) file = project / file;
     std::ifstream in(file, std::ios::binary);
     if (!in) { error = "Icon not found: " + file.string(); return false; }
@@ -129,14 +130,14 @@ std::string FindProjectFile(const fs::path& dir) {
 
 std::vector<fs::path> PlayerSearchDirs() {
     std::vector<fs::path> dirs;
-    if (const char* env = std::getenv("FLYENGINE_PLAYERS_DIR")) dirs.push_back(fs::u8path(env));
+    if (const char* env = std::getenv("FLYENGINE_PLAYERS_DIR")) dirs.push_back(U8Path(env));
     const std::string self = platform::ExecutablePath();
     if (!self.empty()) {
-        const fs::path dir = fs::u8path(self).parent_path();
+        const fs::path dir = U8Path(self).parent_path();
         dirs.push_back(dir / "players");
         dirs.push_back(dir / ".." / "share" / "flyengine" / "players");
     }
-    for (const std::string& r : platform::DataSearchRoots()) dirs.push_back(fs::u8path(r) / "players");
+    for (const std::string& r : platform::DataSearchRoots()) dirs.push_back(U8Path(r) / "players");
     return dirs;
 }
 
@@ -189,7 +190,7 @@ std::string FindPrebuiltPlayer(const std::string& targetId) {
 
 // Does `player` run on the target? Stops an Arch player being packed as a Windows game (or the reverse).
 bool PlayerMatchesTarget(const std::string& player, const std::string& targetId) {
-    const fs::path p = fs::u8path(player);
+    const fs::path p = U8Path(player);
     return IsWindowsTarget(targetId) ? IsWindowsX64Exe(p) : IsLinuxExe(p);
 }
 
@@ -217,14 +218,14 @@ std::vector<std::string> ReadLines(const fs::path& file) {
 
 std::string FindKitDir() {
     std::vector<fs::path> candidates;
-    if (const char* env = std::getenv("FLYENGINE_KIT_DIR")) candidates.push_back(fs::u8path(env));
+    if (const char* env = std::getenv("FLYENGINE_KIT_DIR")) candidates.push_back(U8Path(env));
     const std::string self = platform::ExecutablePath();
     if (!self.empty()) {
-        const fs::path dir = fs::u8path(self).parent_path();
+        const fs::path dir = U8Path(self).parent_path();
         candidates.push_back(dir / "kit");
         candidates.push_back(dir / ".." / "share" / "flyengine" / "kit");
     }
-    for (const std::string& r : platform::DataSearchRoots()) candidates.push_back(fs::u8path(r) / "kit");
+    for (const std::string& r : platform::DataSearchRoots()) candidates.push_back(U8Path(r) / "kit");
     for (const fs::path& c : candidates) {
         std::error_code ec;
         if (fs::is_regular_file(c / "link.txt", ec) && fs::is_regular_file(c / "kit.txt", ec)) return c.lexically_normal().string();
@@ -234,14 +235,14 @@ std::string FindKitDir() {
 
 bool LoadKit(const std::string& dir, Kit& kit, std::string& error) {
     kit.dir = dir;
-    for (const std::string& l : ReadLines(fs::u8path(dir) / "kit.txt")) {
+    for (const std::string& l : ReadLines(U8Path(dir) / "kit.txt")) {
         if (l.compare(0, 9, "compiler=") == 0) kit.compiler = l.substr(9);
     }
-    kit.compileFlags = ReadLines(fs::u8path(dir) / "compile.txt");
-    kit.linkArgs = ReadLines(fs::u8path(dir) / "link.txt");
+    kit.compileFlags = ReadLines(U8Path(dir) / "compile.txt");
+    kit.linkArgs = ReadLines(U8Path(dir) / "link.txt");
     if (kit.compiler.empty() || kit.linkArgs.empty()) { error = "The runtime kit in " + dir + " is incomplete."; return false; }
     std::error_code ec;
-    if (!fs::exists(fs::u8path(kit.compiler), ec)) { error = "The compiler the kit was built with is missing: " + kit.compiler; return false; }
+    if (!fs::exists(U8Path(kit.compiler), ec)) { error = "The compiler the kit was built with is missing: " + kit.compiler; return false; }
     return true;
 }
 
@@ -363,7 +364,7 @@ std::string BuildPlayerWithUserCode(const fs::path& project, const UserCode& cod
     if (!LoadKit(kitDir, kit, error)) return std::string();
     say("Runtime kit: " + kitDir);
 
-    const fs::path work = fs::u8path(workDir);
+    const fs::path work = U8Path(workDir);
     std::error_code ec;
     fs::create_directories(work / "obj", ec);
 
@@ -378,7 +379,7 @@ std::string BuildPlayerWithUserCode(const fs::path& project, const UserCode& cod
     std::vector<std::vector<std::string>> jobs;
     std::vector<std::string> objects;
     auto addJob = [&](const std::string& source, const std::vector<std::string>& extra) {
-        const std::string obj = (work / "obj" / (std::to_string(objects.size()) + "_" + fs::u8path(source).stem().string() + ".o")).string();
+        const std::string obj = (work / "obj" / (std::to_string(objects.size()) + "_" + U8Path(source).stem().string() + ".o")).string();
         std::vector<std::string> args = common;
         args.insert(args.end(), extra.begin(), extra.end());
         args.push_back(source);
@@ -491,7 +492,7 @@ Config LoadConfig(const std::string& projectDir, const std::string& projectName)
     cfg.exeName = SanitizeName(projectName);
     cfg.windowTitle = projectName;
     cfg.fpsCap = gfx::Quality().fpsCap;
-    std::ifstream in(fs::u8path(projectDir) / "export.cfg");
+    std::ifstream in(U8Path(projectDir) / "export.cfg");
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -514,7 +515,7 @@ Config LoadConfig(const std::string& projectDir, const std::string& projectName)
 }
 
 bool SaveConfig(const std::string& projectDir, const Config& cfg) {
-    std::ofstream out(fs::u8path(projectDir) / "export.cfg", std::ios::trunc);
+    std::ofstream out(U8Path(projectDir) / "export.cfg", std::ios::trunc);
     if (!out) return false;
     out << "target " << cfg.target << "\noutputDir " << cfg.outputDir << "\nexeName " << cfg.exeName
         << "\nwindowTitle " << cfg.windowTitle << "\nicon " << cfg.iconPath << "\nlinuxLauncher " << (cfg.linuxLauncher ? 1 : 0) << "\nwindowWidth " << cfg.windowWidth
@@ -550,7 +551,7 @@ std::vector<vfs::ExternalFile> ParseAssetsManifest(const std::string& text) {
 std::string FindPlayerExecutable() {
     const std::string self = platform::ExecutablePath();
     if (self.empty()) return std::string();
-    const fs::path dir = fs::u8path(self).parent_path();
+    const fs::path dir = U8Path(self).parent_path();
 #if defined(_WIN32)
     // Windows file names are case-insensitive, so "FlyPlayer" would also match a Linux "Flyplayer" ELF left in a shared
     // build folder. Only .exe names are candidates here.
@@ -575,7 +576,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     float lastReported = 0.0f;
     auto report = [&](float f) { lastReported = f; return !progress || progress(f); };
 
-    const fs::path project = fs::u8path(projectDir);
+    const fs::path project = U8Path(projectDir);
     std::error_code ec;
     if (!fs::is_directory(project, ec)) return fail("Project folder not found: " + projectDir);
     const std::string flyproj = FindProjectFile(project);
@@ -591,7 +592,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     const bool crossBuild = windowsTarget && !HostIsWindows();   // a player built elsewhere: nothing can be compiled for it here
     std::string player = cfg.playerExe;
     if (player.empty()) player = crossBuild ? FindPrebuiltPlayer(cfg.target) : FindPlayerExecutable();
-    if (player.empty() || !fs::is_regular_file(fs::u8path(player), ec)) {
+    if (player.empty() || !fs::is_regular_file(U8Path(player), ec)) {
         return fail(crossBuild ? "No 64-bit Windows FlyPlayer.exe found (see the target's hint in the Export dialog)."
                                : "Could not find FlyPlayer next to the editor.");
     }
@@ -622,7 +623,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     }
     struct WorkCleanup {
         std::string dir;
-        ~WorkCleanup() { if (!dir.empty()) { std::error_code e; fs::remove_all(fs::u8path(dir), e); } }
+        ~WorkCleanup() { if (!dir.empty()) { std::error_code e; fs::remove_all(U8Path(dir), e); } }
     } cleanup;
     if (userCode.Any() && crossBuild) {
         return fail("This project has C++ scripts/plugins, which are compiled into the game, and that cannot be done for " +
@@ -648,9 +649,9 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         if (cleanup.dir.empty()) {
             cleanup.dir = (fs::temp_directory_path() / ("fly_export_" + std::to_string((unsigned long long)std::time(nullptr)))).string();
         }
-        fs::create_directories(fs::u8path(cleanup.dir), ec);
-        const fs::path iconPlayer = fs::u8path(cleanup.dir) / "player_icon.exe";
-        fs::copy_file(fs::u8path(basePlayer), iconPlayer, fs::copy_options::overwrite_existing, ec);
+        fs::create_directories(U8Path(cleanup.dir), ec);
+        const fs::path iconPlayer = U8Path(cleanup.dir) / "player_icon.exe";
+        fs::copy_file(U8Path(basePlayer), iconPlayer, fs::copy_options::overwrite_existing, ec);
         std::string peError;
         const int n = ec ? 0 : peicon::ReplaceExeIcon(iconPlayer.string(), (const uint8_t*)img.data, img.width, img.height, peError);
         UnloadImage(img);
@@ -703,7 +704,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
             std::vector<vfs::ExternalFile> listed;
             for (const ExternalCopy& x : externals) {
                 std::error_code e3;
-                listed.push_back({ x.rel, (uint64_t)fs::file_size(fs::u8path(x.disk), e3) });
+                listed.push_back({ x.rel, (uint64_t)fs::file_size(U8Path(x.disk), e3) });
             }
             const std::string text = AssetsManifestText(listed);
             pack::Entry m;
@@ -719,7 +720,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     const std::string dataRoot = platform::FoundDataRoot();
     if (hasBasicTerrain) {
         if (dataRoot.empty()) return fail("Could not find the engine's data folder (set FLYENGINE_DATA_DIR).");
-        const fs::path root = fs::u8path(dataRoot);
+        const fs::path root = U8Path(dataRoot);
         std::vector<std::pair<std::string, fs::path>> engineFiles;
         const fs::path leafy = root / "assets" / "PresetTextures" / "LeafyGrass.qoi";
         if (fs::is_regular_file(leafy, ec)) engineFiles.push_back({ "__engine/assets/PresetTextures/LeafyGrass.qoi", leafy });
@@ -750,8 +751,8 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     // --- How the game presents itself, and the graphics settings chosen now.
     {
         std::ostringstream cfgText;
-        cfgText << "projectFile " << flyproj << "\nname " << fs::u8path(flyproj).stem().string()
-                << "\ntitle " << (cfg.windowTitle.empty() ? fs::u8path(flyproj).stem().string() : cfg.windowTitle)
+        cfgText << "projectFile " << flyproj << "\nname " << U8Path(flyproj).stem().string()
+                << "\ntitle " << (cfg.windowTitle.empty() ? U8Path(flyproj).stem().string() : cfg.windowTitle)
                 << "\nwidth " << cfg.windowWidth << "\nheight " << cfg.windowHeight
                 << "\nfullscreen " << (cfg.fullscreen ? 1 : 0) << "\nexe " << SanitizeName(cfg.exeName) << "\n";
         pack::Entry meta;
@@ -780,7 +781,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     }
 
     // --- Pack onto a copy of the player.
-    const fs::path out = fs::u8path(cfg.outputDir) / (SanitizeName(cfg.exeName) + (windowsTarget ? ".exe" : ""));
+    const fs::path out = U8Path(cfg.outputDir) / (SanitizeName(cfg.exeName) + (windowsTarget ? ".exe" : ""));
     say("Writing " + out.string() + " ...");
     std::string error;
     const float packEnd = externals.empty() ? 1.0f : 0.9f;
@@ -790,12 +791,12 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     if (!ok) return fail(error);
 
     if (!externals.empty()) {
-        const fs::path assetsRoot = fs::u8path(cfg.outputDir) / kAssetsFolder;
+        const fs::path assetsRoot = U8Path(cfg.outputDir) / kAssetsFolder;
         size_t copied = 0;
         for (const ExternalCopy& x : externals) {
-            const fs::path dst = assetsRoot / fs::u8path(x.rel.substr(7));   // without "assets/"
+            const fs::path dst = assetsRoot / U8Path(x.rel.substr(7));   // without "assets/"
             fs::create_directories(dst.parent_path(), ec);
-            fs::copy_file(fs::u8path(x.disk), dst, fs::copy_options::overwrite_existing, ec);
+            fs::copy_file(U8Path(x.disk), dst, fs::copy_options::overwrite_existing, ec);
             if (ec) return fail("Could not write " + dst.string() + ": " + ec.message());
             if (!report(0.9f + 0.1f * (float)(++copied) / (float)externals.size())) return fail("Cancelled");
         }
@@ -806,9 +807,9 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     // Optional: Linux has no icon inside an executable, so launchers need the PNG and a .desktop file beside it.
     if (!icon.bytes.empty() && !windowsTarget && cfg.linuxLauncher) {
         const std::string base = SanitizeName(cfg.exeName);
-        std::ofstream(fs::u8path(cfg.outputDir) / (base + ".png"), std::ios::binary)
+        std::ofstream(U8Path(cfg.outputDir) / (base + ".png"), std::ios::binary)
             .write((const char*)icon.bytes.data(), (std::streamsize)icon.bytes.size());
-        std::ofstream(fs::u8path(cfg.outputDir) / (base + ".desktop"))
+        std::ofstream(U8Path(cfg.outputDir) / (base + ".desktop"))
             << "[Desktop Entry]\nType=Application\nName=" << (cfg.windowTitle.empty() ? base : cfg.windowTitle)
             << "\nExec=./" << base << "\nIcon=./" << base << ".png\nStartupWMClass=" << base << "\nTerminal=false\nCategories=Game;\n";
         say("Wrote " + base + ".png and " + base + ".desktop (launcher entry; edit Exec/Icon to absolute paths when installing).");

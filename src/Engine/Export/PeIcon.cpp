@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include "Engine/U8Path.hpp"
 
 namespace peicon {
 namespace {
@@ -62,7 +63,7 @@ void EncodeIconDib(const uint8_t* rgba, int srcW, int srcH, int size, std::strin
 
 int ReplaceExeIcon(const std::string& exePath, const uint8_t* rgba, int width, int height, std::string& error) {
     if (!rgba || width <= 0 || height <= 0) { error = "No icon image."; return 0; }
-    std::fstream f(std::filesystem::u8path(exePath), std::ios::in | std::ios::out | std::ios::binary);
+    std::fstream f(U8Path(exePath), std::ios::in | std::ios::out | std::ios::binary);
     if (!f) { error = "Cannot open " + exePath; return 0; }
 
     auto readAt = [&](std::streamoff off, size_t n, std::vector<uint8_t>& out) {

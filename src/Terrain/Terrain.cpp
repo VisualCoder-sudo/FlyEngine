@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include "Engine/U8Path.hpp"
 
 // Avoid Windows min/max macros
 #undef min
@@ -662,7 +663,7 @@ void Terrain::ReloadMaterialTextures(const std::string& baseDir) {
             // gets this right per-platform (drive letter / UNC on Windows,
             // leading "/" on POSIX); the previous hand-rolled check disagreed
             // with ModelImport::IsAbsolutePath about what "absolute" meant.
-            if (std::filesystem::path(std::filesystem::u8path(p)).is_absolute()) return p;
+            if (std::filesystem::path(U8Path(p)).is_absolute()) return p;
             if (baseDir.empty()) return p;
             return baseDir + "/" + p;
         };

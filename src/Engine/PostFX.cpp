@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "Engine/U8Path.hpp"
 
 namespace gfx {
 
@@ -349,7 +350,7 @@ void SetQualityTier(int tier) {
 namespace {
 std::string QualityFile() {
     const std::string dir = platform::ConfigDir();
-    return dir.empty() ? std::string() : (std::filesystem::u8path(dir) / "graphics.cfg").string();
+    return dir.empty() ? std::string() : (U8Path(dir) / "graphics.cfg").string();
 }
 }
 
@@ -401,7 +402,7 @@ void SaveQualitySettings() {
     const std::string path = QualityFile();
     if (path.empty()) return;
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::u8path(path).parent_path(), ec);
+    std::filesystem::create_directories(U8Path(path).parent_path(), ec);
     std::ofstream out(path, std::ios::trunc);
     if (!out) return;
     const RenderQuality& q = quality;

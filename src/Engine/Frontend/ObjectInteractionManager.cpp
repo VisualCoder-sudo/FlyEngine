@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include "Engine/U8Path.hpp"
 
 static const std::vector<platform::FileFilter>& MeshFilters() {
     static const std::vector<platform::FileFilter> filters = {
@@ -1939,7 +1940,7 @@ static std::string FindIdenticalPlacedModel(const std::string& source,
                                             const std::vector<ScatteredObject*>& objects) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const uintmax_t size = fs::file_size(fs::u8path(source), ec);
+    const uintmax_t size = fs::file_size(U8Path(source), ec);
     if (ec) return std::string();
 
     std::string sourceHash;
@@ -1948,7 +1949,7 @@ static std::string FindIdenticalPlacedModel(const std::string& source,
         if (!obj || !obj->HasModel()) continue;
         const std::string& candidate = obj->GetModelPath();
         if (!seen.insert(candidate).second) continue;
-        if (fs::file_size(fs::u8path(candidate), ec) != size || ec) { ec.clear(); continue; }
+        if (fs::file_size(U8Path(candidate), ec) != size || ec) { ec.clear(); continue; }
         if (sourceHash.empty()) sourceHash = textureManager::ComputeSHA256(source);
         if (!sourceHash.empty() && textureManager::ComputeSHA256(candidate) == sourceHash) return candidate;
     }
