@@ -277,13 +277,18 @@ API 1.1 added `ui_set_accent_color`, which re-skins the editor's accent colour
 
 ## Exporting a game
 
-**File > Export...** packs a project into **one executable**: FlyPlayer with the project's scene, models and
-textures appended to it (compressed), and the project's C++ scripts and plugins compiled *into* it. Nothing else
+**File > Export...** packs a project into an executable: FlyPlayer with the project's scene appended to it (compressed),
+and the project's C++ scripts and plugins compiled *into* it. By default the project's `assets/` (models, textures,
+sounds) are written to an **`Assets` folder beside the game**, which must be shipped with it; if it is missing or
+incomplete the game opens with "All content not present, Continue Playing?" and carries on or quits as you choose.
+Untick *Assets in a folder beside the game* (or pass `--embed-assets` to `flyexport`) to pack them into the single
+executable instead. (Automated runs can answer the question with `FLY_CONTENT_PROMPT=continue|quit`; `FLY_ASSETS_DIR`
+points the game at another folder.) In single-file mode nothing else
 ships: no `.so`/`.dll`, no source, no compiler needed on the player's machine. The editor saves the project first;
 the window title, size, fullscreen and **FPS cap** are chosen in the dialog and stored in `<project>/export.cfg`
 (the graphics settings are the ones saved under Preferences > Rendering at export time).
 
-From a terminal: `flyexport <project> --out <dir> [--name N] [--title T] [--icon game.png] [--fps N] [--size WxH] [--fullscreen]`.
+From a terminal: `flyexport <project> --out <dir> [--name N] [--title T] [--icon game.png] [--fps N] [--size WxH] [--fullscreen] [--embed-assets]`.
 
 **Icon.** Pick a square PNG (256x256 or larger) under *Icon* in the dialog; it is stored in `export.cfg`. The game's window
 and taskbar use it on Windows and X11. For a Windows target it is also written into the `.exe` itself, so Explorer shows it

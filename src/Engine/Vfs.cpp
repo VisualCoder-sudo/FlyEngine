@@ -5,6 +5,8 @@
 #include "miniz.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -27,6 +29,7 @@ struct IndexEntry {
     uint64_t offset = 0, stored = 0, original = 0;
     uint32_t crc = 0;
     uint8_t method = 0;
+    std::string external;    // when set: the file lives on disk at this path, not in the archive
 };
 
 struct State {
@@ -73,6 +76,20 @@ bool ToRelative(const std::string& path, std::string& rel) {
     return true;
 }
 
+// Registers every parent directory of `path`.
+void AddDirs(const std::string& path) {
+    std::string dir;
+    size_t start = 0;
+    while (true) {
+        const size_t slash = path.find('/', start);
+        const std::string name = path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+        g.dirs[dir].insert(name);
+        if (slash == std::string::npos) break;
+        dir += (dir.empty() ? "" : "/") + name;
+        start = slash + 1;
+    }
+}
+
 bool ReadAt(uint64_t absOffset, void* dst, size_t size) {
     std::lock_guard<std::mutex> lock(g.ioMutex);
     if (FLY_FSEEK(g.file, (int64_t)absOffset, SEEK_SET) != 0) return false;
@@ -117,17 +134,7 @@ bool Mount(FILE* f) {
         e.crc = Rd32(&index[pos]); pos += 4;
         e.method = index[pos++];
         g.files[path] = e;
-        // Register every parent directory.
-        std::string dir;
-        size_t start = 0;
-        while (true) {
-            const size_t slash = path.find('/', start);
-            const std::string name = path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
-            g.dirs[dir].insert(name);
-            if (slash == std::string::npos) break;
-            dir += (dir.empty() ? "" : "/") + name;
-            start = slash + 1;
-        }
+        AddDirs(path);
     }
     g.active = true;
     return true;
@@ -198,6 +205,14 @@ bool Read(const std::string& path, std::vector<uint8_t>& out) {
     if (it == g.files.end()) return false;
     const IndexEntry& e = it->second;
 
+    if (!e.external.empty()) {   // shipped beside the executable
+        std::ifstream in(std::filesystem::u8path(e.external), std::ios::binary);
+        if (!in) return false;
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (out.size() != (size_t)e.original) { out.clear(); return false; }
+        return true;
+    }
+
     std::vector<uint8_t> stored((size_t)e.stored);
     if (e.stored && !ReadAt(g.archiveStart + e.offset, stored.data(), stored.size())) return false;
     if (e.method == 0) {
@@ -226,6 +241,30 @@ std::string VirtualPath(const std::string& relative) {
     std::string r = Normalize(relative);
     while (!r.empty() && r.front() == '/') r.erase(r.begin());
     return r.empty() ? std::string(kRoot) : std::string(kRoot) + "/" + r;
+}
+
+ExternalReport MountExternal(const std::string& folder, const std::string& prefix, const std::vector<ExternalFile>& files) {
+    namespace fs = std::filesystem;
+    ExternalReport report;
+    report.expected = files.size();
+    std::error_code ec;
+    report.folderFound = fs::is_directory(fs::u8path(folder), ec);
+    for (const ExternalFile& f : files) {
+        std::string rel = Normalize(f.path);
+        const std::string under = rel.compare(0, prefix.size(), prefix) == 0 ? rel.substr(prefix.size()) : rel;
+        const fs::path disk = fs::u8path(folder) / fs::u8path(under);
+        std::error_code e2;
+        if (!g.active || !fs::is_regular_file(disk, e2) || fs::file_size(disk, e2) != f.size) {
+            report.missing.push_back(rel);
+            continue;
+        }
+        IndexEntry e;
+        e.original = f.size;
+        e.external = disk.string();
+        g.files[rel] = e;
+        AddDirs(rel);
+    }
+    return report;
 }
 
 } // namespace vfs

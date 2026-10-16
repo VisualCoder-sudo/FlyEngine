@@ -30,4 +30,21 @@ std::vector<std::string> List(const std::string& dirPath);         // names of t
 // "/__embedded__/<rel>"
 std::string VirtualPath(const std::string& relative);
 
+// Files that ship beside the executable instead of inside the archive (Export > Assets folder). The archive carries
+// only their names and sizes; once registered here they are served like any other file of the archive: Exists, Read and
+// List see them under the same archive-relative path ("assets/Audio/boom.wav"), whatever folder they really sit in.
+struct ExternalFile {
+    std::string path;        // archive-relative, '/'-separated
+    uint64_t size = 0;       // size it had at export; a file of another size counts as missing
+};
+struct ExternalReport {
+    bool folderFound = false;               // does the folder exist at all?
+    size_t expected = 0;
+    std::vector<std::string> missing;       // archive-relative paths that are absent or the wrong size
+    bool Complete() const { return missing.empty(); }
+};
+// `folder` holds the files with `prefix` ("assets/") removed from their archive path: "assets/Audio/a.wav" is read from
+// <folder>/Audio/a.wav. Needs a mounted archive. Missing files are left out of the file system, and reported.
+ExternalReport MountExternal(const std::string& folder, const std::string& prefix, const std::vector<ExternalFile>& files);
+
 } // namespace vfs

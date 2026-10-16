@@ -71,6 +71,7 @@ int main() {
     cfg.exeName = "My Game";
     cfg.windowTitle = "Hello";
     cfg.fpsCap = 144;
+    cfg.assetsFolder = false;   // single-file mode first: everything inside the executable
     std::string log;
     auto logFn = [&](const std::string& s) { log += s + "\n"; };
 
@@ -91,6 +92,58 @@ int main() {
     CHECK(vfs::Read("__meta/export.cfg", data) && std::string(data.begin(), data.end()).find("title Hello") != std::string::npos);
     CHECK(vfs::Read("__meta/graphics.cfg", data) && std::string(data.begin(), data.end()).find("fpsCap 144") != std::string::npos);
     vfs::Unmount();
+
+    // Assets folder mode: assets/ go beside the game, the executable keeps only a list of them.
+    {
+        exporter::Config folderCfg = cfg;
+        folderCfg.assetsFolder = true;
+        folderCfg.outputDir = (dir / "out_folder").string();
+        std::ofstream(project / "assets" / "b.bin", std::ios::binary) << "second file";
+        fs::create_directories(project / "assets" / "Audio");
+        std::ofstream(project / "assets" / "Audio" / "boom.wav", std::ios::binary) << "RIFFfake";
+        exporter::Result fr = exporter::Run(project.string(), folderCfg, logFn, nullptr);
+        CHECK(fr.ok);
+        const fs::path assetsDir = dir / "out_folder" / "Assets";
+        CHECK(fs::is_regular_file(assetsDir / "a.txt") && fs::is_regular_file(assetsDir / "b.bin"));
+        CHECK(fs::is_regular_file(assetsDir / "Audio" / "boom.wav"));
+        CHECK(fs::file_size(fr.outputPath) < fs::file_size(r.outputPath) + 1000);   // nothing from assets/ was packed in
+        CHECK(vfs::MountFile(fr.outputPath));
+        CHECK(!vfs::Exists("assets/a.txt"));                      // not in the archive...
+        CHECK(vfs::Read("Proj.flyproj", data));                   // ...but the rest still is
+        const std::vector<vfs::ExternalFile> listed = exporter::ParseAssetsManifest(
+            vfs::Read(exporter::kAssetsManifest, data) ? std::string(data.begin(), data.end()) : std::string());
+        CHECK(listed.size() == 3);
+        // Folder present: served from it under the same paths.
+        vfs::ExternalReport ok = vfs::MountExternal(assetsDir.string(), "assets/", listed);
+        CHECK(ok.folderFound && ok.Complete() && ok.expected == 3);
+        CHECK(vfs::Exists("assets/a.txt") && vfs::Exists(vfs::VirtualPath("assets/Audio/boom.wav")));
+        CHECK(vfs::Read("assets/a.txt", data) && std::string(data.begin(), data.end()) == "hello from the archive");
+        CHECK(vfs::IsDir("assets/Audio"));
+        vfs::Unmount();
+        // Folder incomplete: the missing and the resized files are reported, the rest still works.
+        fs::remove(assetsDir / "b.bin");
+        std::ofstream(assetsDir / "Audio" / "boom.wav", std::ios::binary) << "RIFFfake but changed";
+        CHECK(vfs::MountFile(fr.outputPath));
+        vfs::ExternalReport partial = vfs::MountExternal(assetsDir.string(), "assets/", listed);
+        CHECK(partial.folderFound && !partial.Complete() && partial.missing.size() == 2);
+        CHECK(!vfs::Exists("assets/b.bin") && !vfs::Exists("assets/Audio/boom.wav") && vfs::Exists("assets/a.txt"));
+        vfs::Unmount();
+        // Folder gone entirely.
+        fs::remove_all(assetsDir);
+        CHECK(vfs::MountFile(fr.outputPath));
+        vfs::ExternalReport none = vfs::MountExternal(assetsDir.string(), "assets/", listed);
+        CHECK(!none.folderFound && none.missing.size() == 3);
+        vfs::Unmount();
+        // A project with no assets/ files has nothing to ship beside the game, so no manifest and no folder.
+        fs::remove_all(project / "assets");
+        folderCfg.outputDir = (dir / "out_empty").string();
+        exporter::Result er = exporter::Run(project.string(), folderCfg, logFn, nullptr);
+        CHECK(er.ok && !fs::exists(dir / "out_empty" / "Assets"));
+        CHECK(vfs::MountFile(er.outputPath) && !vfs::Exists(exporter::kAssetsManifest));
+        vfs::Unmount();
+        fs::create_directories(project / "assets");
+        std::ofstream(project / "assets" / "a.txt") << "hello from the archive";
+    }
 
     // A project with C++ scripts cannot be built for Windows from here: it has to say so, not export something broken.
     fs::create_directories(project / "Scripts");

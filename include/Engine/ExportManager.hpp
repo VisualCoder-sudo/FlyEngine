@@ -1,6 +1,7 @@
 #pragma once
 // Export: packs a project into a single executable (the player with the project's data appended, see
 // PackArchive.hpp). Used by the editor's Export dialog and by the headless `flyexport` tool.
+#include "Vfs.hpp"
 #include <functional>
 #include <string>
 #include <vector>
@@ -18,6 +19,9 @@ struct Config {
     int windowHeight = 720;
     bool fullscreen = false;
     int fpsCap = 180;            // 0 = unlimited
+    // true: the project's assets/ folder (models, textures, sounds) is written beside the game as an "Assets" folder instead
+    // of being packed into it. The game still starts without the folder; it asks first, because content will be missing.
+    bool assetsFolder = true;
     std::string playerExe;       // player to build on; empty = the FlyPlayer next to this program
 };
 
@@ -37,6 +41,12 @@ struct Result {
 
 using LogFn = std::function<void(const std::string&)>;
 using ProgressFn = std::function<bool(float)>;   // 0..1; return false to cancel
+
+// The folder written beside the game in assetsFolder mode, and the list (inside the game) of what belongs in it.
+constexpr const char* kAssetsFolder = "Assets";
+constexpr const char* kAssetsManifest = "__meta/assets.txt";
+std::string AssetsManifestText(const std::vector<vfs::ExternalFile>& files);
+std::vector<vfs::ExternalFile> ParseAssetsManifest(const std::string& text);
 
 std::vector<Target> Targets();
 std::string DefaultTarget();                     // the target native to this machine, or the first available

@@ -1,5 +1,5 @@
 // flyexport -- the editor's Export, without the editor: packs a project into a single executable.
-//   flyexport <projectDir> --out <dir> [--name <exe>] [--title <text>] [--icon <png>] [--launcher] [--fps <n>] [--size WxH] [--fullscreen]
+//   flyexport <projectDir> --out <dir> [--name <exe>] [--title <text>] [--icon <png>] [--launcher] [--fps <n>] [--size WxH] [--fullscreen] [--embed-assets|--assets-folder]
 //             [--player <FlyPlayer>] [--target <id>]
 #include "Engine/ExportManager.hpp"
 #include "Engine/PostFX.hpp"
@@ -29,6 +29,8 @@ int main(int argc, char** argv) {
         else if (a == "--fps") cfg.fpsCap = std::atoi(next().c_str());
         else if (a == "--size") { const std::string s = next(); std::sscanf(s.c_str(), "%dx%d", &cfg.windowWidth, &cfg.windowHeight); }
         else if (a == "--fullscreen") cfg.fullscreen = true;
+        else if (a == "--embed-assets") cfg.assetsFolder = false;   // one executable, assets inside it
+        else if (a == "--assets-folder") cfg.assetsFolder = true;    // assets/ written to an Assets folder beside the game (default)
         else if (a == "--player") cfg.playerExe = next();
         else if (a == "--target") cfg.target = next();
     }

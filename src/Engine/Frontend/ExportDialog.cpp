@@ -208,6 +208,11 @@ void DrawExportDialog() {
     ImGui::TextDisabled("Square PNG, 256x256 or larger. Empty = default icon.");
     ImGui::Checkbox("Also write .desktop + .png launcher files (Linux)", &g.cfg.linuxLauncher);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Linux executables cannot hold an icon. Off = a single file; the window icon still works.");
+    ImGui::Checkbox("Assets in a folder beside the game", &g.cfg.assetsFolder);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: the project's assets (models, textures, sounds) are written to an 'Assets' folder next to the game, which must\n"
+                          "be shipped with it. If the folder is missing the game asks whether to continue.\n"
+                          "Off: everything is packed into the single executable.");
     ImGui::SetNextItemWidth(90.0f);
     ImGui::InputInt("##w", &g.cfg.windowWidth, 0, 0);
     ImGui::SameLine();

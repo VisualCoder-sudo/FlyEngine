@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "Engine/Vfs.hpp"
+#include "Engine/ExportManager.hpp"
 #include "Engine/Scripts/StaticModules.hpp"
 #include <filesystem>
 #include <fstream>
@@ -725,6 +726,59 @@ static EmbeddedConfig ReadEmbeddedConfig() {
     return cfg;
 }
 
+// Where the exported game's Assets folder is: beside the executable (FLY_ASSETS_DIR overrides, for tests).
+static std::string AssetsFolderPath() {
+    if (const char* env = std::getenv("FLY_ASSETS_DIR"); env && *env) return env;
+    const std::string exe = platform::ExecutablePath();
+    return (std::filesystem::u8path(exe).parent_path() / exporter::kAssetsFolder).string();
+}
+
+// The game's content is missing: ask whether to carry on. Runs in the game's own window, so it needs no dialog toolkit.
+// FLY_CONTENT_PROMPT=continue|quit answers it without a window being watched (automated runs).
+static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::string& folder) {
+    if (const char* auto_ = std::getenv("FLY_CONTENT_PROMPT")) return std::string(auto_) == "continue";
+
+    std::string detail;
+    if (!report.folderFound) detail = "The Assets folder was not found next to the game.";
+    else detail = std::to_string(report.missing.size()) + " of " + std::to_string(report.expected) + " content files are missing from the Assets folder.";
+    const std::string where = "Looked in: " + folder;
+    std::string example;
+    if (!report.missing.empty()) example = "For example: " + report.missing.front();
+
+    while (!WindowShouldClose()) {
+        const float w = (float)GetScreenWidth(), h = (float)GetScreenHeight();
+        const Rectangle yes = { w * 0.5f - 230.0f, h * 0.5f + 70.0f, 220.0f, 44.0f };
+        const Rectangle no = { w * 0.5f + 10.0f, h * 0.5f + 70.0f, 220.0f, 44.0f };
+        const Vector2 mouse = GetMousePosition();
+        const bool overYes = CheckCollisionPointRec(mouse, yes), overNo = CheckCollisionPointRec(mouse, no);
+        bool result = false, decided = false;
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) || IsKeyPressed(KEY_Y) || (overYes && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) { result = true; decided = true; }
+        if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_N) || (overNo && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) { result = false; decided = true; }
+
+        BeginDrawing();
+        ClearBackground(Color{ 24, 26, 31, 255 });
+        auto centered = [&](const std::string& text, float y, int size, Color c) {
+            const int tw = MeasureText(text.c_str(), size);
+            DrawText(text.c_str(), (int)(w * 0.5f) - tw / 2, (int)y, size, c);
+        };
+        centered("All content not present, Continue Playing?", h * 0.5f - 90.0f, 30, Color{ 240, 240, 245, 255 });
+        centered(detail, h * 0.5f - 40.0f, 18, Color{ 200, 200, 210, 255 });
+        centered(where, h * 0.5f - 14.0f, 14, Color{ 150, 154, 165, 255 });
+        if (!example.empty()) centered(example, h * 0.5f + 6.0f, 14, Color{ 150, 154, 165, 255 });
+        DrawRectangleRec(yes, overYes ? Color{ 60, 150, 200, 255 } : Color{ 45, 120, 170, 255 });
+        DrawRectangleRec(no, overNo ? Color{ 90, 94, 105, 255 } : Color{ 66, 70, 80, 255 });
+        auto onButton = [&](const Rectangle& r, const char* text) {
+            const int tw = MeasureText(text, 18);
+            DrawText(text, (int)(r.x + r.width * 0.5f) - tw / 2, (int)(r.y + 13.0f), 18, WHITE);
+        };
+        onButton(yes, "Continue Playing  (Enter)");
+        onButton(no, "Quit  (Esc)");
+        EndDrawing();
+        if (decided) return result;
+    }
+    return false;
+}
+
 int main(int argc, char* argv[]) {
 #if defined(_WIN32)
     AttachParentConsole();
@@ -737,6 +791,18 @@ int main(int argc, char* argv[]) {
         if (emb.projectFile.empty()) {
             std::fprintf(stderr, "This executable's data archive has no project in it.\n");
             return 1;
+        }
+    }
+    // Assets exported to a folder beside the game: serve them from there, and remember if any are missing.
+    vfs::ExternalReport assetsReport;
+    std::string assetsFolder;
+    if (embedded) {
+        const auto listed = exporter::ParseAssetsManifest(ReadEmbeddedText(exporter::kAssetsManifest));
+        if (!listed.empty()) {
+            assetsFolder = AssetsFolderPath();
+            assetsReport = vfs::MountExternal(assetsFolder, "assets/", listed);
+            if (!assetsReport.Complete())
+                std::fprintf(stderr, "[Player] %zu of %zu content files missing from %s\n", assetsReport.missing.size(), assetsReport.expected, assetsFolder.c_str());
         }
     }
     PlayerOptions opts = ParseArgs(argc, argv);
@@ -854,6 +920,9 @@ int main(int argc, char* argv[]) {
         SetWindowSize(GetMonitorWidth(monitor), GetMonitorHeight(monitor));
         ToggleFullscreen();
     }
+
+    // Content that should sit beside the game is missing: the player decides whether to go on.
+    if (!assetsReport.Complete() && !ConfirmMissingContent(assetsReport, assetsFolder)) return 0;
 
     // Core gameplay entities
     std::vector<ScatteredObject*> rawObjectPtrs;

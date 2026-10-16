@@ -508,6 +508,7 @@ Config LoadConfig(const std::string& projectDir, const std::string& projectName)
         else if (key == "windowHeight") cfg.windowHeight = std::max(240, std::atoi(v.c_str()));
         else if (key == "fullscreen") cfg.fullscreen = std::atoi(v.c_str()) != 0;
         else if (key == "fpsCap") cfg.fpsCap = std::clamp(std::atoi(v.c_str()), 0, 1000);
+        else if (key == "assetsFolder") cfg.assetsFolder = std::atoi(v.c_str()) != 0;
     }
     return cfg;
 }
@@ -518,8 +519,32 @@ bool SaveConfig(const std::string& projectDir, const Config& cfg) {
     out << "target " << cfg.target << "\noutputDir " << cfg.outputDir << "\nexeName " << cfg.exeName
         << "\nwindowTitle " << cfg.windowTitle << "\nicon " << cfg.iconPath << "\nlinuxLauncher " << (cfg.linuxLauncher ? 1 : 0) << "\nwindowWidth " << cfg.windowWidth
         << "\nwindowHeight " << cfg.windowHeight << "\nfullscreen " << (cfg.fullscreen ? 1 : 0)
-        << "\nfpsCap " << cfg.fpsCap << "\n";
+        << "\nfpsCap " << cfg.fpsCap << "\nassetsFolder " << (cfg.assetsFolder ? 1 : 0) << "\n";
     return out.good();
+}
+
+// One line per file, "<size><TAB><archive-relative path>"; paths never contain a tab or a newline we would ship.
+std::string AssetsManifestText(const std::vector<vfs::ExternalFile>& files) {
+    std::ostringstream out;
+    out << "folder " << kAssetsFolder << "\n";
+    for (const vfs::ExternalFile& f : files) out << f.size << '\t' << f.path << '\n';
+    return out.str();
+}
+
+std::vector<vfs::ExternalFile> ParseAssetsManifest(const std::string& text) {
+    std::vector<vfs::ExternalFile> files;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos || tab == 0) continue;   // the "folder ..." line, or junk
+        vfs::ExternalFile f;
+        f.size = std::strtoull(line.substr(0, tab).c_str(), nullptr, 10);
+        f.path = line.substr(tab + 1);
+        if (!f.path.empty()) files.push_back(std::move(f));
+    }
+    return files;
 }
 
 std::string FindPlayerExecutable() {
@@ -663,6 +688,33 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     }
     say("Project files: " + std::to_string(entries.size()) + " (" + std::to_string(projectBytes / (1024 * 1024)) + " MB)");
 
+    // --- Assets folder mode: the project's assets/ stay outside the executable, in a folder beside it. The executable
+    // only records what belongs there, so the game can tell when the folder is missing or incomplete.
+    struct ExternalCopy { std::string rel; std::string disk; };
+    std::vector<ExternalCopy> externals;
+    if (cfg.assetsFolder) {
+        std::vector<pack::Entry> kept;
+        for (pack::Entry& e : entries) {
+            if (e.path.rfind("assets/", 0) == 0 && e.path.size() > 7) externals.push_back({ e.path, e.diskPath });
+            else kept.push_back(std::move(e));
+        }
+        entries = std::move(kept);
+        if (!externals.empty()) {
+            std::vector<vfs::ExternalFile> listed;
+            for (const ExternalCopy& x : externals) {
+                std::error_code e3;
+                listed.push_back({ x.rel, (uint64_t)fs::file_size(fs::u8path(x.disk), e3) });
+            }
+            const std::string text = AssetsManifestText(listed);
+            pack::Entry m;
+            m.path = kAssetsManifest;
+            m.fromBytes = true;
+            m.bytes.assign(text.begin(), text.end());
+            entries.push_back(std::move(m));
+            say("Assets folder: " + std::to_string(externals.size()) + " file(s) go beside the game in '" + kAssetsFolder + "'.");
+        }
+    }
+
     // --- The engine's own data, only what the runtime can ask for.
     const std::string dataRoot = platform::FoundDataRoot();
     if (hasBasicTerrain) {
@@ -731,10 +783,25 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     const fs::path out = fs::u8path(cfg.outputDir) / (SanitizeName(cfg.exeName) + (windowsTarget ? ".exe" : ""));
     say("Writing " + out.string() + " ...");
     std::string error;
+    const float packEnd = externals.empty() ? 1.0f : 0.9f;
     const bool ok = pack::BuildExecutable(basePlayer, out.string(), entries, error, [&](size_t done, size_t total) {
-        return report(0.05f + 0.95f * (total ? (float)done / (float)total : 1.0f));
+        return report(0.05f + (packEnd - 0.05f) * (total ? (float)done / (float)total : 1.0f));
     });
     if (!ok) return fail(error);
+
+    if (!externals.empty()) {
+        const fs::path assetsRoot = fs::u8path(cfg.outputDir) / kAssetsFolder;
+        size_t copied = 0;
+        for (const ExternalCopy& x : externals) {
+            const fs::path dst = assetsRoot / fs::u8path(x.rel.substr(7));   // without "assets/"
+            fs::create_directories(dst.parent_path(), ec);
+            fs::copy_file(fs::u8path(x.disk), dst, fs::copy_options::overwrite_existing, ec);
+            if (ec) return fail("Could not write " + dst.string() + ": " + ec.message());
+            if (!report(0.9f + 0.1f * (float)(++copied) / (float)externals.size())) return fail("Cancelled");
+        }
+        say("Wrote " + std::to_string(externals.size()) + " file(s) to " + assetsRoot.string() +
+            ". Ship this folder next to the game.");
+    }
 
     // Optional: Linux has no icon inside an executable, so launchers need the PNG and a .desktop file beside it.
     if (!icon.bytes.empty() && !windowsTarget && cfg.linuxLauncher) {

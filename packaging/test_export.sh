@@ -20,6 +20,8 @@ if [[ -n "${KIT}" ]]; then export FLYENGINE_KIT_DIR="${KIT}"; fi
 "${BUILD}/flyexport" "${PROJECT}" --out "${WORK}/out" --name Game
 
 cp "${WORK}/out/Game" "${WORK}/run/"
+# Assets in a folder beside the game (the default): it has to travel with the game.
+if [[ -d "${WORK}/out/Assets" ]]; then cp -r "${WORK}/out/Assets" "${WORK}/run/Assets"; fi
 if ldd "${WORK}/run/Game" | grep -q "not found"; then
     echo "FAIL: unresolved libraries:"; ldd "${WORK}/run/Game" | grep "not found"; exit 1
 fi
@@ -30,7 +32,15 @@ fi
 ( cd "${WORK}/run" && HOME="${WORK}/home" XDG_CONFIG_HOME="${WORK}/home/.config" FLY_EXIT_AFTER_FRAMES=60 \
     timeout 120 ./Game > "${WORK}/log.txt" 2>&1 ) || { echo "FAIL: the game did not exit cleanly"; tail -20 "${WORK}/log.txt"; exit 1; }
 
-EXTRA="$(ls -A "${WORK}/run" | grep -v '^Game$' || true)"
+EXTRA="$(ls -A "${WORK}/run" | grep -v -e '^Game$' -e '^Assets$' || true)"
 if [[ -n "${EXTRA}" ]]; then echo "FAIL: the game wrote next to itself: ${EXTRA}"; exit 1; fi
+
+# Without its Assets folder the game must still start once told to continue (and stop when told to quit).
+if [[ -d "${WORK}/run/Assets" ]]; then
+    rm -rf "${WORK}/run/Assets"
+    ( cd "${WORK}/run" && HOME="${WORK}/home" XDG_CONFIG_HOME="${WORK}/home/.config" FLY_CONTENT_PROMPT=continue FLY_EXIT_AFTER_FRAMES=30 \
+        timeout 120 ./Game > "${WORK}/log_noassets.txt" 2>&1 ) || { echo "FAIL: the game did not run without its Assets folder"; tail -20 "${WORK}/log_noassets.txt"; exit 1; }
+    grep -q "content files missing" "${WORK}/log_noassets.txt" || { echo "FAIL: missing Assets folder was not noticed"; exit 1; }
+fi
 
 echo "OK: exported game ran from an empty folder ($(du -h "${WORK}/out/Game" | cut -f1))"
