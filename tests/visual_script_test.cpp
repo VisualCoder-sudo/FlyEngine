@@ -148,6 +148,11 @@ void ScatteredObject::SetName(const std::string& n) { g_names[this] = n; }
 extern "C" {
 bool IsKeyPressed(int key) { return key == g_keyPressed; }
 bool IsKeyDown(int key) { return key == g_keyHeld; }
+// No controller in the test: the gamepad nodes read as "nothing connected, nothing pressed".
+bool IsGamepadAvailable(int) { return false; }
+bool IsGamepadButtonPressed(int, int) { return false; }
+bool IsGamepadButtonDown(int, int) { return false; }
+float GetGamepadAxisMovement(int, int) { return 0.0f; }
 void SetMasterVolume(float v) { g_masterVolume = v; }
 int MeasureText(const char* text, int) { return static_cast<int>(std::strlen(text)) * 10; }
 void DrawText(const char* text, int, int, int, Color c) {
