@@ -217,6 +217,12 @@ add_library(FlyEngineCore STATIC
         src/Engine/Backend/VisualScript.cpp
         src/Engine/Frontend/VisualScriptEditor.cpp
         src/Engine/Graphics.cpp
+        src/Engine/CityMeshes.cpp
+        src/Engine/FrameStats.cpp
+        src/Engine/Reflections.cpp
+        src/Engine/Lighting.cpp
+        src/Engine/Shadows.cpp
+        src/Engine/CityInstancing.cpp
         src/Engine/PostFX.cpp
         src/Engine/Atmosphere.cpp
         src/Engine/Clouds.cpp
