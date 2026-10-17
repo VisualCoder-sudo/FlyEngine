@@ -11,15 +11,10 @@
 #include "rlgl.h"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
-#include <atomic>
 #include <cmath>
-#include <cstring>
-#include <filesystem>
 #include <map>
 #include <unordered_map>
 #include <string>
-
-namespace fs = std::filesystem;
 
 namespace {
 
@@ -94,7 +89,6 @@ Shader cityInstancedShader{};
 Material cityInstancedMaterial{};
 bool cityInstancedReady = false;
 float nightLightData[32 * 4] = {};
-int nightLightCount = 0;
 // Road shader: lit fragment shader with a depth-biased vertex stage, used only
 // for the flat road/pad/parks mesh so it wins the depth test against the
 // near-coplanar ground plane at altitude.
@@ -144,27 +138,11 @@ void Init() {
     // Road shader: same lighting as litShader but with a depth bias so the flat
     // road mesh always wins against the near-coplanar ground plane at altitude.
     roadShader = LoadShaderProgram("lit_road");
-    // Loud diagnostic: this is the ONLY place a real-GPU shader failure can
-    // silently hide (the load falls back to the default shader, losing the depth
-    // bias -> coplanar roads re-fight the ground at altitude). The headless
-    // harness stubs GetRoadShader() so it can never see this; the file + loud log
-    // let the real application surface it.
-    if (!IsShaderValid(roadShader)) {
-        FILE* dzD = platform::IsEmbedded() ? nullptr : std::fopen("road_shader_status.txt", "w");
-        if (dzD) {
-            fputs("ROAD_SHADER_LINK_FAILED - road depth bias INACTIVE, expect z-fighting.\n", dzD);
-            fclose(dzD);
-        }
-        TraceLog(LOG_ERROR, "ROAD SHADER LINK FAILED (id=0): depth bias inactive, "
-                            "roads will z-fight the ground at altitude. Check road_shader_status.txt");
-    } else {
-        FILE* dzD = platform::IsEmbedded() ? nullptr : std::fopen("road_shader_status.txt", "w");
-        if (dzD) {
-            fputs("ROAD_SHADER_LINK_OK - depth bias active (constant world-space offset).\n", dzD);
-            fclose(dzD);
-        }
+    // A failed link falls back to the default shader and silently loses the depth bias (roads re-fight the ground).
+    if (!IsShaderValid(roadShader))
+        TraceLog(LOG_ERROR, "ROAD SHADER LINK FAILED (id=0): depth bias inactive, roads will z-fight the ground at altitude");
+    else
         TraceLog(LOG_INFO, "Road shader linked OK (id=%i): depth bias active.", roadShader.id);
-    }
     // DrawMesh uploads matProjection to shaders whose projection loc is registered.
     if (roadShader.id != 0 && roadShader.locs)
         roadShader.locs[SHADER_LOC_MATRIX_PROJECTION] = GetShaderLocation(roadShader, "matProjection");
@@ -306,7 +284,6 @@ void DrawWeather(const Camera3D& camera) {
 }
 void SetNightLights(const Vector4* lights, int count) {
     count = Clamp(count, 0, 32);
-    nightLightCount = count;
     for (int i = 0; i < count; i++) {
         nightLightData[i * 4] = lights[i].x; nightLightData[i * 4 + 1] = lights[i].y;
         nightLightData[i * 4 + 2] = lights[i].z; nightLightData[i * 4 + 3] = lights[i].w;
