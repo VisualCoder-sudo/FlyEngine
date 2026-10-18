@@ -58,6 +58,13 @@ enum class TransformTool {
 };
 
 void Init();
+
+// Scene edits made from the ImGui panels (Explorer) record an undo step through this hook, which the interaction
+// manager installs. PushUndo() snapshots the scene as it is NOW, so call it before changing anything.
+void SetUndoHook(void (*hook)(void*), void* user);
+void PushUndo();
+// Forgets the Explorer's standalone-script selection (after undo/redo swapped the list).
+void ClearScriptSelection();
 void Unload();
 
 // Selected object & scene management
@@ -77,6 +84,10 @@ void SetSelection(const std::vector<ScatteredObject*>& selection, ScatteredObjec
 // Groups the current selection into a new model, or dissolves the model a given
 // object belongs to. Used by the explorer's context menu.
 void GroupSelectedObjects();
+// Ctrl+G / Ctrl+U. Ungroup acts on the outermost groups that are fully selected, or else the group of the
+// primary selection. Both return false when there was nothing to do.
+bool CanGroupSelection();
+bool UngroupSelection(bool dryRun = false);
 void UngroupModelContaining(ScatteredObject* member);
 // Explorer actions that need to remove entities defer the actual deletion to
 // the interaction manager (which owns the engine + object vector).
@@ -90,6 +101,16 @@ TransformTool GetActiveTool();
 bool IsTransformLocalSpace();
 void SetTransformLocalSpace(bool local);
 void ToggleTransformSpace();
+
+// Grid snapping for the transform gizmos. Holding Ctrl while dragging inverts `enabled`.
+struct SnapSettings {
+    bool enabled = false;
+    float move = 0.5f;    // world units
+    float rotate = 15.0f; // degrees
+    float scale = 0.1f;   // size units (uniform scale: ratio)
+    bool toObject = false; // Move: snap the selection's bounds flush against nearby objects
+};
+SnapSettings& GetSnapSettings();
 
 // Play mode: the top-bar Play/Stop button signals a toggle via ConsumePlayToggle(),
 // which the physics simulation consumes once. SetPlayActive mirrors the active state.
@@ -178,6 +199,10 @@ void OpenContextMenu(Vector2 mousePos, bool isObjectTarget, bool isWaterTarget);
 void CloseContextMenu();
 bool IsContextMenuOpen();
 MenuAction ProcessContextMenu();
+// Queues a spawn/menu action from an ImGui panel. `atViewportCenter` places spawned things in front of the
+// camera instead of at the last viewport right-click.
+void RequestMenuAction(MenuAction action, bool atViewportCenter);
+bool ConsumeActionAtViewportCenter();
 
 // True for the rest of the frame after a mouse press was consumed by a menu
 // (item click or dismiss), so the same click never leaks into the world.

@@ -3,6 +3,7 @@
 #include "../Backend/Entity.hpp"
 #include "../include/Engine/Backend/ScatteredObject.hpp"
 #include "ui.hpp"
+#include "PluginHost.hpp"
 #include "../Backend/UndoSystem.hpp"
 #include "raylib.h"
 #include <memory>
@@ -41,6 +42,7 @@ private:
     Engine& engine;
     Camera3D& camera;
     CameraController* cameraController;
+    pluginhost::SceneHost pluginScene;   // what plugins may do to the scene (spawn, remove)
     std::vector<ScatteredObject*>& objects;
     std::vector<std::unique_ptr<ModelGroup>>& models;
     phys::Simulation* physicsSim = nullptr;
@@ -66,7 +68,10 @@ private:
     Vector3 rotatePrevEuler = { 0.0f, 0.0f, 0.0f }; // continuous (unwrapped) Euler for single-object rotate drag
     Vector3 dragPivot = { 0.0f, 0.0f, 0.0f };   // world pivot (selection center) captured at drag start
     std::vector<DragStartState> dragStartStates; // per-object state at drag start
+    BoundingBox dragStartBounds{};               // union of the selection's world bounds at drag start
+    std::vector<BoundingBox> snapTargets;        // bounds of every unselected object at drag start (Snap to Object)
 
+    float SnapToObjectThreshold() const; // capture range in world units, grows with camera distance
     void SyncSelection();
     bool IsInSelection(ScatteredObject* object) const;
     void ToggleSelect(ScatteredObject* object);

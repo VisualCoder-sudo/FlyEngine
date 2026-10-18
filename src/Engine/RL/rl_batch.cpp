@@ -142,6 +142,7 @@ void BatchFlush() {
         }
     } else {
         const int offset = sg_append_buffer(g.batchBuffer, sg_range{ g_batch.vertices.data(), bytes });
+        InvalidateBindings();
         const Matrix mvp = MatrixMultiply(g.modelview, g.projection);
         SetUniformMatrix(*sh, g_batch.locMvp, mvp);
         const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -161,7 +162,7 @@ void BatchFlush() {
             key.depthWrite = g.state.depthWrite;
             key.cull = 0;
             key.format = g.passFormat;
-            sg_apply_pipeline(GetPipeline(key, tmpl));
+            ApplyPipelineCached(GetPipeline(key, tmpl));
 
             sg_bindings bind{};
             bind.vertex_buffers[0] = g.batchBuffer;
@@ -169,7 +170,7 @@ void BatchFlush() {
             unsigned int drawUnits[GfxState::kMaxUnits] = {};
             drawUnits[0] = c.texture;
             ResolveShaderTextures(*sh, drawUnits, bind);
-            sg_apply_bindings(&bind);
+            ApplyBindingsCached(bind);
             ApplyShaderUniforms(*sh);
             sg_draw(c.first, c.count, 1);
         }

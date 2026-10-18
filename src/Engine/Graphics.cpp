@@ -57,7 +57,7 @@ struct LitLocs {
     int cloudShadow = -1, cloudShadowTex = -1;
     int shadowVP = -1, shadowMapFar[3] = { -1, -1, -1 };
 };
-LitLocs litLocs, roadLocs, cityLocs;
+LitLocs litLocs, roadLocs, cityLocs, shapeLocs;
 void FindLitLocs(Shader& sh, LitLocs& l) {
     l.sunDir = GetShaderLocation(sh, "sunDir");
     l.sunColor = GetShaderLocation(sh, "sunColor");
@@ -93,6 +93,10 @@ float nightLightData[32 * 4] = {};
 // for the flat road/pad/parks mesh so it wins the depth test against the
 // near-coplanar ground plane at altitude.
 Shader roadShader{};
+// Instanced variant of the plain lit shader for loose objects (ShapeBatch.cpp).
+Shader shapeInstancedShader{};
+Material shapeInstancedMaterial{};
+bool shapeInstancedReady = false;
 bool initialized = false;
 
 // The lit, road and instanced shaders live in shaders/lit.glsl and are compiled
@@ -158,10 +162,17 @@ void Init() {
     defaultTexture = LoadTextureFromImage(checker);
     UnloadImage(checker);
 
+    shapeInstancedShader = LoadShaderProgram("lit_shape_instanced");
+    if (shapeInstancedShader.id != 0) FindLitLocs(shapeInstancedShader, shapeLocs);
+
     cityInstancedMaterial = LoadMaterialDefault();
     cityInstancedMaterial.shader = cityInstancedShader;
     cityInstancedMaterial.maps[MATERIAL_MAP_DIFFUSE].texture = defaultTexture;
     cityInstancedReady = cityInstancedShader.id != 0;
+    shapeInstancedMaterial = LoadMaterialDefault();
+    shapeInstancedMaterial.shader = shapeInstancedShader;
+    shapeInstancedMaterial.maps[MATERIAL_MAP_DIFFUSE].texture = defaultTexture;
+    shapeInstancedReady = shapeInstancedShader.id != 0;
 
     cubeModel = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
     sphereModel = LoadModelFromMesh(GenMeshSphere(0.5f, 16, 16));
@@ -208,6 +219,9 @@ void Shutdown() {
     if (roadShader.id != 0) UnloadShader(roadShader);
     cityInstancedReady = false;
     cityInstancedMaterial = {};
+    if (shapeInstancedShader.id != 0) UnloadShader(shapeInstancedShader);
+    shapeInstancedReady = false;
+    shapeInstancedMaterial = {};
     UnloadShader(litShader);
 
     initialized = false;
@@ -345,11 +359,15 @@ namespace detail {
 Shader& CityInstancedShader() { return cityInstancedShader; }
 Material& CityInstancedMaterial() { return cityInstancedMaterial; }
 bool CityInstancedReady() { return cityInstancedReady; }
+Material& ShapeInstancedMaterial() { return shapeInstancedMaterial; }
+bool ShapeInstancedReady() { return shapeInstancedReady; }
+void SetupShapeInstancedLighting() { if (shapeInstancedReady) shadow::BindMap(); }
 
 void UploadLightViewProj(const Matrix& lightViewProj) {
     if (litShader.id != 0 && litLocs.lightVP != -1) SetShaderValueMatrix(litShader, litLocs.lightVP, lightViewProj);
     if (roadShader.id != 0 && roadLocs.lightVP != -1) SetShaderValueMatrix(roadShader, roadLocs.lightVP, lightViewProj);
     if (cityInstancedReady && cityLocs.lightVP != -1) SetShaderValueMatrix(cityInstancedShader, cityLocs.lightVP, lightViewProj);
+    if (shapeInstancedReady && shapeLocs.lightVP != -1) SetShaderValueMatrix(shapeInstancedShader, shapeLocs.lightVP, lightViewProj);
 }
 }
 
@@ -373,6 +391,7 @@ void UpdateLighting(const Camera3D& camera) {
     UpdateCloudShadow(camera);
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
+    if (shapeInstancedReady) UploadLitEnvironment(shapeInstancedShader, shapeLocs);
     cityEnvironmentStale = true;
 
     shadow::BindMap();
@@ -400,6 +419,8 @@ void SetUnderwaterParams(float waterY, Vector3, float, Vector3) {
     if (litLocs.waterSurfaceY != -1) SetShaderValue(litShader, litLocs.waterSurfaceY, &waterY, SHADER_UNIFORM_FLOAT);
     if (cityLocs.waterSurfaceY != -1 && cityInstancedShader.id != 0)
         SetShaderValue(cityInstancedShader, cityLocs.waterSurfaceY, &waterY, SHADER_UNIFORM_FLOAT);
+    if (shapeLocs.waterSurfaceY != -1 && shapeInstancedReady)
+        SetShaderValue(shapeInstancedShader, shapeLocs.waterSurfaceY, &waterY, SHADER_UNIFORM_FLOAT);
     if (roadLocs.waterSurfaceY != -1 && roadShader.id != 0)
         SetShaderValue(roadShader, roadLocs.waterSurfaceY, &waterY, SHADER_UNIFORM_FLOAT);
 }

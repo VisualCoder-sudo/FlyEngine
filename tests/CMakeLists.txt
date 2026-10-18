@@ -245,6 +245,11 @@ add_test(NAME visual_script COMMAND visual_script_test)
 add_executable(play_snapshot_test play_snapshot_test.cpp)
 target_link_libraries(play_snapshot_test PRIVATE FlyEngineCore FlyRL)
 
+# Nested explorer groups and hide/lock flags round-trip through the scene file. Opens a window, so it is not
+# registered with ctest: build/tests/explorer_tree_test
+add_executable(explorer_tree_test explorer_tree_test.cpp)
+target_link_libraries(explorer_tree_test PRIVATE FlyEngineCore FlyRL)
+
 # The C++ scripting API (fly.hpp) offers what the Visual Script nodes do. Header-only, runs against a fake engine table.
 add_executable(fly_actions_test fly_actions_test.cpp)
 target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
@@ -256,6 +261,22 @@ add_test(NAME fly_actions COMMAND fly_actions_test)
 add_executable(sound_rays_engine_test sound_rays_engine_test.cpp)
 target_link_libraries(sound_rays_engine_test PRIVATE FlyEngineCore FlyRL)
 
+# Foliage placement/save format and the particle pools, with screenshots. Opens a window, so it is not registered with
+# ctest: build/tests/foliage_test
+add_executable(foliage_test foliage_test.cpp)
+target_link_libraries(foliage_test PRIVATE FlyEngineCore FlyRL)
+
+# Writes the sample projects (ScriptingSDK/samples/projects) and loads them back. Run by hand after changing one. Opens a
+# window, so it is not registered with ctest: build/tests/make_sample_projects
+add_executable(make_sample_projects make_sample_projects.cpp)
+target_link_libraries(make_sample_projects PRIVATE FlyEngineCore FlyRL)
+target_compile_definitions(make_sample_projects PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/ScriptingSDK/samples/projects")
+
 # Opens a window, so it is not registered with ctest: build/tests/script_actions_engine_test
 add_executable(script_actions_engine_test script_actions_engine_test.cpp)
 target_link_libraries(script_actions_engine_test PRIVATE FlyEngineCore FlyRL)
+
+# The terrain panel's tabs, driven with injected mouse input. Opens a window, so it is not registered with ctest:
+# build/tests/terrain_tabs_test
+add_executable(terrain_tabs_test terrain_tabs_test.cpp)
+target_link_libraries(terrain_tabs_test PRIVATE FlyEngineCore FlyRL)

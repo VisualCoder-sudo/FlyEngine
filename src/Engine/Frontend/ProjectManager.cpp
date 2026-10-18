@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include "../../../include/Engine/U8Path.hpp"
 
 namespace fs = std::filesystem;
 
@@ -1013,9 +1014,9 @@ Info ShowProjectManager() {
             shownDir = shownDir.substr(1);
         }
         if (shownDir != baseDir) shownDir = "..." + shownDir;
-        DrawRectangleRounded({ 576, 312, 288, 26 }, 0.15f, 4, theme::INPUT);
-        DrawRectangleLinesEx({ 576, 312, 288, 26 }, 1.0f, theme::BORDER);
-        DrawTextU(shownDir.c_str(), 582, 317, 12, theme::TEXT_MUTED);
+        DrawRectangleRounded({ 576, 384, 288, 26 }, 0.15f, 4, theme::INPUT);
+        DrawRectangleLinesEx({ 576, 384, 288, 26 }, 1.0f, theme::BORDER);
+        DrawTextU(shownDir.c_str(), 582, 389, 12, theme::TEXT_MUTED);
 
         // ---- widgets ----
         const bool openClicked = !confirmDelete && Button({ 36, 458, 234, 28 }, "Open");
@@ -1050,14 +1051,23 @@ Info ShowProjectManager() {
         if (!confirmDelete) {
             DrawTextField({ 576, 148, 288, 26 }, nameField);
 
-            if (TemplateCard({ 576, 212, 139, 58 }, "Blank", "Empty scene", chosenTemplate == "Blank")) {
+            if (TemplateCard({ 576, 212, 139, 50 }, "Blank", "Empty scene", chosenTemplate == "Blank")) {
                 chosenTemplate = "Blank";
             }
-            if (TemplateCard({ 725, 212, 139, 58 }, "Sample Scene", "Basic Template", chosenTemplate == "Sample")) {
+            if (TemplateCard({ 725, 212, 139, 50 }, "Sample Scene", "Basic Template", chosenTemplate == "Sample")) {
                 chosenTemplate = "Sample";
             }
+            if (TemplateCard({ 576, 268, 139, 50 }, "Coin Dash", "Platformer course", chosenTemplate == "Coin Dash")) {
+                chosenTemplate = "Coin Dash";
+            }
+            if (TemplateCard({ 725, 268, 139, 50 }, "Physics Playground", "Joints and impacts", chosenTemplate == "Physics Playground")) {
+                chosenTemplate = "Physics Playground";
+            }
+            if (TemplateCard({ 576, 324, 139, 50 }, "Campfire Valley", "Foliage and fire", chosenTemplate == "Campfire Valley")) {
+                chosenTemplate = "Campfire Valley";
+            }
 
-            const bool createClicked = PrimaryButton({ 576, 392, 288, 30 }, "Create Project");
+            const bool createClicked = PrimaryButton({ 576, 424, 288, 30 }, "Create Project");
             const bool enterPressed = nameField.focused && IsKeyPressed(KEY_ENTER);
 
             if (createClicked || enterPressed) {
@@ -1082,7 +1092,7 @@ Info ShowProjectManager() {
         }
 
         if (!errorMsg.empty()) {
-            DrawTextU(errorMsg.c_str(), 576, 436, 12, theme::DANGER);
+            DrawTextU(errorMsg.c_str(), 576, 462, 12, theme::DANGER);
         }
 
         if (confirmDelete) {
@@ -1128,6 +1138,32 @@ Info ShowProjectManager() {
 // CreateProjectFileInternal implementation
 // =========================================================================
 
+// The sample projects shipped with the SDK (ScriptingSDK/samples/projects/<Name>/<Name>.flyproj) double as New Project
+// templates: the template "Coin Dash" is the folder "CoinDash". Empty when the template is not one of them.
+static std::string SampleProjectFile(const std::string& templateName) {
+    std::string folder;
+    for (char c : templateName) if (c != ' ') folder.push_back(c);
+    if (folder.empty() || folder.find_first_of("/\\.") != std::string::npos) return std::string();
+    return platform::ResolveAsset("ScriptingSDK/samples/projects/" + folder + "/" + folder + ".flyproj");
+}
+
+// Copies a sample's files (scripts, terrain, foliage; not its .flyproj) into a new project folder.
+static bool CopySampleFiles(const std::string& sampleProjectFile, const std::string& projectFolder) {
+    std::error_code ec;
+    const fs::path from = fs::path(U8Path(sampleProjectFile)).parent_path();
+    const fs::path to = U8Path(projectFolder);
+    for (fs::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::path rel = fs::relative(it->path(), from, ec);
+        if (ec) return false;
+        if (it->is_directory(ec)) { fs::create_directories(to / rel, ec); continue; }
+        if (it->path().extension() == ".flyproj") continue;
+        fs::create_directories((to / rel).parent_path(), ec);
+        fs::copy_file(it->path(), to / rel, fs::copy_options::overwrite_existing, ec);
+        if (ec) return false;
+    }
+    return !ec;
+}
+
 bool CreateProjectFileInternal(const std::string& name, const std::string& templateName) {
     if (!IsValidProjectName(name)) return false;
 
@@ -1151,6 +1187,18 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
     fields.modified = fields.created;
 
     WriteProjectHeader(out, fields);
+    // A sample template starts from the sample's scene and files.
+    if (const std::string sample = SampleProjectFile(fields.templateName); !sample.empty()) {
+        HeaderFields sampleFields;
+        SceneSource scene;
+        if (!ReadProjectFileAt(sample, sampleFields, scene)) return false;
+        out << scene.rdbuf();
+        out.close();
+        if (!CopySampleFiles(sample, projectFolder)) return false;
+        std::vector<std::string> recent = LoadRecentPaths();
+        PushRecent(projectFolder, recent);
+        return true;
+    }
     // A new project starts with an empty (but valid) scene, so opening it right
     // away goes through the same path as any other project.
     const std::vector<ScatteredObject*> empty;

@@ -8,6 +8,7 @@
 #include "../../../include/Engine/Backend/ModelImport.hpp"
 #include "../../../include/Engine/PhysicsCollision.hpp"
 #include "../../../include/Terrain/BasicTerrain.hpp"
+#include "../../../include/Terrain/Foliage.hpp"
 #include "../../../include/Terrain/Terrain.hpp"
 #include "../../../include/Terrain/TerrainRegistry.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
@@ -88,7 +89,54 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
         const auto& wi = object->waterInteraction;
         file << ' ' << (int)wi.floats << ' ' << (int)wi.foam << ' ' << (int)wi.splash;
     }
+    // v27: further scripts attached to the object (the first one is stored above).
+    file << ' ' << object->extraScripts.size();
+    for (const auto& name : object->extraScripts) file << ' ' << std::quoted(name);
     file << '\n';
+}
+} // namespace
+
+namespace {
+// v26: nested groups + hide/lock flags. One line per model: parent index (-1 = root),
+// hidden, locked; then one line per object: hidden, locked.
+static void WriteModelTreeExtras(std::ostream& file, const std::vector<ScatteredObject*>& objects,
+                                 const std::vector<std::unique_ptr<ModelGroup>>& models) {
+    for (const auto& model : models) {
+        long parentIdx = -1;
+        if (model && model->parent) {
+            for (size_t i = 0; i < models.size(); ++i)
+                if (models[i].get() == model->parent) { parentIdx = (long)i; break; }
+        }
+        file << parentIdx << ' ' << (model && model->hidden ? 1 : 0) << ' ' << (model && model->locked ? 1 : 0);
+        // v28: plugin tag and the plugin's editable source data.
+        file << ' ' << std::quoted(model ? model->pluginTag : std::string()) << ' '
+             << std::quoted(model ? model->pluginData : std::string()) << '\n';
+    }
+    for (auto* object : objects) {
+        if (!object) continue;
+        file << (object->hidden ? 1 : 0) << ' ' << (object->locked ? 1 : 0) << '\n';
+    }
+}
+
+static bool ReadModelTreeExtras(std::istream& file, int version, const std::vector<std::unique_ptr<ScatteredObject>>& loaded,
+                                std::vector<std::unique_ptr<ModelGroup>>& models) {
+    for (auto& model : models) {
+        long parentIdx = -1; int hidden = 0, locked = 0;
+        if (!(file >> parentIdx >> hidden >> locked)) return false;
+        model->hidden = hidden != 0;
+        model->locked = locked != 0;
+        if (version >= 28 && !(file >> std::quoted(model->pluginTag) >> std::quoted(model->pluginData))) return false;
+        if (parentIdx >= 0 && (size_t)parentIdx < models.size() && models[(size_t)parentIdx].get() != model.get() &&
+            !models[(size_t)parentIdx]->IsDescendantOf(model.get()))
+            models[(size_t)parentIdx]->AddChild(model.get());
+    }
+    for (auto& object : loaded) {
+        int hidden = 0, locked = 0;
+        if (!(file >> hidden >> locked)) return false;
+        object->hidden = hidden != 0;
+        object->locked = locked != 0;
+    }
+    return true;
 }
 } // namespace
 
@@ -96,7 +144,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 25\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 28\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -134,6 +182,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
         }
         file << '\n';
     }
+    WriteModelTreeExtras(file, objects, models);
 
     // v12: ocean surfaces - removed
     file << "0\n";
@@ -229,6 +278,12 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                 ui::LogAlways("[terrain] saved %zu BasicTerrain(s) to %s", bts.size(), btFile.c_str());
             } else {
                 ui::LogAlways("[terrain] failed to write %s", btFile.c_str());
+            }
+            // Foliage rules ride along in their own sidecar. With none left, an old file must not outlive them.
+            const std::string folFile = baseDir + "/foliage.cfg";
+            if (!foliage::SaveFile(folFile)) {
+                std::error_code rmEc;
+                std::filesystem::remove(folFile, rmEc);
             }
         }
     }
@@ -419,6 +474,15 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
         object->waterInteraction.foam   = (fo != 0);
         object->waterInteraction.splash = (sp != 0);
     }
+    if (version >= 27) {
+        size_t extra = 0;
+        if (!(file >> extra) || extra > 1024) return false;
+        for (size_t i = 0; i < extra; ++i) {
+            std::string name;
+            if (!(file >> std::quoted(name))) return false;
+            if (!name.empty()) object->extraScripts.push_back(std::move(name));
+        }
+    }
 
     out = std::move(object);
     return true;
@@ -434,7 +498,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 25) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 28) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -526,6 +590,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             }
             models.push_back(std::move(model));
         }
+        if (version >= 26 && !ReadModelTreeExtras(file, version, loaded, models)) return false;
     }
 
     // v12: ocean surfaces - removed, but still consume the data for backward compatibility
@@ -750,6 +815,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             } else {
                 ui::LogAlways("[terrain] loaded %d BasicTerrain(s) from %s", loaded, btFile.c_str());
             }
+            if (loaded > 0) {
+                const int planted = foliage::LoadFile(baseDir + "/foliage.cfg");
+                if (planted > 0) ui::LogAlways("[terrain] foliage rules restored for %d terrain(s)", planted);
+            }
         }
     }
 
@@ -882,7 +951,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 25\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 28\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -903,6 +972,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
         }
         file << '\n';
     }
+    WriteModelTreeExtras(file, objects, models);
 
     if (!file) return false;
     out = file.str();
@@ -949,7 +1019,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 25) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 28) return false;
 
     models.clear();
 
@@ -984,6 +1054,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
             }
             models.push_back(std::move(model));
         }
+        if (version >= 26 && !ReadModelTreeExtras(file, version, loaded, models)) return false;
     }
 
     AttachDeferredModels(deferredModels);

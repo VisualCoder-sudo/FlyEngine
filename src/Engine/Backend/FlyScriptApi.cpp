@@ -8,10 +8,16 @@
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Backend/VisualScript.hpp"
+#include "../../../include/Engine/Backend/PhysicsSimulation.hpp"
+#include "../../../include/Engine/Particles.hpp"
+#include "../../../ScriptingSDK/include/FlyScriptABI.h"
+#include "raymath.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #if defined(_MSC_VER)
     #include <excpt.h>   // EXCEPTION_EXECUTE_HANDLER, for FLY_CATCH
@@ -461,6 +467,133 @@ void FlyNative_PlaySound_Impl(const char* file, float volume) {
     if (ScriptRuntime* rt = ActiveRuntime(); rt && file) vscript::PlaySoundFile(*rt, file, volume);
 }
 
+
+// ---- gameplay queries and effects ----
+
+short FlyNative_RaycastEx_Impl(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, FlyRayHit* out) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (!rt || !out || !rt->GetSimulation()) return 0;
+    const Vector3 dir = { dx, dy, dz };
+    if (Vector3Length(dir) < 1e-6f) return 0;
+    const phys::RaycastHit hit = rt->GetSimulation()->RayCast({ ox, oy, oz }, Vector3Normalize(dir), maxDistance > 0.0f ? maxDistance : 100.0f);
+    if (!hit.hit) return 0;
+    out->px = hit.point.x; out->py = hit.point.y; out->pz = hit.point.z;
+    out->nx = hit.normal.x; out->ny = hit.normal.y; out->nz = hit.normal.z;
+    out->distance = Vector3Distance({ ox, oy, oz }, hit.point);
+    out->object = MakeHandle(hit.object);
+    return 1;
+}
+
+int FlyNative_OverlapSphere_Impl(float cx, float cy, float cz, float radius, unsigned long long* out, int maxCount) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (!rt || !rt->HasWorld() || !out || maxCount <= 0 || !(radius > 0.0f)) return 0;
+    const Vector3 c = { cx, cy, cz };
+    int n = 0;
+    for (ScatteredObject* o : rt->GetObjects()) {
+        if (!o) continue;
+        // The object's bounding ball: half the diagonal of its box.
+        const float r = Vector3Length(*o->GetSizePtr()) * 0.5f;
+        if (Vector3Distance(c, *o->GetPosPtr()) <= radius + r) {
+            out[n++] = MakeHandle(o);
+            if (n >= maxCount) break;
+        }
+    }
+    return n;
+}
+
+int FlyNative_PollTouches_Impl(FlyTouch* out, int maxCount) {
+    ScriptRuntime* rt = ActiveRuntime();
+    phys::Simulation* sim = rt ? rt->GetSimulation() : nullptr;
+    if (!sim || !out || maxCount <= 0) return 0;
+    const auto& begins = sim->GetFrameBeginEvents();
+    const auto& hits = sim->GetFrameHitEvents();
+    int n = 0;
+    for (const phys::ContactEvent& e : begins) {
+        if (n >= maxCount) break;
+        if (!e.objectA && !e.objectB) continue;
+        FlyTouch& t = out[n++];
+        t.a = MakeHandle(e.objectA ? e.objectA : e.objectB);
+        t.b = e.objectA ? MakeHandle(e.objectB) : 0;
+        t.px = e.point.x; t.py = e.point.y; t.pz = e.point.z;
+        t.nx = 0.0f; t.ny = 1.0f; t.nz = 0.0f;
+        t.speed = 0.0f;
+        // The impact report for the same pair carries the real point, normal and speed.
+        for (const phys::ContactEvent& h : hits) {
+            if ((h.objectA == e.objectA && h.objectB == e.objectB) || (h.objectA == e.objectB && h.objectB == e.objectA)) {
+                t.px = h.point.x; t.py = h.point.y; t.pz = h.point.z;
+                t.nx = h.normal.x; t.ny = h.normal.y; t.nz = h.normal.z;
+                t.speed = std::max(t.speed, h.approachSpeed);
+            }
+        }
+    }
+    return n;
+}
+
+std::map<unsigned, b3JointId>& Joints() {
+    static std::map<unsigned, b3JointId> joints;
+    return joints;
+}
+
+unsigned FlyNative_CreateJoint_Impl(int kind, unsigned long long a, unsigned long long b, float ax, float ay, float az, float bx, float by, float bz) {
+    ScriptRuntime* rt = ActiveRuntime();
+    phys::Simulation* sim = rt ? rt->GetSimulation() : nullptr;
+    ScatteredObject* oa = Resolve(a);
+    ScatteredObject* ob = Resolve(b);
+    if (!sim || !sim->IsPlaying() || !oa || !ob || oa == ob) return 0;
+    const Vector3 pa = { ax, ay, az }, pb = { bx, by, bz };
+    b3JointId j{};
+    switch (kind) {
+        case FLY_JOINT_WELD:  j = sim->CreateWeldJoint(oa, ob, pa); break;
+        case FLY_JOINT_HINGE: j = sim->CreateRevoluteJoint(oa, ob, pa); break;
+        case FLY_JOINT_BALL:  j = sim->CreateSphericalJoint(oa, ob, pa); break;
+        case FLY_JOINT_ROPE:  j = sim->CreateDistanceJoint(oa, ob, pa, pb); break;
+        default: return 0;
+    }
+    if (!b3Joint_IsValid(j)) return 0;
+    static unsigned next = 1;
+    auto& joints = Joints();
+    for (auto it = joints.begin(); it != joints.end();) it = b3Joint_IsValid(it->second) ? std::next(it) : joints.erase(it);   // the map outlives Play
+    joints[next] = j;
+    return next++;
+}
+
+void FlyNative_DestroyJoint_Impl(unsigned joint) {
+    ScriptRuntime* rt = ActiveRuntime();
+    phys::Simulation* sim = rt ? rt->GetSimulation() : nullptr;
+    auto& joints = Joints();
+    auto it = joints.find(joint);
+    if (it == joints.end()) return;
+    if (sim && b3Joint_IsValid(it->second)) sim->DestroyJoint(it->second);
+    joints.erase(it);
+}
+
+void FlyNative_GetCamera_Impl(float* out7) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (!rt || !rt->HasWorld() || !out7) return;
+    const Camera3D& c = rt->GetCamera();
+    out7[0] = c.position.x; out7[1] = c.position.y; out7[2] = c.position.z;
+    out7[3] = c.target.x;   out7[4] = c.target.y;   out7[5] = c.target.z;
+    out7[6] = c.fovy;
+}
+
+void FlyNative_SetCamera_Impl(const float* in7) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (!rt || !rt->HasWorld() || !in7) return;
+    Camera3D& c = rt->GetCamera();
+    c.position = { in7[0], in7[1], in7[2] };
+    c.target = { in7[3], in7[4], in7[5] };
+    if (in7[6] > 1.0f && in7[6] < 170.0f) c.fovy = in7[6];
+}
+
+void FlyNative_EmitParticles_Impl(const char* preset, float x, float y, float z, float dx, float dy, float dz, int count, float scale) {
+    fx::Preset p;
+    if (fx::PresetFromName(preset, p)) fx::Emit(p, { x, y, z }, { dx, dy, dz }, count, scale);
+}
+unsigned FlyNative_StartEmitter_Impl(const char* preset, float x, float y, float z, float dx, float dy, float dz, float scale) {
+    fx::Preset p;
+    return fx::PresetFromName(preset, p) ? (unsigned)fx::StartEmitter(p, { x, y, z }, { dx, dy, dz }, scale) : 0u;
+}
+
 } // namespace impl
 
 extern "C" {
@@ -630,6 +763,45 @@ FLY_API void FlyNative_ShowText(const char* text, const char* position, float se
     FLY_TRY { vscript::ShowText(text ? text : "", position ? position : "", seconds); } FLY_CATCH()
 }
 FLY_API float FlyNative_TimeSincePlay(void) { FLY_TRY { return vscript::TimeSincePlay(); } FLY_CATCH(return 0.0f;) }
+
+FLY_API short FlyNative_GamepadAvailable(int gamepad) { FLY_TRY { return vscript::IsGamepadAvailable(gamepad) ? 1 : 0; } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_GamepadButtonDown(int gamepad, const char* buttonName) {
+    FLY_TRY { return buttonName && vscript::IsGamepadButtonHeld(gamepad, buttonName) ? 1 : 0; } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_GamepadButtonPressed(int gamepad, const char* buttonName) {
+    FLY_TRY { return buttonName && vscript::WasGamepadButtonPressed(gamepad, buttonName) ? 1 : 0; } FLY_CATCH(return 0;)
+}
+FLY_API float FlyNative_GamepadAxis(int gamepad, const char* axisName) {
+    FLY_TRY { return axisName ? vscript::GamepadAxisValue(gamepad, axisName) : 0.0f; } FLY_CATCH(return 0.0f;)
+}
+
+
+FLY_API short FlyNative_RaycastEx(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, FlyRayHit* out) {
+    FLY_TRY { return impl::FlyNative_RaycastEx_Impl(ox, oy, oz, dx, dy, dz, maxDistance, out); } FLY_CATCH(return 0;)
+}
+FLY_API int FlyNative_OverlapSphere(float cx, float cy, float cz, float radius, unsigned long long* out, int maxCount) {
+    FLY_TRY { return impl::FlyNative_OverlapSphere_Impl(cx, cy, cz, radius, out, maxCount); } FLY_CATCH(return 0;)
+}
+FLY_API int FlyNative_PollTouches(FlyTouch* out, int maxCount) { FLY_TRY { return impl::FlyNative_PollTouches_Impl(out, maxCount); } FLY_CATCH(return 0;) }
+FLY_API unsigned FlyNative_CreateJoint(int kind, unsigned long long a, unsigned long long b, float ax, float ay, float az, float bx, float by, float bz) {
+    FLY_TRY { return impl::FlyNative_CreateJoint_Impl(kind, a, b, ax, ay, az, bx, by, bz); } FLY_CATCH(return 0;)
+}
+FLY_API void FlyNative_DestroyJoint(unsigned joint) { FLY_TRY { impl::FlyNative_DestroyJoint_Impl(joint); } FLY_CATCH() }
+FLY_API void FlyNative_GetCamera(float* out7) { FLY_TRY { impl::FlyNative_GetCamera_Impl(out7); } FLY_CATCH() }
+FLY_API void FlyNative_SetCamera(const float* in7) { FLY_TRY { impl::FlyNative_SetCamera_Impl(in7); } FLY_CATCH() }
+FLY_API void FlyNative_EmitParticles(const char* preset, float x, float y, float z, float dx, float dy, float dz, int count, float scale) {
+    FLY_TRY { impl::FlyNative_EmitParticles_Impl(preset, x, y, z, dx, dy, dz, count, scale); } FLY_CATCH()
+}
+FLY_API unsigned FlyNative_StartEmitter(const char* preset, float x, float y, float z, float dx, float dy, float dz, float scale) {
+    FLY_TRY { return impl::FlyNative_StartEmitter_Impl(preset, x, y, z, dx, dy, dz, scale); } FLY_CATCH(return 0;)
+}
+FLY_API void FlyNative_MoveEmitter(unsigned emitter, float x, float y, float z, float dx, float dy, float dz) {
+    FLY_TRY { fx::MoveEmitter((int)emitter, { x, y, z }, { dx, dy, dz }); } FLY_CATCH()
+}
+FLY_API void FlyNative_StopEmitter(unsigned emitter) { FLY_TRY { fx::StopEmitter((int)emitter); } FLY_CATCH() }
+FLY_API void FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds) {
+    FLY_TRY { fx::Decal({ x, y, z }, { nx, ny, nz }, size, { r, g, b, a }, seconds); } FLY_CATCH()
+}
 
 // FindObject and GetSelf
 FLY_API unsigned long long FlyNative_FindObject(const char* name) {

@@ -10,6 +10,7 @@
 #include "../../../include/CPluginAPI.h"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Frontend/PluginHost.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Scripts/ScriptCompiler.hpp"
 #include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
@@ -197,6 +198,22 @@ FlyApi MakeScriptApi() {
     a.SetMasterVolume = FlyNative_SetMasterVolume;
     a.ShowText = FlyNative_ShowText;
     a.TimeSincePlay = FlyNative_TimeSincePlay;
+    a.GamepadAvailable = FlyNative_GamepadAvailable;
+    a.GamepadButtonDown = FlyNative_GamepadButtonDown;
+    a.GamepadButtonPressed = FlyNative_GamepadButtonPressed;
+    a.GamepadAxis = FlyNative_GamepadAxis;
+    a.RaycastEx = FlyNative_RaycastEx;
+    a.OverlapSphere = FlyNative_OverlapSphere;
+    a.PollTouches = FlyNative_PollTouches;
+    a.CreateJoint = FlyNative_CreateJoint;
+    a.DestroyJoint = FlyNative_DestroyJoint;
+    a.GetCamera = FlyNative_GetCamera;
+    a.SetCamera = FlyNative_SetCamera;
+    a.EmitParticles = FlyNative_EmitParticles;
+    a.StartEmitter = FlyNative_StartEmitter;
+    a.MoveEmitter = FlyNative_MoveEmitter;
+    a.StopEmitter = FlyNative_StopEmitter;
+    a.SpawnDecal = FlyNative_SpawnDecal;
     return a;
 }
 
@@ -251,10 +268,33 @@ NativeScriptHost::NativeScriptHost()
     SetPlayStateHook([](bool playing) {
         if (g_activeHost) g_activeHost->SetPlayActive(playing);
     });
+    pluginhost::SetEventSink([this](pluginhost::SceneEvent e) { DispatchSceneEvent(e); });
+}
+
+// The scene was swapped under the plugins (load, undo/redo, stop-play): their object and group handles are stale.
+void NativeScriptHost::DispatchSceneEvent(pluginhost::SceneEvent e) {
+    CP_Internal_InvalidateHandles();
+    CP_Event event{};
+    event.type = (e == pluginhost::SceneEvent::Loaded) ? CP_EVENT_SCENE_LOADED : CP_EVENT_UNDO_REDO;
+    for (auto& plugin : plugins) {
+        if (plugin->loaded && plugin->entry && plugin->entry->on_event) plugin->entry->on_event(&event);
+    }
+}
+
+// Editor viewport pass for plugin tools. Not in Play, and not in the player (no scene host there).
+void NativeScriptHost::DrawOverlay3D() {
+    if (!pluginhost::IsEditor() || (m_runtime && m_runtime->IsSimPlaying())) return;
+    for (auto& plugin : plugins) {
+        // on_draw_overlay3d was added to CP_PluginEntry in 1.2: older plugins have a shorter struct.
+        if (plugin->loaded && plugin->entry && CP_API_VersionAtLeast(plugin->entry->api_version, CP_API_Version{1, 2, 0}) &&
+            plugin->entry->on_draw_overlay3d)
+            plugin->entry->on_draw_overlay3d();
+    }
 }
 
 NativeScriptHost::~NativeScriptHost() {
     Shutdown();
+    pluginhost::SetEventSink(nullptr);
     if (g_activeHost == this) {
         g_activeHost = nullptr;
         SetPlayStateHook(nullptr);
@@ -363,6 +403,7 @@ void NativeScriptHost::Shutdown() {
 
     for (auto it = plugins.rbegin(); it != plugins.rend(); ++it) {
         auto& plugin = *it;
+        if (plugin->entry) pluginhost::RemoveModesOf(plugin->entry);   // before its code can go away
         if (plugin->loaded && plugin->entry && plugin->entry->on_unload) {
             plugin->entry->on_unload();
         }
@@ -436,7 +477,9 @@ bool NativeScriptHost::LoadPlugin(const std::string& pluginPath) {
     CP_Internal_SetScriptRuntime(m_runtime.get());
     
     if (plugin->entry->on_load) {
+        pluginhost::SetLoadingOwner(plugin->entry);
         int result = plugin->entry->on_load(CP_GetEngineAPI());
+        pluginhost::SetLoadingOwner(nullptr);
         if (result != 0) {
             plugin->loadFailed = true;
             plugin->errorMessage = "on_load returned error code: " + std::to_string(result);
@@ -468,7 +511,9 @@ bool NativeScriptHost::LoadStaticPlugin(const char* name, CP_PluginEntry* (*getE
     CP_Internal_SetEngine(m_engine);
     CP_Internal_SetScriptRuntime(m_runtime.get());
     if (plugin->entry->on_load) {
+        pluginhost::SetLoadingOwner(plugin->entry);
         const int result = plugin->entry->on_load(CP_GetEngineAPI());
+        pluginhost::SetLoadingOwner(nullptr);
         if (result != 0) {
             ui::LogAlways("[NativeScriptHost] ERROR: built-in plugin %s on_load failed with code %d", plugin->name.c_str(), result);
             return false;
@@ -484,6 +529,7 @@ void NativeScriptHost::UnloadPlugin(const std::string& pluginName) {
     for (auto it = plugins.begin(); it != plugins.end(); ++it) {
         if ((*it)->name == pluginName) {
             auto& plugin = *it;
+            if (plugin->entry) pluginhost::RemoveModesOf(plugin->entry);   // before its code can go away
             if (plugin->loaded && plugin->entry && plugin->entry->on_unload) {
                 plugin->entry->on_unload();
             }
@@ -509,6 +555,7 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
     
     ui::LogAlways("[NativeScriptHost] Reloading plugin: %s", pluginName.c_str());
     
+    if (plugin->entry) pluginhost::RemoveModesOf(plugin->entry);   // before its code can go away
     if (plugin->loaded && plugin->entry && plugin->entry->on_unload) {
         plugin->entry->on_unload();
     }
@@ -552,7 +599,9 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
     CP_Internal_SetScriptRuntime(m_runtime.get());
     
     if (plugin->entry->on_load) {
+        pluginhost::SetLoadingOwner(plugin->entry);
         int result = plugin->entry->on_load(CP_GetEngineAPI());
+        pluginhost::SetLoadingOwner(nullptr);
         if (result != 0) {
             plugin->loadFailed = true;
             plugin->errorMessage = "on_load failed after reload: " + std::to_string(result);
@@ -727,7 +776,7 @@ void NativeScriptHost::FinishBuild() {
 
     for (const auto& rr : restart) {
         if (rr.object && !ObjectAlive(rr.object)) continue;
-        StartScript(rr.className, rr.object, rr.standaloneIndex);
+        StartScript(rr.className, rr.object, rr.standaloneIndex, false);
     }
     scriptCompiler::RemoveStaleLibraries(m_projectPath, m_scriptLibPath);
     SyncStandaloneScripts();
@@ -841,7 +890,7 @@ void NativeScriptHost::SyncStandaloneScripts() {
         // as standalone too would run them twice.
         if (!listed && m_runtime->HasWorld()) {
             for (auto* obj : m_runtime->GetObjects())
-                if (obj && obj->script == name) { listed = true; break; }
+                if (obj && obj->HasScript(name)) { listed = true; break; }
         }
         if (listed) continue;
         ScriptRuntime::StandaloneScript s;
@@ -858,7 +907,7 @@ bool NativeScriptHost::ObjectAlive(ScatteredObject* obj) const {
     return std::find(objects.begin(), objects.end(), obj) != objects.end();
 }
 
-bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex) {
+bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex, bool replace) {
     if (className.empty()) return false;
     if (vscript::Has(className) && (!m_module || !FindClass(className))) return false;   // a visual-only script
     if (!m_module) {
@@ -873,9 +922,11 @@ bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject
         return false;
     }
 
-    // One script per object / standalone slot: replace whatever ran there. (Snippets have neither: several can run.)
-    if (obj) StopObjectScriptOn(obj);
-    else if (standaloneIndex >= 0) StopStandaloneScriptAt(standaloneIndex);
+    // One script per standalone slot: replace whatever ran there. An object can run several scripts, so the caller
+    // stops its old ones once (replace) and then starts each. (Snippets have neither: several can run.)
+    if (obj) {
+        if (replace) StopObjectScriptOn(obj);
+    } else if (standaloneIndex >= 0) StopStandaloneScriptAt(standaloneIndex);
 
     void* instance = cls->create(cls);
     if (!instance) return false;
@@ -916,7 +967,10 @@ void NativeScriptHost::TickScripts(float dt) {
 
 bool NativeScriptHost::StartObjectScriptOn(ScatteredObject* obj) {
     if (!obj || obj->script.empty()) return false;
-    return StartScript(obj->script, obj, -1);
+    StopObjectScriptOn(obj);
+    bool any = false;
+    for (const auto& name : obj->AllScripts()) any |= StartScript(name, obj, -1, false);
+    return any;
 }
 
 void NativeScriptHost::StopObjectScriptOn(ScatteredObject* obj) {

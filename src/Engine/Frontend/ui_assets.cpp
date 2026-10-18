@@ -594,12 +594,14 @@ static void DrawAssetBrowserGrid() {
 static void DrawAssetBrowserToolbar() {
     ImTextureID upTex = g_terrainToolIcons[TTOOLICON_LOWER].id
         ? static_cast<ImTextureID>(GetTextureImGuiId(g_terrainToolIcons[TTOOLICON_LOWER])) : static_cast<ImTextureID>(0);
-    if (upTex) {
-        ImGui::Image(upTex, ImVec2(12.0f, 12.0f));
-        ImGui::SameLine(0.0f, 4.0f);
-    }
-    if (ImGui::Button("##assetBreadcrumbBtn", ImVec2(upTex ? 22.0f : 26.0f, 24.0f))) {
+    const float frameH = ImGui::GetFrameHeight();
+    if (ImGui::Button("##assetBreadcrumbBtn", ImVec2(frameH + 4.0f, frameH))) {
         ImGui::OpenPopup("##AssetBreadcrumb");
+    }
+    if (upTex) {
+        const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+        const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+        ImGui::GetWindowDrawList()->AddImage(upTex, ImVec2(c.x - 6.0f, c.y - 6.0f), ImVec2(c.x + 6.0f, c.y + 6.0f));
     }
     if (!g_assetPath.empty() && ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_FSPATH")) {
@@ -639,6 +641,12 @@ static void DrawAssetBrowserToolbar() {
     }
 
     ImGui::SameLine();
+    if (ImGui::Button("Import")) {
+        BeginChooseModelOpenPath(::project::GetCurrentProject().path);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Import a 3D model (or drop files onto the browser)");
+
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 190.0f);
     bool submitted = ImGui::InputText("##assetPathBar", g_assetPathBuf, sizeof(g_assetPathBuf),
                                       ImGuiInputTextFlags_EnterReturnsTrue);
@@ -675,7 +683,10 @@ static void DrawAssetBrowserToolbar() {
     ImGui::SameLine();
     ImTextureID searchTex = g_assetSearchIcon.id ? static_cast<ImTextureID>(GetTextureImGuiId(g_assetSearchIcon)) : static_cast<ImTextureID>(0);
     if (searchTex) {
-        ImGui::Image(searchTex, ImVec2(14.0f, 14.0f));
+        ImGui::Dummy(ImVec2(14.0f, frameH));
+        const ImVec2 mn = ImGui::GetItemRectMin();
+        const float y = mn.y + (frameH - 14.0f) * 0.5f;
+        ImGui::GetWindowDrawList()->AddImage(searchTex, ImVec2(mn.x, y), ImVec2(mn.x + 14.0f, y + 14.0f));
         ImGui::SameLine(0.0f, 4.0f);
     }
     ImGui::SetNextItemWidth(150.0f);
@@ -871,7 +882,7 @@ static void DrawVisualScriptTab() {
     }
     if (g_sceneObjects)
         for (auto* o : *g_sceneObjects)
-            if (o && !o->script.empty()) scene.existingScripts.push_back(scriptLauncher::MakeClassName(o->script));
+            if (o) for (const auto& sc : o->AllScripts()) scene.existingScripts.push_back(scriptLauncher::MakeClassName(sc));
     vscript::DrawEditor(scene);
 }
 

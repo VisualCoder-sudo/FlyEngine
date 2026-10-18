@@ -8,6 +8,7 @@
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/Terrain/BasicTerrain.hpp"
+#include "../../../include/Terrain/Foliage.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Graphics.hpp"
@@ -26,6 +27,7 @@
 #include "raymath.h"
 #include "imgui.h"
 #include "rlimgui.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
@@ -49,7 +51,7 @@ Rectangle g_terrainToolDropdownListRect = { 0 };
 int g_terrainToolDropdownActiveTool = -1;
 
 // ---------------------------------------------------------------------------
-static bool g_terrainGenMode = false; // false = Sculpt tab, true = Generate tab
+static int g_terrainTab = 0; // 0 = Sculpt tab, 1 = Generate tab, 2 = Foliage tab
 static float g_terrainPanelScrollY = 0.0f;
 static float g_terrainPanelContentHeight = 0.0f; // measured at the end of the previous frame's draw
 bool g_terrainToolDropdownOpen = false;
@@ -302,7 +304,7 @@ void DrawTerrainToolPanel() {
     }
 
     // Safety: if a terrain is selected but tool is None, default to Raise
-    if ((useChunked || tBasic) && br.tool == BasicTerrain::Tool::None) {
+    if ((useChunked || tBasic) && br.tool == BasicTerrain::Tool::None && g_terrainTab == 0) {
         br.tool = BasicTerrain::Tool::Raise;
     }
 
@@ -457,13 +459,13 @@ void DrawTerrainToolPanel() {
 
     // Sculpt / Generate tabs
     {
-        const char* tabNames[2] = { "Sculpt", "Generate" };
+        const char* tabNames[3] = { "Sculpt", "Generate", "Foliage" };
         float tabGap = 6.0f;
-        float tabW = (innerW - tabGap) * 0.5f;
+        float tabW = (innerW - tabGap * 2.0f) / 3.0f;
         float tabH = 26.0f;
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < 3; i++) {
             Rectangle tr = { x + i * (tabW + tabGap), y, tabW, tabH };
-            bool sel = (g_terrainGenMode == (i == 1));
+            bool sel = (g_terrainTab == i);
             bool hov = CheckCollisionPointRec(mouse, tr);
             float ht3 = HoverProgress(static_cast<uint64_t>(9600u + i), hov);
             Color bg = sel ? theme::ACCENT_SOFT : theme::BG_WIDGET;
@@ -474,16 +476,33 @@ void DrawTerrainToolPanel() {
             DrawTextArial(tabNames[i], tr.x + (tr.width - tw3) * 0.5f, tr.y + 6.0f, 12.0f,
                           sel ? theme::TEXT : theme::TEXT_MUTED);
             if (hov) MarkHand();
-            if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) g_terrainGenMode = (i == 1);
+            if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) g_terrainTab = i;
         }
         y += tabH + 10.0f;
     }
 
     // The region-box preview in the viewport only makes sense while the
     // Generate tab is actually open for this terrain.
-    if (tBasic) tBasic->showGenBox = g_terrainGenMode;
+    if (tBasic) tBasic->showGenBox = (g_terrainTab == 1);
+    if (g_terrainTab != 2 || !tBasic) foliage::SetPaintTarget(nullptr, -1);   // the foliage brush only lives on its tab
+    // Each tab owns its own brush: off the Sculpt tab the sculpt tool is put away (and comes back with the tab), so a
+    // click only ever does what the open tab says.
+    {
+        static BasicTerrain::Tool savedTool = BasicTerrain::Tool::None;
+        static bool toolPutAway = false;
+        BasicTerrain::Brush& sb = BasicTerrain::GetBrush();
+        if (g_terrainTab != 0) {
+            if (!toolPutAway) { savedTool = sb.tool; toolPutAway = true; }
+            sb.tool = BasicTerrain::Tool::None;
+            br.tool = BasicTerrain::Tool::None;   // finishPanel() writes br back
+        } else if (toolPutAway) {
+            sb.tool = savedTool;
+            br.tool = savedTool;
+            toolPutAway = false;
+        }
+    }
 
-    if (g_terrainGenMode) {
+    if (g_terrainTab == 1) {
         // ================= GENERATE TAB =================
         bool hasTerrain = (tBasic != nullptr || tChunked != nullptr);
         if (!hasTerrain) {
@@ -674,6 +693,131 @@ void DrawTerrainToolPanel() {
         }
 
         // Divider between halves
+        DrawLine(static_cast<int>(panelRec.x + pad), static_cast<int>(y),
+                 static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
+        y += 12.0f;
+    } else if (g_terrainTab == 2) {
+        // ================= FOLIAGE TAB =================
+        if (!tBasic) {
+            DrawTextArial("Select or spawn a Basic Terrain first.", x, y + 4.0f, 12.0f, theme::TEXT_MUTED);
+            y += 28.0f;
+        } else {
+            foliage::Settings& fs = foliage::For(tBasic);
+            const foliage::Settings fsBefore = fs;
+            DrawTextArial("ADD a plant, then drag on the terrain to paint it.", x, y, 11.0f, theme::TEXT_DIM);
+            y += 18.0f;
+            if (TerrainCheckbox(x, y, "Foliage on", fs.enabled, 9700u)) fs.enabled = !fs.enabled;
+            y += 26.0f;
+            TerrainSlider("Wind", x, y, innerW, fs.wind, 0.0f, 2.0f, "%.2f", 9701u);
+            y += 26.0f;
+            TerrainSlider("Density", x, y, innerW, fs.density, 0.1f, 6.0f, "x%.2f", 9702u);
+            y += 26.0f;
+            TerrainSlider("Draw distance", x, y, innerW, fs.distance, 0.25f, 3.0f, "x%.2f", 9703u);
+            y += 32.0f;
+
+            auto smallButton = [&](Rectangle r, const char* label, uint64_t key) {
+                bool h = CheckCollisionPointRec(mouse, r);
+                float t = HoverProgress(key, h);
+                DrawRectangleRounded(r, 0.18f, 4, Mix(theme::ACCENT_SOFT, theme::ACCENT_HOVER, t));
+                DrawRectangleLinesEx(r, h ? 2.0f : 1.0f, h ? theme::ACCENT : theme::BORDER);
+                float lw = MeasureTextArial(label, 11.0f);
+                DrawTextArial(label, r.x + (r.width - lw) * 0.5f, r.y + (r.height - 11.0f) * 0.5f - 1.0f, 11.0f, h ? theme::TEXT : theme::TEXT_MUTED);
+                if (h) MarkHand();
+                return h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+            };
+
+            DrawTextArial("ADD", x, y, 11.0f, theme::TEXT_DIM);
+            y += 16.0f;
+            {
+                const float gap = 5.0f, bw = (innerW - gap * 2.0f) / 3.0f;
+                for (int k = 0; k < (int)foliage::Kind::Count; k++) {
+                    const float bx = x + (float)(k % 3) * (bw + gap);
+                    const float by = y + (float)(k / 3) * 28.0f;
+                    if (smallButton({ bx, by, bw, 24.0f }, foliage::KindName((foliage::Kind)k), 9710u + (uint64_t)k)) {
+                        // New plants start unpainted: nothing grows until you paint it with the brush.
+                        foliage::Rule nr = foliage::DefaultRule((foliage::Kind)k);
+                        nr.painted = true;
+                        fs.rules.push_back(nr);
+                        const int added = (int)fs.rules.size() - 1;
+                        foliage::FillMask(tBasic, added, false);
+                        foliage::SetPaintTarget(tBasic, added);
+                        BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None;
+                        ui::SetSelectedTerrain(tBasic);
+                    }
+                }
+                y += 58.0f;
+            }
+
+            int removeIndex = -1;
+            for (size_t ri = 0; ri < fs.rules.size(); ri++) {
+                foliage::Rule& r = fs.rules[ri];
+                const uint64_t base = 9800u + (uint64_t)ri * 16u;
+                DrawLine(static_cast<int>(x), static_cast<int>(y), static_cast<int>(x + innerW), static_cast<int>(y), theme::DIVIDER);
+                y += 8.0f;
+                if (TerrainCheckbox(x, y, foliage::KindName(r.kind), r.enabled, base)) r.enabled = !r.enabled;
+                if (smallButton({ x + innerW - 64.0f, y - 2.0f, 64.0f, 22.0f }, "Remove", base + 1u)) removeIndex = (int)ri;
+                y += 28.0f;
+                if (!r.enabled) continue;
+                {
+                    const float gap = 5.0f, bw = (innerW - gap) / 2.0f;
+                    if (smallButton({ x, y, bw, 22.0f }, r.painted ? "Grow on: Brush" : "Grow on: Layer", base + 10u)) {
+                        r.painted = !r.painted;
+                        if (!r.painted && foliage::PaintTarget(tBasic)) foliage::SetPaintTarget(nullptr, -1);
+                    }
+                    if (r.painted) {
+                        int target = -1;
+                        const bool on = foliage::PaintTarget(tBasic, &target) && target == (int)ri;
+                        if (smallButton({ x + bw + gap, y, bw, 22.0f }, on ? "Painting: ON" : "Paint", base + 11u)) {
+                            foliage::SetPaintTarget(on ? nullptr : tBasic, on ? -1 : (int)ri);
+                            if (!on) { BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None; ui::SetSelectedTerrain(tBasic); }
+                        }
+                    }
+                    y += 28.0f;
+                }
+                if (r.painted) {
+                    auto& pb = br;   // the shared brush sliders (the panel writes br back at the end)
+                    const float gap = 5.0f, bw = (innerW - gap) / 2.0f;
+                    if (smallButton({ x, y, bw, 22.0f }, "Fill all", base + 12u)) foliage::FillMask(tBasic, (int)ri, true);
+                    if (smallButton({ x + bw + gap, y, bw, 22.0f }, "Clear all", base + 13u)) foliage::FillMask(tBasic, (int)ri, false);
+                    y += 28.0f;
+                    TerrainSlider("Brush size", x, y, innerW, pb.radius, 2.0f, 100.0f, "%.0f m", base + 14u); y += 26.0f;
+                    TerrainSlider("Brush strength", x, y, innerW, pb.strength, 5.0f, 100.0f, "%.0f", base + 15u); y += 26.0f;
+                    TerrainSlider("Brush hardness", x, y, innerW, pb.hardness, 0.0f, 1.0f, "%.2f", 12000u + (uint64_t)ri); y += 26.0f;
+                    DrawTextArial("Drag on the terrain. Ctrl erases, Shift paints faster.", x, y, 10.0f, theme::TEXT_DIM);
+                    y += 18.0f;
+                } else {
+                    float layerF = (float)r.layer;
+                    TerrainSlider("Layer", x, y, innerW, layerF, -1.0f, 3.0f, "%.0f", base + 2u); r.layer = (int)std::lround(layerF); y += 26.0f;
+                    TerrainSlider("Painted", x, y, innerW, r.minWeight, 0.0f, 1.0f, "%.2f", base + 3u); y += 26.0f;
+                }
+                TerrainSlider("Density", x, y, innerW, r.density, 0.0f, r.kind == foliage::Kind::Grass ? 3000.0f : (r.kind == foliage::Kind::Flowers ? 300.0f : 60.0f), "%.1f", base + 4u); y += 26.0f;
+                TerrainSlider("Min size", x, y, innerW, r.minScale, 0.2f, 3.0f, "%.2f", base + 5u); y += 26.0f;
+                TerrainSlider("Max size", x, y, innerW, r.maxScale, 0.2f, 4.0f, "%.2f", base + 6u); y += 26.0f;
+                if (r.maxScale < r.minScale) r.maxScale = r.minScale;
+                TerrainSlider("Max slope", x, y, innerW, r.maxSlope, 0.0f, 90.0f, "%.0f deg", base + 7u); y += 26.0f;
+                TerrainSlider("Distance", x, y, innerW, r.viewDistance, 10.0f, 2000.0f, "%.0f m", base + 8u); y += 26.0f;
+                TerrainSlider("Fade start", x, y, innerW, r.fadeStart, 0.0f, 0.95f, "%.2f", 12100u + (uint64_t)ri * 2u); y += 26.0f;
+                TerrainSlider("Far keep", x, y, innerW, r.farKeep, 0.0f, 1.0f, "%.2f", 12101u + (uint64_t)ri * 2u); y += 26.0f;
+                TerrainSlider("LOD 1 at", x, y, innerW, r.lod1, 0.0f, 1.0f, "%.2f", 12200u + (uint64_t)ri * 2u); y += 26.0f;
+                TerrainSlider("LOD 2 at", x, y, innerW, r.lod2, 0.0f, 1.0f, "%.2f", 12201u + (uint64_t)ri * 2u); y += 26.0f;
+                if (r.lod2 < r.lod1) r.lod2 = r.lod1;
+                float seedF = (float)r.seed;
+                TerrainSlider("Seed", x, y, innerW, seedF, 0.0f, 999.0f, "%.0f", base + 9u); r.seed = (int)seedF; y += 30.0f;
+            }
+            if (removeIndex >= 0) { foliage::SetPaintTarget(nullptr, -1); fs.rules.erase(fs.rules.begin() + removeIndex); }
+            if (!fs.rules.empty()) {
+                const std::string total = std::to_string(foliage::InstanceCount()) + " plants placed, " + std::to_string(foliage::DrawnCount()) + " drawn";
+                DrawTextArial(total.c_str(), x, y, 11.0f, theme::TEXT_DIM);
+                y += 20.0f;
+            }
+
+            // Rules changed: the plants are placed again. (Dragging a slider re-places them every frame, which is cheap:
+            // only the cells near the camera are rebuilt.)
+            bool changed = fs.rules.size() != fsBefore.rules.size() || fs.enabled != fsBefore.enabled || fs.density != fsBefore.density;
+            for (size_t i = 0; !changed && i < fs.rules.size(); i++) changed = !foliage::SameRule(fs.rules[i], fsBefore.rules[i]);
+            if (changed) foliage::Invalidate(tBasic);
+        }
+
         DrawLine(static_cast<int>(panelRec.x + pad), static_cast<int>(y),
                  static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
         y += 12.0f;
@@ -874,7 +1018,7 @@ void DrawTerrainToolPanel() {
     DrawLine(static_cast<int>(panelRec.x + pad), static_cast<int>(y),
              static_cast<int>(panelRec.x + panelRec.width - pad), static_cast<int>(y), theme::DIVIDER);
     y += 12.0f;
-    } // end Sculpt tab (g_terrainGenMode == false)
+    } // end Sculpt tab (g_terrainTab == 0)
 
     // ================= BOTTOM HALF: PROPERTIES =================
     DrawTextArial("PROPERTIES", x, y, 11.0f, theme::TEXT_DIM);

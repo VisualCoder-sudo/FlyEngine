@@ -34,7 +34,7 @@ everywhere. You can also build only OpenGL with
 
 #### Linux
 
-Debian/Ubuntu:
+Debian/Ubuntu Linux:
 
 ```sh
 sudo apt install build-essential cmake ninja-build pkg-config \
@@ -45,7 +45,7 @@ sudo apt install build-essential cmake ninja-build pkg-config \
 sudo apt install vulkan-validationlayers
 ```
 
-Arch:
+Arch Linux:
 
 ```sh
 sudo pacman -S base-devel cmake ninja pkgconf \
@@ -105,7 +105,7 @@ Flyengine /path/to/proj.flyproj
 
 ### Where the engine finds its data
 
-Shaders are compiled into the binary. The binary locates `assets/` on its own, so it works from any
+Shaders are compiled into the binary. The binary locates the `assets/` directory on its own, so it works from any
 working directory - including a `.desktop` launcher, which starts with `$HOME`
 as the CWD. The first of these that contains the file wins:
 
@@ -165,8 +165,8 @@ installed, because the data-root search is relative to the executable.
 
 ## Wayland
 
-sokol_app (the windowing layer) talks X11. Under a Wayland session this works
-through **XWayland**, which GNOME, KDE Plasma and Sway enable by default. If
+sokol_app (the windowing layer) talks to X11, Under a Wayland session this works
+through **XWayland**, which GNOME, KDE Plasma and Sway Desktop Environemnts enable by default. If
 your session has XWayland disabled, enable it.
 
 There is no native Wayland backend to select; this is a property of
@@ -176,7 +176,7 @@ sokol_app's Linux backend, not of Flyengine.
 
 ## Platform differences
 
-Everything below is deliberate, not unfinished.
+Everything below is on purpose, not unfinished.
 
 ### File dialogs
 
@@ -243,6 +243,27 @@ belongs to; a playtest puts the whole Lighting section back when it stops.
 
 The editor console (`` ` ``) takes commands such as `Cube.Position = (0, 5, 0)`,
 `Physics.Gravity`, `Environment.Rain = 0.6`, `run Spinner`, `scripts` and `rebuild`; type `help`.
+
+### Gameplay API
+
+Ray casts with hit info, sphere overlaps, touch events, joints, camera control, particles, decals, tweens and events.
+See [docs/ScriptAPI.md](docs/ScriptAPI.md), and [docs/FirstGame.md](docs/FirstGame.md) for a tutorial.
+
+### Sample projects
+
+`ScriptingSDK/samples/projects/` holds Coin Dash, Physics Playground and Campfire Valley. Each is offered as a template
+in the New Project dialog, which copies it (scene, scripts and terrain). `make_sample_projects` regenerates them.
+
+### Particles
+
+Smoke, fire, sparks, dust, splash, debris and steam, drawn as soft billboards from a 6000 particle pool. Scripts start
+them with `fly::Emit` / `fly::Emitter`; hard physics impacts add dust and scuffs on their own.
+
+### Foliage
+
+Terrain panel, **Foliage** tab: rules grow grass, flowers, bushes, trees, pines and rocks on a painted layer, with
+density, size, slope and altitude limits. Placement is procedural per cell, drawn instanced with wind sway and LOD,
+and saved as `foliage.cfg`.
 
 ### Fonts
 
@@ -695,10 +716,6 @@ should reach for anything platform-specific. It covers:
 * [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut
 * [ufbx](https://github.com/ufbx/ufbx) by Ulti
 * [cglm](https://github.com/recp/cglm) by Recep Aslantas
-* [TinyGLTF](https://github.com/syoyo/tinygltf) by Syoyo Fujita and contributors
-* [meshoptimizer](https://github.com/zeux/meshoptimizer) by Arseny Kapoulkine
-* [KTX-Software](https://github.com/KhronosGroup/KTX-Software) by The Khronos Group
-* [glslang](https://github.com/KhronosGroup/glslang) by The Khronos Group and contributors
 * [stb](https://github.com/nothings/stb) by Sean Barrett and contributors
 * [miniaudio](https://github.com/mackron/miniaudio) and dr_libs by David Reid
 * [QOI](https://github.com/phoboslab/qoi) by Dominic Szablewski

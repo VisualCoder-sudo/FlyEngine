@@ -36,6 +36,32 @@ extern "C" {
 
 typedef unsigned long long FlyHandle; /* 0 = none */
 
+/* Where a ray hit: the point, the surface's outward normal, the distance from the origin, and the object (0 when it
+ * hit terrain, the city or something else that is not a scene object). */
+typedef struct FlyRayHit {
+    float px, py, pz;
+    float nx, ny, nz;
+    float distance;
+    FlyHandle object;
+} FlyRayHit;
+
+/* Two things that started touching this frame. `speed` is how hard they met (0 when the engine saw no impact for
+ * the pair); `px,py,pz` is roughly where. `b` is 0 when `a` touched terrain or the city. */
+typedef struct FlyTouch {
+    FlyHandle a, b;
+    float px, py, pz;
+    float nx, ny, nz;
+    float speed;
+} FlyTouch;
+
+/* Joint kinds for CreateJoint. */
+enum {
+    FLY_JOINT_WELD = 0,   /* glued together */
+    FLY_JOINT_HINGE = 1,  /* swings about an axis through the anchor (a door) */
+    FLY_JOINT_BALL = 2,   /* free rotation about the anchor (a rope swing, a ragdoll shoulder) */
+    FLY_JOINT_ROPE = 3    /* keeps the two anchors a fixed distance apart */
+};
+
 /* Engine services, filled in by the engine. Mirrors the FlyNative_* set in
  * include/Engine/Scripts/FlyScriptApi.hpp. Append only; never reorder. */
 typedef struct FlyApi {
@@ -131,6 +157,27 @@ typedef struct FlyApi {
     void      (*SetMasterVolume)(float volume);
     void      (*ShowText)(const char* text, const char* position, float seconds);   /* seconds 0 = until replaced; "" clears */
     float     (*TimeSincePlay)(void);
+
+    /* Gamepads. `gamepad` is 0-based (0..3); button/axis names match the Visual Script Input nodes
+     * (GamepadButtonDown/GamepadAxis). Added after the first releases: fly.hpp checks `size` first. */
+    short     (*GamepadAvailable)(int gamepad);
+    short     (*GamepadButtonDown)(int gamepad, const char* buttonName);      /* true while held */
+    short     (*GamepadButtonPressed)(int gamepad, const char* buttonName);   /* true on the frame it went down */
+    float     (*GamepadAxis)(int gamepad, const char* axisName);              /* -1..1; triggers rest at -1 */
+
+    /* Gameplay queries and effects. Added after the first releases: fly.hpp checks `size` first. */
+    short     (*RaycastEx)(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, FlyRayHit* out); /* 1 on a hit */
+    int       (*OverlapSphere)(float cx, float cy, float cz, float radius, FlyHandle* out, int maxCount);   /* objects touching the ball; returns how many were stored */
+    int       (*PollTouches)(FlyTouch* out, int maxCount);          /* contacts that began since the last Update; each is delivered once per frame */
+    unsigned  (*CreateJoint)(int kind, FlyHandle a, FlyHandle b, float ax, float ay, float az, float bx, float by, float bz); /* anchors in world space; the second is used by ROPE only. 0 = failed */
+    void      (*DestroyJoint)(unsigned joint);
+    void      (*GetCamera)(float* out7);                            /* x y z, target x y z, fov */
+    void      (*SetCamera)(const float* in7);                       /* the same layout; call every frame to keep control of the view */
+    void      (*EmitParticles)(const char* preset, float x, float y, float z, float dx, float dy, float dz, int count, float scale);
+    unsigned  (*StartEmitter)(const char* preset, float x, float y, float z, float dx, float dy, float dz, float scale); /* 0 = failed */
+    void      (*MoveEmitter)(unsigned emitter, float x, float y, float z, float dx, float dy, float dz);
+    void      (*StopEmitter)(unsigned emitter);
+    void      (*SpawnDecal)(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

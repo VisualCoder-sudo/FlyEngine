@@ -4,7 +4,7 @@
  * This is the stable C interface that all native plugins (nat/, lib/) must use.
  * Plugins include this header and implement the CP_PluginEntry structure.
  *
- * Version: 1.1.0 (1.1: ui_set_accent_color)
+ * Version: 1.2.0 (1.1: ui_set_accent_color; 1.2: editor camera and viewport mouse hooks)
  */
 
 #ifndef CPLUGIN_API_H
@@ -29,8 +29,8 @@ typedef struct {
     uint32_t patch;
 } CP_API_Version;
 
-#define CP_API_CURRENT_VERSION {1, 1, 0}
-#define CP_API_VERSION_STRING "1.1.0"
+#define CP_API_CURRENT_VERSION {1, 2, 0}
+#define CP_API_VERSION_STRING "1.2.0"
 
 // Version comparison helpers
 static inline int CP_API_VersionCompare(CP_API_Version a, CP_API_Version b) {
@@ -52,6 +52,7 @@ static inline int CP_API_VersionAtLeast(CP_API_Version have, CP_API_Version need
 typedef struct CP_EngineAPI CP_EngineAPI;
 typedef struct CP_PluginEntry CP_PluginEntry;
 typedef uint64_t CP_EntityID;
+typedef uint64_t CP_GroupID;    // 1.2: an Explorer group (0 = none)
 typedef uint64_t CP_AssetHandle;
 typedef uint64_t CP_TextureHandle;
 typedef uint64_t CP_MeshHandle;
@@ -114,6 +115,29 @@ typedef enum {
     CP_KEY_RIGHT_ALT = 346, CP_KEY_RIGHT_SUPER = 347, CP_KEY_KB_MENU = 348,
 } CP_KeyCode;
 
+// An editor mode a plugin offers (1.2). Strings must outlive the plugin.
+typedef struct {
+    const char* id;               // unique, e.g. "planster"
+    const char* label;            // shown in the top bar
+    void (*on_enter)(void);       // optional
+    void (*on_exit)(void);        // optional
+} CP_EditorMode;
+
+// A context-menu entry for an Explorer group kind (1.2). `label` must outlive the plugin.
+typedef struct {
+    const char* label;
+    void (*on_click)(CP_GroupID group);
+} CP_GroupMenuItem;
+
+// Part shapes for entity_create_shaped (1.2). Every shape fits a 1x1x1 box
+// scaled by its size.
+typedef enum {
+    CP_SHAPE_CUBE = 0,
+    CP_SHAPE_SPHERE,
+    CP_SHAPE_CYLINDER,
+    CP_SHAPE_WEDGE,
+} CP_Shape;
+
 // Event types
 typedef enum {
     CP_EVENT_NONE = 0,
@@ -125,6 +149,11 @@ typedef enum {
     CP_EVENT_ENTITY_CREATED,
     CP_EVENT_ENTITY_DESTROYED,
     CP_EVENT_ASSET_LOADED,
+    // 1.2: the scene was replaced under the plugin (project/scene opened, or
+    // undo/redo/stop-play restored a snapshot). Entity and group handles from
+    // before the event are invalid; look them up again (group_find_by_tag).
+    CP_EVENT_SCENE_LOADED,
+    CP_EVENT_UNDO_REDO,
     CP_EVENT_CUSTOM = 1000,
 } CP_EventType;
 
@@ -190,13 +219,26 @@ struct CP_PluginEntry {
 
     // Optional event handling
     void (*on_event)(const CP_Event* event);
+
+    // Added in 1.2 (the engine reads these only when api_version >= 1.2).
+    // Editor viewport pass, inside the 3D camera and outside Play. Draw with
+    // draw_line3d / draw_box_outline3d.
+    void (*on_draw_overlay3d)(void);
 };
 
-// Macro to register plugin entry point
+// Macro to register plugin entry point. C linkage, so a C++ plugin exports the
+// plain symbol the loader looks up instead of a mangled name.
+#ifdef __cplusplus
+#define CP_REGISTER_PLUGIN(entry_struct) \
+    extern "C" CP_EXPORT CP_PluginEntry* CP_GetPluginEntry(void) { \
+        return &entry_struct; \
+    }
+#else
 #define CP_REGISTER_PLUGIN(entry_struct) \
     CP_EXPORT CP_PluginEntry* CP_GetPluginEntry(void) { \
         return &entry_struct; \
     }
+#endif
 
 // Raycast hit structure
 typedef struct {
@@ -392,6 +434,102 @@ struct CP_EngineAPI {
     // Sets the editor's accent colour (r,g,b in 0..1; alpha ignored). Hover and
     // pressed shades are derived. Editor only: has no effect in the player.
     void (*ui_set_accent_color)(CP_Color color);
+
+    // --------------------------------------------------------
+    // Editor camera and viewport mouse (added in 1.2; check engine_api->version
+    // before calling). Editor only: no-ops in the player.
+    // --------------------------------------------------------
+    // Top-down orthographic view looking straight down at `center`.
+    // `view_height` is the world-space height visible on screen. While active
+    // the fly controls are suspended; pan and zoom by calling set_topdown_view.
+    void (*camera_enter_topdown)(CP_Vec3 center, float view_height);
+    void (*camera_set_topdown_view)(CP_Vec3 center, float view_height);
+    // Restores the camera that was active before camera_enter_topdown.
+    void (*camera_exit_topdown)(void);
+    bool (*camera_is_topdown)(void);
+
+    // Intersects the mouse ray with the horizontal plane at `plane_y`.
+    // Returns false when the ray misses the plane.
+    bool (*mouse_ground_point)(float plane_y, CP_Vec3* out_point);
+    // True when the mouse is over an editor panel or ImGui window.
+    bool (*mouse_over_ui)(void);
+    // While claimed, the editor does no picking, selection or gizmo work, so
+    // viewport clicks belong to the plugin. Release it when the tool closes.
+    void (*viewport_claim)(bool claimed);
+    // World position to screen pixels (same space as input_get_mouse_pos).
+    CP_Vec2 (*world_to_screen)(CP_Vec3 pos);
+
+    // Overlay drawing: call only from on_draw_overlay3d.
+    void (*draw_line3d)(CP_Vec3 a, CP_Vec3 b, CP_Color color);
+    void (*draw_box_outline3d)(CP_Vec3 center, CP_Vec3 size, CP_Color color);
+    // Text at a world position, drawn over the viewport. Call from on_update
+    // (any time the ImGui frame is open).
+    void (*ui_draw_text_at)(CP_Vec3 pos, const char* text, CP_Color color);
+
+    // Scene objects. entity_create (above) makes an object the editor does not
+    // save; these make real scene parts that save, undo and export.
+    CP_EntityID (*entity_create_shaped)(CP_Shape shape, CP_Vec3 pos, CP_Vec3 size, CP_Color color, const char* name);
+    // Deletes an object made by entity_create_shaped (or found in the scene).
+    void (*entity_remove)(CP_EntityID id);
+
+    // Groups. Handles die on CP_EVENT_SCENE_LOADED / CP_EVENT_UNDO_REDO.
+    CP_GroupID (*group_create)(const char* name, CP_GroupID parent);
+    void (*group_add_entity)(CP_GroupID group, CP_EntityID entity);
+    // Removes the group with everything nested in it. With delete_members the
+    // parts are deleted too, otherwise they stay as loose objects.
+    void (*group_delete)(CP_GroupID group, bool delete_members);
+    void (*group_set_name)(CP_GroupID group, const char* name);
+    void (*group_set_locked)(CP_GroupID group, bool locked);
+    // Marks the group as owned by a plugin and stores the plugin's editable
+    // source data on it. Both are saved with the scene and with undo
+    // snapshots. An empty tag makes it an ordinary group again.
+    void (*group_set_plugin)(CP_GroupID group, const char* tag, const char* data);
+    // Returned strings stay valid until the next group_get_* call.
+    const char* (*group_get_plugin_tag)(CP_GroupID group);
+    const char* (*group_get_plugin_data)(CP_GroupID group);
+    // The index-th group (from 0) carrying `tag`, or 0.
+    CP_GroupID (*group_find_by_tag)(const char* tag, int index);
+
+    // Records an undo step of the scene as it is NOW. Call before changing it.
+    void (*push_undo)(void);
+
+    // Editor modes. Register one from on_load; the editor lists it in the top
+    // bar mode switcher. Entering a mode switches to the top-down map camera
+    // (WASD/arrows or right/middle-drag pan, wheel zoom) and gives the plugin
+    // the viewport: no picking, shortcuts or gizmos. Leaving restores the fly
+    // camera. Play, plugin unload and the top bar all leave the mode.
+    // on_enter / on_exit run inside those transitions.
+    void (*mode_register)(const CP_EditorMode* mode);
+    void (*mode_enter)(const char* id);
+    void (*mode_exit)(void);
+    bool (*mode_is_active)(const char* id);
+
+    // Map view state and screen, for hit radii and grid drawing. Returns false
+    // when the top-down camera is not active.
+    bool (*camera_get_topdown_view)(CP_Vec3* center, float* view_height);
+    CP_Vec2 (*screen_size)(void);
+
+    // True while a text or number field has keyboard focus: ignore shortcuts
+    // such as Delete.
+    bool (*ui_wants_keyboard)(void);
+    // Number fields that report a finished edit, not every keystroke: they
+    // return true when the user pressed Enter, left the field after typing, or
+    // clicked the +/- buttons. *value changes only then.
+    bool (*ui_input_float)(const char* label, float* value, float step);
+    bool (*ui_input_int)(const char* label, int* value);
+    bool (*ui_selectable)(const char* label, bool selected);
+    // For the item just drawn (ui_input_text, ...): true on the frame the user
+    // finished editing it.
+    bool (*ui_item_deactivated_after_edit)(void);
+
+    // Explorer group kind. Groups whose plugin tag equals `tag` show the PNG at
+    // `icon_path` (absolute, own colours) and the given context-menu items;
+    // Ungroup, New Group Inside and Lock are hidden for them. Call from on_load.
+    // Menu callbacks should call push_undo() themselves if they change the scene.
+    void (*explorer_register_group_kind)(const char* tag, const char* icon_path, const CP_GroupMenuItem* items, int count);
+    // Adds an entry to a top-bar menu. `menu` ("Plugins") becomes a button next
+    // to Mode, shared by every plugin that uses the same name. Call from on_load.
+    void (*ui_add_menu_item)(const char* menu, const char* label, void (*on_click)(void));
 };
 
 // ============================================================================
@@ -407,6 +545,10 @@ void CP_Internal_SetEngine(void* engine);
 
 // Called by engine to set script runtime pointer
 void CP_Internal_SetScriptRuntime(void* runtime);
+
+// Called by the host when the scene is replaced (load, undo/redo): drops every
+// entity and group handle handed out so far.
+void CP_Internal_InvalidateHandles(void);
 
 // Get the engine API vtable for plugins
 const CP_EngineAPI* CP_GetEngineAPI(void);

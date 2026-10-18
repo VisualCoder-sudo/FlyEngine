@@ -572,6 +572,7 @@ void WaterBody::UpdateShaderUniforms(const Camera3D& camera, float globalTime) {
         Vector4 reflParams = { reflection.strength, reflection.distortion, reflection.distanceFade * 0.02f, enabled };
         SetShaderValue(shader, reflParamsLoc, &reflParams, SHADER_UNIFORM_VEC4);
     }
+    gfx::UploadWaterShadows(shader);
     BindRippleTexture();
     if (reflTexLoc >= 0 && gfx::IsReflectionsEnabled()) {
         Texture2D reflTex = gfx::GetReflectionTarget().texture;
@@ -759,7 +760,7 @@ void WaterBody::Draw() {
 }
 
 void WaterBody::DrawOverlay3D() {
-    if (!isSelected) return;
+    if (!isSelected || ui::IsPlayActive()) return;
 
     if (showWireframe) {
         BoundingBox box = GetBoundingBox();

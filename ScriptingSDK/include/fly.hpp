@@ -33,8 +33,11 @@
 
 #include "FlyScriptABI.h"
 
+#include <algorithm>
+#include <cmath>
 #include <coroutine>
 #include <cstddef>
+#include <functional>
 #include <exception>
 #include <sstream>
 #include <string>
@@ -277,6 +280,23 @@ inline std::string Raycast(Vec3 origin, Vec3 direction, float maxDistance = 100.
 inline bool KeyDown(const char* key)    { return detail::HaveActions() && detail::Api()->KeyDown(key) != 0; }      // held
 inline bool KeyPressed(const char* key) { return detail::HaveActions() && detail::Api()->KeyPressed(key) != 0; }   // went down this frame
 
+// Gamepads: `gamepad` is 0-based. Buttons: "A", "B", "X", "Y", "Left Bumper", "Right Bumper", "Left Trigger",
+// "Right Trigger", "Back", "Start", "Guide", "Left Stick", "Right Stick", "Up", "Down", "Left", "Right".
+// Axes: "Left X", "Left Y", "Right X", "Right Y", "Left Trigger", "Right Trigger" (-1..1; triggers rest at -1).
+namespace detail {
+inline bool HaveGamepad() { return Api()->size >= offsetof(FlyApi, GamepadAxis) + sizeof(void*); }
+}
+inline bool GamepadAvailable(int gamepad = 0) { return detail::HaveGamepad() && detail::Api()->GamepadAvailable(gamepad) != 0; }
+inline bool GamepadDown(const char* button, int gamepad = 0) {
+    return detail::HaveGamepad() && detail::Api()->GamepadButtonDown(gamepad, button) != 0;
+}
+inline bool GamepadPressed(const char* button, int gamepad = 0) {
+    return detail::HaveGamepad() && detail::Api()->GamepadButtonPressed(gamepad, button) != 0;
+}
+inline float GamepadAxis(const char* axis, int gamepad = 0) {
+    return detail::HaveGamepad() ? detail::Api()->GamepadAxis(gamepad, axis) : 0.0f;
+}
+
 // Sound: a file in the project, volume 0..1. SetVolume is the master volume.
 inline void PlaySound(const std::string& file, float volume = 1.0f) { if (detail::HaveActions()) detail::Api()->PlaySound(file.c_str(), volume); }
 inline void SetVolume(float volume) { if (detail::HaveActions()) detail::Api()->SetMasterVolume(volume); }
@@ -289,6 +309,249 @@ inline void ShowText(const std::string& text, const std::string& position = "Top
 
 // Seconds since Play started.
 inline float TimeSincePlay() { return detail::HaveActions() ? detail::Api()->TimeSincePlay() : 0.0f; }
+
+// ---- vector helpers --------------------------------------------------------
+
+inline float Dot(Vec3 a, Vec3 b)      { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float Length(Vec3 v)           { return std::sqrt(Dot(v, v)); }
+inline float Distance(Vec3 a, Vec3 b) { return Length(a - b); }
+inline Vec3 Normalize(Vec3 v)         { const float l = Length(v); return l > 1e-6f ? v * (1.0f / l) : Vec3{}; }
+inline Vec3 Cross(Vec3 a, Vec3 b)     { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
+inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
+inline Vec3 Lerp(Vec3 a, Vec3 b, float t)    { return a + (b - a) * t; }
+
+// ---- gameplay: rays, overlaps, touches, joints, camera ---------------------
+//
+// Everything in this section needs an engine that has them; on an older one the queries find nothing and the
+// actions do nothing.
+
+namespace detail {
+inline bool HaveGameplay() { return Api()->size >= offsetof(FlyApi, SpawnDecal) + sizeof(void*); }
+}
+
+// What a ray hit. `object` is invalid when it hit terrain, the city or anything else that is not a scene object.
+struct Hit {
+    bool hit = false;
+    Vec3 point, normal;
+    float distance = 0.0f;
+    Object object;
+    explicit operator bool() const { return hit; }
+};
+
+// Shoots a ray (the direction need not be normalised) and reports the first thing it meets, with where and how far.
+inline Hit Cast(Vec3 origin, Vec3 direction, float maxDistance = 100.0f) {
+    Hit h;
+    if (!detail::HaveGameplay()) return h;
+    FlyRayHit r;
+    if (!detail::Api()->RaycastEx(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, maxDistance, &r)) return h;
+    h.hit = true;
+    h.point = { r.px, r.py, r.pz };
+    h.normal = { r.nx, r.ny, r.nz };
+    h.distance = r.distance;
+    h.object = Object(r.object);
+    return h;
+}
+
+// Every scene object whose bounds reach into the ball (up to `maxCount`).
+inline std::vector<Object> OverlapSphere(Vec3 center, float radius, int maxCount = 64) {
+    std::vector<Object> found;
+    if (!detail::HaveGameplay() || maxCount <= 0) return found;
+    std::vector<FlyHandle> handles(static_cast<size_t>(maxCount));
+    const int n = detail::Api()->OverlapSphere(center.x, center.y, center.z, radius, handles.data(), maxCount);
+    for (int i = 0; i < n; i++) found.push_back(Object(handles[static_cast<size_t>(i)]));
+    return found;
+}
+
+// Two things that started touching. `b` is invalid when `a` touched terrain or the city. `speed` is how hard they
+// met (0 for a gentle contact the engine reported no impact for).
+struct Touch {
+    Object a, b;
+    Vec3 point, normal;
+    float speed = 0.0f;
+    // True when `o` is one of the two.
+    bool Involves(Object o) const { return o.IsValid() && (a == o || b == o); }
+    // The one that is not `o` (invalid if `o` is neither).
+    Object Other(Object o) const { return a == o ? b : (b == o ? a : Object()); }
+};
+
+// The contacts that began since the last physics update. Every script that asks in a frame sees the same list.
+//
+//     for (const fly::Touch& t : fly::Touches())
+//         if (t.Involves(self) && t.speed > 4.0f) fly::Emit("Sparks", t.point, t.normal);
+inline std::vector<Touch> Touches(int maxCount = 128) {
+    std::vector<Touch> out;
+    if (!detail::HaveGameplay() || maxCount <= 0) return out;
+    std::vector<FlyTouch> raw(static_cast<size_t>(maxCount));
+    const int n = detail::Api()->PollTouches(raw.data(), maxCount);
+    for (int i = 0; i < n; i++) {
+        const FlyTouch& r = raw[static_cast<size_t>(i)];
+        Touch t;
+        t.a = Object(r.a); t.b = Object(r.b);
+        t.point = { r.px, r.py, r.pz };
+        t.normal = { r.nx, r.ny, r.nz };
+        t.speed = r.speed;
+        out.push_back(t);
+    }
+    return out;
+}
+
+// A physics joint between two objects. Joints exist only while playing; they vanish when Play stops.
+class Joint {
+public:
+    Joint() = default;
+    bool IsValid() const { return m_id != 0; }
+    explicit operator bool() const { return IsValid(); }
+    void Destroy() { if (m_id && detail::HaveGameplay()) detail::Api()->DestroyJoint(m_id); m_id = 0; }
+
+    // Glued together at `anchor` (a world position).
+    static Joint Weld(Object a, Object b, Vec3 anchor) { return Make(FLY_JOINT_WELD, a, b, anchor, anchor); }
+    // Swings about an axis through `anchor` (a door on its post).
+    static Joint Hinge(Object a, Object b, Vec3 anchor) { return Make(FLY_JOINT_HINGE, a, b, anchor, anchor); }
+    // Turns freely about `anchor` (a rope swing, a shoulder).
+    static Joint Ball(Object a, Object b, Vec3 anchor) { return Make(FLY_JOINT_BALL, a, b, anchor, anchor); }
+    // Keeps `anchorA` (on a) and `anchorB` (on b) the distance apart they are now.
+    static Joint Rope(Object a, Object b, Vec3 anchorA, Vec3 anchorB) { return Make(FLY_JOINT_ROPE, a, b, anchorA, anchorB); }
+
+private:
+    static Joint Make(int kind, Object a, Object b, Vec3 pa, Vec3 pb) {
+        Joint j;
+        if (detail::HaveGameplay())
+            j.m_id = detail::Api()->CreateJoint(kind, a.Handle(), b.Handle(), pa.x, pa.y, pa.z, pb.x, pb.y, pb.z);
+        return j;
+    }
+    unsigned m_id = 0;
+};
+
+namespace Game {
+namespace Camera {
+// Where the view is and what it looks at. Whatever drives the camera (the player, the editor) may move it again, so
+// call SetView every frame to keep hold of it.
+struct View { Vec3 position, target; float fov = 60.0f; };
+inline View Get() {
+    View v;
+    if (!detail::HaveGameplay()) return v;
+    float f[7] = {};
+    detail::Api()->GetCamera(f);
+    v.position = { f[0], f[1], f[2] };
+    v.target = { f[3], f[4], f[5] };
+    v.fov = f[6];
+    return v;
+}
+inline void SetView(Vec3 position, Vec3 target, float fov = 0.0f) {
+    if (!detail::HaveGameplay()) return;
+    const float f[7] = { position.x, position.y, position.z, target.x, target.y, target.z, fov > 0.0f ? fov : Get().fov };
+    detail::Api()->SetCamera(f);
+}
+}
+}
+
+// ---- gameplay: particles and decals ----------------------------------------
+//
+// Presets: "Smoke", "Fire", "Sparks", "Dust", "Splash", "Debris", "Steam". Heavy impacts already kick up dust by
+// themselves; use these for anything else.
+
+// One puff. `count` 0 uses the preset's own size; `scale` multiplies particle size and speed.
+inline void Emit(const char* preset, Vec3 position, Vec3 direction = { 0, 1, 0 }, int count = 0, float scale = 1.0f) {
+    if (detail::HaveGameplay()) detail::Api()->EmitParticles(preset, position.x, position.y, position.z, direction.x, direction.y, direction.z, count, scale);
+}
+
+// A steady source (a campfire, a chimney) that runs until Stop().
+class Emitter {
+public:
+    Emitter() = default;
+    static Emitter Start(const char* preset, Vec3 position, Vec3 direction = { 0, 1, 0 }, float scale = 1.0f) {
+        Emitter e;
+        if (detail::HaveGameplay()) e.m_id = detail::Api()->StartEmitter(preset, position.x, position.y, position.z, direction.x, direction.y, direction.z, scale);
+        return e;
+    }
+    bool IsValid() const { return m_id != 0; }
+    void Move(Vec3 position, Vec3 direction = { 0, 1, 0 }) {
+        if (m_id) detail::Api()->MoveEmitter(m_id, position.x, position.y, position.z, direction.x, direction.y, direction.z);
+    }
+    void Stop() { if (m_id && detail::HaveGameplay()) detail::Api()->StopEmitter(m_id); m_id = 0; }
+private:
+    unsigned m_id = 0;
+};
+
+struct ColorRGBA { unsigned char r = 0, g = 0, b = 0, a = 255; };
+
+// A flat mark on a surface: `normal` points out of it, `size` is its diameter in metres. It fades out over its
+// last quarter. Use the point and normal of a Cast() or a Touch.
+inline void Decal(Vec3 position, Vec3 normal, float size, ColorRGBA color = { 20, 18, 15, 160 }, float seconds = 30.0f) {
+    if (detail::HaveGameplay()) detail::Api()->SpawnDecal(position.x, position.y, position.z, normal.x, normal.y, normal.z, size, color.r, color.g, color.b, color.a, seconds);
+}
+
+// ---- tweens and events (scripts only, no engine support needed) ------------
+
+enum class Ease { Linear, In, Out, InOut, Bounce, Back };
+
+inline float Ease01(Ease e, float t) {
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    switch (e) {
+        case Ease::In: return t * t * t;
+        case Ease::Out: { const float u = 1.0f - t; return 1.0f - u * u * u; }
+        case Ease::InOut: return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) / 2.0f;
+        case Ease::Bounce: {
+            const float n = 7.5625f, d = 2.75f;
+            if (t < 1.0f / d) return n * t * t;
+            if (t < 2.0f / d) { t -= 1.5f / d; return n * t * t + 0.75f; }
+            if (t < 2.5f / d) { t -= 2.25f / d; return n * t * t + 0.9375f; }
+            t -= 2.625f / d; return n * t * t + 0.984375f;
+        }
+        case Ease::Back: { const float c1 = 1.70158f, c3 = c1 + 1.0f; const float u = t - 1.0f; return 1.0f + c3 * u * u * u + c1 * u * u; }
+        default: return t;
+    }
+}
+
+// Moves a value (float or Vec3) from `from` to `to` over `seconds`.
+//
+//     fly::Tween<fly::Vec3> tw(door.Position(), door.Position() + fly::Vec3{0, 3, 0}, 1.5f, fly::Ease::InOut);
+//     while (!tw.Done()) { door.SetPosition(tw.Step(fly::DeltaTime())); co_await fly::NextFrame(); }
+template <typename T>
+class Tween {
+public:
+    Tween() : m_from(), m_to(), m_seconds(1.0f), m_ease(Ease::Linear), m_t(1.0f) {}   // already finished
+    Tween(T from, T to, float seconds, Ease ease = Ease::Linear) : m_from(from), m_to(to), m_seconds(seconds > 1e-4f ? seconds : 1e-4f), m_ease(ease) {}
+    // Advances by `dt` and returns the new value.
+    T Step(float dt) { m_t += dt; return Value(); }
+    T Value() const { return Lerp(m_from, m_to, Ease01(m_ease, m_t / m_seconds)); }
+    bool Done() const { return m_t >= m_seconds; }
+    void Restart() { m_t = 0.0f; }
+private:
+    T m_from, m_to;
+    float m_seconds;
+    Ease m_ease;
+    float m_t = 0.0f;
+};
+
+// Named events that scripts in the same project can fire and listen to. Handlers run immediately inside Fire().
+//
+//     auto sub = fly::Events::On("door_open", [](float who) { fly::Print("opened by ", who); });
+//     fly::Events::Fire("door_open", 1.0f);
+//     fly::Events::Off(sub);
+//
+// Handlers are lost when scripts hot-reload, like any other script state; subscribe again from Run().
+namespace Events {
+using Handler = std::function<void(float)>;
+namespace detail_ev {
+struct Sub { int id; std::string name; Handler fn; };
+inline std::vector<Sub>& Subs() { static std::vector<Sub> s; return s; }
+inline int& NextId() { static int n = 1; return n; }
+}
+inline int On(const std::string& name, Handler fn) {
+    const int id = detail_ev::NextId()++;
+    detail_ev::Subs().push_back({ id, name, std::move(fn) });
+    return id;
+}
+inline void Off(int subscription) {
+    auto& s = detail_ev::Subs();
+    for (size_t i = 0; i < s.size(); i++) if (s[i].id == subscription) { s.erase(s.begin() + static_cast<std::ptrdiff_t>(i)); return; }
+}
+inline void Fire(const std::string& name, float value = 0.0f) {
+    auto copy = detail_ev::Subs();   // a handler may subscribe or unsubscribe
+    for (auto& sub : copy) if (sub.name == name && sub.fn) sub.fn(value);
+}
+}
 
 // ---- coroutines ------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 // timing, files and misc utilities.
 #include "flyvfs.h"
 #include "rl_internal.hpp"
+#include "rl_shader_hotreload.hpp"
 
 #include "flyapp.h"
 #include "sokol_app.h"
@@ -59,6 +60,7 @@ void BeginInputFrame() {
     CoreState& c = Core();
     std::copy(std::begin(c.keyDown), std::end(c.keyDown), std::begin(c.keyPrev));
     std::copy(std::begin(c.mouseDown), std::end(c.mouseDown), std::begin(c.mousePrev));
+    std::memcpy(c.gamepadButtonPrev, c.gamepadButtonDown, sizeof(c.gamepadButtonPrev));
     std::fill(std::begin(c.keyRepeat), std::end(c.keyRepeat), false);
     std::fill(std::begin(c.keyPressedEvt), std::end(c.keyPressedEvt), false);
     std::fill(std::begin(c.keyReleasedEvt), std::end(c.keyReleasedEvt), false);
@@ -76,12 +78,17 @@ void BeginInputFrame() {
 void PollEvents() {
     CoreState& c = Core();
     BeginInputFrame();
+    GamepadPoll();
+    for (int g = 0; g < kMaxGamepads; ++g)
+        for (int b = 0; b < kMaxGamepadButtons; ++b)
+            if (c.gamepadButtonDown[g][b] && !c.gamepadButtonPrev[g][b]) c.gamepadLastButtonPressed = b;
     if (!flyapp_poll()) c.shouldClose = true;
     if (c.cursorLocked) flyapp_recenter_locked_pointer();
     if (c.exitKey != KEY_NULL && c.exitKey > 0 && c.exitKey < kMaxKeys &&
         c.keyDown[c.exitKey] && !c.keyPrev[c.exitKey]) {
         c.shouldClose = true;
     }
+    TickShaderHotReload();
 }
 
 // Diagnostics: FLYENGINE_LOG_INPUT=1 prints mouse-lock requests and the first mouse events to stderr.
@@ -311,6 +318,7 @@ void InitWindow(int width, int height, const char* title) {
 
     GfxInit(sapp_width(), sapp_height());
     TextInit();
+    GamepadInit();
 
     TraceLog(LOG_INFO, "DISPLAY: Window created (%ix%i) using %s", sapp_width(), sapp_height(), GetGraphicsBackendName());
     PollEvents();
@@ -323,6 +331,7 @@ void CloseWindow(void) {
     ModelsShutdown();
     ShadersShutdown();
     GfxShutdown();
+    GamepadShutdown();
     flyapp_close();
     c.windowOpen = false;
     c.cursorLocked = false;
@@ -388,6 +397,7 @@ int GetMonitorWidth(int) { return flyapp_monitor_width(); }
 int GetMonitorHeight(int) { return flyapp_monitor_height(); }
 
 void SetEventHook(FlyEventHook hook) { g_eventHook = hook; }
+void SetShaderHotReload(bool enabled) { rli::SetShaderHotReloadEnabled(enabled); }
 
 //------------------------------------------------------------------------------------
 // Frame
@@ -626,13 +636,36 @@ void DisableCursor(void) {
 }
 
 //------------------------------------------------------------------------------------
-// Input: gamepad (sokol_app has no gamepad support; stubbed)
+// Input: gamepad (sokol_app has no gamepad API; polled separately, see rl_gamepad.cpp)
 //------------------------------------------------------------------------------------
-bool IsGamepadAvailable(int) { return false; }
-bool IsGamepadButtonPressed(int, int) { return false; }
-bool IsGamepadButtonDown(int, int) { return false; }
-bool IsGamepadButtonReleased(int, int) { return false; }
-float GetGamepadAxisMovement(int, int) { return 0.0f; }
+bool IsGamepadAvailable(int gamepad) {
+    return gamepad >= 0 && gamepad < kMaxGamepads && Core().gamepadAvailable[gamepad];
+}
+bool IsGamepadButtonDown(int gamepad, int button) {
+    if (gamepad < 0 || gamepad >= kMaxGamepads || button < 0 || button >= kMaxGamepadButtons) return false;
+    return Core().gamepadButtonDown[gamepad][button];
+}
+bool IsGamepadButtonPressed(int gamepad, int button) {
+    if (gamepad < 0 || gamepad >= kMaxGamepads || button < 0 || button >= kMaxGamepadButtons) return false;
+    const CoreState& c = Core();
+    return c.gamepadButtonDown[gamepad][button] && !c.gamepadButtonPrev[gamepad][button];
+}
+bool IsGamepadButtonReleased(int gamepad, int button) {
+    if (gamepad < 0 || gamepad >= kMaxGamepads || button < 0 || button >= kMaxGamepadButtons) return false;
+    const CoreState& c = Core();
+    return !c.gamepadButtonDown[gamepad][button] && c.gamepadButtonPrev[gamepad][button];
+}
+bool IsGamepadButtonUp(int gamepad, int button) { return !IsGamepadButtonDown(gamepad, button); }
+int GetGamepadButtonPressed(void) { return Core().gamepadLastButtonPressed; }
+int GetGamepadAxisCount(int gamepad) { return IsGamepadAvailable(gamepad) ? kMaxGamepadAxes : 0; }
+float GetGamepadAxisMovement(int gamepad, int axis) {
+    if (gamepad < 0 || gamepad >= kMaxGamepads || axis < 0 || axis >= kMaxGamepadAxes) return 0.0f;
+    return Core().gamepadAxisVal[gamepad][axis];
+}
+const char* GetGamepadName(int gamepad) {
+    if (gamepad < 0 || gamepad >= kMaxGamepads) return "";
+    return Core().gamepadName[gamepad].c_str();
+}
 
 //------------------------------------------------------------------------------------
 // Clipboard, drag & drop
@@ -878,3 +911,9 @@ unsigned char* CompressData(const unsigned char*, int, int* compDataSize) {
     return nullptr;
 }
 
+
+// Test hook: puts the mouse somewhere with a button state, as if the user had, without a real device.
+void flyrl_test_set_mouse(float x, float y, bool leftDown) {
+    Core().mousePos = { x, y };
+    Core().mouseDown[MOUSE_BUTTON_LEFT] = leftDown;
+}

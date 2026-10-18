@@ -1,5 +1,6 @@
 ﻿#include "Engine/Vfs.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
+#include "../../include/Terrain/Foliage.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 #include "../../include/Engine/Graphics.hpp"
@@ -72,7 +73,7 @@ int BasicTerrain::s_shaderCloudShadowTexLoc = -1;
 BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
     : width(w), depth(d), scale(s), maxHeight(maxH), textureTiling(texTile) {
     heightmap.assign((size_t)width * depth, 0.0f);
-    meshDirty = true;
+    meshDirty = true; ++revision;
 
     // Splatmap resolution is supersampled relative to the heightmap grid so
     // painted blends look smooth instead of blocky.
@@ -139,6 +140,7 @@ BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
 }
 
 BasicTerrain::~BasicTerrain() {
+    foliage::Forget(this);
     s_instances.erase(std::remove(s_instances.begin(), s_instances.end(), this), s_instances.end());
     if (mesh.vertices) UnloadMesh(mesh);
     if (terrainTexture.id > 0) UnloadTexture(terrainTexture);
@@ -164,8 +166,8 @@ void BasicTerrain::GenerateFlat(float height) {
         splatmap[i * 4 + 2] = 0;
         splatmap[i * 4 + 3] = 0;
     }
-    splatmapDirty = true;
-    meshDirty = true;
+    splatmapDirty = true; ++revision;
+    meshDirty = true; ++revision;
 }
 
 bool BasicTerrain::LoadHeightmap(const std::string& path) {
@@ -197,8 +199,8 @@ bool BasicTerrain::LoadHeightmap(const std::string& path) {
         splatmap[i * 4 + 2] = 0;
         splatmap[i * 4 + 3] = 0;
     }
-    splatmapDirty = true;
-    meshDirty = true;
+    splatmapDirty = true; ++revision;
+    meshDirty = true; ++revision;
     return true;
 }
 
@@ -372,7 +374,7 @@ void BasicTerrain::ApplyBrush(const Brush& b, Vector2 worldPos, float dt) {
                         std::clamp(before + (after - before) * weight, minHeight, maxHeight);
                 }
             }
-            meshDirty = true;
+            meshDirty = true; ++revision;
         }
         return;
     }
@@ -428,7 +430,7 @@ void BasicTerrain::ApplyBrush(const Brush& b, Vector2 worldPos, float dt) {
             h = std::clamp(h, minHeight, maxHeight);
         }
     }
-    meshDirty = true;
+    meshDirty = true; ++revision;
 }
 
 void BasicTerrain::StampBrush(const Brush& b, Vector2 worldPos) {
@@ -530,7 +532,7 @@ void BasicTerrain::ApplyRamp(Vector2 start, Vector2 end, float strength, float b
             h = std::clamp(h + (target - h) * pull * fall, minHeight, maxHeight);
         }
     }
-    meshDirty = true;
+    meshDirty = true; ++revision;
 }
 
 void BasicTerrain::ApplyPaintBrush(const Brush& b, Vector2 worldPos, float dt) {
@@ -615,7 +617,7 @@ void BasicTerrain::ApplyPaintBrush(const Brush& b, Vector2 worldPos, float dt) {
             }
         }
     }
-    splatmapDirty = true;
+    splatmapDirty = true; ++revision;
 }
 
 void BasicTerrain::LoadTerrainTextures() {
@@ -827,7 +829,7 @@ void BasicTerrain::GenerateTerrainInBox() {
         AutoPaintByHeightSlope(minWX - falloffX, maxWX + falloffX, minWZ - falloffZ, maxWZ + falloffZ);
     }
 
-    meshDirty = true;
+    meshDirty = true; ++revision;
 }
 
 void BasicTerrain::AutoPaintByHeightSlope(float minWX, float maxWX, float minWZ, float maxWZ) {
@@ -880,7 +882,7 @@ void BasicTerrain::AutoPaintByHeightSlope(float minWX, float maxWX, float minWZ,
             }
         }
     }
-    splatmapDirty = true;
+    splatmapDirty = true; ++revision;
 }
 
 void BasicTerrain::RebuildMesh() {
@@ -1319,6 +1321,40 @@ void BasicTerrain::Update(float dt) {
         editActive = false;
     }
 
+    // Foliage brush: the terrain panel's Foliage tab names the rule it paints.
+    foliagePaint = false;
+    int paintRule = -1;
+    if (!editorHandling && foliage::PaintTarget(this, &paintRule) && brushValid && !overUI) {
+        foliagePaint = true;
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !ui::WasUIClickConsumed()) { foliageStroke = true; ui::MarkUIClickConsumed(); }
+        if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) { foliageStroke = false; foliageHasLast = false; }
+        if (foliageStroke) {
+            // Ctrl erases, Shift paints faster.
+            const bool erase = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+            const float boost = (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) ? 2.5f : 1.0f;
+            // Stamps along the way from where the cursor was, spaced by the brush size, so a fast drag paints a line
+            // and how much it paints depends on the distance covered, not the frame rate. Held still, it builds up with time.
+            const Vector2 from = foliageHasLast ? foliageLast : brushWorldPos;
+            const float travel = Vector2Distance(from, brushWorldPos);
+            const float spacing = std::max(s_brush.radius * 0.2f, 0.5f);
+            const float perStamp = s_brush.strength * boost / 100.0f * 0.25f;
+            if (travel < spacing * 0.5f) {
+                foliage::Paint(this, brushWorldPos.x, brushWorldPos.y, s_brush.radius, s_brush.strength * boost / 100.0f * 3.0f * dt, s_brush.hardness, erase);
+            } else {
+                const int stamps = std::clamp((int)std::ceil(travel / spacing), 1, 96);
+                for (int i = 1; i <= stamps; i++) {
+                    const Vector2 at = Vector2Lerp(from, brushWorldPos, (float)i / (float)stamps);
+                    foliage::Paint(this, at.x, at.y, s_brush.radius, perStamp, s_brush.hardness, erase);
+                }
+            }
+            foliageLast = brushWorldPos;
+            foliageHasLast = true;
+        }
+    } else {
+        foliageStroke = false;
+        foliageHasLast = false;
+    }
+
     // Skip drag handling if TerrainEditor is handling input for this terrain
     if (editActive && !overUI && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && brushValid &&
         s_brush.tool != Tool::None && s_brush.tool != Tool::Ramp && !editorHandling) {
@@ -1474,6 +1510,7 @@ BoundingBox BasicTerrain::GetCullBounds() const {
 
 void BasicTerrain::DrawOverlay3D() {
     if (!editActive && !isSelected) return;
+    if (ui::IsPlayActive()) return;
 
     // Yellow outline around the terrain footprint so selection is obvious
     float hw = width * scale * 0.5f;
@@ -1535,6 +1572,18 @@ void BasicTerrain::DrawOverlay3D() {
 
     // Brush outline that follows the terrain surface (shape-aware).
     // The Ramp tool gets its own band preview instead of the ring.
+    if (foliagePaint) {
+        const Color ring = { 90, 220, 90, 230 };
+        const int seg = 40;
+        Vector3 prev{};
+        for (int i = 0; i <= seg; i++) {
+            const float ang = (float)i / seg * 2.0f * PI;
+            const float px = brushWorldPos.x + cosf(ang) * s_brush.radius, pz = brushWorldPos.y + sinf(ang) * s_brush.radius;
+            const Vector3 p = { px, position.y + GetHeightAt(px, pz) + 0.4f, pz };
+            if (i > 0) DrawLine3D(prev, p, ring);
+            prev = p;
+        }
+    }
     if (editActive && brushValid && s_brush.tool != Tool::Ramp) {
         Color ring = Color{ 60, 140, 255, 220 };
         if (s_brush.shape == Shape::Square) {

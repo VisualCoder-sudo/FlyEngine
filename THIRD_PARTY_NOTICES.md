@@ -23,10 +23,6 @@ Each library remains under its own license; the full license texts ship with the
 | Library | Author | License | Location |
 |---|---|---|---|
 | [ufbx](https://github.com/ufbx/ufbx) | Samuli Raivio (bqqbarbhg) | MIT / public domain | `extern/ufbx/` |
-| [TinyGLTF](https://github.com/syoyo/tinygltf) | Syoyo Fujita and contributors | MIT | `src/Engine/Backend/tinygltf/` |
-| [meshoptimizer](https://github.com/zeux/meshoptimizer) | Arseny Kapoulkine | MIT | `src/Engine/Backend/meshoptimizer/` |
-| [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (incl. Basis Universal, Zstandard) | The Khronos Group and contributors | Apache-2.0 (bundled components under their own licenses) | `src/Engine/Backend/ktxsm/` |
-| [glslang / SPIRV-Tools](https://github.com/KhronosGroup/glslang) | The Khronos Group, Google, LunarG and contributors | BSD-3-Clause / Apache-2.0 | `src/Engine/Backend/spirvc/` |
 | [stb](https://github.com/nothings/stb) (image, image_write, image_resize2, truetype, rect_pack, perlin, vorbis, ...) | Sean Barrett and contributors | MIT / public domain | `src/Engine/Backend/stb/`, `src/Engine/RL/raylib/external/` |
 | [QOI](https://github.com/phoboslab/qoi) | Dominic Szablewski | MIT | `src/Engine/RL/raylib/external/qoi.h` |
 | [cgltf](https://github.com/jkuhlmann/cgltf) | Johannes Kuhlmann | MIT | `src/Engine/RL/raylib/external/` |
@@ -55,7 +51,4 @@ Each library remains under its own license; the full license texts ship with the
 
 ## Vendored but not currently used by the engine sources
 
-[Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) and Vulkan validation layers (Khronos, Apache-2.0),
-[volk](https://github.com/zeux/volk) (Arseny Kapoulkine, MIT),
-[vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) (Charles Giessen, MIT),
-[VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndProcessors/VulkanMemoryAllocator) (AMD, MIT).
+[Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) and Vulkan validation layers (Khronos, Apache-2.0).

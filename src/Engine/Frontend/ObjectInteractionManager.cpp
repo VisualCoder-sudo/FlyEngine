@@ -22,6 +22,8 @@
 #include "../../../include/CityGen/CityEditor.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
+#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
+#include <iomanip>
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -93,6 +95,43 @@ ObjectInteractionManager::ObjectInteractionManager(Engine& engine, Camera3D& cam
     : engine(engine), camera(camera), cameraController(cameraController), objects(objects), models(models), physicsSim(physicsSim) {
     // City editor commits (node drags, regens, deletions) become undo steps.
     city::SetCityEditCallback([this]() { PushUndoNow(); });
+    ui::SetUndoHook([](void* self) { static_cast<ObjectInteractionManager*>(self)->PushUndoNow(); }, this);
+    // Plugins create and delete scene objects through these.
+    pluginScene.models = &this->models;
+    pluginScene.spawn = [this](ShapeType shape, Vector3 pos, Vector3 size, Color color, const std::string& name) {
+        auto obj = std::make_unique<ScatteredObject>(pos, size, color, shape);
+        obj->SetName(name.empty() ? "Object" : name);
+        ScatteredObject* raw = obj.get();
+        this->objects.push_back(raw);   // `this->`: the constructor parameters shadow the members
+        this->engine.AddEntity(std::move(obj));
+        return raw;
+    };
+    pluginScene.remove = [this](ScatteredObject* target) { DeleteObject(target); };
+    pluginScene.enterTopDown = [this](Vector3 c, float h) { if (this->cameraController) this->cameraController->EnterTopDown(c, h); };
+    pluginScene.setTopDown = [this](Vector3 c, float h) { if (this->cameraController) this->cameraController->SetTopDownView(c, h); };
+    pluginScene.exitTopDown = [this]() { if (this->cameraController) this->cameraController->ExitTopDown(); };
+    pluginScene.isTopDown = [this]() { return this->cameraController && this->cameraController->IsTopDown(); };
+    pluginScene.getTopDown = [this](Vector3& c, float& h) {
+        if (!this->cameraController || !this->cameraController->IsTopDown()) return false;
+        c = this->cameraController->TopDownCenter();
+        h = this->cameraController->TopDownViewHeight();
+        return true;
+    };
+    pluginScene.enterTopDownFromView = [this]() {
+        if (!this->cameraController) return;
+        const Camera3D& cam = this->camera;
+        // Land on the ground point the fly camera is looking at, at about the zoom it had.
+        Vector3 center = { cam.position.x, 0.0f, cam.position.z };
+        const Vector3 dir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+        if (fabsf(dir.y) > 0.05f) {
+            const float t = -cam.position.y / dir.y;
+            if (t > 0.0f && t < 500.0f) center = { cam.position.x + dir.x * t, 0.0f, cam.position.z + dir.z * t };
+        }
+        float height = 30.0f;
+        if (cam.position.y > 3.0f) height = Clamp(cam.position.y * 2.0f * tanf(cam.fovy * DEG2RAD * 0.5f), 12.0f, 80.0f);
+        this->cameraController->EnterTopDown(center, height);
+    };
+    pluginhost::SetSceneHost(&pluginScene);
     // A playtest can never leave a change in the scene: it is snapshotted before play's scripts run and put back after
     // they have all stopped (see the hooks in ScriptRuntime.hpp).
     SetPrePlayHook([this]() { CapturePlaySnapshot(); });
@@ -102,6 +141,10 @@ ObjectInteractionManager::ObjectInteractionManager(Engine& engine, Camera3D& cam
 ObjectInteractionManager::~ObjectInteractionManager() {
     SetPrePlayHook(nullptr);
     SetPostPlayHook(nullptr);
+    ui::SetUndoHook(nullptr, nullptr);
+    pluginhost::LeaveMode();   // while the camera controller and the plugins still exist
+    pluginhost::SetSceneHost(nullptr);
+    pluginhost::SetViewportClaimed(false);
     CleanupPendingImports();
 }
 
@@ -151,6 +194,53 @@ Vector3 RingPoint(Vector3 center, float radius, int axis, float angle) {
     if (axis == 0) return { center.x, center.y + c, center.z + s }; // X: YZ plane
     if (axis == 1) return { center.x + c, center.y, center.z + s }; // Y: XZ plane
     return { center.x + c, center.y + s, center.z };                // Z: XY plane
+}
+
+// Grid snapping: Ctrl held during a drag inverts the toolbar toggle.
+static bool SnapActive() {
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    return ui::GetSnapSettings().enabled != ctrl;
+}
+static float SnapValue(float v, float step) {
+    return step > 1e-6f ? roundf(v / step) * step : v;
+}
+
+// Snap to Object: slide the moved bounds so a face lies exactly against a face of a nearby object.
+static float& Comp(Vector3& v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; }
+static float Comp(const Vector3& v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; }
+
+static bool ValidBox(const BoundingBox& b) {
+    for (int a = 0; a < 3; ++a) {
+        const float lo = Comp(b.min, a), hi = Comp(b.max, a);
+        if (!std::isfinite(lo) || !std::isfinite(hi) || lo > hi) return false;
+    }
+    return true;
+}
+
+// Smallest translation along world axis `a` (|gap| < thresh) that makes `mv` touch a box in
+// `others`. The boxes must also overlap on the other two axes, within thresh.
+static bool BestTouchGap(const BoundingBox& mv, const std::vector<BoundingBox>& others, int a, float thresh, float& gapOut) {
+    bool found = false;
+    float best = thresh;
+    for (const BoundingBox& o : others) {
+        bool overlaps = true;
+        for (int k = 0; k < 3 && overlaps; ++k) {
+            if (k == a) continue;
+            overlaps = Comp(mv.min, k) <= Comp(o.max, k) + thresh && Comp(mv.max, k) >= Comp(o.min, k) - thresh;
+        }
+        if (!overlaps) continue;
+        const float cands[2] = { Comp(o.max, a) - Comp(mv.min, a), Comp(o.min, a) - Comp(mv.max, a) };
+        for (float g : cands) {
+            if (fabsf(g) < best) { best = fabsf(g); gapOut = g; found = true; }
+        }
+    }
+    return found;
+}
+
+static BoundingBox TranslatedBox(BoundingBox b, Vector3 d) {
+    b.min = Vector3Add(b.min, d);
+    b.max = Vector3Add(b.max, d);
+    return b;
 }
 
 // Ring point in object's local space (rotated by object's rotation)
@@ -344,6 +434,10 @@ static int PickWaterHandle(WaterBody* water, const Camera3D& cam, Vector2 mouse)
     return -1;
 }
 
+float ObjectInteractionManager::SnapToObjectThreshold() const {
+    return Clamp(Vector3Distance(camera.position, dragPivot) * 0.03f, 0.1f, 2.0f);
+}
+
 void ObjectInteractionManager::SyncSelection() {
     selectedObjects = ui::GetSelection();
 }
@@ -368,13 +462,16 @@ void ObjectInteractionManager::ToggleSelect(ScatteredObject* object) {
 }
 
 void ObjectInteractionManager::ToggleModel(ModelGroup* model) {
-    if (!model || model->members.empty()) return;
+    if (!model) return;
+    std::vector<ScatteredObject*> all;
+    model->CollectObjects(all);
+    if (all.empty()) return;
 
     PushUndoNow();
 
     bool allSelected = true;
-    for (auto* m : model->members) {
-        if (!m || !IsInSelection(m)) { allSelected = false; break; }
+    for (auto* m : all) {
+        if (!IsInSelection(m)) { allSelected = false; break; }
     }
 
     std::vector<ScatteredObject*> next = selectedObjects;
@@ -382,14 +479,14 @@ void ObjectInteractionManager::ToggleModel(ModelGroup* model) {
     if (allSelected) {
         next.erase(std::remove_if(next.begin(), next.end(),
             [&](ScatteredObject* o) {
-                return std::find(model->members.begin(), model->members.end(), o) != model->members.end();
+                return std::find(all.begin(), all.end(), o) != all.end();
             }), next.end());
         primary = next.empty() ? nullptr : next.front();
     } else {
-        for (auto* m : model->members) {
-            if (m && std::find(next.begin(), next.end(), m) == next.end()) next.push_back(m);
+        for (auto* m : all) {
+            if (std::find(next.begin(), next.end(), m) == next.end()) next.push_back(m);
         }
-        primary = model->members.front();
+        primary = all.front();
     }
     ui::SetSelection(next, primary);
 }
@@ -421,8 +518,20 @@ Vector3 ObjectInteractionManager::SelectionCenter() const {
 }
 
 void ObjectInteractionManager::RemoveEmptyModels() {
-    models.erase(std::remove_if(models.begin(), models.end(),
-        [](const std::unique_ptr<ModelGroup>& m) { return !m || m->members.empty(); }), models.end());
+    // Drop groups with no objects anywhere below them; deepest first so a chain of empty groups goes in one pass.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto it = models.begin(); it != models.end(); ++it) {
+            ModelGroup* m = it->get();
+            if (m && (!m->members.empty() || !m->children.empty())) continue;
+            // A plugin's group carries its source data; it survives being emptied while the plugin rebuilds it.
+            if (m && !m->pluginTag.empty()) continue;
+            if (m && m->parent) m->parent->RemoveChild(m);
+            models.erase(it);
+            changed = true;
+            break;
+        }
+    }
 }
 
 void ObjectInteractionManager::RemoveObjectFromScene(ScatteredObject* target) {
@@ -465,9 +574,58 @@ void ObjectInteractionManager::RemoveObjectFromScene(ScatteredObject* target) {
     // unused imported folders are collected on the next save (CommitAssets).
 }
 
+namespace {
+
+// Explorer standalone scripts ride along in undo snapshots as a "\nSCRIPTS n" trailer ahead of the city one.
+std::string SerializeStandaloneScripts() {
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return "";
+    const auto& scripts = rt->StandaloneScripts();
+    std::ostringstream out;
+    out << "\nSCRIPTS " << scripts.size() << "\n";
+    for (const auto& s : scripts)
+        out << (s.runOnPlay ? 1 : 0) << ' ' << std::quoted(s.name) << ' ' << std::quoted(s.typeName) << '\n';
+    return out.str();
+}
+
+// Reads the trailer if it is next in the stream (older snapshots and runtime-less ones have none).
+void RestoreStandaloneScripts(std::istream& in) {
+    const std::streampos base = in.tellg();
+    std::string marker;
+    size_t count = 0;
+    if (!(in >> marker) || marker != "SCRIPTS" || !(in >> count) || count > 100000) {
+        in.clear();
+        if (base != std::streampos(-1)) in.seekg(base);
+        return;
+    }
+    std::vector<ScriptRuntime::StandaloneScript> restored;
+    for (size_t i = 0; i < count; ++i) {
+        int run = 1;
+        ScriptRuntime::StandaloneScript s;
+        if (!(in >> run >> std::quoted(s.name) >> std::quoted(s.typeName))) { in.clear(); return; }
+        s.runOnPlay = run != 0;
+        restored.push_back(std::move(s));
+    }
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return;
+    auto& scripts = rt->StandaloneScripts();
+    // An entry that went away keeps its compiled class from being listed again by the library sync.
+    if (NativeScript::NativeScriptHost* host = rt->GetHost())
+        for (const auto& old : scripts) {
+            bool kept = false;
+            for (const auto& s : restored) if (s.name == old.name && s.typeName == old.typeName) { kept = true; break; }
+            if (!kept && !old.typeName.empty()) host->ForgetScriptClass(old.typeName);
+        }
+    scripts = std::move(restored);
+    ui::ClearScriptSelection();
+}
+
+} // namespace
+
 bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<std::string>& sel) const {
     const project::Info& current = project::GetCurrentProject();
     if (!SnapshotSceneToMemory(objects, models, current.path, bytes)) return false;
+    bytes += SerializeStandaloneScripts();
     bytes += city::SerializeCitiesSnapshot();
 
     sel.clear();
@@ -565,6 +723,8 @@ void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, con
     for (size_t i = 0; i < previousObjectCount; ++i) engine.RemoveEntity(objects[i]);
     objects.erase(objects.begin(), objects.begin() + previousObjectCount);
 
+    RestoreStandaloneScripts(in);
+
     // Trailing city payload ("\nCITY n ..."); a snapshot without one restores
     // the previous cities untouched.
     city::RestoreCitiesFromSnapshot(in, engine, [this]() -> city::City* {
@@ -589,6 +749,7 @@ void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, con
 
     SyncSelection();
     SelectObjectsByName(selNames);
+    pluginhost::Notify(pluginhost::SceneEvent::UndoRedo);
 }
 
 void ObjectInteractionManager::SelectObjectsByName(const std::vector<std::string>& names) {
@@ -710,6 +871,26 @@ void ObjectInteractionManager::BeginSelectionDrag() {
         dragStartStates.push_back(s);
     }
     dragPivot = SelectionCenter();
+    dragStartBounds = {};
+    snapTargets.clear();
+    if (ui::GetSnapSettings().toObject) {
+        bool first = true;
+        for (auto* obj : selectedObjects) {
+            if (!obj) continue;
+            BoundingBox b = obj->GetBoundingBox();
+            if (!ValidBox(b)) continue;
+            if (first) { dragStartBounds = b; first = false; }
+            else { dragStartBounds.min = Vector3Min(dragStartBounds.min, b.min); dragStartBounds.max = Vector3Max(dragStartBounds.max, b.max); }
+        }
+        if (first) dragStartBounds = {};
+        else {
+            for (auto* obj : objects) {
+                if (!obj || IsInSelection(obj)) continue;
+                BoundingBox b = obj->GetBoundingBox();
+                if (ValidBox(b)) snapTargets.push_back(b);
+            }
+        }
+    }
     ScatteredObject* primary = ui::GetPrimarySelection();
     if (primary) {
         startPos = *primary->GetPosPtr();
@@ -722,7 +903,7 @@ ScatteredObject* ObjectInteractionManager::PickObject(Ray ray) const {
     float closestDistance = 1e9f;
     ScatteredObject* hitObject = nullptr;
     for (auto* obj : objects) {
-        if (!obj) continue;
+        if (!obj || obj->IsHiddenEffective() || obj->IsLockedEffective()) continue;
         BoundingBox box = obj->GetBoundingBox();
         // Check for valid bounding box
         if (box.min.x > box.max.x || box.min.y > box.max.y || box.min.z > box.max.z) continue;
@@ -742,7 +923,10 @@ ModelGroup* ObjectInteractionManager::PickModel(Ray ray) const {
     float closestDistance = 1e9f;
     ModelGroup* hitModel = nullptr;
     for (const auto& model : models) {
-        if (!model || model->members.empty()) continue;
+        if (!model || model->parent || model->IsHiddenEffective() || model->IsLockedEffective()) continue;
+        std::vector<ScatteredObject*> all;
+        model->CollectObjects(all);
+        if (all.empty()) continue;
         BoundingBox box = model->GetBounds();
         if (box.min.x > box.max.x || box.min.y > box.max.y || box.min.z > box.max.z) continue;
         if (!std::isfinite(box.min.x) || !std::isfinite(box.min.y) || !std::isfinite(box.min.z)) continue;
@@ -787,9 +971,9 @@ ObjectInteractionManager::ClickTarget ObjectInteractionManager::PickClickTargets
     }
 
     if (hitObject && hitObject->parentModel) {
-        // Clicking a member of a model selects the whole model.
-        target.model = hitObject->parentModel;
-        target.objects = target.model->members;
+        // Clicking a member of a model selects the outermost model.
+        target.model = hitObject->parentModel->Root();
+        target.model->CollectObjects(target.objects);
         target.primary = target.objects.empty() ? nullptr : target.objects.front();
         return target;
     }
@@ -798,7 +982,7 @@ ObjectInteractionManager::ClickTarget ObjectInteractionManager::PickClickTargets
         ModelGroup* hitModel = PickModel(ray);
         if (hitModel != nullptr) {
             target.model = hitModel;
-            target.objects = hitModel->members;
+            hitModel->CollectObjects(target.objects);
             target.primary = target.objects.empty() ? nullptr : target.objects.front();
         }
     }
@@ -919,6 +1103,7 @@ void ObjectInteractionManager::PumpDialogs() {
             c->alive = false;
         }
         city::SetActiveCity(nullptr);
+        pluginhost::Notify(pluginhost::SceneEvent::Loaded);
         return;
     }
 
@@ -942,6 +1127,10 @@ void ObjectInteractionManager::Update(float dt) {
         else RestorePlaySnapshot();
     }
 
+    // Editor modes: Play ends them; a top-bar request switches them.
+    if (playing && !pluginhost::ActiveModeId().empty()) pluginhost::RequestMode("");
+    if (!playing || !pluginhost::ActiveModeId().empty()) pluginhost::ProcessModeRequest();
+
     if (playing) return; // editing disabled while physics runs
 
     // Update terrain editor
@@ -949,7 +1138,13 @@ void ObjectInteractionManager::Update(float dt) {
 
     // City node editor: must run (and possibly consume the viewport click)
     // before any object picking below.
-    const bool cityConsumedClick = city::UpdateCityEditor(engine, camera);
+    bool cityConsumedClick = city::UpdateCityEditor(engine, camera);
+
+    // A plugin mode owns the viewport: no picking, and no leftover gizmo from an earlier selection.
+    if (pluginhost::IsViewportClaimed()) {
+        if (!ui::GetSelection().empty()) ui::SetSelection({}, nullptr);
+        cityConsumedClick = true;
+    }
 
     {
         std::string spawnPath;
@@ -1007,6 +1202,7 @@ void ObjectInteractionManager::Update(float dt) {
     if (!ui::IsEditingText()) {
         std::vector<ScatteredObject*> pendingDelete = ui::ConsumePendingDelete();
         if (!pendingDelete.empty()) {
+            PushUndoNow();
             for (auto* target : pendingDelete) {
                 RemoveObjectFromScene(target);
             }
@@ -1044,6 +1240,9 @@ void ObjectInteractionManager::Update(float dt) {
         }
     }
 
+    // A plugin mode owns everything below: shortcuts, the context menu, picking and gizmos.
+    if (pluginhost::IsViewportClaimed()) return;
+
     // Ctrl+A selects every object in the scene.
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen() &&
         (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_A)) {
@@ -1059,6 +1258,21 @@ void ObjectInteractionManager::Update(float dt) {
         return;
     }
 
+    // Ctrl+G groups the selection, Ctrl+U ungroups it.
+    if (!ui::IsEditingText() && !ui::IsContextMenuOpen() &&
+        (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        if (IsKeyPressed(KEY_G) && ui::CanGroupSelection()) {
+            PushUndoNow();
+            ui::GroupSelectedObjects();
+            return;
+        }
+        if (IsKeyPressed(KEY_U) && ui::UngroupSelection(true)) {
+            PushUndoNow();
+            ui::UngroupSelection();
+            return;
+        }
+    }
+
     // Ctrl+L toggle transform space (Local/World)
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen()) {
         if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_L)) {
@@ -1066,6 +1280,22 @@ void ObjectInteractionManager::Update(float dt) {
             ui::LogAlways("Transform space: %s", ui::IsTransformLocalSpace() ? "Local" : "World");
             return;
         }
+    }
+
+    // G toggles gizmo snapping.
+    if (!ui::IsEditingText() && !ui::IsContextMenuOpen() && IsKeyPressed(KEY_G) &&
+        !(IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        ui::SnapSettings& sn = ui::GetSnapSettings();
+        sn.enabled = !sn.enabled;
+        ui::LogAlways("Snap: %s", sn.enabled ? "On" : "Off");
+    }
+
+    // H toggles Snap to Object.
+    if (!ui::IsEditingText() && !ui::IsContextMenuOpen() && IsKeyPressed(KEY_H) &&
+        !(IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        ui::SnapSettings& sn = ui::GetSnapSettings();
+        sn.toObject = !sn.toObject;
+        ui::LogAlways("Snap to Object: %s", sn.toObject ? "On" : "Off");
     }
 
     // Delete/Backspace: one path for every deletable thing (objects, water, terrain).
@@ -1113,6 +1343,8 @@ void ObjectInteractionManager::Update(float dt) {
 
     // 1. Process Context Menu Actions FIRST
     ui::MenuAction action = ui::ProcessContextMenu();
+    if (action != ui::MenuAction::None && ui::ConsumeActionAtViewportCenter())
+        rmbPressPos = { GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f };
 
     if (action == ui::MenuAction::Save) {
         const project::Info& current = project::GetCurrentProject();
@@ -1203,6 +1435,7 @@ void ObjectInteractionManager::Update(float dt) {
     }
 
     if (action == ui::MenuAction::SpawnWater) {
+        PushUndoNow();
         Ray ray = GetMouseRay(rmbPressPos, camera);
         Vector3 spawnPos;
 
@@ -1400,6 +1633,16 @@ void ObjectInteractionManager::Update(float dt) {
     const bool additive = shiftDown || ctrlHeld;
     ScatteredObject* primary = ui::GetPrimarySelection();
 
+    // Holding ALT and hovering an object selects just that object, even inside a group. Needs no click, so it
+    // also works where the window manager grabs Alt+click.
+    if (altHeld && !additive && activeHandle < 0 && !freeDrag && !ui::IsContextMenuOpen() && !ui::IsEditingText() &&
+        !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) &&
+        PickHandle(GetMousePosition()) < 0) {
+        if (ScatteredObject* hover = PickObject(GetMouseRay(GetMousePosition(), camera))) {
+            if (!IsExactSelection({ hover })) ui::SetSelection({ hover }, hover);
+        }
+    }
+
     // Water body gizmo interaction (Move + Scale, no Rotate)
     WaterBody* waterSel = ui::GetSelectedWater();
     if (waterSel && ui::GetActiveTool() != ui::TransformTool::Select &&
@@ -1559,9 +1802,37 @@ void ObjectInteractionManager::Update(float dt) {
                 if (freeDrag) {
                     Ray ray = GetMouseRay(GetMousePosition(), camera);
                     Vector3 hit = RayPlaneIntersection(ray, startPos, dragPlaneNormal);
-                    next = Vector3Add(startPos, Vector3Subtract(hit, dragPlanePoint));
+                    Vector3 delta = Vector3Subtract(hit, dragPlanePoint);
+                    if (SnapActive()) {
+                        const float st = ui::GetSnapSettings().move;
+                        delta = { SnapValue(delta.x, st), SnapValue(delta.y, st), SnapValue(delta.z, st) };
+                    }
+                    if (!snapTargets.empty()) {
+                        for (int a = 0; a < 3; ++a) {
+                            float g;
+                            if (BestTouchGap(TranslatedBox(dragStartBounds, delta), snapTargets, a, SnapToObjectThreshold(), g)) Comp(delta, a) += g;
+                        }
+                    }
+                    next = Vector3Add(startPos, delta);
                 } else {
-                    next = axisMove.Apply(GetMouseRay(GetMousePosition(), camera));
+                    float off = axisMove.Offset(GetMouseRay(GetMousePosition(), camera));
+                    if (SnapActive()) off = SnapValue(off, ui::GetSnapSettings().move);
+                    if (!snapTargets.empty()) {
+                        // The drag is locked to one line: find the shift along it that closes the nearest face gap.
+                        const BoundingBox mv = TranslatedBox(dragStartBounds, Vector3Scale(axisMove.dir, off));
+                        bool found = false;
+                        float bestDt = 0.0f;
+                        for (int a = 0; a < 3; ++a) {
+                            const float d = Comp(axisMove.dir, a);
+                            if (fabsf(d) < 0.2f) continue;
+                            float g;
+                            if (!BestTouchGap(mv, snapTargets, a, SnapToObjectThreshold() * fabsf(d), g)) continue;
+                            const float dt = g / d;
+                            if (!found || fabsf(dt) < fabsf(bestDt)) { bestDt = dt; found = true; }
+                        }
+                        if (found) off += bestDt;
+                    }
+                    next = Vector3Add(axisMove.origin, Vector3Scale(axisMove.dir, off));
                 }
 
                 if (multi) {
@@ -1592,6 +1863,7 @@ void ObjectInteractionManager::Update(float dt) {
                         Vector2 dir = Vector2Scale(Vector2Subtract(cornerScreen, centerScreen), 1.0f / r0);
                         float deltaAlong = Vector2DotProduct(mouseDelta, dir);
                         uniformFactor = Clamp(1.0f + deltaAlong / r0, 0.02f, 100.0f);
+                        if (SnapActive()) uniformFactor = fmaxf(SnapValue(uniformFactor, ui::GetSnapSettings().scale), 0.02f);
                         uniformScale = true;
                         nextSize = Vector3Scale(startSize, uniformFactor);
                     }
@@ -1625,6 +1897,14 @@ void ObjectInteractionManager::Update(float dt) {
                         if (activeHandle == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, currentSize.y + amount);
                         if (activeHandle == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, currentSize.z + amount);
                     }
+                }
+
+                if (!uniformScale && activeHandle >= 0 && activeHandle < 3 && SnapActive()) {
+                    const float st = ui::GetSnapSettings().scale;
+                    auto snapAxis = [&](float v) { return fmaxf(SCALE_MIN_SIZE, SnapValue(v, st)); };
+                    if (activeHandle == 0) nextSize.x = snapAxis(nextSize.x);
+                    if (activeHandle == 1) nextSize.y = snapAxis(nextSize.y);
+                    if (activeHandle == 2) nextSize.z = snapAxis(nextSize.z);
                 }
 
                 if (multi) {
@@ -1675,6 +1955,7 @@ void ObjectInteractionManager::Update(float dt) {
                 // Total rotation from drag start is a pure function of the cursor
                 // position, so it can't accumulate per-frame error or spiral out.
                 float totalDegrees = -totalDelta * RAD2DEG * rotateSign;
+                if (SnapActive()) totalDegrees = SnapValue(totalDegrees, ui::GetSnapSettings().rotate);
 
                 bool localSpace = ui::IsTransformLocalSpace();
                 Vector3 axisDir = localSpace ? RotatedAxisDirection(startRotation, activeHandle) : AxisDirection(activeHandle);
@@ -1810,6 +2091,7 @@ void ObjectInteractionManager::Update(float dt) {
 }
 
 void ObjectInteractionManager::DrawOverlay3D() {
+    if (ui::IsPlayActive()) return; // gizmos are editing aids; Update() already ignores input during play
     // Water body gizmo (no ScatteredObject primary needed)
     WaterBody* waterSel = ui::GetSelectedWater();
     if (waterSel && ui::GetActiveTool() != ui::TransformTool::Select &&

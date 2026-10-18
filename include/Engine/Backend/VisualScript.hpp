@@ -66,6 +66,9 @@ enum class NodeType {
     Time = 50,          // prop = "Delta Time" or "Time Since Play"
     ObjectExists = 51,  // target = object path: true if it is in the scene
     StopSound = 52,     // target = file; the "object" sound option limits it to that object's sound (see SoundOption)
+    GamepadButtonDown = 53,   // prop = button (see GamepadButtonNames); gamepad 0: true while it is held
+    GamepadAxis = 54,         // prop = axis (see GamepadAxisNames); gamepad 0: -1..1, triggers rest at -1
+    OnGamepadButton = 55,     // event: prop = button name (see GamepadButtonNames); gamepad 0
     Count_
 };
 
@@ -154,6 +157,8 @@ std::vector<int> SetupChainNodes();
 const char* TypeName(NodeType t);
 const char* NodeHelp(NodeType t);             // one or two sentences on what the node does (the Insert Node tooltip); "" if unknown
 const std::vector<std::string>& KeyNames();   // keys offered by On Key Pressed
+const std::vector<std::string>& GamepadButtonNames();   // buttons offered by the gamepad nodes (gamepad 0)
+const std::vector<std::string>& GamepadAxisNames();      // axes offered by the Gamepad Axis node (gamepad 0)
 const std::vector<std::string>& ShapeNames(); // shapes offered by Create Object
 const std::vector<std::string>& MathFuncNames();   // functions offered by the Math Function node (Sin/Cos take degrees)
 const std::vector<std::string>& VecMathOps();
@@ -201,6 +206,10 @@ ScatteredObject* ResolveObject(ScriptRuntime& rt, const std::string& path);
 // its C++ equivalent behave identically.
 bool IsKeyHeld(const std::string& keyName);       // a name from KeyNames()
 bool WasKeyPressed(const std::string& keyName);   // went down this frame
+bool IsGamepadAvailable(int gamepad);
+bool IsGamepadButtonHeld(int gamepad, const std::string& buttonName);       // a name from GamepadButtonNames()
+bool WasGamepadButtonPressed(int gamepad, const std::string& buttonName);   // went down this frame
+float GamepadAxisValue(int gamepad, const std::string& axisName);          // a name from GamepadAxisNames(); -1..1
 void ShowText(const std::string& text, const std::string& position, float seconds);   // position from HudPositions(); seconds 0 = until replaced; "" clears
 void PlaySoundFile(ScriptRuntime& rt, const std::string& file, float volume);        // file relative to the project (or absolute)
 void PlaySoundNode(ScriptRuntime& rt, const Node& n, float volume);                  // Play Sound with all its options

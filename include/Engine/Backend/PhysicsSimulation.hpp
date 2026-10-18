@@ -94,6 +94,10 @@ public:
                           float minNormalY, Vector3& outNormal);
 
     const std::vector<ContactEvent>& GetContactBeginEvents() const { return contactBeginEvents; }
+    // Everything that touched / hit during the last Update() call, across all of its fixed steps (the lists above hold
+    // only the final step's). Cleared at the start of the next Update(), so a consumer sees each event once.
+    const std::vector<ContactEvent>& GetFrameBeginEvents() const { return frameBeginEvents; }
+    const std::vector<ContactEvent>& GetFrameHitEvents() const { return frameHitEvents; }
     const std::vector<ContactEvent>& GetContactHitEvents() const { return contactHitEvents; }
 
     // Debug draw. This class collects the data (contact events, body transforms,
@@ -174,6 +178,8 @@ private:
     std::vector<b3JointId> joints;
 
     std::vector<ContactEvent> contactBeginEvents;
+    std::vector<ContactEvent> frameBeginEvents;
+    std::vector<ContactEvent> frameHitEvents;
     std::vector<ContactEvent> contactHitEvents;
 
     // Overwritten from the "physics_gravity" cvar in StartPlay(), where the

@@ -18,6 +18,7 @@ set(FLY_SHADERS
     ${CMAKE_SOURCE_DIR}/shaders/post.glsl)
 set(FLY_SHADER_INCLUDES
     ${CMAKE_SOURCE_DIR}/shaders/fly_common.glsl
+    ${CMAKE_SOURCE_DIR}/shaders/fly_shadow.glsl
     ${CMAKE_SOURCE_DIR}/shaders/fly_atmosphere.glsl)
 
 # --- Backend selection ------------------------------------------------------
@@ -150,9 +151,11 @@ add_library(${target} STATIC
     src/Engine/RL/rl_fallback.c
     src/Engine/RL/sokol_imgui_impl.cpp
     src/Engine/RL/rl_core.cpp
+    src/Engine/RL/rl_gamepad.cpp
     src/Engine/RL/rl_gfx.cpp
     src/Engine/RL/rl_batch.cpp
     src/Engine/RL/rl_shader.cpp
+    src/Engine/RL/rl_shader_hotreload.cpp
     src/Engine/RL/rl_textures.cpp
     src/Engine/RL/rl_models.cpp
     src/Engine/RL/rl_misc.cpp
@@ -170,6 +173,13 @@ set_source_files_properties(${FLY_SHADERS} PROPERTIES HEADER_FILE_ONLY ON)
 add_dependencies(${target} FlyShaders)
 
 target_compile_definitions(${target} PUBLIC ${sokol_define} RL_SOKOL_BACKEND)
+# Lets rl_shader_hotreload.cpp shell out to the same pinned sokol-shdc and
+# recompile a single shader's wrapper .cpp with the same backend macro.
+target_compile_definitions(${target} PRIVATE
+    FLY_SOKOL_SHDC_PATH="${FLYENGINE_SOKOL_SHDC}"
+    FLY_SHADERS_SRC_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    FLY_SOKOL_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/sokol"
+    FLY_SOKOL_BACKEND_DEFINE="${sokol_define}")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # sokol_gfx's own validation layer.
     target_compile_definitions(${target} PRIVATE FLY_SOKOL_DEBUG)
@@ -260,14 +270,20 @@ elseif(backend STREQUAL "D3D11")
 endif()
 
 if(WIN32)
-    target_link_libraries(${target} PUBLIC kernel32 user32 shell32 gdi32 dwmapi)
+    # xinput9_1_0 (not xinput1_4/1_3) ships on every Windows version back to
+    # Vista and is what rl_gamepad.cpp links against.
+    target_link_libraries(${target} PUBLIC kernel32 user32 shell32 gdi32 dwmapi xinput9_1_0)
 elseif(UNIX AND NOT APPLE)
     find_package(X11 REQUIRED)
     if(NOT X11_Xi_FOUND OR NOT X11_Xcursor_FOUND)
         message(FATAL_ERROR "sokol_app needs libXi and libXcursor development files")
     endif()
     find_package(Threads REQUIRED)
-    target_link_libraries(${target} PUBLIC X11::X11 X11::Xi X11::Xcursor Threads::Threads ${CMAKE_DL_LIBS} m)
+    # rl_gamepad.cpp enumerates joystick devices through libudev.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FLY_UDEV REQUIRED libudev)
+    target_link_libraries(${target} PUBLIC X11::X11 X11::Xi X11::Xcursor Threads::Threads ${CMAKE_DL_LIBS} m ${FLY_UDEV_LIBRARIES})
+    target_include_directories(${target} PRIVATE ${FLY_UDEV_INCLUDE_DIRS})
 endif()
 endfunction()
 

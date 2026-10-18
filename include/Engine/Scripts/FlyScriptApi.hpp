@@ -118,6 +118,24 @@ FLY_API void FlyNative_PlaySound(const char* file, float volume);
 FLY_API void FlyNative_SetMasterVolume(float volume);
 FLY_API void FlyNative_ShowText(const char* text, const char* position, float seconds);
 FLY_API float FlyNative_TimeSincePlay(void);
+FLY_API short FlyNative_GamepadAvailable(int gamepad);
+FLY_API short FlyNative_GamepadButtonDown(int gamepad, const char* buttonName);
+FLY_API short FlyNative_GamepadButtonPressed(int gamepad, const char* buttonName);
+FLY_API float FlyNative_GamepadAxis(int gamepad, const char* axisName);
+
+// Gameplay queries and effects (see FlyRayHit / FlyTouch and friends in FlyScriptABI.h).
+FLY_API short FlyNative_RaycastEx(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, struct FlyRayHit* out);
+FLY_API int   FlyNative_OverlapSphere(float cx, float cy, float cz, float radius, unsigned long long* out, int maxCount);
+FLY_API int   FlyNative_PollTouches(struct FlyTouch* out, int maxCount);
+FLY_API unsigned FlyNative_CreateJoint(int kind, unsigned long long a, unsigned long long b, float ax, float ay, float az, float bx, float by, float bz);
+FLY_API void  FlyNative_DestroyJoint(unsigned joint);
+FLY_API void  FlyNative_GetCamera(float* out7);
+FLY_API void  FlyNative_SetCamera(const float* in7);
+FLY_API void  FlyNative_EmitParticles(const char* preset, float x, float y, float z, float dx, float dy, float dz, int count, float scale);
+FLY_API unsigned FlyNative_StartEmitter(const char* preset, float x, float y, float z, float dx, float dy, float dz, float scale);
+FLY_API void  FlyNative_MoveEmitter(unsigned emitter, float x, float y, float z, float dx, float dy, float dz);
+FLY_API void  FlyNative_StopEmitter(unsigned emitter);
+FLY_API void  FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
 
 // Physics (game.Physics.* - routed to the simulation).
 FLY_API float FlyNative_GetGravity(void);

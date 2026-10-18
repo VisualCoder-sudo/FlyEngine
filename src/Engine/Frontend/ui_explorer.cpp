@@ -1,5 +1,6 @@
 // ui_explorer.cpp: the Explorer panel and its right-click menu, split out of ui.cpp.
 #include "ui_internal.hpp"
+#include "../../../include/Engine/Frontend/PluginHost.hpp"
 #include <map>
 #include <set>
 #include "../../../include/Engine/ExportManager.hpp"
@@ -33,6 +34,10 @@
 #include <unordered_map>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
+#include <functional>
+#include <fstream>
+#include <unordered_set>
 #include "ui_internal.hpp"
 
 namespace ui {
@@ -81,148 +86,595 @@ static void SyncVisualScriptEntries() {
     }
 }
 
-const char* ExplorerMenuItemLabel(int i) {
-    switch (g_explorerMenuMode) {
-        case ExplorerMenuMode::Object: {
-            bool singleSel = g_explorerMenuObject
-                && g_selection.size() == 1
-                && std::find(g_selection.begin(), g_selection.end(), g_explorerMenuObject) != g_selection.end();
-            bool has = singleSel && !g_explorerMenuObject->script.empty();
-            bool canGroup = g_selection.size() >= 2;
-            bool inModel = g_explorerMenuObject && g_explorerMenuObject->parentModel;
-            int cursor = 0;
-            if (singleSel && i == cursor++) return has ? "Edit Script" : "Add Script";
-            if (has && i == cursor++) return "Remove Script";
-            if (has && i == cursor++) return "Choose Editor...";
-            if (has && i == cursor++) return "Open in Visual Script";
-            if (canGroup && i == cursor++) return "Group";
-            if (inModel && i == cursor++) return "Ungroup";
-            return nullptr;
-        }
-        case ExplorerMenuMode::Model: {
-            if (i == 0) return "Ungroup";
-            if (i == 1) return "Delete";
-            return nullptr;
-        }
-        case ExplorerMenuMode::Empty:
-            return i == 0 ? "Insert Script" : nullptr;
-        case ExplorerMenuMode::Script:
-            if (ScriptMenuIsMulti()) return i == 0 ? "Open in Visual Script" : (i == 1 ? "Delete Selected" : nullptr);
-            return i == 0 ? "Rename" : (i == 1 ? "Delete" : (i == 2 ? "Choose Editor..." : (i == 3 ? "Open in Visual Script" : nullptr)));
-    }
-    return nullptr;
+static bool ExplorerRenameActive() {
+    return g_renameObject || g_renameModel || g_renameTerrain || g_renameLegacyTerrain || g_scriptRenameIndex >= 0;
 }
 
-static void PerformExplorerMenuAction(int i) {
-    // Object/group/model actions work without a script runtime; only the
-    // script-list actions need one, and they check below.
-    switch (g_explorerMenuMode) {
-        case ExplorerMenuMode::Object: {
-            if (!g_explorerMenuObject) return;
-            bool singleSel = g_selection.size() == 1
-                && std::find(g_selection.begin(), g_selection.end(), g_explorerMenuObject) != g_selection.end();
-            bool has = singleSel && !g_explorerMenuObject->script.empty();
-            bool canGroup = g_selection.size() >= 2;
-            bool inModel = g_explorerMenuObject->parentModel != nullptr;
-            int cursor = 0;
-            if (singleSel && i == cursor++) {
-                scriptLauncher::EditObjectScript(g_explorerMenuObject);
-                return;
-            }
-            if (has && i == cursor++) {
-                if (ScriptRuntime* rt = GetActiveRuntime()) rt->StopObjectScript(g_explorerMenuObject);
-                g_explorerMenuObject->script.clear();
-                g_explorerMenuObject->runOnPlay = false;
-                return;
-            }
-            if (has && i == cursor++) {
-                scriptLauncher::ChooseEditorForObjectScript(g_explorerMenuObject);
-                return;
-            }
-            if (has && i == cursor++) {
-                vscript::OpenByName(scriptLauncher::MakeClassName(g_explorerMenuObject->script));
-                SelectBottomTab(2);
-                return;
-            }
-            if (canGroup && i == cursor++) {
-                GroupSelectedObjects();
-                return;
-            }
-            if (inModel && i == cursor++) {
-                UngroupModelContaining(g_explorerMenuObject);
-                return;
-            }
-            break;
-        }
-        case ExplorerMenuMode::Model: {
-            if (!g_explorerMenuObject || !g_explorerMenuObject->parentModel) return;
-            if (i == 0) {
-                UngroupModelContaining(g_explorerMenuObject);
-            } else if (i == 1) {
-                ModelGroup* model = g_explorerMenuObject->parentModel;
-                std::vector<ScatteredObject*> targets = model->members;
-                UngroupModelContaining(g_explorerMenuObject);
-                RequestDelete(targets);
-                SetSelection({}, nullptr);
-            }
-            break;
-        }
-        case ExplorerMenuMode::Empty: {
-            if (ScriptRuntime* rt = GetActiveRuntime()) {
-                auto& scripts = rt->StandaloneScripts();
-                ScriptRuntime::StandaloneScript s;
-                s.name = "Script";
-                s.typeName = "";
-                s.runOnPlay = true;
-                scripts.push_back(std::move(s));
-                auto idx = static_cast<int>(scripts.size()) - 1;
-                std::string className;
-                scriptLauncher::EditStandaloneScript(scripts[idx].name, scripts[idx].typeName, &className);
-                if (!className.empty() && scripts[idx].typeName.empty())
-                    scripts[idx].typeName = className;
-            }
-            break;
-        }
-        case ExplorerMenuMode::Script: {
-            if (ScriptRuntime* rt = GetActiveRuntime()) {
-                auto& scripts = rt->StandaloneScripts();
-                if (g_explorerMenuScript < 0 || g_explorerMenuScript >= static_cast<int>(scripts.size())) return;
-                if (ScriptMenuIsMulti()) {
-                    const std::set<std::string> keys = g_scriptSel;
-                    if (i == 0) {
-                        for (const auto& k : keys) vscript::OpenByName(k);
-                        SelectBottomTab(2);
-                    } else if (i == 1) {
-                        for (int k = static_cast<int>(scripts.size()) - 1; k >= 0; --k)
-                            if (keys.count(ScriptKey(scripts[k]))) {
-                                DeleteScriptEverywhere(ScriptKey(scripts[k]), k);
-                            }
-                        g_scriptSel.clear();
-                    }
-                    return;
-                }
-                if (i == 0) {
-                    g_scriptRenameIndex = g_explorerMenuScript;
-                    snprintf(g_scriptNameBuffer, sizeof(g_scriptNameBuffer), "%s", scripts[g_explorerMenuScript].name.c_str());
-                    g_scriptNameBuffer[sizeof(g_scriptNameBuffer) - 1] = '\0';
-                    g_cursorPos = static_cast<int>(strlen(g_scriptNameBuffer));
-                    g_selStart = -1;
-                } else if (i == 1) {
-                    DeleteScriptEverywhere(ScriptKey(scripts[g_explorerMenuScript]), g_explorerMenuScript);
-                } else if (i == 2) {
-                    auto& s = scripts[g_explorerMenuScript];
-                    scriptLauncher::ChooseEditorForStandaloneScript(s.name, s.typeName);
-                } else if (i == 3) {
-                    vscript::OpenByName(ScriptKey(scripts[g_explorerMenuScript]));
-                    SelectBottomTab(2);
-                }
-            }
-            break;
-        }
+// Small helper: draw+commit/cancel an inline rename InputText, focusing it
+// the first frame it appears. Returns true once Enter/blur commits the value.
+static bool ExplorerRenameField(const char* imguiId, char* buf, size_t bufSize, bool justOpened) {
+    if (justOpened) ImGui::SetKeyboardFocusHere();
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll;
+    bool committed = ImGui::InputText(imguiId, buf, bufSize, flags);
+    bool cancel = ImGui::IsItemDeactivated() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    bool blurred = ImGui::IsItemDeactivatedAfterEdit() && !committed;
+    if (committed || blurred) return true;
+    if (cancel) { *buf = '\0'; return false; } // caller checks g_render* pointers, not the buffer, to detect cancel
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Context menu: a list of {label, action} built when the menu opens.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct MenuItem {
+    std::string label;
+    std::function<void()> action;
+    std::vector<MenuItem> sub;   // non-empty: this entry opens a submenu
+    bool undo = true;            // false when the action does not change the scene, or records its own undo step
+};
+std::vector<MenuItem> s_menuItems;
+
+// Group currently highlighted in the tree. Only needed for groups that hold no objects (nothing to select);
+// every other group is highlighted from the selection itself.
+ModelGroup* s_selGroup = nullptr;
+
+bool GroupExists(const ModelGroup* g) {
+    if (!g || !g_sceneModels) return false;
+    for (const auto& m : *g_sceneModels) if (m.get() == g) return true;
+    return false;
+}
+
+std::vector<ScatteredObject*> GroupObjects(const ModelGroup* g) {
+    std::vector<ScatteredObject*> out;
+    if (g) g->CollectObjects(out);
+    return out;
+}
+
+bool AllSelected(const std::vector<ScatteredObject*>& objs) {
+    if (objs.empty()) return false;
+    for (auto* o : objs) if (!o || !o->isSelected) return false;
+    return true;
+}
+
+// The outermost group whose objects are all selected and that contains `obj`, or nullptr.
+ModelGroup* FullySelectedGroupOf(ScatteredObject* obj) {
+    ModelGroup* best = nullptr;
+    for (ModelGroup* g = obj ? obj->parentModel : nullptr; g; g = g->parent)
+        if (AllSelected(GroupObjects(g))) best = g;
+    return best;
+}
+
+void BeginRename(ModelGroup* g) {
+    g_renameModel = g;
+    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g->name.c_str());
+    g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
+}
+
+void BeginRename(ScatteredObject* o) {
+    g_renameObject = o;
+    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", o->GetName().c_str());
+    g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
+}
+
+// --- Fold state --------------------------------------------------------------
+// Everything is open unless its key is in s_closed. Group keys are the "/"-joined name path so the state
+// survives a restart and a scene reload. Saved to <config dir>/explorer_folds.txt.
+std::unordered_set<std::string> s_closed;
+bool s_foldLoaded = false;
+
+std::string FoldFilePath() {
+    const std::string dir = platform::ConfigDir();
+    return dir.empty() ? std::string() : dir + "/explorer_folds.txt";
+}
+
+void LoadFolds() {
+    if (s_foldLoaded) return;
+    s_foldLoaded = true;
+    const std::string path = FoldFilePath();
+    if (path.empty()) return;
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) if (!line.empty()) s_closed.insert(line);
+}
+
+void SaveFolds() {
+    const std::string path = FoldFilePath();
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::ofstream out(path, std::ios::trunc);
+    for (const auto& k : s_closed) out << k << '\n';
+}
+
+std::string GroupKey(const ModelGroup* g) {
+    std::string key = g->name;
+    for (const ModelGroup* p = g->parent; p; p = p->parent) key = p->name + "/" + key;
+    return key;
+}
+
+bool IsOpen(const std::string& key) { return s_closed.count(key) == 0; }
+
+void SetOpen(const std::string& key, bool open) {
+    if (open ? s_closed.erase(key) > 0 : s_closed.insert(key).second) SaveFolds();
+}
+
+void ExpandAll() {
+    if (s_closed.empty()) return;
+    s_closed.clear();
+    SaveFolds();
+}
+
+void CollapseAll() {
+    for (const char* k : { "#Objects", "#Water", "#Terrain", "#Lighting", "#Scripts" }) s_closed.insert(k);
+    if (g_sceneModels) for (const auto& m : *g_sceneModels) if (m) s_closed.insert(GroupKey(m.get()));
+    SaveFolds();
+}
+
+// --- Search ------------------------------------------------------------------
+char s_filter[64] = "";
+
+bool FilterActive() { return s_filter[0] != '\0'; }
+
+bool NameMatches(const std::string& name) {
+    if (!FilterActive()) return true;
+    auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    std::string hay(name), needle(s_filter);
+    std::transform(hay.begin(), hay.end(), hay.begin(), lower);
+    std::transform(needle.begin(), needle.end(), needle.begin(), lower);
+    return hay.find(needle) != std::string::npos;
+}
+
+bool GroupMatches(const ModelGroup* g) {
+    if (!FilterActive()) return true;
+    if (NameMatches(g->name)) return true;
+    for (const auto* m : g->members) if (m && NameMatches(m->GetName())) return true;
+    for (const auto* c : g->children) if (c && GroupMatches(c)) return true;
+    return false;
+}
+
+// --- Reveal: a selection made elsewhere (3D view) opens the path to its row and scrolls to it ----------------
+const void* s_scrollTarget = nullptr;
+
+// Call just before drawing a row, with the cursor still at its start.
+void ScrollToIfTarget(const void* id) {
+    if (!id || id != s_scrollTarget) return;
+    s_scrollTarget = nullptr;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    if (!ImGui::IsRectVisible(p, ImVec2(p.x + 1.0f, p.y + 20.0f))) ImGui::SetScrollHereY(0.5f);
+}
+
+// Opens every fold above `obj` and queues a scroll to it. Runs once per change of the primary selection.
+void RevealObject(ScatteredObject* obj) {
+    if (!obj) return;
+    bool changed = false;
+    auto open = [&](const std::string& key) { if (s_closed.erase(key) > 0) changed = true; };
+    open("#Objects");
+    for (ModelGroup* g = obj->parentModel; g; g = g->parent) open(GroupKey(g));
+    if (changed) SaveFolds();
+    s_scrollTarget = obj;
+}
+
+// --- Row drawing -------------------------------------------------------------
+struct RowDesc {
+    const void* id = nullptr;
+    int idInt = 0;                       // used when id is null
+    RowIconType icon = ROWICON_OBJECT;
+    ImTextureID customIcon = 0;          // overrides `icon` (plugin group kinds)
+    bool showIcon = true;
+    const char* label = "";
+    bool selected = false;
+    int depth = 0;
+    bool hasArrow = false;
+    bool open = false;
+    bool dimmed = false;
+    bool header = false;                 // category row: muted caps look
+    bool renaming = false;
+    char* renameBuf = nullptr;
+    size_t renameBufSize = 0;
+    bool* hidden = nullptr;              // eye toggle
+    bool* locked = nullptr;              // lock toggle
+    bool hiddenInherited = false;        // shown dim when a parent group is hidden
+    bool lockedInherited = false;
+    ScatteredObject* obj = nullptr;      // set for tree rows that take part in drag and drop
+    ModelGroup* group = nullptr;
+    bool dropToRoot = false;             // dropping on this row moves things out of every group
+};
+
+struct RowResult {
+    bool clicked = false;
+    bool doubleClicked = false;
+    bool rightClicked = false;
+    bool arrowClicked = false;
+    bool renameCommit = false;
+    bool renameCancel = false;
+};
+
+// Drag and drop between explorer rows. The payload carries nothing: the dragged things live here.
+std::vector<ScatteredObject*> s_dragObjects;
+ModelGroup* s_dragGroup = nullptr;
+const void* s_lastRenameId = nullptr;
+
+enum class DropZone { Before, Into, After };
+
+void DrawEye(ImDrawList* dl, ImVec2 c, bool off, ImU32 col) {
+    if (!off) {
+        dl->AddEllipse(c, ImVec2(6.0f, 3.5f), col, 0.0f, 0, 1.3f);
+        dl->AddCircleFilled(c, 1.8f, col);
+    } else {
+        dl->AddLine(ImVec2(c.x - 6.0f, c.y + 0.5f), ImVec2(c.x + 6.0f, c.y + 0.5f), col, 1.3f);
+        dl->AddLine(ImVec2(c.x - 4.0f, c.y + 1.0f), ImVec2(c.x - 5.0f, c.y + 3.5f), col, 1.1f);
+        dl->AddLine(ImVec2(c.x, c.y + 1.5f), ImVec2(c.x, c.y + 4.0f), col, 1.1f);
+        dl->AddLine(ImVec2(c.x + 4.0f, c.y + 1.0f), ImVec2(c.x + 5.0f, c.y + 3.5f), col, 1.1f);
     }
 }
 
-static void OpenExplorerMenu(Vector2 pos, ExplorerMenuMode mode, ScatteredObject* obj, int scriptIndex) {
+void DrawLock(ImDrawList* dl, ImVec2 c, bool on, ImU32 col) {
+    dl->AddRectFilled(ImVec2(c.x - 4.0f, c.y - 1.0f), ImVec2(c.x + 4.0f, c.y + 5.0f), col, 1.0f);
+    const float cx = on ? c.x : c.x + 3.0f;
+    dl->PathArcTo(ImVec2(cx, c.y - 1.0f), 2.8f, 3.1415927f, 6.2831853f, 8);
+    dl->PathStroke(col, 0, 1.3f);
+    if (!on) dl->AddLine(ImVec2(c.x + 5.8f, c.y - 1.0f), ImVec2(c.x + 5.8f, c.y - 0.2f), col, 1.3f);
+    else {
+        dl->AddLine(ImVec2(c.x - 2.8f, c.y - 1.0f), ImVec2(c.x - 2.8f, c.y), col, 1.3f);
+        dl->AddLine(ImVec2(c.x + 2.8f, c.y - 1.0f), ImVec2(c.x + 2.8f, c.y), col, 1.3f);
+    }
+}
+
+// Drop handling for one row. Called right after the row's Selectable, while it is still the last item.
+void HandleRowDrop(const RowDesc& d, ImVec2 rmin, ImVec2 rmax) {
+    if (!ImGui::BeginDragDropTarget()) return;
+    const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("FLY_EXPLORER",
+        ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+    if (pl) {
+        const float t = (ImGui::GetMousePos().y - rmin.y) / std::max(1.0f, rmax.y - rmin.y);
+        DropZone zone = t < 0.25f ? DropZone::Before : (t > 0.75f ? DropZone::After : DropZone::Into);
+        if (d.dropToRoot) zone = DropZone::Into;
+        // Only groups can hold things. Dropping in the middle of an object row places the drag after it.
+        if (zone == DropZone::Into && !d.group && !d.dropToRoot) zone = DropZone::After;
+
+        // Where would the drag end up: the receiving group (nullptr = root) and the sibling it is placed next to.
+        ModelGroup* newParent = nullptr;
+        ScatteredObject* refObj = nullptr;
+        ModelGroup* refGroup = nullptr;
+        if (d.dropToRoot) {
+            newParent = nullptr;
+        } else if (zone == DropZone::Into) {
+            newParent = d.group;
+        } else if (d.group) {
+            newParent = d.group->parent;
+            refGroup = d.group;
+        } else if (d.obj) {
+            newParent = d.obj->parentModel;
+            refObj = d.obj;
+        }
+
+        bool valid = true;
+        if (s_dragGroup) {
+            valid = !(newParent == s_dragGroup || (newParent && newParent->IsDescendantOf(s_dragGroup)));
+            if (refGroup == s_dragGroup) valid = false;
+        } else {
+            if (s_dragObjects.empty()) valid = false;
+            for (auto* o : s_dragObjects) if (o == refObj) valid = false;
+        }
+
+        if (valid) {
+            const ImU32 col = theme::AccentU32();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (zone == DropZone::Into) {
+                dl->AddRectFilled(rmin, rmax, theme::AccentU32(50));
+                dl->AddRect(rmin, rmax, col, 2.0f, 0, 1.5f);
+            } else {
+                const float y = zone == DropZone::Before ? rmin.y - 2.0f : rmax.y + 2.0f;
+                dl->AddLine(ImVec2(rmin.x, y), ImVec2(rmax.x, y), col, 2.0f);
+            }
+        }
+
+        if (pl->IsDelivery() && valid) {
+            const bool after = zone == DropZone::After;
+            PushUndo();
+            if (s_dragGroup) {
+                // Dropping beside an object: the group joins that object's parent group.
+                MoveGroupTo(s_dragGroup, newParent, refGroup, after);
+            } else {
+                MoveObjectsToGroup(s_dragObjects, newParent, refObj, after);
+            }
+            s_dragObjects.clear();
+            s_dragGroup = nullptr;
+        }
+    }
+    ImGui::EndDragDropTarget();
+}
+
+// One explorer row: fold arrow, icon, label (or an inline rename field), eye/lock toggles, drag source and
+// drop target. Every row type goes through here so they all look and behave the same.
+RowResult DrawRow(const RowDesc& d) {
+    RowResult r;
+    constexpr float kHeight = 20.0f, kIndent = 14.0f, kArrow = 14.0f;
+    if (d.id) ImGui::PushID(d.id); else ImGui::PushID(d.idInt);
+
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemAllowOverlap();
+    const bool selClicked = ImGui::Selectable("##row", d.selected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, kHeight));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 rmin = ImGui::GetItemRectMin(), rmax = ImGui::GetItemRectMax();
+    const ImVec2 after = ImGui::GetCursorScreenPos();
+
+    const float x0 = p.x + 4.0f + static_cast<float>(d.depth) * kIndent;
+    if (selClicked) {
+        const float mx = ImGui::GetMousePos().x;
+        if (d.hasArrow && mx >= x0 - 2.0f && mx <= x0 + kArrow) r.arrowClicked = true;
+        else r.clicked = true;
+    }
+    r.doubleClicked = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !r.arrowClicked;
+    r.rightClicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+
+    // Drag source / drop target (tree rows only).
+    if ((d.obj || d.group) && !d.renaming && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        s_dragObjects.clear();
+        s_dragGroup = nullptr;
+        if (d.group) {
+            s_dragGroup = d.group;
+            ImGui::Text("%s", d.group->name.c_str());
+        } else {
+            if (d.obj->isSelected && g_selection.size() > 1) s_dragObjects = g_selection;
+            else s_dragObjects = { d.obj };
+            if (s_dragObjects.size() > 1) ImGui::Text("%d objects", static_cast<int>(s_dragObjects.size()));
+            else ImGui::Text("%s", d.obj->GetName().c_str());
+        }
+        const int dummy = 1;
+        ImGui::SetDragDropPayload("FLY_EXPLORER", &dummy, sizeof(dummy));
+        ImGui::EndDragDropSource();
+    }
+    if (d.obj || d.group || d.dropToRoot) HandleRowDrop(d, rmin, rmax);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec4 textVec = d.header ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    ImVec4 tv = textVec;
+    if (d.dimmed) tv.w *= 0.45f;
+    const ImU32 textCol = ImGui::GetColorU32(tv);
+    const float midY = (rmin.y + rmax.y) * 0.5f;
+
+    float x = x0;
+    if (d.hasArrow) {
+        const ImU32 ac = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        if (d.open)
+            dl->AddTriangleFilled(ImVec2(x + 2.0f, midY - 2.0f), ImVec2(x + 10.0f, midY - 2.0f), ImVec2(x + 6.0f, midY + 3.0f), ac);
+        else
+            dl->AddTriangleFilled(ImVec2(x + 3.0f, midY - 4.0f), ImVec2(x + 3.0f, midY + 4.0f), ImVec2(x + 8.0f, midY), ac);
+    }
+    x += kArrow + 2.0f;
+    if (d.showIcon) {
+        ImTextureID tex = d.customIcon ? d.customIcon : RowTex(d.icon);
+        if (tex) dl->AddImage(tex, ImVec2(x, midY - 7.0f), ImVec2(x + 14.0f, midY + 7.0f), ImVec2(0, 0), ImVec2(1, 1),
+                              d.dimmed ? IM_COL32(255, 255, 255, 110) : IM_COL32_WHITE);
+        x += 20.0f;
+    }
+
+    if (d.renaming) {
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y));
+        ImGui::SetNextItemWidth(std::max(40.0f, rmax.x - x - 4.0f));
+        const bool justOpened = (s_lastRenameId != (d.id ? d.id : reinterpret_cast<const void*>(static_cast<intptr_t>(d.idInt) + 1)));
+        s_lastRenameId = d.id ? d.id : reinterpret_cast<const void*>(static_cast<intptr_t>(d.idInt) + 1);
+        r.renameCommit = ExplorerRenameField("##rename", d.renameBuf, d.renameBufSize, justOpened);
+        r.renameCancel = !r.renameCommit && ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetCursorScreenPos(after);
+    } else {
+        const ImVec2 ts = ImGui::CalcTextSize(d.label);
+        dl->AddText(ImVec2(x, midY - ts.y * 0.5f), textCol, d.label);
+    }
+
+    // Right edge: eye + lock on tree rows.
+    const bool rowHot = ImGui::IsMouseHoveringRect(rmin, rmax) && !d.renaming;
+    float rx = rmax.x - 14.0f;
+    auto toggle = [&](const char* btnId, bool* flag, bool inherited, bool isEye) {
+        const bool shown = rowHot || *flag || inherited;
+        if (!shown) { rx -= 20.0f; return; }
+        ImGui::SetCursorScreenPos(ImVec2(rx - 9.0f, rmin.y + 1.0f));
+        if (ImGui::InvisibleButton(btnId, ImVec2(18.0f, kHeight - 2.0f))) { PushUndo(); *flag = !*flag; }
+        const bool on = *flag;
+        ImVec4 cv = ImGui::GetStyleColorVec4(ImGui::IsItemHovered() ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        if (!on && !inherited) cv.w *= 0.7f;
+        const ImU32 col = ImGui::GetColorU32(isEye ? (on ? ImVec4(0.95f, 0.45f, 0.40f, 1.0f) : cv)
+                                                   : (on ? ImVec4(0.95f, 0.75f, 0.35f, 1.0f) : cv));
+        if (isEye) DrawEye(dl, ImVec2(rx, midY), on || inherited, col);
+        else DrawLock(dl, ImVec2(rx, midY - 1.5f), on || inherited, col);
+        ImGui::SetCursorScreenPos(after);
+        rx -= 20.0f;
+    };
+    if (d.locked) toggle("##lock", d.locked, d.lockedInherited, false);
+    if (d.hidden) toggle("##hide", d.hidden, d.hiddenInherited, true);
+
+    ImGui::SetCursorScreenPos(after);
+    ImGui::PopID();
+    return r;
+}
+
+// Category row (Objects, Water, ...): an arrow, a caps label. Returns whether it is open; `rightClicked` reports a right-click on the header.
+bool DrawCategory(const char* label, const char* key, bool* rightClicked = nullptr, bool dropToRoot = false) {
+    RowDesc d;
+    d.id = key;
+    d.showIcon = false;
+    d.label = label;
+    d.header = true;
+    d.hasArrow = true;
+    d.open = IsOpen(key);
+    d.dropToRoot = dropToRoot;
+    RowResult r = DrawRow(d);
+    if (rightClicked) *rightClicked = r.rightClicked;
+    if (r.clicked || r.arrowClicked) {
+        SetOpen(key, !d.open);
+        return !d.open;
+    }
+    return d.open;
+}
+
+// --- Context menu builders ---------------------------------------------------
+void AddMenu(const char* label, std::function<void()> fn, bool undo = true) { s_menuItems.push_back({ label, std::move(fn), {}, undo }); }
+
+template <class F> void ForEachSelected(F&& f) {
+    for (auto* o : std::vector<ScatteredObject*>(g_selection)) if (o) f(o);
+}
+
+MenuItem MakeInsertMenu(ScatteredObject* scriptTarget);
+
+void BuildObjectMenu(ScatteredObject* obj) {
+    const bool singleSel = obj && g_selection.size() == 1 &&
+        std::find(g_selection.begin(), g_selection.end(), obj) != g_selection.end();
+    // Insert > Script attaches another script to the object right-clicked on.
+    s_menuItems.push_back(MakeInsertMenu(singleSel ? obj : nullptr));
+    if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); });
+    if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); });
+    const bool hide = !obj->hidden;
+    AddMenu(hide ? "Hide" : "Show", [hide] { ForEachSelected([hide](ScatteredObject* o) { o->hidden = hide; }); });
+    const bool lock = !obj->locked;
+    AddMenu(lock ? "Lock" : "Unlock", [lock] { ForEachSelected([lock](ScatteredObject* o) { o->locked = lock; }); });
+}
+
+// Menu for one script row under an object.
+void BuildObjectScriptMenu(ScatteredObject* obj, const std::string& name) {
+    AddMenu("Edit Script", [obj, name] { scriptLauncher::EditObjectScriptNamed(obj, name); }, false);
+    AddMenu("Remove Script", [obj, name] {
+        if (ScriptRuntime* rt = GetActiveRuntime()) rt->StopObjectScript(obj);
+        obj->RemoveScript(name);
+        if (obj->script.empty()) obj->runOnPlay = false;
+    });
+    AddMenu("Choose Editor...", [name] { scriptLauncher::ChooseEditorForObjectScriptNamed(name); }, false);
+    AddMenu("Open in Visual Script", [name] {
+        vscript::OpenByName(scriptLauncher::MakeClassName(name));
+        SelectBottomTab(2);
+    }, false);
+    MenuItem insert = MakeInsertMenu(obj);
+    s_menuItems.insert(s_menuItems.begin(), std::move(insert));
+}
+
+void BuildModelMenu(ModelGroup* model) {
+    AddMenu("Rename", [model] { BeginRename(model); }, false);
+    // A plugin-owned group: the plugin's items, and no way to take it apart or unlock it from here.
+    if (const pluginhost::GroupKind* kind = pluginhost::FindGroupKind(model->pluginTag)) {
+        for (const auto& item : kind->items) AddMenu(item.label.c_str(), [run = item.run, model] { run(model); }, false);
+        AddMenu(model->hidden ? "Show" : "Hide", [model] { model->hidden = !model->hidden; });
+        AddMenu("Delete", [model] {
+            std::vector<ScatteredObject*> targets = DissolveModelTree(model);
+            if (s_selGroup == model) s_selGroup = nullptr;
+            RequestDelete(targets);
+            SetSelection({}, nullptr);
+        });
+        return;
+    }
+    AddMenu("New Group Inside", [model] {
+        ModelGroup* g = CreateEmptyGroup(model);
+        if (!g) return;
+        SetOpen(GroupKey(model), true);
+        BeginRename(g);
+    });
+    AddMenu("Ungroup", [model] { UngroupModel(model); if (s_selGroup == model) s_selGroup = nullptr; });
+    AddMenu(model->hidden ? "Show" : "Hide", [model] { model->hidden = !model->hidden; });
+    AddMenu(model->locked ? "Unlock" : "Lock", [model] { model->locked = !model->locked; });
+    AddMenu("Delete", [model] {
+        std::vector<ScatteredObject*> targets = DissolveModelTree(model);
+        if (s_selGroup == model) s_selGroup = nullptr;
+        RequestDelete(targets);
+        SetSelection({}, nullptr);
+    });
+}
+
+void InsertScript() {
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return;
+    auto& scripts = rt->StandaloneScripts();
+    ScriptRuntime::StandaloneScript s;
+    s.name = "Script";
+    s.typeName = "";
+    s.runOnPlay = true;
+    scripts.push_back(std::move(s));
+    auto idx = static_cast<int>(scripts.size()) - 1;
+    std::string className;
+    scriptLauncher::EditStandaloneScript(scripts[idx].name, scripts[idx].typeName, &className);
+    if (!className.empty() && scripts[idx].typeName.empty())
+        scripts[idx].typeName = className;
+}
+
+// "Insert" submenu: everything that can be added to the scene. Shapes and water/terrain reuse the viewport spawn
+// actions, placed in front of the camera.
+MenuItem MakeInsertMenu(ScatteredObject* scriptTarget) {
+    MenuItem insert{ "Insert", nullptr, {} };
+    auto spawn = [&](const char* label, ui::MenuAction a) {
+        insert.sub.push_back({ label, [a] { ui::RequestMenuAction(a, true); }, {}, false });
+    };
+    spawn("Cube", ui::MenuAction::SpawnCube);
+    spawn("Sphere", ui::MenuAction::SpawnSphere);
+    spawn("Cylinder", ui::MenuAction::SpawnCylinder);
+    spawn("Wedge", ui::MenuAction::SpawnWedge);
+    insert.sub.push_back({ "Group", [] { if (ModelGroup* g = CreateEmptyGroup(nullptr)) BeginRename(g); }, {} });
+    spawn("Water Body", ui::MenuAction::SpawnWater);
+    spawn("Basic Terrain", ui::MenuAction::SpawnBasicTerrain);
+    spawn("Import Terrain", ui::MenuAction::ImportTerrain);
+    // With an object to attach to, "Script" adds to that object; otherwise it makes a standalone script.
+    if (scriptTarget) insert.sub.push_back({ "Script", [scriptTarget] { scriptLauncher::AddObjectScript(scriptTarget); }, {} });
+    else insert.sub.push_back({ "Script", [] { InsertScript(); }, {} });
+    return insert;
+}
+
+void BuildEmptyMenu() {
+    s_menuItems.push_back(MakeInsertMenu(nullptr));
+    AddMenu("Expand All", [] { ExpandAll(); }, false);
+    AddMenu("Collapse All", [] { CollapseAll(); }, false);
+}
+
+void BuildScriptMenu(int scriptIndex) {
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (!rt) return;
+    auto& scripts = rt->StandaloneScripts();
+    if (scriptIndex < 0 || scriptIndex >= static_cast<int>(scripts.size())) return;
+    if (ScriptMenuIsMulti()) {
+        const std::set<std::string> keys = g_scriptSel;
+        AddMenu("Open in Visual Script", [keys] {
+            for (const auto& k : keys) vscript::OpenByName(k);
+            SelectBottomTab(2);
+        }, false);
+        AddMenu("Delete Selected", [keys] {
+            ScriptRuntime* r = GetActiveRuntime();
+            if (!r) return;
+            auto& list = r->StandaloneScripts();
+            for (int k = static_cast<int>(list.size()) - 1; k >= 0; --k)
+                if (keys.count(ScriptKey(list[k]))) DeleteScriptEverywhere(ScriptKey(list[k]), k);
+            g_scriptSel.clear();
+        });
+        return;
+    }
+    AddMenu("Rename", [scriptIndex] {
+        ScriptRuntime* r = GetActiveRuntime();
+        if (!r || scriptIndex >= static_cast<int>(r->StandaloneScripts().size())) return;
+        g_scriptRenameIndex = scriptIndex;
+        snprintf(g_scriptNameBuffer, sizeof(g_scriptNameBuffer), "%s", r->StandaloneScripts()[scriptIndex].name.c_str());
+        g_scriptNameBuffer[sizeof(g_scriptNameBuffer) - 1] = '\0';
+        g_cursorPos = static_cast<int>(strlen(g_scriptNameBuffer));
+        g_selStart = -1;
+    }, false);
+    AddMenu("Delete", [scriptIndex] {
+        ScriptRuntime* r = GetActiveRuntime();
+        if (!r || scriptIndex >= static_cast<int>(r->StandaloneScripts().size())) return;
+        DeleteScriptEverywhere(ScriptKey(r->StandaloneScripts()[scriptIndex]), scriptIndex);
+    });
+    AddMenu("Choose Editor...", [scriptIndex] {
+        ScriptRuntime* r = GetActiveRuntime();
+        if (!r || scriptIndex >= static_cast<int>(r->StandaloneScripts().size())) return;
+        auto& s = r->StandaloneScripts()[scriptIndex];
+        scriptLauncher::ChooseEditorForStandaloneScript(s.name, s.typeName);
+    }, false);
+    AddMenu("Open in Visual Script", [scriptIndex] {
+        ScriptRuntime* r = GetActiveRuntime();
+        if (!r || scriptIndex >= static_cast<int>(r->StandaloneScripts().size())) return;
+        vscript::OpenByName(ScriptKey(r->StandaloneScripts()[scriptIndex]));
+        SelectBottomTab(2);
+    }, false);
+}
+
+void OpenExplorerMenu(Vector2 pos, ExplorerMenuMode mode, ScatteredObject* obj, int scriptIndex, ModelGroup* model = nullptr,
+                      const std::string& objScript = std::string()) {
     CloseContextMenu();
     g_explorerMenuOpen = true;
     g_explorerMenuPos = pos;
@@ -230,7 +682,19 @@ static void OpenExplorerMenu(Vector2 pos, ExplorerMenuMode mode, ScatteredObject
     g_explorerMenuObject = obj;
     g_explorerMenuScript = scriptIndex;
     g_explorerMenuOpenTime = GetTime();
+    s_menuItems.clear();
+    switch (mode) {
+        case ExplorerMenuMode::Object:
+            if (obj && !objScript.empty()) BuildObjectScriptMenu(obj, objScript);
+            else if (obj) BuildObjectMenu(obj);
+            break;
+        case ExplorerMenuMode::Model:  if (model) BuildModelMenu(model); break;
+        case ExplorerMenuMode::Empty:  BuildEmptyMenu(); break;
+        case ExplorerMenuMode::Script: BuildScriptMenu(scriptIndex); break;
+    }
 }
+
+} // namespace
 
 // ImGui popup version of the explorer's right-click menu. Runs in the ImGui
 // frame (unlike the raylib 2D pass, which is always painted *under* every
@@ -248,14 +712,27 @@ void DrawImGuiExplorerMenu() {
         ImGui::OpenPopup("##ExplorerCtxMenu");
     }
     if (ImGui::BeginPopup("##ExplorerCtxMenu")) {
-        int n = ExplorerMenuItemCount();
-        for (int i = 0; i < n; ++i) {
-            const char* label = ExplorerMenuItemLabel(i);
-            if (!label) continue;
-            if (ImGui::MenuItem(label)) {
-                PerformExplorerMenuAction(i);
-                ImGui::CloseCurrentPopup();
+        std::function<void()> chosen;
+        bool chosenUndo = false;
+        for (const auto& item : s_menuItems) {
+            if (!item.sub.empty()) {
+                if (ImGui::BeginMenu(item.label.c_str())) {
+                    for (const auto& sub : item.sub)
+                        if (ImGui::MenuItem(sub.label.c_str())) { chosen = sub.action; chosenUndo = sub.undo; }
+                    ImGui::EndMenu();
+                }
+            } else if (ImGui::MenuItem(item.label.c_str())) {
+                chosen = item.action;
+                chosenUndo = item.undo;
             }
+            if (chosen) break;
+        }
+        if (chosen) {
+            // The action may open another menu and rebuild the list, so it runs after the loop.
+            ImGui::CloseCurrentPopup();
+            // Scene-changing items record an undo step first.
+            if (chosenUndo) PushUndo();
+            chosen();
         }
         ImGui::EndPopup();
     }
@@ -267,69 +744,235 @@ void DrawImGuiExplorerMenu() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Left Panel (Explorer Window)
+// Explorer window (Dear ImGui). Called once per frame from DrawImGuiFrame().
+// Layout: search box, then collapsible categories (Objects, Water, Terrain, Lighting, Scripts). Objects holds
+// the nested group tree; every row is drawn by DrawRow.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// 2. Left Panel (Explorer Window, Dear ImGui)
-// Reuses the existing rename/selection/drag-drop state (g_renameObject,
-// g_explorerDrag*, OpenExplorerMenu, PerformExplorerDrop, ...) - only the
-// input/rendering is now driven by ImGui widgets instead of raylib hit tests.
-// Called once per frame from DrawImGuiFrame().
-// ---------------------------------------------------------------------------
-static bool ExplorerRenameActive() {
-    return g_renameObject || g_renameModel || g_renameTerrain || g_renameLegacyTerrain || g_scriptRenameIndex >= 0;
+namespace {
+
+// Per-frame state shared by the tree drawing helpers.
+struct TreeCtx {
+    bool rightClickHandled = false;
+    bool rowClickedThisFrame = false;
+    Vector2 mouse = { 0.0f, 0.0f };
+    std::vector<ScatteredObject*> order;      // object rows in the order drawn this frame
+};
+TreeCtx s_ctx;
+std::vector<ScatteredObject*> s_orderPrev;    // last frame's order, for shift-range selection
+
+int IndexInOrder(const ScatteredObject* o) {
+    for (size_t i = 0; i < s_orderPrev.size(); ++i) if (s_orderPrev[i] == o) return static_cast<int>(i);
+    return -1;
 }
 
-// Draws one row as an ImGui Selectable and returns true if it was clicked
-// (left button, on this frame).
-static bool ExplorerRow(const char* label, bool selected, bool* outRightClicked) {
-    ImGuiSelectableFlags flags = ImGuiSelectableFlags_AllowDoubleClick;
-    bool clicked = ImGui::Selectable(label, selected, flags, ImVec2(0.0f, 20.0f));
-    if (outRightClicked) {
-        *outRightClicked = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-    }
-    return clicked;
+void SelectRange(int a, int b, ScatteredObject* primary) {
+    if (a > b) std::swap(a, b);
+    std::vector<ScatteredObject*> sel;
+    for (int i = std::max(a, 0); i <= b && i < static_cast<int>(s_orderPrev.size()); ++i) sel.push_back(s_orderPrev[i]);
+    SetSelection(sel, KeepPrimary(sel, primary));
 }
 
-// Same as ExplorerRow, but draws a fixed-size icon (from assets/EditorIcons/)
-// before the text instead of a leading unicode glyph.
-static bool ExplorerRowIcon(RowIconType icon, const char* label, bool selected, bool* outRightClicked) {
-    ImVec2 rowStart = ImGui::GetCursorPos();
-    ImGuiSelectableFlags flags = ImGuiSelectableFlags_AllowDoubleClick;
-    bool clicked = ImGui::Selectable("##row", selected, flags, ImVec2(0.0f, 20.0f));
-    if (outRightClicked) {
-        *outRightClicked = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+void HandleObjectRow(ScatteredObject* obj, const RowResult& r) {
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    const int myIdx = IndexInOrder(obj);
+    if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        s_selGroup = nullptr;
+        if (shift && g_explorerAnchorIndex >= 0) {
+            SelectRange(g_explorerAnchorIndex, myIdx, obj);
+        } else if (ctrl) {
+            std::vector<ScatteredObject*> next;
+            for (auto* o : g_selection) if (o != obj) next.push_back(o);
+            if (!obj->isSelected) next.push_back(obj);
+            g_explorerAnchorIndex = myIdx;
+            SetSelection(next, KeepPrimary(next, g_primarySelection));
+        } else {
+            // Pressing a row of an existing multi-selection keeps it, so the whole selection can be dragged.
+            if (!(obj->isSelected && g_selection.size() > 1)) SetSelection({ obj }, obj);
+            g_explorerAnchorIndex = myIdx;
+        }
+        s_ctx.rowClickedThisFrame = true;
     }
-    ImGui::SetCursorPos(ImVec2(rowStart.x + 4.0f, rowStart.y + 2.0f));
-    ImTextureID tex = RowTex(icon);
-    if (tex) {
-        ImGui::Image(tex, ImVec2(14.0f, 14.0f));
-        ImGui::SameLine(0.0f, 6.0f);
+    if (r.doubleClicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        SetSelection({ obj }, obj);
+        BeginRename(obj);
+    } else if (r.rightClicked && !ExplorerRenameActive()) {
+        if (!obj->isSelected) {
+            SetSelection({ obj }, obj);
+            g_explorerAnchorIndex = myIdx;
+        }
+        s_ctx.rightClickHandled = true;
+        OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Object, obj, -1);
+        s_ctx.rowClickedThisFrame = true;
+    }
+}
+
+void HandleGroupRow(ModelGroup* g, const std::vector<ScatteredObject*>& all, bool selected, const RowResult& r) {
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    ScatteredObject* first = all.empty() ? nullptr : all.front();
+    if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        s_selGroup = g;
+        if (ctrl) {
+            std::vector<ScatteredObject*> next = g_selection;
+            if (selected) {
+                next.erase(std::remove_if(next.begin(), next.end(),
+                    [&](ScatteredObject* o) { return std::find(all.begin(), all.end(), o) != all.end(); }), next.end());
+            } else {
+                for (auto* m : all) if (std::find(next.begin(), next.end(), m) == next.end()) next.push_back(m);
+            }
+            g_explorerAnchorIndex = IndexInOrder(first);
+            SetSelection(next, KeepPrimary(next, g_primarySelection));
+        } else if (shift && g_explorerAnchorIndex >= 0 && first) {
+            SelectRange(g_explorerAnchorIndex, IndexInOrder(first), first);
+        } else {
+            SetSelection(all, first);
+            g_explorerAnchorIndex = IndexInOrder(first);
+        }
+        s_ctx.rowClickedThisFrame = true;
+    }
+    if (r.doubleClicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        BeginRename(g);
+    } else if (r.rightClicked && !ExplorerRenameActive()) {
+        if (!selected) {
+            SetSelection(all, first);
+            s_selGroup = g;
+        }
+        s_ctx.rightClickHandled = true;
+        OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Model, first, -1, g);
+        s_ctx.rowClickedThisFrame = true;
+    }
+}
+
+// Objects whose script child is folded away. Runtime only; everything starts open.
+std::unordered_set<const ScatteredObject*> s_scriptClosed;
+
+// The script attached to an object, shown as a child row under it.
+void DrawObjectScriptRow(ScatteredObject* obj, const std::string& name, int idx, int depth) {
+    ImGui::PushID(obj);
+    RowDesc d;
+    d.idInt = 1 + idx;
+    d.icon = ROWICON_SCRIPT;
+    d.label = name.c_str();
+    d.selected = false;
+    d.depth = depth;
+    d.dimmed = obj->IsHiddenEffective();
+    RowResult r = DrawRow(d);
+    ImGui::PopID();
+    if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        s_selGroup = nullptr;
+        SetSelection({ obj }, obj);
+        s_ctx.rowClickedThisFrame = true;
+    }
+    if (r.doubleClicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        SetSelection({ obj }, obj);
+        scriptLauncher::EditObjectScriptNamed(obj, name);
+    } else if (r.rightClicked && !ExplorerRenameActive()) {
+        SetSelection({ obj }, obj);
+        s_ctx.rightClickHandled = true;
+        s_ctx.rowClickedThisFrame = true;
+        OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Object, obj, -1, nullptr, name);
+    }
+}
+
+void DrawObjectRow(ScatteredObject* obj, int depth) {
+    s_ctx.order.push_back(obj);
+    const std::string label = obj->GetName();
+    const bool hasScript = !obj->script.empty();
+    const bool scriptOpen = hasScript && s_scriptClosed.count(obj) == 0;
+    RowDesc d;
+    d.id = obj;
+    d.icon = ROWICON_OBJECT;
+    d.label = label.c_str();
+    d.selected = obj->isSelected;
+    d.depth = depth;
+    d.hasArrow = hasScript;
+    d.open = scriptOpen;
+    d.hidden = &obj->hidden;
+    d.locked = &obj->locked;
+    d.hiddenInherited = !obj->hidden && obj->parentModel && obj->parentModel->IsHiddenEffective();
+    d.lockedInherited = !obj->locked && obj->parentModel && obj->parentModel->IsLockedEffective();
+    d.dimmed = obj->IsHiddenEffective();
+    d.obj = obj;
+    d.renaming = (g_renameObject == obj);
+    d.renameBuf = g_nameBuffer;
+    d.renameBufSize = sizeof(g_nameBuffer);
+    ScrollToIfTarget(obj);
+    RowResult r = DrawRow(d);
+    if (d.renaming) {
+        if (r.renameCommit) { if (obj->GetName() != g_nameBuffer) PushUndo(); obj->SetName(g_nameBuffer); g_renameObject = nullptr; }
+        else if (r.renameCancel) g_renameObject = nullptr;
     } else {
-        ImGui::Dummy(ImVec2(14.0f, 14.0f));
-        ImGui::SameLine(0.0f, 6.0f);
+        if (r.arrowClicked) {
+            if (scriptOpen) s_scriptClosed.insert(obj); else s_scriptClosed.erase(obj);
+        }
+        HandleObjectRow(obj, r);
     }
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    return clicked;
+    if (hasScript && (scriptOpen || FilterActive())) {
+        const std::vector<std::string> names = obj->AllScripts();
+        for (size_t i = 0; i < names.size(); ++i) DrawObjectScriptRow(obj, names[i], static_cast<int>(i), depth + 1);
+    }
 }
 
-// Small helper: draw+commit/cancel an inline rename InputText, focusing it
-// the first frame it appears. Returns true once Enter/blur commits the value.
-static bool ExplorerRenameField(const char* imguiId, char* buf, size_t bufSize, bool justOpened) {
-    ImGui::SetNextItemWidth(-1.0f);
-    if (justOpened) ImGui::SetKeyboardFocusHere();
-    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll;
-    bool committed = ImGui::InputText(imguiId, buf, bufSize, flags);
-    bool cancel = ImGui::IsItemDeactivated() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
-    bool blurred = ImGui::IsItemDeactivatedAfterEdit() && !committed;
-    if (committed || blurred) return true;
-    if (cancel) { *buf = '\0'; return false; } // caller checks g_render* pointers, not the buffer, to detect cancel
-    return false;
+void DrawGroupNode(ModelGroup* g, int depth, bool ancestorMatched) {
+    if (!g) return;
+    const bool selfMatch = ancestorMatched || NameMatches(g->name);
+    if (FilterActive() && !selfMatch && !GroupMatches(g)) return;
+
+    const std::vector<ScatteredObject*> all = GroupObjects(g);
+    const bool selected = !all.empty() ? AllSelected(all) : (s_selGroup == g && g_selection.empty());
+    const std::string key = GroupKey(g);
+    const bool hasContent = !g->children.empty() || !g->members.empty();
+    const bool open = FilterActive() ? true : IsOpen(key);
+
+    char label[160];
+    snprintf(label, sizeof(label), "%s (%d)", g->name.c_str(), static_cast<int>(all.size()));
+    RowDesc d;
+    d.id = g;
+    d.icon = ROWICON_GROUP;
+    if (const pluginhost::GroupKind* kind = pluginhost::FindGroupKind(g->pluginTag)) d.customIcon = PluginIconTex(kind->iconPath);
+    d.label = label;
+    d.selected = selected;
+    d.depth = depth;
+    d.hasArrow = hasContent;
+    d.open = open;
+    d.hidden = &g->hidden;
+    d.locked = &g->locked;
+    d.hiddenInherited = !g->hidden && g->parent && g->parent->IsHiddenEffective();
+    d.lockedInherited = !g->locked && g->parent && g->parent->IsLockedEffective();
+    d.dimmed = g->IsHiddenEffective();
+    d.group = g;
+    d.renaming = (g_renameModel == g);
+    d.renameBuf = g_nameBuffer;
+    d.renameBufSize = sizeof(g_nameBuffer);
+    ScrollToIfTarget(g);
+    RowResult r = DrawRow(d);
+
+    if (d.renaming) {
+        if (r.renameCommit) { if (g->name != g_nameBuffer) PushUndo(); g->name = g_nameBuffer; g_renameModel = nullptr; }
+        else if (r.renameCancel) g_renameModel = nullptr;
+    } else {
+        if (r.arrowClicked && !FilterActive()) SetOpen(key, !open);
+        HandleGroupRow(g, all, selected, r);
+    }
+
+    if (!open) return;
+    // Copy: an action in this frame (drop, delete) must not invalidate what we iterate.
+    const std::vector<ModelGroup*> kids = g->children;
+    const std::vector<ScatteredObject*> mem = g->members;
+    for (auto* c : kids) DrawGroupNode(c, depth + 1, selfMatch && NameMatches(g->name) ? true : ancestorMatched);
+    for (auto* m : mem) {
+        if (!m) continue;
+        if (FilterActive() && !selfMatch && !NameMatches(m->GetName())) continue;
+        DrawObjectRow(m, depth + 1);
+    }
 }
+
+} // namespace
 
 void DrawImGuiExplorer() {
     Rectangle panelRec = GetExplorerPanelBounds();
+    LoadFolds();
 
     ImGui::SetNextWindowPos(ImVec2(panelRec.x, panelRec.y));
     ImGui::SetNextWindowSize(ImVec2(panelRec.width, panelRec.height));
@@ -337,22 +980,54 @@ void DrawImGuiExplorer() {
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings;
     ImGui::Begin("##Explorer", nullptr, flags);
-
     ImGui::TextColored(theme::AccentVec(), "EXPLORER");
+    ImGui::SameLine();
+    {
+        // Right-aligned fold buttons.
+        const float bw = ImGui::CalcTextSize("Collapse").x + ImGui::CalcTextSize("Expand").x + 4.0f * ImGui::GetStyle().FramePadding.x + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - bw));
+        if (ImGui::SmallButton("Expand")) ExpandAll();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Collapse")) CollapseAll();
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##explorerfilter", "Search...", s_filter, sizeof(s_filter));
     ImGui::Separator();
 
-    bool rightClickHandled = false;
-    bool rowClickedThisFrame = false;
+    s_ctx = TreeCtx{};
     ImVec2 mouseImgui = ImGui::GetMousePos();
-    Vector2 mouse = { mouseImgui.x, mouseImgui.y };
+    s_ctx.mouse = { mouseImgui.x, mouseImgui.y };
+    if (!ExplorerRenameActive()) s_lastRenameId = nullptr;
+    if (s_selGroup && !GroupExists(s_selGroup)) s_selGroup = nullptr;
+
+    // The selection changed (a click in the 3D view, Ctrl+A, undo...): show it here.
+    {
+        static const void* s_seenPrimary = nullptr;
+        static const void* s_seenWater = nullptr;
+        static const void* s_seenTerrain = nullptr;
+        const void* terrainNow = g_selectedTerrain ? static_cast<const void*>(g_selectedTerrain)
+            : static_cast<const void*>(terrain::GetTerrainEditorState().selectedTerrainLegacy);
+        if (g_primarySelection != s_seenPrimary) {
+            s_seenPrimary = g_primarySelection;
+            if (g_primarySelection) RevealObject(g_primarySelection);
+        } else if (g_selectedWater != s_seenWater && g_selectedWater) {
+            s_seenWater = g_selectedWater;
+            SetOpen("#Water", true);
+            s_scrollTarget = g_selectedWater;
+        } else if (terrainNow != s_seenTerrain && terrainNow) {
+            s_seenTerrain = terrainNow;
+            SetOpen("#Terrain", true);
+            s_scrollTarget = terrainNow;
+        }
+        s_seenWater = g_selectedWater;
+        s_seenTerrain = terrainNow;
+    }
 
     ImGui::BeginChild("##ExplorerContent", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoSavedSettings);
 
-    ImGui::TextDisabled("SCENE");
-
     if (g_sceneObjects != nullptr) {
         // F2 to rename the current selection, matching the old raylib shortcut.
-        if (!ExplorerRenameActive() && IsKeyPressed(KEY_F2)) {
+        if (!ExplorerRenameActive() && !ImGui::GetIO().WantTextInput && IsKeyPressed(KEY_F2)) {
             if (g_selectedTerrain) {
                 g_renameTerrain = g_selectedTerrain;
                 snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g_selectedTerrain->GetName().c_str());
@@ -360,200 +1035,121 @@ void DrawImGuiExplorer() {
                 terrain::Terrain* legacy = terrain::GetTerrainEditorState().selectedTerrainLegacy;
                 g_renameLegacyTerrain = legacy;
                 snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
+            } else if (s_selGroup && g_selection.empty()) {
+                BeginRename(s_selGroup);
             } else if (g_primarySelection) {
-                ModelGroup* pm = g_primarySelection->parentModel;
-                bool modelAllSelected = pm && !pm->members.empty();
-                if (pm) {
-                    for (auto* m : pm->members) {
-                        if (!m || !m->isSelected) { modelAllSelected = false; break; }
-                    }
-                }
-                if (modelAllSelected) {
-                    g_renameModel = pm;
-                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", pm->name.c_str());
-                } else {
-                    g_renameObject = g_primarySelection;
-                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g_primarySelection->GetName().c_str());
-                }
+                if (ModelGroup* pm = FullySelectedGroupOf(g_primarySelection)) BeginRename(pm);
+                else BeginRename(g_primarySelection);
             }
             g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
         }
 
-        std::vector<ExplorerEntry> entries = BuildExplorerEntries();
-
-        for (const auto& entry : entries) {
-            const void* stableId = entry.isHeader ? static_cast<const void*>(entry.model)
-                : entry.water ? static_cast<const void*>(entry.water)
-                : entry.basicTerrain ? static_cast<const void*>(entry.basicTerrain)
-                : entry.legacyTerrain ? static_cast<const void*>(entry.legacyTerrain)
-                : static_cast<const void*>(entry.obj);
-            ImGui::PushID(stableId);
-
-            // --- Model header row ---
-            if (entry.isHeader) {
-                ModelGroup* model = entry.model;
-                if (!model) { ImGui::PopID(); continue; }
-
-                bool modelSelected = !model->members.empty();
-                for (auto* m : model->members) {
-                    if (!m || !m->isSelected) { modelSelected = false; break; }
-                }
-
-                if (model == g_renameModel) {
-                    static ModelGroup* s_lastRenameModel = nullptr;
-                    bool justOpened = (s_lastRenameModel != model);
-                    s_lastRenameModel = model;
-                    if (ExplorerRenameField("##rename", g_nameBuffer, sizeof(g_nameBuffer), justOpened)) {
-                        model->name = g_nameBuffer;
-                        g_renameModel = nullptr;
-                    } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
-                        g_renameModel = nullptr; // ESC / blur-without-edit cancels
-                    }
-                } else {
-                    char label[128];
-                    snprintf(label, sizeof(label), "%s (%d)", model->name.c_str(), static_cast<int>(model->members.size()));
-                    bool rightClicked = false;
-                    bool clicked = ExplorerRowIcon(ROWICON_OBJECT, label, modelSelected, &rightClicked);
-
-                    if (g_explorerDragActive && ImGui::IsItemHovered()) {
-                        g_explorerDropTarget = model;
-                        g_explorerDropValid = true;
-                    }
-
-                    if (clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
-                        bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-                        bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-                        if (ctrl) {
-                            std::vector<ScatteredObject*> next = g_selection;
-                            if (modelSelected) {
-                                next.erase(std::remove_if(next.begin(), next.end(),
-                                    [&](ScatteredObject* o) {
-                                        return std::find(model->members.begin(), model->members.end(), o) != model->members.end();
-                                    }), next.end());
-                            } else {
-                                for (auto* m : model->members) {
-                                    if (m && std::find(next.begin(), next.end(), m) == next.end()) next.push_back(m);
-                                }
-                            }
-                            g_explorerAnchorIndex = entry.objRowIndex;
-                            SetSelection(next, KeepPrimary(next, g_primarySelection));
-                        } else if (shift && g_explorerAnchorIndex >= 0) {
-                            int a = g_explorerAnchorIndex, b = entry.objRowIndex;
-                            if (a < 0) a = b;
-                            if (a > b) std::swap(a, b);
-                            std::vector<ScatteredObject*> sel;
-                            for (const auto& e : entries) {
-                                if (!e.isHeader && e.obj && e.objRowIndex >= a && e.objRowIndex <= b) sel.push_back(e.obj);
-                            }
-                            ScatteredObject* primary = model->members.empty() ? nullptr : model->members.front();
-                            SetSelection(sel, KeepPrimary(sel, primary));
-                        } else {
-                            SetSelection(model->members, model->members.empty() ? nullptr : model->members.front());
-                            g_explorerAnchorIndex = entry.objRowIndex;
-                            double now = GetTime();
-                            if (g_lastExplorerModelClick == model && now - g_lastExplorerClickTime < 0.35) {
-                                g_renameModel = model;
-                                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", model->name.c_str());
-                                g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
-                                g_lastExplorerModelClick = nullptr;
-                            } else {
-                                g_lastExplorerModelClick = model;
-                                g_lastExplorerClickTime = now;
-                            }
-                        }
-                        rowClickedThisFrame = true;
-                    } else if (rightClicked && !ExplorerRenameActive()) {
-                        if (!modelSelected) {
-                            SetSelection(model->members, model->members.empty() ? nullptr : model->members.front());
-                        }
-                        rightClickHandled = true;
-                        if (!model->members.empty()) OpenExplorerMenu(mouse, ExplorerMenuMode::Model, model->members.front(), -1);
-                        rowClickedThisFrame = true;
-                    }
-
-                    if (ImGui::IsItemActivated() && !ExplorerRenameActive() && !g_explorerMenuOpen && !model->members.empty()) {
-                        g_explorerDragPending = true;
-                        g_explorerDragObjects = model->members;
-                        g_explorerDragStart = mouse;
-                    }
-                }
-                ImGui::PopID();
-                continue;
+        // --- Objects: the nested group tree, then loose objects ---
+        bool objectsOpen = DrawCategory("OBJECTS", "#Objects", nullptr, true);
+        if (objectsOpen || FilterActive()) {
+            std::vector<ModelGroup*> roots;
+            if (g_sceneModels) for (auto& m : *g_sceneModels) if (m && !m->parent) roots.push_back(m.get());
+            for (auto* g : roots) DrawGroupNode(g, 1, false);
+            const std::vector<ScatteredObject*> loose(g_sceneObjects->begin(), g_sceneObjects->end());
+            for (auto* o : loose) {
+                if (!o || o->parentModel) continue;
+                if (FilterActive() && !NameMatches(o->GetName())) continue;
+                DrawObjectRow(o, 1);
             }
+        }
 
-            // --- Water body row ---
-            if (entry.water) {
-                WaterBody* water = entry.water;
-                if (!water) { ImGui::PopID(); continue; }
+        // --- Water ---
+        const auto& waters = WaterBody::GetInstances();
+        bool anyWater = false;
+        for (auto* w : waters) if (w) { anyWater = true; break; }
+        if (anyWater && DrawCategory("WATER", "#Water")) {
+            for (auto* water : waters) {
+                if (!water) continue;
+                if (FilterActive() && !NameMatches(water->GetName())) continue;
                 char label[128];
                 snprintf(label, sizeof(label), "%s", water->GetName().c_str());
-                bool rightClicked = false;
-                bool clicked = ExplorerRowIcon(ROWICON_WATER, label, water->isSelected, &rightClicked);
-                if (clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
-                    g_explorerAnchorIndex = entry.objRowIndex;
+                RowDesc d;
+                d.id = water;
+                d.icon = ROWICON_WATER;
+                d.label = label;
+                d.selected = water->isSelected;
+                d.depth = 1;
+                ScrollToIfTarget(water);
+                RowResult r = DrawRow(d);
+                if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+                    g_explorerAnchorIndex = -1;
+                    s_selGroup = nullptr;
                     SetSelectedWater(g_selectedWater == water ? nullptr : water);
-                    rowClickedThisFrame = true;
-                } else if (rightClicked && !ExplorerRenameActive()) {
+                    s_ctx.rowClickedThisFrame = true;
+                } else if (r.rightClicked && !ExplorerRenameActive()) {
                     SetSelectedWater(water);
-                    rightClickHandled = true;
-                    rowClickedThisFrame = true;
+                    s_ctx.rightClickHandled = true;
+                    s_ctx.rowClickedThisFrame = true;
                 }
-                ImGui::PopID();
-                continue;
             }
+        }
 
-            // --- BasicTerrain row ---
-            if (entry.basicTerrain) {
-                BasicTerrain* terr = entry.basicTerrain;
-                if (!terr) { ImGui::PopID(); continue; }
-                bool isRenaming = (g_renameTerrain == terr);
-                bool isSel = terr->isSelected || terr == BasicTerrain::GetActive();
-
-                if (isRenaming) {
-                    static BasicTerrain* s_lastRenameTerrain = nullptr;
-                    bool justOpened = (s_lastRenameTerrain != terr);
-                    s_lastRenameTerrain = terr;
-                    if (ExplorerRenameField("##rename", g_nameBuffer, sizeof(g_nameBuffer), justOpened)) {
-                        terr->SetName(g_nameBuffer);
-                        g_renameTerrain = nullptr;
-                    } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
-                        g_renameTerrain = nullptr;
-                    }
-                } else {
-                    char label[128];
-                    snprintf(label, sizeof(label), "%s", terr->GetName().c_str());
-                    bool rightClicked = false;
-                    bool clicked = ExplorerRowIcon(ROWICON_TERRAIN, label, isSel, &rightClicked);
-                    if (clicked && !g_explorerMenuOpen) {
-                        SetSelectedTerrain(g_selectedTerrain == terr ? nullptr : terr);
-                        rowClickedThisFrame = true;
-                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                            g_renameTerrain = terr;
-                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", terr->GetName().c_str());
-                            g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
-                        }
-                    } else if (rightClicked) {
-                        SetSelectedTerrain(terr);
-                        rightClickHandled = true;
-                        rowClickedThisFrame = true;
-                    }
+        // --- Terrain (BasicTerrain and the legacy chunked terrain) ---
+        const auto& basicTerrains = BasicTerrain::GetInstances();
+        const auto& legacyTerrains = terrain::GetTerrainRegistry().GetTerrains();
+        bool anyTerrain = false;
+        for (auto* t : basicTerrains) if (t) { anyTerrain = true; break; }
+        for (auto* t : legacyTerrains) if (t) { anyTerrain = true; break; }
+        if (anyTerrain && DrawCategory("TERRAIN", "#Terrain")) {
+            for (auto* terr : basicTerrains) {
+                if (!terr) continue;
+                if (FilterActive() && !NameMatches(terr->GetName())) continue;
+                char label[128];
+                snprintf(label, sizeof(label), "%s", terr->GetName().c_str());
+                RowDesc d;
+                d.id = terr;
+                d.icon = ROWICON_TERRAIN;
+                d.label = label;
+                d.selected = terr->isSelected || terr == BasicTerrain::GetActive();
+                d.depth = 1;
+                ScrollToIfTarget(terr);
+                d.renaming = (g_renameTerrain == terr);
+                d.renameBuf = g_nameBuffer;
+                d.renameBufSize = sizeof(g_nameBuffer);
+                RowResult r = DrawRow(d);
+                if (d.renaming) {
+                    if (r.renameCommit) { terr->SetName(g_nameBuffer); g_renameTerrain = nullptr; }
+                    else if (r.renameCancel) g_renameTerrain = nullptr;
+                } else if (r.clicked && !g_explorerMenuOpen) {
+                    g_explorerAnchorIndex = -1;
+                    s_selGroup = nullptr;
+                    SetSelectedTerrain(g_selectedTerrain == terr ? nullptr : terr);
+                    s_ctx.rowClickedThisFrame = true;
+                } else if (r.rightClicked) {
+                    SetSelectedTerrain(terr);
+                    s_ctx.rightClickHandled = true;
+                    s_ctx.rowClickedThisFrame = true;
                 }
-                ImGui::PopID();
-                continue;
+                if (r.doubleClicked && !d.renaming) {
+                    g_renameTerrain = terr;
+                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", terr->GetName().c_str());
+                    g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
+                }
             }
-
-            // --- Legacy chunked terrain::Terrain row ---
-            if (entry.legacyTerrain) {
-                terrain::Terrain* legacy = entry.legacyTerrain;
-                if (!legacy) { ImGui::PopID(); continue; }
-                bool isSel = terrain::GetTerrainEditorState().selectedTerrainLegacy == legacy;
-                bool isRenaming = (g_renameLegacyTerrain == legacy);
-
-                if (isRenaming) {
-                    static terrain::Terrain* s_lastRenameLegacy = nullptr;
-                    bool justOpened = (s_lastRenameLegacy != legacy);
-                    s_lastRenameLegacy = legacy;
-                    if (ExplorerRenameField("##rename", g_nameBuffer, sizeof(g_nameBuffer), justOpened)) {
+            for (auto* legacy : legacyTerrains) {
+                if (!legacy) continue;
+                if (FilterActive() && !NameMatches(legacy->GetName())) continue;
+                const bool isSel = terrain::GetTerrainEditorState().selectedTerrainLegacy == legacy;
+                char label[128];
+                snprintf(label, sizeof(label), "%s", legacy->GetName().c_str());
+                RowDesc d;
+                d.id = legacy;
+                d.icon = ROWICON_TERRAIN;
+                d.label = label;
+                d.selected = isSel;
+                d.depth = 1;
+                ScrollToIfTarget(legacy);
+                d.renaming = (g_renameLegacyTerrain == legacy);
+                d.renameBuf = g_nameBuffer;
+                d.renameBufSize = sizeof(g_nameBuffer);
+                RowResult r = DrawRow(d);
+                if (d.renaming) {
+                    if (r.renameCommit) {
                         std::string newName = g_nameBuffer;
                         if (newName.empty()) newName = "Terrain";
                         bool taken = false;
@@ -563,178 +1159,36 @@ void DrawImGuiExplorer() {
                         if (taken) LogAlways("[terrain] name '%s' is already in use - rename blocked", newName.c_str());
                         else legacy->SetName(newName);
                         g_renameLegacyTerrain = nullptr;
-                    } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
+                    } else if (r.renameCancel) {
                         g_renameLegacyTerrain = nullptr;
                     }
-                } else {
-                    char label[128];
-                    snprintf(label, sizeof(label), "%s", legacy->GetName().c_str());
-                    bool rightClicked = false;
-                    bool clicked = ExplorerRowIcon(ROWICON_TERRAIN, label, isSel, &rightClicked);
-                    if (clicked && !g_explorerMenuOpen) {
-                        terrain::HandleTerrainSelection(legacy, !isSel);
-                        rowClickedThisFrame = true;
-                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                            g_renameLegacyTerrain = legacy;
-                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
-                            g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
-                        }
-                    } else if (rightClicked) {
-                        terrain::HandleTerrainSelection(legacy, true);
-                        rightClickHandled = true;
-                        rowClickedThisFrame = true;
-                    }
+                } else if (r.clicked && !g_explorerMenuOpen) {
+                    g_explorerAnchorIndex = -1;
+                    s_selGroup = nullptr;
+                    terrain::HandleTerrainSelection(legacy, !isSel);
+                    s_ctx.rowClickedThisFrame = true;
+                } else if (r.rightClicked) {
+                    terrain::HandleTerrainSelection(legacy, true);
+                    s_ctx.rightClickHandled = true;
+                    s_ctx.rowClickedThisFrame = true;
                 }
-                ImGui::PopID();
-                continue;
-            }
-
-            // --- Object / model member row ---
-            ScatteredObject* obj = entry.obj;
-            if (!obj) { ImGui::PopID(); continue; }
-            bool isMember = obj->parentModel != nullptr;
-
-            if (g_renameObject == obj) {
-                if (isMember) ImGui::Indent(14.0f);
-                static ScatteredObject* s_lastRenameObj = nullptr;
-                bool justOpened = (s_lastRenameObj != obj);
-                s_lastRenameObj = obj;
-                if (ExplorerRenameField("##rename", g_nameBuffer, sizeof(g_nameBuffer), justOpened)) {
-                    obj->SetName(g_nameBuffer);
-                    g_renameObject = nullptr;
-                } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
-                    g_renameObject = nullptr;
-                }
-                if (isMember) ImGui::Unindent(14.0f);
-            } else {
-                if (isMember) ImGui::Indent(14.0f);
-                char label[128];
-                snprintf(label, sizeof(label), "%s", obj->GetName().c_str());
-                bool rightClicked = false;
-                bool clicked = ExplorerRowIcon(ROWICON_OBJECT, label, obj->isSelected, &rightClicked);
-
-                if (g_explorerDragActive && ImGui::IsItemHovered()) {
-                    g_explorerDropTarget = obj->parentModel;
-                    g_explorerDropValid = true;
-                }
-
-                std::vector<ScatteredObject*> pressSelection;
-                if (clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
-                    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-                    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-                    if (shift && g_explorerAnchorIndex >= 0) {
-                        int a = g_explorerAnchorIndex, b = entry.objRowIndex;
-                        if (a > b) std::swap(a, b);
-                        std::vector<ScatteredObject*> sel;
-                        for (const auto& e : entries) {
-                            if (!e.isHeader && e.obj && e.objRowIndex >= a && e.objRowIndex <= b) sel.push_back(e.obj);
-                        }
-                        SetSelection(sel, obj);
-                        pressSelection = std::move(sel);
-                    } else if (ctrl) {
-                        bool wasSelected = obj->isSelected;
-                        std::vector<ScatteredObject*> next;
-                        for (auto* o : g_selection) if (o != obj) next.push_back(o);
-                        if (!wasSelected) next.push_back(obj);
-                        g_explorerAnchorIndex = entry.objRowIndex;
-                        SetSelection(next, KeepPrimary(next, g_primarySelection));
-                        pressSelection = std::move(next);
-                    } else {
-                        if (obj->isSelected && g_selection.size() > 1) {
-                            pressSelection = g_selection;
-                            SetSelection(pressSelection, g_primarySelection);
-                        } else {
-                            pressSelection = { obj };
-                            SetSelection({ obj }, obj);
-                        }
-                        g_explorerAnchorIndex = entry.objRowIndex;
-
-                        double now = GetTime();
-                        if (g_lastExplorerClick == obj && now - g_lastExplorerClickTime < 0.35) {
-                            g_renameObject = obj;
-                            snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", obj->GetName().c_str());
-                            g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
-                            g_lastExplorerClick = nullptr;
-                        } else {
-                            g_lastExplorerClick = obj;
-                            g_lastExplorerClickTime = now;
-                        }
-                    }
-                    rowClickedThisFrame = true;
-                } else if (rightClicked && !ExplorerRenameActive()) {
-                    if (!obj->isSelected) {
-                        SetSelection({ obj }, obj);
-                        g_explorerAnchorIndex = entry.objRowIndex;
-                    }
-                    rightClickHandled = true;
-                    OpenExplorerMenu(mouse, ExplorerMenuMode::Object, obj, -1);
-                    rowClickedThisFrame = true;
-                }
-
-                if (!pressSelection.empty()) {
-                    g_explorerDragPending = true;
-                    g_explorerDragObjects = std::move(pressSelection);
-                    g_explorerDragStart = mouse;
-                }
-                if (isMember) ImGui::Unindent(14.0f);
-            }
-            ImGui::PopID();
-        }
-
-        // Clicking blank space in the SCENE section clears the selection.
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-            && !ExplorerRenameActive() && !g_explorerMenuOpen && !rowClickedThisFrame && !ImGui::IsAnyItemHovered()) {
-            SetSelection({}, nullptr);
-            g_explorerAnchorIndex = -1;
-            g_lastExplorerClick = nullptr;
-        }
-
-        // Resolve drop target: hovering blank SCENE space (not over a row)
-        // means "back to the workspace root".
-        if (g_explorerDragActive && !g_explorerDropValid) {
-            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
-                g_explorerDropTarget = nullptr;
-                g_explorerDropValid = true;
-            }
-        }
-
-        // Drag state machine: press-and-move past a threshold starts the
-        // drag; release over a valid target reparents the dragged objects.
-        if (g_explorerDragPending || g_explorerDragActive) {
-            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-                if (g_explorerDragActive && g_explorerDropValid) {
-                    PerformExplorerDrop(g_explorerDragObjects, g_explorerDropTarget);
-                }
-                g_explorerDragPending = false;
-                g_explorerDragActive = false;
-                g_explorerDragObjects.clear();
-                g_explorerDropTarget = nullptr;
-                g_explorerDropValid = false;
-            } else if (!g_explorerDragActive && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                if (ExplorerRenameActive() || g_explorerMenuOpen) {
-                    g_explorerDragPending = false;
-                    g_explorerDragObjects.clear();
-                } else {
-                    Vector2 delta = Vector2Subtract(mouse, g_explorerDragStart);
-                    if (fabsf(delta.x) + fabsf(delta.y) > 6.0f) {
-                        g_explorerDragActive = true;
-                        g_explorerDragPending = false;
-                        g_explorerDropValid = false;
-                    }
+                if (r.doubleClicked && !d.renaming) {
+                    g_renameLegacyTerrain = legacy;
+                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
+                    g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                 }
             }
         }
     }
 
-    // --- Lighting: scene-wide settings. Time is built in; the "+" menu inserts Sun, Ambient, Sky and Fog. Selecting a row
+    // --- Lighting: scene-wide settings. Time is built in; right-clicking the LIGHTING header (or Time) opens an Insert menu for Sun, Ambient, Sky, Fog and so on. Selecting a row
     // opens its settings in the properties area; right-click an inserted item to remove it (it goes back to its default). ---
     {
         gfx::LightingSettings& L = gfx::Lighting();
         if (!g_selection.empty() || g_selectedWater || g_selectedTerrain) g_lightingSel = 0;   // selecting anything else leaves it
-        ImGui::Spacing();
-        ImGui::TextDisabled("LIGHTING");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+##insertlighting")) ImGui::OpenPopup("##InsertLighting");
+        bool headerRightClicked = false;
+        const bool lightingOpen = DrawCategory("LIGHTING", "#Lighting", &headerRightClicked);
+        if (headerRightClicked) { s_ctx.rightClickHandled = true; ImGui::OpenPopup("##InsertLighting"); }
         if (ImGui::BeginPopup("##InsertLighting")) {
             ImGui::TextDisabled("Insert");
             ImGui::Separator();
@@ -765,11 +1219,17 @@ void DrawImGuiExplorer() {
                              { 6, "Weather", L.hasWeather, true }, { 8, "Picture", L.hasPicture, true } };
         static int s_removeId = 0;
         for (const Row& r : rows) {
-            if (!r.present) continue;
-            ImGui::PushID(100 + r.id);
-            bool rightClicked = false;
-            const bool clicked = ExplorerRowIcon(ROWICON_OBJECT, r.name, g_lightingSel == r.id, &rightClicked);
-            if (clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+            if (!r.present || !lightingOpen) continue;
+            RowDesc rd;
+            rd.idInt = 100 + r.id;
+            rd.icon = ROWICON_OBJECT;
+            rd.label = r.name;
+            rd.selected = g_lightingSel == r.id;
+            rd.depth = 1;
+            const RowResult rr = DrawRow(rd);
+            const bool rightClicked = rr.rightClicked;
+            if (rr.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+                s_selGroup = nullptr;
                 SetSelection({}, nullptr);
                 if (g_selectedWater) { g_selectedWater->isSelected = false; g_selectedWater = nullptr; }
                 if (g_selectedTerrain) { g_selectedTerrain->isSelected = false; g_selectedTerrain = nullptr; }
@@ -778,10 +1238,10 @@ void DrawImGuiExplorer() {
                 g_lightingSel = r.id;
             }
             if (rightClicked) {
-                rightClickHandled = true;
+                s_ctx.rightClickHandled = true;
                 if (r.removable) { s_removeId = r.id; ImGui::OpenPopup("##LightingRowMenu"); }
+                else ImGui::OpenPopup("##InsertLighting");
             }
-            ImGui::PopID();
         }
         if (ImGui::BeginPopup("##LightingRowMenu")) {
             if (ImGui::MenuItem("Remove (back to default)")) {
@@ -811,34 +1271,39 @@ void DrawImGuiExplorer() {
     SyncVisualScriptEntries();
     if (ScriptRuntime* rt = GetActiveRuntime()) {
         auto& scripts = rt->StandaloneScripts();
-        ImGui::Spacing();
-        ImGui::TextDisabled("SCRIPTS");
-
-        for (int i = 0; i < static_cast<int>(scripts.size()); ++i) {
-            ImGui::PushID(i);
-            if (g_scriptRenameIndex == i) {
-                static int s_lastRenameScriptIdx = -1;
-                bool justOpened = (s_lastRenameScriptIdx != i);
-                s_lastRenameScriptIdx = i;
-                if (ExplorerRenameField("##scriptrename", g_scriptNameBuffer, sizeof(g_scriptNameBuffer), justOpened)) {
-                    auto& s = scripts[i];
-                    std::string oldClass = scriptLauncher::MakeClassName(s.typeName.empty() ? s.name : s.typeName);
-                    s.name = g_scriptNameBuffer;
-                    if (s.typeName == oldClass)
-                        s.typeName = scriptLauncher::MakeClassName(s.name);
-                    vscript::RenameKey(oldClass, ScriptKey(s));
-                    g_scriptRenameIndex = -1;
-                } else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
-                    g_scriptRenameIndex = -1;
-                }
-            } else {
+        if (DrawCategory("SCRIPTS", "#Scripts")) {
+            for (int i = 0; i < static_cast<int>(scripts.size()); ++i) {
+                if (FilterActive() && !NameMatches(scripts[i].name)) continue;
+                const std::string key = ScriptKey(scripts[i]);
                 char label[128];
                 snprintf(label, sizeof(label), "%s", scripts[i].name.c_str());
-                bool rightClicked = false;
-                const std::string key = ScriptKey(scripts[i]);
-                bool clicked = ExplorerRowIcon(ROWICON_SCRIPT, label, g_scriptSel.count(key) > 0, &rightClicked);
-                if (rightClicked && !g_scriptSel.count(key)) { g_scriptSel = { key }; g_scriptSelAnchor = i; }
-                if (clicked && !g_explorerMenuOpen) {
+                RowDesc d;
+                d.idInt = 1000 + i;
+                d.icon = ROWICON_SCRIPT;
+                d.label = label;
+                d.selected = g_scriptSel.count(key) > 0;
+                d.depth = 1;
+                d.renaming = (g_scriptRenameIndex == i);
+                d.renameBuf = g_scriptNameBuffer;
+                d.renameBufSize = sizeof(g_scriptNameBuffer);
+                RowResult r = DrawRow(d);
+                if (d.renaming) {
+                    if (r.renameCommit) {
+                        auto& s = scripts[i];
+                        if (s.name != g_scriptNameBuffer) PushUndo();
+                        std::string oldClass = scriptLauncher::MakeClassName(s.typeName.empty() ? s.name : s.typeName);
+                        s.name = g_scriptNameBuffer;
+                        if (s.typeName == oldClass)
+                            s.typeName = scriptLauncher::MakeClassName(s.name);
+                        vscript::RenameKey(oldClass, ScriptKey(s));
+                        g_scriptRenameIndex = -1;
+                    } else if (r.renameCancel) {
+                        g_scriptRenameIndex = -1;
+                    }
+                    continue;
+                }
+                if (r.rightClicked && !g_scriptSel.count(key)) { g_scriptSel = { key }; g_scriptSelAnchor = i; }
+                if (r.clicked && !g_explorerMenuOpen) {
                     const ImGuiIO& io = ImGui::GetIO();
                     if (io.KeyCtrl) {                       // Ctrl: add or remove this one
                         if (!g_scriptSel.erase(key)) g_scriptSel.insert(key);
@@ -847,32 +1312,60 @@ void DrawImGuiExplorer() {
                         g_scriptSel.clear();
                         const int lo = std::min(g_scriptSelAnchor, i), hi = std::max(g_scriptSelAnchor, i);
                         for (int k = lo; k <= hi && k < static_cast<int>(scripts.size()); ++k) g_scriptSel.insert(ScriptKey(scripts[k]));
-                    } else {                                // plain click: just this one, and edit it
+                    } else {                                // plain click: just select it
                         g_scriptSel = { key };
                         g_scriptSelAnchor = i;
-                        if (i >= 0 && i < static_cast<int>(scripts.size())) {
-                            std::string className;
-                            scriptLauncher::EditStandaloneScript(scripts[i].name, scripts[i].typeName, &className);
-                            if (!className.empty()) {
-                                scripts[i].typeName = className;
-                                scripts[i].runOnPlay = true;
-                            }
-                        }
                     }
-                } else if (rightClicked) {
-                    rightClickHandled = true;
-                    OpenExplorerMenu(mouse, ExplorerMenuMode::Script, nullptr, i);
+                    s_ctx.rowClickedThisFrame = true;
+                } else if (r.doubleClicked && !g_explorerMenuOpen) {   // double click opens it in the editor
+                    std::string className;
+                    scriptLauncher::EditStandaloneScript(scripts[i].name, scripts[i].typeName, &className);
+                    if (!className.empty()) {
+                        scripts[i].typeName = className;
+                        scripts[i].runOnPlay = true;
+                    }
+                } else if (r.rightClicked) {
+                    s_ctx.rightClickHandled = true;
+                    OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Script, nullptr, i);
                 }
             }
-            ImGui::PopID();
         }
     }
+
+    // Blank space below the rows: a click clears the selection, a drop moves things out of every group.
+    {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::InvisibleButton("##explorerblank", ImVec2(std::max(avail.x, 1.0f), std::max(avail.y, 24.0f)));
+        const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
+        if (ImGui::BeginDragDropTarget()) {
+            const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("FLY_EXPLORER",
+                ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+            if (pl) {
+                ImGui::GetWindowDrawList()->AddRect(ImVec2(bmin.x, bmin.y), ImVec2(bmax.x, bmin.y + 1.0f), theme::AccentU32(), 0.0f, 0, 2.0f);
+                if (pl->IsDelivery()) {
+                    PushUndo();
+                    if (s_dragGroup) MoveGroupTo(s_dragGroup, nullptr, nullptr, false);
+                    else MoveObjectsToGroup(s_dragObjects, nullptr, nullptr, false);
+                    s_dragObjects.clear();
+                    s_dragGroup = nullptr;
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+            SetSelection({}, nullptr);
+            s_selGroup = nullptr;
+            g_explorerAnchorIndex = -1;
+        }
+    }
+
+    s_orderPrev = std::move(s_ctx.order);
 
     bool contentHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
     ImGui::EndChild();
 
-    if (g_sceneObjects && contentHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !rightClickHandled) {
-        OpenExplorerMenu(mouse, ExplorerMenuMode::Empty, nullptr, -1);
+    if (g_sceneObjects && contentHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !s_ctx.rightClickHandled) {
+        OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Empty, nullptr, -1);
     }
 
     ImGui::End();

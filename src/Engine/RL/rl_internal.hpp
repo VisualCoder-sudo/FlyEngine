@@ -54,6 +54,9 @@ extern const char* const kAttribNames[ATTR_COUNT];
 // ---------------------------------------------------------------------------
 constexpr int kMaxKeys = 512;
 constexpr int kMaxMouseButtons = 8;
+constexpr int kMaxGamepads = 4;
+constexpr int kMaxGamepadButtons = 18;   // GamepadButton enum, GAMEPAD_BUTTON_UNKNOWN..RIGHT_THUMB
+constexpr int kMaxGamepadAxes = 6;       // GamepadAxis enum, LEFT_X..RIGHT_TRIGGER
 
 struct CoreState {
     bool windowOpen = false;
@@ -95,8 +98,23 @@ struct CoreState {
     int cursorWanted = 0;   // shape requested this frame; applied once in EndDrawing
 
     float masterVolume = 1.0f;
+
+    // Gamepads (current/previous frame), polled outside sokol_app (see rl_gamepad.cpp).
+    bool gamepadAvailable[kMaxGamepads] = {};
+    std::string gamepadName[kMaxGamepads];
+    bool gamepadButtonDown[kMaxGamepads][kMaxGamepadButtons] = {};
+    bool gamepadButtonPrev[kMaxGamepads][kMaxGamepadButtons] = {};
+    float gamepadAxisVal[kMaxGamepads][kMaxGamepadAxes] = {};
+    int gamepadLastButtonPressed = 0;   // GAMEPAD_BUTTON_UNKNOWN
 };
 CoreState& Core();
+
+// Gamepad backend (rl_gamepad.cpp): Linux polls evdev devices found via libudev,
+// Windows polls XInput. Called once per frame from PollEvents(), after the
+// previous frame's button state has been copied out by BeginInputFrame().
+void GamepadInit();
+void GamepadShutdown();
+void GamepadPoll();
 
 // Optional hook that sees every window event before the raylib input state does
 // (the ImGui integration uses it). Set through SetEventHook() in raylib.h.
@@ -193,6 +211,9 @@ struct GfxState {
     // Current render target (index into targets) and whether a sokol pass is open.
     unsigned int currentTarget = 0;
     bool passActive = false;
+    sg_pipeline appliedPipeline{};
+    sg_bindings appliedBindings{};
+    bool bindingsApplied = false;
     PassFormat passFormat;
     bool frameActive = false;
     uint64_t frameCounter = 0;
@@ -278,6 +299,13 @@ struct PipelineKey {
 sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& descTemplate);
 // Cache lookup only; id 0 on a miss (lets callers skip building the template).
 sg_pipeline FindPipeline(const PipelineKey& key);
+// Redundant-state filters for the hot draw path. Cache is dropped at every pass boundary.
+void ApplyPipelineCached(sg_pipeline pip);
+void ApplyBindingsCached(const sg_bindings& bind);
+void ResetAppliedState();
+// sokol rotates a dynamic buffer/image's write slot on every update or append, so bindings
+// applied before it are stale: call after any sg_update_buffer/append_buffer/update_image.
+void InvalidateBindings();
 
 // ---------------------------------------------------------------------------
 // Immediate-mode batch (rl_batch.cpp)
@@ -356,6 +384,9 @@ void SetLinearTargetUniform(ShaderRec& sh);
 // Models (rl_models.cpp)
 // ---------------------------------------------------------------------------
 void ModelsShutdown();
+// Builds the pipelines a mesh shader is most likely to need (main and depth-only formats),
+// so the first draw does not stall on sg_make_pipeline().
+void PrewarmMeshPipelines(const ShaderRec& sh);
 void TrimBufferPool();   // once per frame: age/size limits on the recycled-buffer pool
 
 // ---------------------------------------------------------------------------

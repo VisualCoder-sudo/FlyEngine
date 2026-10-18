@@ -171,6 +171,8 @@ Node& AddNode(NodeType type, float x, float y) {
         n.target = "0"; n.prop = "0";   // value inputs / value outputs
     }
     else if (type == NodeType::SetWorld) { n.target = "Lighting"; n.prop = "GlobalShadows"; n.value = "true"; }
+    else if (type == NodeType::GamepadButtonDown || type == NodeType::OnGamepadButton) n.prop = "A";
+    else if (type == NodeType::GamepadAxis) n.prop = "Left X";
     g2.nodes.push_back(n);
     return g2.nodes.back();
 }
@@ -189,13 +191,15 @@ void RemoveNode(int id) {
 
 namespace {
 bool IsEvent(NodeType t) {
-    return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey || t == NodeType::EveryN;
+    return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey ||
+           t == NodeType::EveryN || t == NodeType::OnGamepadButton;
 }
 }
 
 bool IsPure(NodeType t) {
     return (t >= NodeType::GetVariable && t <= NodeType::Raycast) ||
-           (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN);
+           (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN) ||
+           t == NodeType::GamepadButtonDown || t == NodeType::GamepadAxis;
 }
 
 int DataOutputCount(const Node& n) {
@@ -386,6 +390,17 @@ const std::vector<std::string>& KeyNames() {
     return k;
 }
 
+const std::vector<std::string>& GamepadButtonNames() {
+    static const std::vector<std::string> b = { "A", "B", "X", "Y", "Left Bumper", "Right Bumper", "Left Trigger",
+                                                 "Right Trigger", "Back", "Start", "Guide", "Left Stick", "Right Stick",
+                                                 "Up", "Down", "Left", "Right" };
+    return b;
+}
+const std::vector<std::string>& GamepadAxisNames() {
+    static const std::vector<std::string> a = { "Left X", "Left Y", "Right X", "Right Y", "Left Trigger", "Right Trigger" };
+    return a;
+}
+
 const std::vector<std::string>& MathFuncNames() {
     static const std::vector<std::string> f = { "Min", "Max", "Abs", "Round", "Floor", "Ceil", "Sqrt", "Pow", "Modulo", "Sin", "Cos" };
     return f;
@@ -464,6 +479,9 @@ const char* TypeName(NodeType t) {
         case NodeType::Time: return "Time";
         case NodeType::ObjectExists: return "Object Exists";
         case NodeType::StopSound: return "Stop Sound";
+        case NodeType::GamepadButtonDown: return "Is Gamepad Button Down";
+        case NodeType::GamepadAxis: return "Gamepad Axis";
+        case NodeType::OnGamepadButton: return "On Gamepad Button Pressed";
         default: break;
     }
     return "?";
@@ -524,6 +542,9 @@ const char* NodeHelp(NodeType t) {
         case NodeType::Or: return "True when at least one input is true.";
         case NodeType::Not: return "Flips true to false and false to true.";
         case NodeType::CodeSnippet: return "Your own C++ code, run when the flow reaches it. Add value inputs and outputs to pass data in and out.";
+        case NodeType::GamepadButtonDown: return "True while the chosen gamepad button is held down (gamepad 1), false otherwise.";
+        case NodeType::GamepadAxis: return "The chosen gamepad stick/trigger's position, -1 to 1 (gamepad 1). Triggers rest at -1.";
+        case NodeType::OnGamepadButton: return "Runs once each time the chosen gamepad button is pressed (gamepad 1, not while it is held).";
         default: break;
     }
     return "";
@@ -693,6 +714,29 @@ int KeyCodeFor(const std::string& name) {
     return it == codes.end() ? -1 : it->second;
 }
 
+int GamepadButtonCodeFor(const std::string& name) {
+    static const std::map<std::string, int> codes = {
+        { "A", GAMEPAD_BUTTON_RIGHT_FACE_DOWN }, { "B", GAMEPAD_BUTTON_RIGHT_FACE_RIGHT },
+        { "X", GAMEPAD_BUTTON_RIGHT_FACE_LEFT }, { "Y", GAMEPAD_BUTTON_RIGHT_FACE_UP },
+        { "Left Bumper", GAMEPAD_BUTTON_LEFT_TRIGGER_1 }, { "Right Bumper", GAMEPAD_BUTTON_RIGHT_TRIGGER_1 },
+        { "Left Trigger", GAMEPAD_BUTTON_LEFT_TRIGGER_2 }, { "Right Trigger", GAMEPAD_BUTTON_RIGHT_TRIGGER_2 },
+        { "Back", GAMEPAD_BUTTON_MIDDLE_LEFT }, { "Start", GAMEPAD_BUTTON_MIDDLE_RIGHT }, { "Guide", GAMEPAD_BUTTON_MIDDLE },
+        { "Left Stick", GAMEPAD_BUTTON_LEFT_THUMB }, { "Right Stick", GAMEPAD_BUTTON_RIGHT_THUMB },
+        { "Up", GAMEPAD_BUTTON_LEFT_FACE_UP }, { "Down", GAMEPAD_BUTTON_LEFT_FACE_DOWN },
+        { "Left", GAMEPAD_BUTTON_LEFT_FACE_LEFT }, { "Right", GAMEPAD_BUTTON_LEFT_FACE_RIGHT } };
+    const auto it = codes.find(name);
+    return it == codes.end() ? -1 : it->second;
+}
+
+int GamepadAxisCodeFor(const std::string& name) {
+    static const std::map<std::string, int> codes = {
+        { "Left X", GAMEPAD_AXIS_LEFT_X }, { "Left Y", GAMEPAD_AXIS_LEFT_Y },
+        { "Right X", GAMEPAD_AXIS_RIGHT_X }, { "Right Y", GAMEPAD_AXIS_RIGHT_Y },
+        { "Left Trigger", GAMEPAD_AXIS_LEFT_TRIGGER }, { "Right Trigger", GAMEPAD_AXIS_RIGHT_TRIGGER } };
+    const auto it = codes.find(name);
+    return it == codes.end() ? -1 : it->second;
+}
+
 bool ParseVec(const std::string& s, double v[3]) {
     float x = 0, y = 0, z = 0;
     if (std::sscanf(s.c_str(), " ( %f , %f , %f", &x, &y, &z) != 3) { v[0] = v[1] = v[2] = 0.0; return false; }
@@ -780,6 +824,14 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
         }
         case NodeType::Lerp: { const double a = num(0); return NumStr(a + (num(1) - a) * num(2)); }
         case NodeType::KeyDown: { const int k = KeyCodeFor(n.prop); return k >= 0 && IsKeyDown(k) ? "true" : "false"; }
+        case NodeType::GamepadButtonDown: {
+            const int b = GamepadButtonCodeFor(n.prop);
+            return b >= 0 && ::IsGamepadButtonDown(0, b) ? "true" : "false";
+        }
+        case NodeType::GamepadAxis: {
+            const int a = GamepadAxisCodeFor(n.prop);
+            return NumStr(a >= 0 ? ::GetGamepadAxisMovement(0, a) : 0.0);
+        }
         case NodeType::Concat: return in(0) + in(1) + in(2);
         case NodeType::MakeVec3: return VecStr(num(0), num(1), num(2));
         case NodeType::VecPart: {
@@ -1076,6 +1128,11 @@ void Tick(ScriptRuntime& rt, float dt) {
         for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnKey) keys.push_back({ n.id, n.prop });
         for (const auto& [id, key] : keys) if (KeyPressed(key)) Emit(rt, gi, id, 0);
     }
+    for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
+        std::vector<std::pair<int, std::string>> buttons;
+        for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnGamepadButton) buttons.push_back({ n.id, n.prop });
+        for (const auto& [id, button] : buttons) if (WasGamepadButtonPressed(0, button)) Emit(rt, gi, id, 0);
+    }
 }
 
 void Stop(ScriptRuntime& rt) {
@@ -1222,6 +1279,19 @@ bool IsKeyHeld(const std::string& keyName) {
     return k >= 0 && IsKeyDown(k);
 }
 bool WasKeyPressed(const std::string& keyName) { return KeyPressed(keyName); }
+bool IsGamepadAvailable(int gamepad) { return ::IsGamepadAvailable(gamepad); }
+bool IsGamepadButtonHeld(int gamepad, const std::string& buttonName) {
+    const int b = GamepadButtonCodeFor(buttonName);
+    return b >= 0 && ::IsGamepadButtonDown(gamepad, b);
+}
+bool WasGamepadButtonPressed(int gamepad, const std::string& buttonName) {
+    const int b = GamepadButtonCodeFor(buttonName);
+    return b >= 0 && ::IsGamepadButtonPressed(gamepad, b);
+}
+float GamepadAxisValue(int gamepad, const std::string& axisName) {
+    const int a = GamepadAxisCodeFor(axisName);
+    return a >= 0 ? ::GetGamepadAxisMovement(gamepad, a) : 0.0f;
+}
 void ShowText(const std::string& text, const std::string& position, float seconds) {
     if (text.empty()) g_hud.erase(position);
     else g_hud[position] = { text, seconds > 0.0f ? seconds : -1.0f };

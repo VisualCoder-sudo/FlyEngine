@@ -97,6 +97,5 @@ scene_*.png
 /*.png
 
 # Collected executables
-/exe/
+/export/
 /dist/
-/exe-deb/

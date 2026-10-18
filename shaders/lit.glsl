@@ -9,6 +9,7 @@
 // post passes (shaders/post.glsl).
 @module lit
 @include fly_common.glsl
+@include fly_shadow.glsl
 
 @block lit_vs_outputs
 out vec2 fragTexCoord;
@@ -122,24 +123,73 @@ void main() {
 }
 @end
 
+// Loose-object variant: the plain lit fragment stage (fs) fed by per-instance transforms, so
+// shapes sharing a mesh and texture draw in one call (gfx::QueueShape). The instance's colour tint
+// rides in the otherwise unused w of the first three columns, like the city instancing above.
+@vs vs_shape_instanced
+@include_block fly_clip
+layout(binding=0) uniform vs_shape_params {
+    mat4 mvp;
+    mat4 lightVP;
+    vec4 foliageWind;   // x = time (s), y = strength (0 = off, every other shape), zw = direction on the ground
+    vec4 foliageFade;   // x = fade start (m), y = fade end (m), z = share that lasts to the end, w = on (0 = every other shape)
+    vec4 foliageCam;    // xy = camera on the ground, z = growth of the plants that stay as the rest thin out
+};
+@include_block lit_vs_inputs
+in vec4 instanceTransform0;
+in vec4 instanceTransform1;
+in vec4 instanceTransform2;
+in vec4 instanceTransform3;
+@include_block lit_vs_outputs
+void main() {
+    vec3 a = instanceTransform0.xyz;
+    vec3 b = instanceTransform1.xyz;
+    vec3 c = instanceTransform2.xyz;
+    mat4 model = mat4(vec4(a, 0.0), vec4(b, 0.0), vec4(c, 0.0), vec4(instanceTransform3.xyz, 1.0));
+    vec3 instTint = vec3(instanceTransform0.w, instanceTransform1.w, instanceTransform2.w);
+    vec4 worldPos = model * vec4(vertexPosition, 1.0);
+    if (foliageFade.w > 0.0) {
+        // Each plant leaves at its own distance (its rank rides in instanceTransform3.w) and shrinks into the ground,
+        // so the edge of the draw distance thins out instead of ending in a line. The CPU keeps the same test.
+        float rank = instanceTransform3.w;
+        float dist = length(instanceTransform3.xz - foliageCam.xy);
+        float start = foliageFade.x;
+        float t = clamp((dist - start) / max(foliageFade.y - start, 0.01), 0.0, 1.0);
+        float threshold = foliageFade.z + (1.0 - foliageFade.z) * (1.0 - t);
+        float edge = clamp((foliageFade.y - dist) / (0.06 * foliageFade.y + 1.0), 0.0, 1.0);
+        float keep = clamp((threshold - rank) * 10.0, 0.0, 1.0) * edge;
+        keep *= 1.0 + (foliageCam.z - 1.0) * t;   // the plants left grow as their neighbours go, so the ground stays covered
+        worldPos.xyz = instanceTransform3.xyz + (worldPos.xyz - instanceTransform3.xyz) * keep;
+    }
+    if (foliageWind.y > 0.0) {
+        // Foliage meshes keep how far a vertex is from its roots in texcoord.y (0 = rooted, 1 = free). Plants bend
+        // downwind in gusts, and flutter faster the closer a vertex is to the tip.
+        float root = vertexTexCoord.y;
+        float t = foliageWind.x;
+        float gust = 0.55 + 0.45 * sin(t * 1.3 + worldPos.x * 0.07 + worldPos.z * 0.05);
+        float sway = sin(t * 2.1 + worldPos.x * 0.45 + worldPos.z * 0.38) * 0.6 + sin(t * 4.7 + worldPos.x * 1.3 + worldPos.z * 0.9) * 0.4;
+        float amount = root * root * length(b) * foliageWind.y * 0.22;
+        worldPos.xz += foliageWind.zw * amount * (gust + sway * 0.35);
+    }
+    fragTexCoord = vertexTexCoord;
+    fragColor = vec4(vertexColor.rgb * instTint, vertexColor.a);
+    // Inverse transpose of the model's 3x3 (its columns' cross products), so non-uniform scales light correctly.
+    float handed = dot(a, cross(b, c)) < 0.0 ? -1.0 : 1.0;
+    fragNormal = normalize(handed * (vertexNormal.x * cross(b, c) + vertexNormal.y * cross(c, a) + vertexNormal.z * cross(a, b)));
+    fragShadowCoord = lightVP * worldPos;
+    fragWorldPos = worldPos.xyz;
+    gl_Position = fly_clip(mvp * worldPos);
+}
+@end
+
 @block lit_fs_common
 @include_block fly_rt_uv
 @include_block fly_color
+@include_block fly_shadow
 layout(binding=0) uniform texture2D texture0;
 layout(binding=0) uniform sampler texture0_smp;
-layout(binding=1) uniform texture2D shadowMap;
-layout(binding=1) uniform sampler shadowMap_smp;
-@image_sample_type shadowMap depth
-@sampler_type shadowMap_smp comparison
 layout(binding=2) uniform texture2D cloudShadowTex;
 layout(binding=2) uniform sampler cloudShadowTex_smp;
-// The further shadow cascades (see ShadowCalculation); they share shadowMap's sampler.
-layout(binding=3) uniform texture2D shadowMap1;
-layout(binding=4) uniform texture2D shadowMap2;
-layout(binding=5) uniform texture2D shadowMap3;
-@image_sample_type shadowMap1 depth
-@image_sample_type shadowMap2 depth
-@image_sample_type shadowMap3 depth
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -148,62 +198,8 @@ in vec4 fragShadowCoord;
 in vec3 fragWorldPos;
 out vec4 finalColor;
 
-// 1 = lit, 0 = in shadow, filtered by the hardware.
-float ShadowTap(int cascade, vec3 p) {
-    if (cascade == 0) return texture(sampler2DShadow(shadowMap, shadowMap_smp), p);
-    if (cascade == 1) return texture(sampler2DShadow(shadowMap1, shadowMap_smp), p);
-    if (cascade == 2) return texture(sampler2DShadow(shadowMap2, shadowMap_smp), p);
-    return texture(sampler2DShadow(shadowMap3, shadowMap_smp), p);
-}
-vec2 ShadowTexel(int cascade) {
-    if (cascade == 0) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap, shadowMap_smp), 0));
-    if (cascade == 1) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap1, shadowMap_smp), 0));
-    if (cascade == 2) return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap2, shadowMap_smp), 0));
-    return 1.0 / vec2(textureSize(sampler2DShadow(shadowMap3, shadowMap_smp), 0));
-}
-
-// The sun's shadow: 0 = lit, 1 = in shadow.
-//
-// The shadow maps are cascades: the first is a box of ground round the camera drawn
-// in fine detail, each further one a box about three times as wide at the same
-// resolution (shadowVP[i] takes a world position into box i; sunDir.w says how many
-// there are, 0 = shadows off). A point takes its shadow from the finest box it is in.
 float ShadowCalculation(vec3 normal) {
-    int count = int(sunDir.w + 0.5);
-    // Combined anti-acne scheme (shared by every lit mesh).
-    //
-    // (B) SLOPE-SCALE DEPTH BIAS - grows as the surface tilts away from the
-    //     light, where acne is worst. In depth-buffer units: tuned for the first box's
-    //     1..430 m range, and the further boxes' ranges are longer in step with their texels.
-    float facing = 1.0 - dot(normal, -sunDir.xyz);
-    float bias = max(0.0037 * facing * facing, 0.00093);
-    float scale0 = length(vec3(shadowVP[0][0][0], shadowVP[0][1][0], shadowVP[0][2][0]));
-    vec3 n = normalize(normal);
-    for (int c = 0; c < 4; ++c) {
-        if (c >= count) break;
-        // (A) NORMAL-BASED BIAS - shift the shadow comparison point along the
-        //     surface normal in WORLD space before projecting to light space: 5 cm in
-        //     the first box (correct at every camera altitude), more where texels are larger.
-        float coarser = scale0 / max(length(vec3(shadowVP[c][0][0], shadowVP[c][1][0], shadowVP[c][2][0])), 1e-9);
-        vec4 biasedLightPos = shadowVP[c] * vec4(fragWorldPos + n * (0.05 * coarser), 1.0);
-        vec3 ndc = biasedLightPos.xyz / biasedLightPos.w;
-        float currentDepth = ndc.z * 0.5 + 0.5;
-        // The rim of a box is left to the next one (its taps would reach over the edge).
-        float rim = c + 1 < count ? 0.97 : 1.0;
-        if (abs(ndc.x) > rim || abs(ndc.y) > rim || currentDepth > 1.0) continue;
-
-        vec2 uv = fly_rt_uv(ndc.xy);
-        vec2 texelSize = ShadowTexel(c);
-        // 3x3 PCF; each tap is itself a filtered hardware comparison.
-        float shadow = 0.0;
-        for (int x = -1; x <= 1; ++x) {
-            for (int y = -1; y <= 1; ++y) {
-                shadow += 1.0 - ShadowTap(c, vec3(uv + vec2(x, y) * texelSize, currentDepth - bias));
-            }
-        }
-        return shadow / 9.0;
-    }
-    return 0.0;
+    return ShadowCalculation(fragWorldPos, normal);
 }
 
 // How much of the sun the clouds let through to this point: the clouds' shadow is a texture over the
@@ -517,3 +513,4 @@ void main() {
 @program lit vs fs
 @program lit_road vs_road fs_road
 @program lit_instanced vs_instanced fs_building
+@program lit_shape_instanced vs_shape_instanced fs

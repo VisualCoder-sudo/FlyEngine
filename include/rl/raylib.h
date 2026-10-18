@@ -1768,6 +1768,7 @@ RLAPI bool IsRenderOriginTopLeft(void);                               // True wh
 RLAPI const char *GetGraphicsBackendName(void);                       // "OpenGL", "Vulkan", "D3D11"
 typedef bool (*FlyEventHook)(const void *sappEvent);                  // Receives every sapp_event before raylib input does
 RLAPI void SetEventHook(FlyEventHook hook);
+RLAPI void SetShaderHotReload(bool enabled);                          // Watches shaders/*.glsl and recompiles+swaps changed programs in place (editor/dev builds; default on)
 RLAPI unsigned long long GetTextureImGuiId(Texture2D texture);        // ImTextureID for sokol_imgui
 RLAPI void SetWindowClass(const char *name);                          // X11 WM_CLASS (desktop file StartupWMClass)
 

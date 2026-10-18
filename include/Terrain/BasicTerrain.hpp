@@ -81,7 +81,9 @@ public:
     // constructor.
     void Reshape(int newWidth, int newDepth, float newScale,
                  float newMinHeight, float newMaxHeight, float newTiling);
-    void MarkAllDirty() { meshDirty = true; splatmapDirty = true; paintColorDirty = true; }
+    void MarkAllDirty() { meshDirty = true; splatmapDirty = true; paintColorDirty = true; ++revision; }
+    // Counts every change to the heights or the painted layers; things built from the ground (foliage) watch it.
+    uint32_t GetRevision() const { return revision; }
     float* GetHeightData() { return heightmap.data(); }
     const float* GetHeightData() const { return heightmap.data(); }
     size_t GetHeightBytes() const { return heightmap.size() * sizeof(float); }
@@ -232,6 +234,7 @@ private:
     Model model = {0};
     Texture2D terrainTexture = {0};
     bool meshDirty = true;
+    uint32_t revision = 0;
 
     // The material shader raylib assigns by default in LoadModelFromMesh().
     // Cached so Draw() can swap back to it for the flat-color fallback path
@@ -241,6 +244,10 @@ private:
     // Brush preview
     Vector2 brushWorldPos = {0, 0};
     bool brushValid = false;
+    bool foliagePaint = false;    // the foliage brush is on this terrain
+    bool foliageStroke = false;   // a foliage stroke is in progress
+    bool foliageHasLast = false;
+    Vector2 foliageLast = {0, 0};   // where the foliage brush was last frame
 
     // Ramp tool drag state (start captured on press, end follows the cursor)
     Vector2 rampStart = {0, 0};

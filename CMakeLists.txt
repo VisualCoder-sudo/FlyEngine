@@ -223,6 +223,8 @@ add_library(FlyEngineCore STATIC
         src/Engine/Lighting.cpp
         src/Engine/Shadows.cpp
         src/Engine/CityInstancing.cpp
+        src/Engine/ShapeBatch.cpp
+        src/Engine/Particles.cpp
         src/Engine/PostFX.cpp
         src/Engine/Atmosphere.cpp
         src/Engine/Clouds.cpp
@@ -255,6 +257,11 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ui_terrain_panel.cpp
         src/Engine/Frontend/ui_properties.cpp
         src/Engine/Frontend/ui_explorer.cpp
+        src/Engine/Frontend/ui_groups.cpp
+        src/Engine/Frontend/PluginHost.cpp
+        src/Engine/Frontend/ui_theme.cpp
+        src/Engine/Frontend/ui_lighting.cpp
+        src/Engine/Frontend/ui_topbar.cpp
         src/Engine/Frontend/ExportDialog.cpp
         src/Engine/Platform/Platform.cpp
         src/Engine/Platform/FileDialog.cpp
@@ -267,6 +274,7 @@ add_library(FlyEngineCore STATIC
         src/Terrain/TerrainCollider.cpp
         src/Terrain/TerrainEditor.cpp
         src/Terrain/BasicTerrain.cpp
+        src/Terrain/Foliage.cpp
         src/Terrain/BasicTerrainIO.cpp
         src/Terrain/BasicTerrainErode.cpp
         src/Terrain/Water/WaterBody.cpp
@@ -440,8 +448,7 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
-# Collect the built executables into <source>/exe after every build.
-set(FLY_EXE_DIR "${CMAKE_SOURCE_DIR}/exe" CACHE PATH "Where built executables are copied")
+# Collect the built executables into <source>/export/<platform> after every build.
 set(_fly_exe_targets Flyengine FlyPlayer flyexport)
 if(FLY_HAS_FALLBACK)
     list(APPEND _fly_exe_targets Flyengine_fallback FlyPlayer_fallback)
@@ -464,6 +471,13 @@ else()
     endif()
 endif()
 set(FLY_PLATFORM_TAG "${FLY_PLATFORM_TAG}" CACHE STRING "Suffix for executables copied to FLY_EXE_DIR")
+# Output layout: export/windows, export/debian, export/arch (export/linux, export/macos elsewhere).
+set(_fly_platform_dirs_win windows)
+set(_fly_platform_dirs_deb debian)
+set(_fly_platform_dirs_arch arch)
+set(_fly_platform_dirs_linux linux)
+set(_fly_platform_dirs_mac macos)
+set(FLY_EXE_DIR "${CMAKE_SOURCE_DIR}/export/${_fly_platform_dirs_${FLY_PLATFORM_TAG}}" CACHE PATH "Where built executables are copied")
 
 add_custom_target(fly_collect_exe ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${FLY_EXE_DIR}"

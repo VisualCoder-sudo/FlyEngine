@@ -26,8 +26,33 @@ public:
     std::string name = "Model";
     std::vector<ScatteredObject*> members;
 
-    // Axis-aligned union of all member bounds. Zero box if empty.
+    // Nesting: a model can sit inside another model. Both links are editor-owned
+    // and kept in sync by the explorer; the model vector still owns the storage.
+    ModelGroup* parent = nullptr;
+    std::vector<ModelGroup*> children;
+
+    // Explorer toggles. Flags on a group apply to everything below it.
+    bool hidden = false;
+    bool locked = false;
+
+    // Plugin ownership. A plugin that generates this group's contents (e.g. a
+    // building sketch tool) tags it and keeps its editable source data here.
+    // Both strings are saved with the scene and with undo/play snapshots, so the
+    // data survives save/load, undo and export. Empty tag = ordinary group.
+    std::string pluginTag;
+    std::string pluginData;
+
+    // Axis-aligned union of all member and child bounds. Zero box if empty.
     BoundingBox GetBounds() const;
+
+    bool IsDescendantOf(const ModelGroup* other) const;
+    ModelGroup* Root();
+    // Every object in this group and all nested groups.
+    void CollectObjects(std::vector<ScatteredObject*>& out) const;
+    bool IsHiddenEffective() const;
+    bool IsLockedEffective() const;
+    void AddChild(ModelGroup* child);
+    void RemoveChild(ModelGroup* child);
 };
 
 class ScatteredObject : public Entity {
@@ -130,10 +155,27 @@ public:
     // a standalone top-level object. Owned by the editor, never freed here.
     ModelGroup* parentModel = nullptr;
 
+    // Explorer eye / lock toggles. Hidden objects are not drawn, locked ones
+    // cannot be picked in the viewport. Use the Effective helpers to include
+    // the parent chain.
+    bool hidden = false;
+    bool locked = false;
+    bool IsHiddenEffective() const;
+    bool IsLockedEffective() const;
+
     // Flyscript attached to this object. Edited from the explorer's
     // right-click menu and executed when Run or Play starts (see runOnPlay).
+    // `script` is the first script; `extraScripts` are the others (an object can carry several).
     std::string script;
+    std::vector<std::string> extraScripts;
     bool runOnPlay = true;
+
+    // Every attached script class, primary first.
+    std::vector<std::string> AllScripts() const;
+    bool HasScript(const std::string& name) const;
+    void AddScript(const std::string& name);
+    // Removes one script; removing the first promotes the next one.
+    void RemoveScript(const std::string& name);
 
     // When true, the physics simulation treats this object as static:
     // gravity, impulses and forces are ignored and it cannot be pushed around.

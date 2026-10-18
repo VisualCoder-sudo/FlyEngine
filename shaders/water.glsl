@@ -4,6 +4,7 @@
 // ivec4[128] uniform array, read through P().
 @module water
 @include fly_common.glsl
+@include fly_shadow.glsl
 
 @vs vs
 @include_block fly_clip
@@ -24,8 +25,8 @@ layout(binding=0) uniform vs_params {
 };
 // Dynamic ripple layer (boat wakes / splashes): r = height (m), g = foam 0..1.
 // The fragment stage binds the same texture under its own name (rippleTexFS).
-layout(binding=1) uniform texture2D rippleTexVS;
-layout(binding=1) uniform sampler rippleTexVS_smp;
+layout(binding=6) uniform texture2D rippleTexVS;
+layout(binding=6) uniform sampler rippleTexVS_smp;
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -277,11 +278,14 @@ layout(binding=1) uniform fs_params {
     vec2 farRimParams;              // x=clip radius (0 disables), y=feather width
     float chunkFade;
     int objectCount;
+    vec4 sunDir;                    // xyz = unit vector the sunlight travels along, w = shadow cascade count (0 = shadows off)
+    mat4 shadowVP[4];               // world to shadow-map space, one per cascade
 };
 layout(binding=0) uniform texture2D reflectionTex;   // planar mirror of the world
 layout(binding=0) uniform sampler reflectionTex_smp;
 layout(binding=2) uniform texture2D rippleTexFS;     // r = ripple height, g = foam trail
 layout(binding=2) uniform sampler rippleTexFS_smp;
+@include_block fly_shadow
 
 in vec3 worldPos;
 in vec3 worldNormal;
@@ -482,8 +486,10 @@ void main() {
 
     totalFoam = clamp(totalFoam, 0.0, 1.0);
 
-    // Lighting (linear light; the sun's glints are far brighter than the water, and bloom)
-    vec3 diffuse = vec3(vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * vsSceneB.xyz;
+    // Lighting (linear light; the sun's glints are far brighter than the water, and bloom).
+    // Water in the shade of a building or bridge gets none of the sun: no diffuse, no glints.
+    vec3 sunLight = vsSceneB.xyz * (1.0 - ShadowCalculation(worldPos, N));
+    vec3 diffuse = vec3(vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * sunLight;
     // A tight lobe, soft-capped: the sun's reflection path stays a field of glints
     // instead of flooding to flat white once the bloom spreads it.
     float spec = pow(NdotH, 400.0) * 6.0 + pow(NdotH, 64.0) * 0.25;
@@ -503,8 +509,8 @@ void main() {
     vec3 reflTerm = mix(skyColor, reflectionColor, reflEnabled);
 
     vec3 color = mix(baseColor * diffuse, reflTerm, reflMix);
-    color += fly_srgb_to_linear(waterBodyFoamColor) * totalFoam * (vsSceneA.w + vsSceneB.xyz);
-    color += vsSceneB.xyz * spec;
+    color += fly_srgb_to_linear(waterBodyFoamColor) * totalFoam * (vsSceneA.w + sunLight);
+    color += sunLight * spec;
 
     float edgeAlpha = mix(alpha, 1.0, fresnel * 0.5);
 

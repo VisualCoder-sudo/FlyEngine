@@ -41,7 +41,7 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Branch: case NodeType::Sequence: case NodeType::Delay:
         case NodeType::Repeat: case NodeType::DoOnce: return IM_COL32(150, 110, 30, 255);
         case NodeType::Print: return IM_COL32(110, 70, 160, 255);
-        case NodeType::OnKey: case NodeType::EveryN: return IM_COL32(40, 130, 60, 255);
+        case NodeType::OnKey: case NodeType::EveryN: case NodeType::OnGamepadButton: return IM_COL32(40, 130, 60, 255);
         case NodeType::AddToVariable: return IM_COL32(40, 130, 140, 255);
         case NodeType::PlaySound: case NodeType::StopSound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
         case NodeType::ShowText: return IM_COL32(110, 70, 160, 255);
@@ -80,6 +80,7 @@ int BodyRows(NodeType t) {
         case NodeType::Sequence: case NodeType::Repeat:
         case NodeType::GetVariable: case NodeType::Not:
         case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: return 1;
+        case NodeType::GamepadButtonDown: case NodeType::GamepadAxis: case NodeType::OnGamepadButton: return 1;
         case NodeType::PlaySound: return 7;   // File, Volume, Object, Range, Loop, Muffle, Echo
         case NodeType::StopSound: return 2;   // File, Object
         case NodeType::ShowText: case NodeType::SetWorld: return 3;
@@ -551,6 +552,9 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         }
         case NodeType::OnKey: ComboRow(n, o, 0, "Key", n.prop, KeyNames()); break;
         case NodeType::KeyDown: ComboRow(n, o, 0, "Key", n.prop, KeyNames()); break;
+        case NodeType::OnGamepadButton: ComboRow(n, o, 0, "Button", n.prop, GamepadButtonNames()); break;
+        case NodeType::GamepadButtonDown: ComboRow(n, o, 0, "Button", n.prop, GamepadButtonNames()); break;
+        case NodeType::GamepadAxis: ComboRow(n, o, 0, "Axis", n.prop, GamepadAxisNames()); break;
         case NodeType::EveryN: NumRow(n, o, 0, "Seconds", n.value, false); break;
         case NodeType::AddToVariable:
             StrRow(n, o, 0, "Name", n.target, "##var");
@@ -1074,8 +1078,8 @@ void DrawEditor(const SceneListing& scene) {
         ImGui::Separator();
         struct Category { const char* name; std::vector<NodeType> types; };
         const std::vector<Category> categories = {
-            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop, NodeType::OnKey, NodeType::EveryN } },
-            { "Input", { NodeType::KeyDown } },
+            { "Events", { NodeType::Start, NodeType::OnUpdate, NodeType::OnStop, NodeType::OnKey, NodeType::EveryN, NodeType::OnGamepadButton } },
+            { "Input", { NodeType::KeyDown, NodeType::GamepadButtonDown, NodeType::GamepadAxis } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
             { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText, NodeType::CodeSnippet } },
             { "Audio", { NodeType::PlaySound, NodeType::StopSound, NodeType::SetVolume } },

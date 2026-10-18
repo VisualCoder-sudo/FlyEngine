@@ -23,6 +23,9 @@ constexpr int kMaxShaderLocations = 32;   // RL_MAX_SHADER_LOCATIONS
 // Shader still has its own uniform values, like separate GL programs would).
 std::unordered_map<std::string, sg_shader> g_programShaders;
 
+// Hot-reload overrides, keyed by program name (see rl_shader_hotreload.cpp).
+std::unordered_map<std::string, ProgramInfo> g_programOverrides;
+
 int UniformTypeSize(int sgType) {
     switch (sgType) {
         case SG_UNIFORMTYPE_FLOAT: case SG_UNIFORMTYPE_INT: return 4;
@@ -100,6 +103,31 @@ sg_shader ProgramShader(const ProgramInfo* prog) {
 
 } // namespace
 
+void SetProgramOverride(const char* name, const ProgramInfo& info) {
+    if (!name) return;
+    g_programOverrides[name] = info;
+}
+
+void ClearProgramOverride(const char* name) {
+    if (!name) return;
+    g_programOverrides.erase(name);
+}
+
+const ProgramInfo* FindProgramLive(const char* name) {
+    if (!name) return nullptr;
+    auto it = g_programOverrides.find(name);
+    if (it != g_programOverrides.end()) return &it->second;
+    return FindProgram(name);
+}
+
+void InvalidateProgramShader(const char* name) {
+    if (!name) return;
+    auto it = g_programShaders.find(name);
+    if (it == g_programShaders.end()) return;
+    sg_destroy_shader(it->second);
+    g_programShaders.erase(it);
+}
+
 std::vector<ShaderRec>& Shaders() {
     static std::vector<ShaderRec> s(1);
     return s;
@@ -112,7 +140,7 @@ ShaderRec* GetShader(unsigned int id) {
 }
 
 unsigned int LoadProgram(const char* name) {
-    const ProgramInfo* prog = name ? FindProgram(name) : nullptr;
+    const ProgramInfo* prog = name ? FindProgramLive(name) : nullptr;
     if (!prog) {
         TraceLog(LOG_WARNING, "SHADER: program '%s' is not compiled into this build", name ? name : "(null)");
         return 0;
@@ -214,6 +242,7 @@ unsigned int LoadProgram(const char* name) {
     if (sh.locs[SHADER_LOC_COLOR_DIFFUSE] >= 0) SetUniformValue(sh, sh.locs[SHADER_LOC_COLOR_DIFFUSE], white, SHADER_UNIFORM_VEC4, 1);
 
     sh.alive = true;
+    PrewarmMeshPipelines(sh);
     return id;
 }
 

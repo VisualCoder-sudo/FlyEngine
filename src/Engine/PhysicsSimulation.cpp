@@ -2,6 +2,7 @@
 #include "../../include/Terrain/Water/WaterBody.hpp"
 #include "../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../include/Engine/Graphics.hpp"
+#include "../../include/Engine/Particles.hpp"
 #include "../../include/Engine/Backend/Box3DWrapper.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/TechnicalTools.hpp"
@@ -324,6 +325,8 @@ void Simulation::Update(float dt) {
     if (maxStepsPerFrame < 1) maxStepsPerFrame = 1;
     if (maxStepsPerFrame > 16) maxStepsPerFrame = 16;
 
+    frameBeginEvents.clear();
+    frameHitEvents.clear();
     accumulator += dt;
     int steps = 0;
     double stepStartTime = GetTime();
@@ -351,6 +354,8 @@ void Simulation::StartPlay() {
     joints.clear();
     contactBeginEvents.clear();
     contactHitEvents.clear();
+    frameBeginEvents.clear();
+    frameHitEvents.clear();
     ui::ClearLog();
     playStartTime = GetTime();
 
@@ -902,7 +907,12 @@ void Simulation::ProcessEvents() {
         ContactEvent ev;
         ev.objectA = FindObjectByBody(bodyToObject, b3Shape_GetBody(e.shapeIdA));
         ev.objectB = FindObjectByBody(bodyToObject, b3Shape_GetBody(e.shapeIdB));
+        // Begin-touch events carry no manifold: the contact point is the midpoint of the two bodies (or the one body).
+        if (ev.objectA && ev.objectB) ev.point = Vector3Scale(Vector3Add(*ev.objectA->GetPosPtr(), *ev.objectB->GetPosPtr()), 0.5f);
+        else if (ev.objectA) ev.point = *ev.objectA->GetPosPtr();
+        else if (ev.objectB) ev.point = *ev.objectB->GetPosPtr();
         contactBeginEvents.push_back(ev);
+        if (frameBeginEvents.size() < 512) frameBeginEvents.push_back(ev);
     }
 
     for (int i = 0; i < ce.hitCount; ++i) {
@@ -914,6 +924,8 @@ void Simulation::ProcessEvents() {
         ev.normal = b3wrap::ToRL(e.normal);
         ev.approachSpeed = e.approachSpeed;
         contactHitEvents.push_back(ev);
+        fx::OnImpact(ev.point, ev.normal, ev.approachSpeed);
+        if (frameHitEvents.size() < 512) frameHitEvents.push_back(ev);
     }
 }
 

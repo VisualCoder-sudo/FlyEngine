@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <chrono>
 #include <future>
 #include <unordered_map>
 #include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Occlusion.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
@@ -434,6 +436,7 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     copy->anchored = anchored;
     copy->runOnPlay = runOnPlay;
     copy->script = script;
+    copy->extraScripts = extraScripts;
     copy->texturePath = texturePath;
     if (!texturePath.empty()) copy->textureNeedsBind = true;
     
@@ -488,6 +491,7 @@ void ScatteredObject::UpdateLOD() {
 }
 
 void ScatteredObject::Draw() {
+    if (IsHiddenEffective()) return;
     // When the shadow map is being reused, the pass is still entered and every
     // entity is still called -- Graphics.cpp sets a 0x0 scissor so the
     // fragments are all discarded. Everything below (LOD, frustum extraction,
@@ -568,7 +572,7 @@ void ScatteredObject::Draw() {
         gfx::AddMeshCount(1);
         gfx::AddModelTriangles(model);
 
-        if (isSelected) {
+        if (isSelected && !ui::IsPlayActive()) {
             // Selection outline: the same transform at 102% scale, drawn as
             // wireframe, then the solid transform is restored.
             const Vector3 outlineScale = { size.x * 1.02f, size.y * 1.02f, size.z * 1.02f };
@@ -584,12 +588,16 @@ void ScatteredObject::Draw() {
     Matrix rotMat = useRenderRotation
         ? renderRotation
         : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
-    DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false);
-    gfx::IncrementDrawCallCount(1);
-    gfx::AddMeshCount(1);
-    gfx::AddModelTriangles(gfx::GetShapeModel(shape));
+    // Opaque shapes are batched into one instanced draw per (shape, texture) while the engine's
+    // object loops run; anything else (transparent, no batch active) is drawn right here.
+    if (!gfx::QueueShape(shape, GetTexture(), gfx::ComposeTRS(size, rotMat, pos), drawColor)) {
+        DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false);
+        gfx::IncrementDrawCallCount(1);
+        gfx::AddMeshCount(1);
+        gfx::AddModelTriangles(gfx::GetShapeModel(shape));
+    }
 
-    if (isSelected) {
+    if (isSelected && !ui::IsPlayActive()) {
         DrawShapeModel(shape, pos, size, rotMat, WHITE, GetTexture(), true);
     }
 }
@@ -640,29 +648,112 @@ bool ScatteredObject::GetOccluderCorners(Vector3 out[8], float& volume) const {
 
 BoundingBox ModelGroup::GetBounds() const {
     BoundingBox box{};
-    if (members.empty()) {
+    bool first = false;
+    auto merge = [&](const BoundingBox& m) {
+        if (!first) {
+            box = m;
+            first = true;
+            return;
+        }
+        box.min.x = fminf(box.min.x, m.min.x);
+        box.min.y = fminf(box.min.y, m.min.y);
+        box.min.z = fminf(box.min.z, m.min.z);
+        box.max.x = fmaxf(box.max.x, m.max.x);
+        box.max.y = fmaxf(box.max.y, m.max.y);
+        box.max.z = fmaxf(box.max.z, m.max.z);
+    };
+    for (const auto* member : members)
+        if (member) merge(member->GetBoundingBox());
+    for (const auto* child : children) {
+        if (!child) continue;
+        BoundingBox c = child->GetBounds();
+        if (c.min.x == c.max.x && c.min.y == c.max.y && c.min.z == c.max.z &&
+            child->members.empty() && child->children.empty()) continue;
+        merge(c);
+    }
+    if (!first) {
         box.min = { 0.0f, 0.0f, 0.0f };
         box.max = { 0.0f, 0.0f, 0.0f };
-        return box;
-    }
-    bool first = true;
-    for (const auto* member : members) {
-        if (!member) continue;
-        BoundingBox m = member->GetBoundingBox();
-        if (first) {
-            box.min = m.min;
-            box.max = m.max;
-            first = false;
-        } else {
-            box.min.x = fminf(box.min.x, m.min.x);
-            box.min.y = fminf(box.min.y, m.min.y);
-            box.min.z = fminf(box.min.z, m.min.z);
-            box.max.x = fmaxf(box.max.x, m.max.x);
-            box.max.y = fmaxf(box.max.y, m.max.y);
-            box.max.z = fmaxf(box.max.z, m.max.z);
-        }
     }
     return box;
+}
+
+bool ModelGroup::IsDescendantOf(const ModelGroup* other) const {
+    for (const ModelGroup* g = parent; g; g = g->parent)
+        if (g == other) return true;
+    return false;
+}
+
+ModelGroup* ModelGroup::Root() {
+    ModelGroup* g = this;
+    while (g->parent) g = g->parent;
+    return g;
+}
+
+void ModelGroup::CollectObjects(std::vector<ScatteredObject*>& out) const {
+    for (auto* m : members) if (m) out.push_back(m);
+    for (const auto* c : children) if (c) c->CollectObjects(out);
+}
+
+bool ModelGroup::IsHiddenEffective() const {
+    for (const ModelGroup* g = this; g; g = g->parent)
+        if (g->hidden) return true;
+    return false;
+}
+
+bool ModelGroup::IsLockedEffective() const {
+    for (const ModelGroup* g = this; g; g = g->parent)
+        if (g->locked) return true;
+    return false;
+}
+
+void ModelGroup::AddChild(ModelGroup* child) {
+    if (!child || child == this) return;
+    if (child->parent) child->parent->RemoveChild(child);
+    child->parent = this;
+    children.push_back(child);
+}
+
+void ModelGroup::RemoveChild(ModelGroup* child) {
+    children.erase(std::remove(children.begin(), children.end(), child), children.end());
+    if (child && child->parent == this) child->parent = nullptr;
+}
+
+std::vector<std::string> ScatteredObject::AllScripts() const {
+    std::vector<std::string> out;
+    if (!script.empty()) out.push_back(script);
+    out.insert(out.end(), extraScripts.begin(), extraScripts.end());
+    return out;
+}
+
+bool ScatteredObject::HasScript(const std::string& name) const {
+    return script == name || std::find(extraScripts.begin(), extraScripts.end(), name) != extraScripts.end();
+}
+
+void ScatteredObject::AddScript(const std::string& name) {
+    if (name.empty() || HasScript(name)) return;
+    if (script.empty()) script = name;
+    else extraScripts.push_back(name);
+}
+
+void ScatteredObject::RemoveScript(const std::string& name) {
+    if (script == name) {
+        script.clear();
+        if (!extraScripts.empty()) {
+            script = extraScripts.front();
+            extraScripts.erase(extraScripts.begin());
+        }
+        return;
+    }
+    extraScripts.erase(std::remove(extraScripts.begin(), extraScripts.end(), name), extraScripts.end());
+}
+
+bool ScatteredObject::IsHiddenEffective() const {
+    return hidden || (parentModel && parentModel->IsHiddenEffective());
+}
+
+bool ScatteredObject::IsLockedEffective() const {
+    return locked || (parentModel && parentModel->IsLockedEffective());
 }
 
 Vector3* ScatteredObject::GetPosPtr() { return &pos; }

@@ -15,7 +15,77 @@ CameraController::CameraController(Camera3D& cam)
     pitch = atan2f(dir.y, xzLen);
 }
 
+void CameraController::EnterTopDown(Vector3 center, float viewHeight) {
+    if (!topDown) savedCamera = camera;
+    topDown = true;
+    tdDragging = false;
+    SetTopDownView(center, viewHeight);
+}
+
+void CameraController::SetTopDownView(Vector3 center, float viewHeight) {
+    if (!topDown) return;
+    tdCenter = center;
+    tdHeight = Clamp(viewHeight, 2.0f, 400.0f);
+    camera.projection = CAMERA_ORTHOGRAPHIC;
+    camera.fovy = tdHeight;
+    camera.position = { center.x, center.y + 150.0f, center.z };
+    camera.target = center;
+    camera.up = { 0.0f, 0.0f, -1.0f };   // screen right = +X, screen down = +Z
+}
+
+void CameraController::ExitTopDown() {
+    if (!topDown) return;
+    topDown = false;
+    tdDragging = false;
+    camera = savedCamera;
+}
+
+// Map controls. The view is orthographic, so a screen pixel is a fixed length on the ground.
+void CameraController::UpdateTopDown(float dt) {
+    const float screenW = (float)GetScreenWidth();
+    const float screenH = (float)std::max(1, GetScreenHeight());
+    const Vector2 mouse = GetMousePosition();
+    const bool overUI = ui::IsMouseOverUI();
+    Vector3 center = tdCenter;
+    float height = tdHeight;
+    const float worldPerPixel = height / screenH;
+
+    // Drag pan: grab the ground with the right or middle button.
+    const bool dragButton = IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
+    if (!dragButton) tdDragging = false;
+    else if (!tdDragging && !overUI &&
+             (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) || IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE))) tdDragging = true;
+    if (tdDragging) {
+        const Vector2 delta = GetMouseDelta();
+        center.x -= delta.x * worldPerPixel;
+        center.z -= delta.y * worldPerPixel;
+    }
+
+    // Wheel zoom keeps the ground point under the cursor where it is.
+    const float wheel = GetMouseWheelMove();
+    if (wheel != 0.0f && !overUI) {
+        const float newHeight = Clamp(height * powf(0.88f, wheel), 2.0f, 400.0f);
+        const float dx = mouse.x - screenW * 0.5f, dz = mouse.y - screenH * 0.5f;
+        center.x += dx * (worldPerPixel - newHeight / screenH);
+        center.z += dz * (worldPerPixel - newHeight / screenH);
+        height = newHeight;
+    }
+
+    // Keys: WASD or arrows, shift for speed. Not while typing or while Ctrl is an editor shortcut.
+    if (!ui::IsEditingText() && !IsKeyDown(KEY_LEFT_CONTROL) && !IsKeyDown(KEY_RIGHT_CONTROL)) {
+        const float step = height * 0.8f * dt * (IsKeyDown(KEY_LEFT_SHIFT) ? 2.5f : 1.0f);
+        if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))    center.z -= step;
+        if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))  center.z += step;
+        if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))  center.x -= step;
+        if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) center.x += step;
+    }
+
+    SetTopDownView(center, height);
+}
+
 void CameraController::Update(float dt) {
+    if (topDown) { UpdateTopDown(dt); return; }
+
     static Vector2 rmbPressPos = { 0, 0 };
     static float dragDist = 0.0f;
     static bool isCapturingMouse = false;

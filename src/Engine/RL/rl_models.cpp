@@ -114,6 +114,7 @@ sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, co
             g_pooledBytes -= size;
             --g_pooledCount;
             sg_update_buffer(pb.buffer, sg_range{ data, size });
+            InvalidateBindings();
             g_lastUpdate[pb.buffer.id] = frame;
             g_pooledKeys[pb.buffer.id] = key;
             return pb.buffer;
@@ -144,6 +145,7 @@ sg_buffer MakeBuffer(const void* data, size_t size, bool dynamic, bool index, co
     }
     if ((dynamic || pooled) && data) {
         sg_update_buffer(b, sg_range{ data, size });
+        InvalidateBindings();
         g_lastUpdate[b.id] = FrameIndex();
     }
     if (pooled) g_pooledKeys[b.id] = PoolKey(size, index);
@@ -304,7 +306,7 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     if (locs[SHADER_LOC_MATRIX_VIEW] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_VIEW], matView);
     if (locs[SHADER_LOC_MATRIX_PROJECTION] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_PROJECTION], matProjection);
     if (locs[SHADER_LOC_MATRIX_MODEL] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_MODEL], matModel);
-    if (locs[SHADER_LOC_MATRIX_NORMAL] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_NORMAL], MatrixTranspose(MatrixInvert(matModel)));
+    if (locs[SHADER_LOC_MATRIX_NORMAL] >= 0) SetUniformMatrix(*sh, locs[SHADER_LOC_MATRIX_NORMAL], instanced ? MatrixIdentity() : MatrixTranspose(MatrixInvert(matModel)));
     SetLinearTargetUniform(*sh);
     if (material.maps) {
         if (locs[SHADER_LOC_COLOR_DIFFUSE] >= 0) {
@@ -346,7 +348,7 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     key.format = g.passFormat;
     sg_pipeline pip = FindPipeline(key);
     if (!pip.id) pip = GetPipeline(key, MeshPipelineTemplate(*sh, instanced));
-    sg_apply_pipeline(pip);
+    ApplyPipelineCached(pip);
 
     sg_bindings bind{};
     for (int a = 0; a < kMeshAttribs; ++a) {
@@ -360,7 +362,7 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     if (useLines) bind.index_buffer = m->lineIb;
     else if (m->ib.id) bind.index_buffer = m->ib;
     ResolveShaderTextures(*sh, drawUnits, bind);
-    sg_apply_bindings(&bind);
+    ApplyBindingsCached(bind);
     ApplyShaderUniforms(*sh);
 
     const int count = useLines ? m->lineIndexCount : (m->ib.id ? m->indexCount : m->vertexCount);
@@ -368,6 +370,39 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
 }
 
 } // namespace
+
+void PrewarmMeshPipelines(const ShaderRec& sh) {
+    GfxState& g = Gfx();
+    const uint32_t layout = sh.attrMask & ((1u << kMeshAttribs) - 1);
+    if (!(layout & (1u << ATTR_POSITION)) || g.pipelines.size() > 1500) return;
+    if (g.mainTarget == 0 || g.mainTarget >= g.targets.size() || !g.targets[g.mainTarget].alive) return;
+
+    PassFormat formats[2];
+    formats[0].color = g.targets[g.mainTarget].colorFormat;
+    formats[0].depth = SG_PIXELFORMAT_DEPTH;
+    formats[0].colorCount = 1;
+    formats[1].depth = SG_PIXELFORMAT_DEPTH;   // depth-only (shadow) pass
+    const bool canInstance = (sh.attrMask & (1u << ATTR_INSTANCE0)) != 0;
+
+    for (const PassFormat& fmt : formats) {
+        for (int instanced = 0; instanced <= (canInstance ? 1 : 0); ++instanced) {
+            for (int indexed = 0; indexed < 2; ++indexed) {
+                PipelineKey key{};
+                key.shader = sh.shader.id;
+                key.layout = layout;
+                key.primitive = SG_PRIMITIVETYPE_TRIANGLES;
+                key.indexType = indexed ? SG_INDEXTYPE_UINT16 : SG_INDEXTYPE_NONE;
+                key.blend = (uint8_t)(BLEND_ALPHA + 1);
+                key.depthTest = 1;
+                key.depthWrite = 1;
+                key.cull = 1;
+                key.instanced = (uint8_t)instanced;
+                key.format = fmt;
+                if (!FindPipeline(key).id) GetPipeline(key, MeshPipelineTemplate(sh, instanced != 0));
+            }
+        }
+    }
+}
 
 // Called once per frame: drops pooled buffers that have gone unused for a while
 // and enforces the overall size limit, oldest first.
@@ -472,6 +507,7 @@ void UpdateMeshBuffer(Mesh mesh, int index, const void* data, int dataSize, int 
     const size_t full = (size_t)mesh.vertexCount * (size_t)kAttribSize[index];
     if (m->dynamic && m->vb[index].id && offset == 0) {
         sg_update_buffer(m->vb[index], sg_range{ data, std::min((size_t)dataSize, full) });
+        InvalidateBindings();
         return;
     }
     // Immutable buffer: rebuild it. The mesh's CPU array supplies the bytes
@@ -517,7 +553,9 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform) {
 void DrawMeshInstanced(Mesh mesh, Material material, const Matrix* transforms, int instances) {
     GfxState& g = Gfx();
     if (!transforms || instances <= 0 || !g.initialized) return;
-    std::vector<float16> data((size_t)instances);
+    // Reused across calls: dynamic props call this many times per frame.
+    static thread_local std::vector<float16> data;
+    data.resize((size_t)instances);
     for (int i = 0; i < instances; ++i) data[(size_t)i] = MatrixToFloatV(transforms[i]);
     const size_t bytes = data.size() * sizeof(float16);
     if (sg_query_buffer_will_overflow(g.instanceBuffer, bytes)) {
@@ -529,6 +567,7 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix* transforms, i
         return;
     }
     const int offset = sg_append_buffer(g.instanceBuffer, sg_range{ data.data(), bytes });
+    InvalidateBindings();
     DrawMeshInternal(mesh, material, MatrixIdentity(), g.instanceBuffer, offset, instances);
 }
 
@@ -550,7 +589,10 @@ int* rlGetShaderLocsDefault(void) {
 void rlUpdateVertexBuffer(unsigned int bufferId, const void* data, int dataSize, int) {
     if (bufferId == 0 || !data || dataSize <= 0) return;
     sg_buffer b{ bufferId };
-    if (sg_query_buffer_usage(b).dynamic_update) sg_update_buffer(b, sg_range{ data, (size_t)dataSize });
+    if (sg_query_buffer_usage(b).dynamic_update) {
+        sg_update_buffer(b, sg_range{ data, (size_t)dataSize });
+        InvalidateBindings();
+    }
 }
 
 void rlEnableShader(unsigned int) {}

@@ -71,6 +71,14 @@ void CancelPending();
 // if materialization failed).
 std::string EditObjectScript(ScatteredObject* obj);
 
+// Attaches one more script to the object (it can carry several) under a fresh class name and opens it.
+// Returns the new class name, or empty on failure.
+std::string AddObjectScript(ScatteredObject* obj);
+
+// Opens one specific attached script (by class name) in the editor / the editor picker.
+std::string EditObjectScriptNamed(ScatteredObject* obj, const std::string& className);
+std::string ChooseEditorForObjectScriptNamed(const std::string& className);
+
 // Convenience: materializes a standalone script's C++ stub to
 // <Scripts>/<typeName>.cpp and queues it to open. `typeName` is the FLY_SCRIPT
 // class; when empty it is derived from `scriptName`. The resolved class name is

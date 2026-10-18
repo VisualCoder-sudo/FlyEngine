@@ -31,6 +31,7 @@ class ModelGroup;
 class ScriptRuntime;
 struct Camera3D;
 namespace phys { class Simulation; }
+namespace pluginhost { enum class SceneEvent; }
 
 namespace NativeScript {
 
@@ -65,6 +66,9 @@ public:
     // Called each frame: hot-reload checks, play/stop edges, plugin updates
     // and one step of every running script.
     void Update(float dt) override;
+
+    // Gives plugins their viewport overlay pass (editor, outside Play).
+    void DrawOverlay3D() override;
 
     // ---- plugins ----
 
@@ -172,6 +176,7 @@ private:
     std::future<scriptCompiler::Result> m_build;
     bool m_rebuildQueued = false;
 
+    void DispatchSceneEvent(pluginhost::SceneEvent e);
     void TickScripts(float dt);
     void WatchScriptSources(float dt);
     void StartBuild();
@@ -181,7 +186,7 @@ private:
     bool LoadStaticPlugin(const char* name, CP_PluginEntry* (*getEntry)(void));
     void UnloadScriptLibrary();
     const FlyScriptClass* FindClass(const std::string& name) const;
-    bool StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex);
+    bool StartScript(const std::string& className, ScatteredObject* obj, int standaloneIndex, bool replace = true);
     void DestroyRunning(RunningScript& rs);
     bool ObjectAlive(ScatteredObject* obj) const;
 

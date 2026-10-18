@@ -6,6 +6,8 @@
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
 #include "../../include/Engine/Audio.hpp"
+#include "../../include/Engine/Particles.hpp"
+#include "../../include/Terrain/Foliage.hpp"
 #include "../../include/Engine/Backend/SoundRays.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../include/Terrain/Terrain.hpp"
@@ -55,6 +57,7 @@ Engine::~Engine() {
     soundrays::Clear();
     vscript::SetSoundPlayer(nullptr);
     vscript::SetSoundStopper(nullptr);
+    foliage::Shutdown();
     gfx::Shutdown();
     CloseWindow();
 }
@@ -87,7 +90,7 @@ void Engine::Update(float deltaTime) {
         const bool playing = isPlayerBuild || ui::IsPlayActive();
         if (playing && !wasPlaying) timeBeforePlay = gfx::Lighting().timeOfDay;
         if (!playing && wasPlaying) gfx::Lighting().timeOfDay = timeBeforePlay;
-        if (!playing && wasPlaying) { audio::StopAll(); soundrays::Clear(); }   // Play ended: cut the sounds off
+        if (!playing && wasPlaying) { audio::StopAll(); soundrays::Clear(); fx::Clear(); }   // Play ended: cut the sounds off
         wasPlaying = playing;
         if (playing) gfx::TickLighting(deltaTime);
     }
@@ -112,6 +115,8 @@ void Engine::Update(float deltaTime) {
             tickEntities = false;
         }
     }
+
+    if (tickEntities) fx::Update(deltaTime * timeScale);
 
     if (tickEntities) {
         isUpdating = true;
@@ -150,10 +155,13 @@ void Engine::Draw() {
     // (Once per shadow cascade; the further cascades only ask for it every few frames.)
     for (int cascade = 0; cascade < gfx::ShadowCascadeCount(); cascade++) {
         if (!gfx::BeginShadowCascade(cascade)) continue;
+        gfx::BeginShapeBatch();
         for (auto& entity : entities) {
             if (isPlayerBuild && entity->IsEditorOnly()) continue;
             entity->Draw();
         }
+        gfx::EndShapeBatch();
+        foliage::Draw(camera, true);
         gfx::EndShadowCascade();
     }
     double p1 = GetTime();
@@ -175,6 +183,7 @@ void Engine::Draw() {
                 // Draw opaque entities first (they write depth). Anything fully
                 // underwater has no reflection (the mirrored camera would wrongly
                 // lift it above the surface), so skip it.
+                gfx::BeginShapeBatch();
                 for (auto& entity : entities) {
                     if (isPlayerBuild && entity->IsEditorOnly()) continue;
                     if (entity->IsTransparent()) continue;
@@ -186,6 +195,7 @@ void Engine::Draw() {
                     }
                     entity->Draw();
                 }
+                gfx::EndShapeBatch();
             // Must be called while still inside BeginMode3D(reflCam): it reads the
             // mirrored camera's matrices, then ends both the 3D and texture modes.
             gfx::EndReflectionPass();
@@ -228,12 +238,15 @@ void Engine::Draw() {
             occlusion::BeginFrame(occluders);
         }
         // Draw opaque entities first (they write depth)
+        gfx::BeginShapeBatch();
         for (auto& entity : entities) {
             if (isPlayerBuild && entity->IsEditorOnly()) continue;
             if (!entity->IsTransparent()) {
                 entity->Draw(); // Entity handles its own frustum culling and draw call counting
             }
         }
+        gfx::EndShapeBatch();
+        foliage::Draw(camera, false);
         occlusion::EndFrame();
         pOpaque = GetTime();
         // Draw transparent entities last (water renders on top, reads depth)
@@ -244,6 +257,7 @@ void Engine::Draw() {
             }
         }
         gfx::DrawWeather(camera);   // falling rain (nothing unless the Weather item sets rain)
+        fx::Draw(camera);           // particles and decals
         // Editor overlays (transform gizmos) render after every entity so they
         // stay readable even when buried inside another object.
         for (auto& entity : entities) {

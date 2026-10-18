@@ -288,7 +288,7 @@ struct DebugStats {
             gap(6);
             section("RENDERING");
             line(SKYBLUE, 13, "Draw Calls:  %d", drawCalls);
-            line(WHITE, 13, "Triangles:   %d  (%.2f K)", trianglesRendered, trianglesRendered / 1000.0f);
+            line(WHITE, 13, "Triangles:   %d  (%.2f K)", trianglesRendered, trianglesRendered / 1000);
             line(WHITE, 13, "Meshes:      %d", meshesRendered);
             // These two are distinct resources touched this frame, and they come
             // from the engine's own draw sites rather than from inside raylib,
@@ -300,7 +300,7 @@ struct DebugStats {
             line(LIME, 13, "Rendered:    %d", renderedEntities);
             line(ORANGE, 13, "Culled:      %d", culledEntities);
             if (renderedEntities + culledEntities > 0) {
-                float pct = (float)culledEntities / (renderedEntities + culledEntities) * 100.0f;
+                float pct = (float)culledEntities / (renderedEntities + culledEntities) * 100;
                 line(WHITE, 13, "Cull Rate:   %.1f%%", pct);
             }
             
@@ -976,6 +976,7 @@ int main(int argc, char* argv[]) {
     auto nativeScriptHost = std::make_unique<NativeScript::NativeScriptHost>();
     NativeScript::NativeScriptHost* nativeScriptHostPtr = nativeScriptHost.get();
     nativeScriptHost->SetScriptHotReload(opts.hotReload);
+    SetShaderHotReload(opts.hotReload);
     nativeScriptHost->BindProjectFolder(info.path);   // even when no scripts load: Play Sound needs the project folder
     loading::Range(0.05f, 0.30f);
     if (!opts.noScripts) {

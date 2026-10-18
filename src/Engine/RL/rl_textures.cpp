@@ -92,6 +92,7 @@ void Materialize(unsigned int id, TextureRec& t) {
             h = h > 1 ? h / 2 : 1;
         }
         sg_update_image(t.image, &data);
+        InvalidateBindings();
         t.lastUpdateFrame = (uint32_t)Gfx().frameCounter;
     }
     sg_view_desc vd{};
@@ -121,6 +122,7 @@ void ApplyDeferredTextureUpdates() {
         sg_image_data data{};
         data.mip_levels[0] = { t->pending.data(), t->pending.size() };
         sg_update_image(t->image, &data);
+        InvalidateBindings();
         t->lastUpdateFrame = (uint32_t)Gfx().frameCounter;
         std::vector<uint8_t>().swap(t->pending);
     }
@@ -243,6 +245,7 @@ void UpdateTexture(Texture2D texture, const void* pixels) {
     sg_image_data data{};
     data.mip_levels[0] = { pixels, (size_t)size };
     sg_update_image(t->image, &data);
+    InvalidateBindings();
     t->lastUpdateFrame = frame;
 }
 

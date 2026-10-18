@@ -189,5 +189,5 @@ void BasicTerrain::ErodeRegion(int x0, int z0, int x1, int z1,
             heightmap[(size_t)z * width + x] = std::clamp(
                 buf[(size_t)(z - pz0) * rw + (x - px0)], minHeight, maxHeight);
 
-    meshDirty = true;
+    meshDirty = true; ++revision;
 }

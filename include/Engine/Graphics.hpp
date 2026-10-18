@@ -45,6 +45,14 @@ void SetInstanceBuffersEnabled(bool enabled);
 bool GetInstanceBuffersEnabled();
 void DrawCityInstancesBuffered(Mesh mesh, unsigned int instanceVbo, int count, Color tint);
 
+// Loose shape batching: between BeginShapeBatch() and EndShapeBatch(), QueueShape() collects opaque
+// shapes and EndShapeBatch() draws each (shape, texture) group in one instanced call. QueueShape()
+// returns false when batching is off or unavailable; the caller then draws the shape itself.
+// EndShapeBatch() must run inside the same pass (and before any state that changes it) as the queueing.
+void BeginShapeBatch();
+bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Color tint);
+void EndShapeBatch();
+
 void UpdateLighting(const Camera3D& camera); // call once per frame before drawing
 void SetUnderwaterParams(float waterY, Vector3 absorption, float fogDensity, Vector3 fogColor); // call per ocean per frame
 

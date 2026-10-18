@@ -1,48 +1,31 @@
 // ui.cpp (fixed)
 #include "ui_internal.hpp"
-#include <map>
-#include <set>
-#include "../../../include/Engine/ExportManager.hpp"
 #include "../../../include/Engine/Backend/VisualScript.hpp"
-#include "../../../include/Engine/Platform/Platform.hpp"
-#include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
-#include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
-#include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Graphics.hpp"
-#include "../../../include/Engine/PostFX.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
-#include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
-#include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
-#include "../../../include/Engine/Backend/ModelImport.hpp"
-#include "../include/Terrain/Terrain.hpp"
 #include "../../../include/Terrain/TerrainEditor.hpp"
 #include "../../../include/Terrain/TerrainRegistry.hpp"
 #include "../../../include/CityGen/CityEditor.hpp"
-#include "raymath.h"
-#include "imgui.h"
+#include "../../../include/Engine/Platform/Platform.hpp"
+#include "../../../include/Terrain/BasicTerrain.hpp"
+#include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "rlimgui.h"
-#include <cstdio>
-#include <cstdlib>
+#include <algorithm>
 #include <cstdarg>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
-#include <filesystem>
-#include <algorithm>
 #include <utility>
-#include <sstream>
-#include <cctype>
-#include <cmath>
-#include "Engine/U8Path.hpp"
 
 namespace ui {
 
 static Font g_arialFont = { 0 };
-static Texture2D g_toolIcons[5] = {};
+Texture2D g_toolIcons[5] = {};
 Texture2D g_deleteIcon = { 0 };
 Texture2D g_rowIcons[ROWICON_COUNT] = {};
 // Asset browser: folder + search glyph (mesh/water/terrain/script entries
@@ -63,9 +46,6 @@ std::string ScriptKey(const ScriptRuntime::StandaloneScript& s) {
     return scriptLauncher::MakeClassName(s.typeName.empty() ? s.name : s.typeName);
 }
 
-static const std::vector<WaterBody*>& SceneWaters() {
-    return WaterBody::GetInstances();
-}
 ScatteredObject* g_selectedObject = nullptr;
 phys::Simulation* g_simulation = nullptr;
 std::vector<ScatteredObject*> g_selection;
@@ -84,14 +64,6 @@ BasicTerrain* g_selectedTerrain = nullptr;
 char g_nameBuffer[64] = "";
 float g_colorPickerAnchorY = -1.0f;
 
-// Explorer drag-and-drop: press on an object row, drag it onto a model header
-// (or into empty SCENE space) to reparent it into/out of a model group.
-bool g_explorerDragPending = false;
-bool g_explorerDragActive = false;
-std::vector<ScatteredObject*> g_explorerDragObjects;
-Vector2 g_explorerDragStart = { 0.0f, 0.0f };
-ModelGroup* g_explorerDropTarget = nullptr;
-bool g_explorerDropValid = false;
 
 // Preset texture dropdown state
 bool g_presetDropdownOpen = false;
@@ -125,27 +97,6 @@ static int  g_prefsLanguageIndex = 0;
 // ImGui-driven rename state: signals the inline rename field to grab focus.
 static bool g_imFocusNextRename = false;
 static std::vector<ScatteredObject*> g_imDragPayload; // explorer drag payload buffer
-
-
-
-// Points every accent-coloured ImGui style entry at theme::ACCENT. No-op until
-// the ImGui context exists; ApplyImGuiTheme calls it again when it is created.
-static void ApplyAccentToImGuiStyle() {
-    if (!ImGui::GetCurrentContext()) return;
-    ImVec4* c = ImGui::GetStyle().Colors;
-    const ImVec4 hover(theme::ACCENT_HOVER.r / 255.0f, theme::ACCENT_HOVER.g / 255.0f,
-                       theme::ACCENT_HOVER.b / 255.0f, 1.0f);
-    c[ImGuiCol_TextSelectedBg]     = theme::AccentVec(64 / 255.0f);
-    c[ImGuiCol_CheckMark]          = theme::AccentVec();
-    c[ImGuiCol_SliderGrab]         = theme::AccentVec();
-    c[ImGuiCol_SliderGrabActive]   = hover;
-    c[ImGuiCol_SeparatorActive]    = theme::AccentVec();
-    c[ImGuiCol_TabHovered]         = theme::AccentVec(100 / 255.0f);
-    c[ImGuiCol_TabActive]          = theme::AccentVec(55 / 255.0f);
-    c[ImGuiCol_TabUnfocusedActive] = theme::AccentVec(35 / 255.0f);
-    c[ImGuiCol_PlotLines]          = theme::AccentVec();
-    c[ImGuiCol_PlotHistogram]      = theme::AccentVec();
-}
 
 // ---------------------------------------------------------------------------
 // Anonymous namespace: internal linkage definitions
@@ -197,8 +148,9 @@ void EndCursorPass() {
 } // namespace
 
 // Active Toolbar State
-static TransformTool g_activeTool = TransformTool::Select;
+TransformTool g_activeTool = TransformTool::Select;
 static bool g_transformLocalSpace = true; // true = Local, false = World
+SnapSettings g_snap;
 
 // HSV Color Picker & Popup State
 Vector3 g_hsv = { 0.0f, 0.0f, 1.0f };
@@ -220,13 +172,13 @@ static bool g_showSubMenu = false;
 static double g_menuOpenTime = 0.0;
 static bool g_fileMenuOpen = false;
 static double g_fileMenuOpenTime = 0.0;
-static MenuAction g_pendingFileAction = MenuAction::None; // set by the ImGui File menu, consumed by ProcessContextMenu()
+MenuAction g_pendingFileAction = MenuAction::None; // set by the ImGui File menu, consumed by ProcessContextMenu()
 
 // Play Mode State
 bool g_playActive = false;
-static bool g_playTogglePending = false;
+bool g_playTogglePending = false;
 static double g_playEndedAt = 0.0;
-static bool g_importRequested = false;
+bool g_importRequested = false;
 
 // Explorer right-click context menu (separate from the 3D-view menu)
 bool g_explorerMenuOpen = false;
@@ -272,9 +224,6 @@ bool g_waterWakeOpen = true;
 // Screen rect of the currently active number field
 Rectangle g_activeFieldRect = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-// Forward declarations
-static void ApplyImGuiTheme();
-
 // Loads one of the engine's bundled icons, taking a name relative to
 // assets/EditorIcons/ (or to assets/ when it starts with "../"). The returned
 // Image is owned by the caller, who must UnloadImage() it after uploading.
@@ -287,7 +236,12 @@ static Image LoadEditorIcon(const std::string& name) {
     const std::string path = platform::ResolveAsset("assets/EditorIcons/" + name);
     if (path.empty()) return img;
     img = LoadImage(path.c_str());
-    if (img.data != nullptr) ImageColorBrightness(&img, 255);
+    if (img.data != nullptr) {
+        // Row icons are drawn at 14 px; oversized exports are scaled to the 96 px size of the rest of the set.
+        if (img.width > 128 || img.height > 128) ImageResize(&img, 96, 96);
+        // Icons in explorericons/ keep their own colours; the older black silhouettes are recoloured to white.
+        if (name.rfind("explorericons/", 0) != 0) ImageColorBrightness(&img, 255);
+    }
     return img;
 }
 
@@ -320,7 +274,7 @@ void Init() {
         }
     }
 
-    constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png" };
+    constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png", "explorericons/Group.png" };
     for (int i = 0; i < ROWICON_COUNT; ++i) {
         Image img = LoadEditorIcon(rowIconNames[i]);
         if (img.data != nullptr) {
@@ -624,73 +578,6 @@ void SetSelectedTerrain(BasicTerrain* t) {
 
 BasicTerrain* GetSelectedTerrain() { return g_selectedTerrain; }
 
-// Helpers that dissolve or build model containers. These live here (rather
-// than in the interaction manager) because the explorer context menu triggers
-// them, and the models vector is registered through SetSceneModels.
-void GroupSelectedObjects() {
-    if (!g_sceneModels || !g_sceneObjects) return;
-    if (g_selection.size() < 2) return;
-
-    auto model = std::make_unique<ModelGroup>();
-    model->name = "Model";
-    for (auto* obj : g_selection) {
-        if (!obj) continue;
-        if (obj->parentModel) {
-            // A selected object already inside a model: pull it out first so
-            // members never end up owned by two containers.
-            for (auto& existing : *g_sceneModels) {
-                auto& members = existing->members;
-                members.erase(std::remove(members.begin(), members.end(), obj), members.end());
-            }
-            obj->parentModel = nullptr;
-        }
-        model->members.push_back(obj);
-        obj->parentModel = model.get();
-    }
-    g_sceneModels->push_back(std::move(model));
-}
-
-void UngroupModelContaining(ScatteredObject* member) {
-    if (!g_sceneModels) return;
-    if (!member || !member->parentModel) return;
-
-    for (auto it = g_sceneModels->begin(); it != g_sceneModels->end(); ++it) {
-        if (it->get() == member->parentModel) {
-            for (auto* m : (*it)->members) {
-                if (m) m->parentModel = nullptr;
-            }
-            g_sceneModels->erase(it);
-            return;
-        }
-    }
-}
-
-// Reparents dragged explorer objects. `target` is the model to join, or
-// nullptr to drop the objects back at the workspace root (out of any model).
-void PerformExplorerDrop(const std::vector<ScatteredObject*>& dragged, ModelGroup* target) {
-    if (!g_sceneModels) return;
-
-    for (auto* obj : dragged) {
-        if (!obj) continue;
-        if (obj->parentModel) {
-            ModelGroup* model = obj->parentModel;
-            model->members.erase(std::remove(model->members.begin(), model->members.end(), obj), model->members.end());
-            obj->parentModel = nullptr;
-        }
-    }
-    if (target) {
-        for (auto* obj : dragged) {
-            if (!obj) continue;
-            target->members.push_back(obj);
-            obj->parentModel = target;
-        }
-    }
-
-    // Drop containers left empty (mirrors ObjectInteractionManager removal).
-    g_sceneModels->erase(std::remove_if(g_sceneModels->begin(), g_sceneModels->end(),
-        [](const std::unique_ptr<ModelGroup>& m) { return !m || m->members.empty(); }), g_sceneModels->end());
-}
-
 static std::vector<ScatteredObject*> g_pendingDelete;
 
 void RequestDelete(const std::vector<ScatteredObject*>& targets) {
@@ -721,6 +608,10 @@ void SetTransformLocalSpace(bool local) {
 
 void ToggleTransformSpace() {
     g_transformLocalSpace = !g_transformLocalSpace;
+}
+
+SnapSettings& GetSnapSettings() {
+    return g_snap;
 }
 
 bool ConsumePlayToggle() {
@@ -819,90 +710,6 @@ static bool IsOverActiveNumberInput(Vector2 point) {
     return CheckCollisionPointRec(point, g_activeFieldRect);
 }
 
-// One row in the explorer's SCENE section: either a model header or an object.
-// `objRowIndex` is the position of an object row in the flattened object list
-// (used by shift-range selection); model headers share their first member's
-// index (or -1 when the model is empty).
-
-std::vector<ExplorerEntry> BuildExplorerEntries() {
-    std::vector<ExplorerEntry> entries;
-    int objRow = 0;
-    if (g_sceneModels) {
-        for (const auto& model : *g_sceneModels) {
-            if (!model) continue;
-            ExplorerEntry header;
-            header.model = model.get();
-            header.isHeader = true;
-            header.objRowIndex = model->members.empty() ? -1 : objRow;
-            entries.push_back(header);
-            for (auto* m : model->members) {
-                if (!m) continue;
-                ExplorerEntry e;
-                e.obj = m;
-                e.objRowIndex = objRow++;
-                entries.push_back(e);
-            }
-        }
-    }
-    if (g_sceneObjects) {
-        for (auto* o : *g_sceneObjects) {
-            if (!o || o->parentModel) continue;
-            ExplorerEntry e;
-            e.obj = o;
-            e.objRowIndex = objRow++;
-            entries.push_back(e);
-        }
-    }
-    for (auto* w : SceneWaters()) {
-        if (!w) continue;
-        ExplorerEntry e;
-        e.water = w;
-        e.objRowIndex = objRow++;
-        entries.push_back(e);
-    }
-    for (auto* t : BasicTerrain::GetInstances()) {
-        if (!t) continue;
-        ExplorerEntry e;
-        e.basicTerrain = t;
-        e.objRowIndex = objRow++;
-        entries.push_back(e);
-    }
-    for (auto* t : terrain::GetTerrainRegistry().GetTerrains()) {
-        if (!t) continue;
-        ExplorerEntry e;
-        e.legacyTerrain = t;
-        e.objRowIndex = objRow++;
-        entries.push_back(e);
-    }
-    return entries;
-}
-
-// Total rows (model headers + members + standalone objects + water bodies) in the SCENE
-// section, for scroll clamping and the FLYSCRIPTS offset.
-static int ExplorerRowCount() {
-    int n = 0;
-    if (g_sceneModels) {
-        for (const auto& model : *g_sceneModels) {
-            if (model) n += 1 + static_cast<int>(model->members.size());
-        }
-    }
-    if (g_sceneObjects) {
-        for (auto* o : *g_sceneObjects) {
-            if (o && !o->parentModel) ++n;
-        }
-    }
-    for (auto* w : SceneWaters()) {
-        if (w) ++n;
-    }
-    for (auto* t : BasicTerrain::GetInstances()) {
-        if (t) ++n;
-    }
-    for (auto* t : terrain::GetTerrainRegistry().GetTerrains()) {
-        if (t) ++n;
-    }
-    return n;
-}
-
 // Keeps `candidate` as the primary when it is still selected, otherwise falls
 // back to the first remaining selection.
 ScatteredObject* KeepPrimary(const std::vector<ScatteredObject*>& selection, ScatteredObject* candidate) {
@@ -934,7 +741,7 @@ void UpdateInput() {
 // Panel Bounding Rectangles
 // ---------------------------------------------------------------------------
 
-static Rectangle GetTopBarBounds() {
+Rectangle GetTopBarBounds() {
     return Rectangle{ 0.0f, 0.0f, static_cast<float>(GetScreenWidth()), 120.0f };
 }
 
@@ -1030,12 +837,6 @@ static void GetContextMenuBounds(Rectangle& mainRec, Rectangle& subRec) {
     }
 }
 
-
-int ExplorerMenuItemCount() {
-    int n = 0;
-    while (ExplorerMenuItemLabel(n) != nullptr) ++n;
-    return n;
-}
 
 // Script build panel: a strip over the top of the viewport. While compiling it
 // is a one-line status (shown only once a build has taken a moment, so quick
@@ -1170,6 +971,37 @@ static bool g_uiClickConsumed = false;
 
 void MarkUIClickConsumed() { g_uiClickConsumed = true; }
 bool WasUIClickConsumed() { return g_uiClickConsumed; }
+
+static void (*g_undoHook)(void*) = nullptr;
+static void* g_undoHookUser = nullptr;
+
+void SetUndoHook(void (*hook)(void*), void* user) {
+    g_undoHook = hook;
+    g_undoHookUser = user;
+}
+
+void ClearScriptSelection() {
+    g_scriptSel.clear();
+    g_scriptSelAnchor = -1;
+    g_scriptRenameIndex = -1;
+}
+
+void PushUndo() {
+    if (g_undoHook) g_undoHook(g_undoHookUser);
+}
+
+static bool g_pendingAtCenter = false;
+
+void RequestMenuAction(MenuAction action, bool atViewportCenter) {
+    g_pendingFileAction = action;
+    g_pendingAtCenter = atViewportCenter;
+}
+
+bool ConsumeActionAtViewportCenter() {
+    bool v = g_pendingAtCenter;
+    g_pendingAtCenter = false;
+    return v;
+}
 
 MenuAction ProcessContextMenu() {
     g_uiClickConsumed = false;
@@ -1399,18 +1231,22 @@ static void DrawContextMenu() {
     DrawContextMenuInternal(mainRec, subRec, g_isObjectTarget, g_isWaterTarget, g_showSubMenu, g_menuOpenTime);
 }
 
-// ---------------------------------------------------------------------------
-// 1. Top Bar
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// 1. Top Bar (Dear ImGui) - File menu, Import, tool buttons, Play/Stop.
-// Called once per frame from DrawImGuiFrame(), between ImGui::NewFrame()
-// (UpdateInput()) and ImGui::Render().
-// ---------------------------------------------------------------------------
-static ImTextureID ToolTex(int i) {
-    return g_toolIcons[i].id != 0
-        ? static_cast<ImTextureID>(GetTextureImGuiId(g_toolIcons[i]))
-        : static_cast<ImTextureID>(0);
+
+ImTextureID PluginIconTex(const std::string& path) {
+    static std::map<std::string, Texture2D> cache;
+    if (path.empty()) return static_cast<ImTextureID>(0);
+    auto it = cache.find(path);
+    if (it == cache.end()) {
+        Texture2D tex = {};
+        Image img = LoadImage(path.c_str());
+        if (img.data != nullptr) {
+            if (img.width > 128 || img.height > 128) ImageResize(&img, 96, 96);
+            tex = LoadTextureFromImage(img);
+            UnloadImage(img);
+        }
+        it = cache.emplace(path, tex).first;
+    }
+    return it->second.id != 0 ? static_cast<ImTextureID>(GetTextureImGuiId(it->second)) : static_cast<ImTextureID>(0);
 }
 
 ImTextureID RowTex(RowIconType i) {
@@ -1419,209 +1255,6 @@ ImTextureID RowTex(RowIconType i) {
         : static_cast<ImTextureID>(0);
 }
 
-// Launch the standalone player with the current project
-static void LaunchPlayer() {
-    std::string playerExe = platform::ExecutablePath();
-    std::filesystem::path exePath = U8Path(playerExe);
-    
-    // Try to find FlyPlayer in the same directory
-    std::filesystem::path playerPath = exePath.parent_path() / "FlyPlayer";
-    {
-        // Knows the platform's file name too (FlyPlayer.exe on Windows).
-        const std::string found = exporter::FindPlayerExecutable();
-        if (!found.empty()) playerPath = U8Path(found);
-    }
-    if (!std::filesystem::exists(playerPath)) {
-        // Try case-insensitive search
-        for (auto& entry : std::filesystem::directory_iterator(exePath.parent_path())) {
-            std::string name = entry.path().filename().string();
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-            if (lower == "flyplayer") {
-                playerPath = entry.path();
-                break;
-            }
-        }
-    }
-    
-    // Fallback to case variants
-    if (!std::filesystem::exists(playerPath)) {
-        playerPath = exePath.parent_path() / "flyplayer";
-    }
-    if (!std::filesystem::exists(playerPath)) {
-        playerPath = exePath.parent_path() / "FLYPLAYER";
-    }
-    if (!std::filesystem::exists(playerPath)) {
-        playerPath = exePath.parent_path() / "Flyplayer";
-    }
-    
-    // Get current project path
-    const auto& proj = project::GetCurrentProject();
-    if (proj.path.empty()) {
-        return;
-    }
-    
-    // Save current scene to temp file (doesn't overwrite main .flyproj)
-    std::string tempProjectFile = "";
-    
-    // Get legacy terrain from terrain editor state
-    terrain::Terrain* currentTerrain = nullptr;
-    auto& terrainEditorState = terrain::GetTerrainEditorState();
-    currentTerrain = terrainEditorState.selectedTerrainLegacy;
-    
-    if (g_sceneObjects && g_sceneModels) {
-        tempProjectFile = project::SaveProjectFileTemp(proj.path, *g_sceneObjects, *g_sceneModels, currentTerrain);
-        if (!tempProjectFile.empty()) {
-            std::printf("[Play in Player] Saved temp scene to: %s\n", tempProjectFile.c_str());
-        }
-    }
-    
-    // Final fallback to editor executable
-    if (!std::filesystem::exists(playerPath)) {
-        playerPath = U8Path(platform::ExecutablePath());
-    }
-    
-    // Use temp file if created, otherwise use main project
-    std::string launchPath = tempProjectFile.empty() ? proj.path : tempProjectFile;
-    std::vector<std::string> args = {"-play", launchPath, "--noscripts"};
-    platform::LaunchDetached(playerPath.string(), args);
-}
-
-static void DrawImGuiTopBar() {
-    Rectangle barRec = GetTopBarBounds();
-
-    ImGui::SetNextWindowPos(ImVec2(barRec.x, barRec.y));
-    ImGui::SetNextWindowSize(ImVec2(barRec.width, barRec.height));
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings;
-
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(25 / 255.0f, 27 / 255.0f, 32 / 255.0f, 1.0f)); // theme::BG_TOP_BAR
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
-    ImGui::Begin("##TopBar", nullptr, flags);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
-
-    ImGui::BeginDisabled(g_playActive);
-
-    // File button (toggles a popup below it)
-    if (ImGui::Button("File", ImVec2(56.0f, 30.0f))) {
-        ImGui::OpenPopup("##FileMenu");
-    }
-    ImGui::SameLine();
-
-    // Import button
-    if (ToolTex(4)) {
-        ImGui::Image(ToolTex(4), ImVec2(16.0f, 16.0f));
-        ImGui::SameLine(0.0f, 6.0f);
-    }
-    if (ImGui::Button("Import", ImVec2(0.0f, 30.0f))) {
-        g_importRequested = true;
-    }
-
-    ImGui::SameLine();
-    if (ImGui::Button("City", ImVec2(0.0f, 30.0f))) {
-        ImGui::OpenPopup("##CityMenu");
-    }
-    ImVec2 cityBtnMin = ImGui::GetItemRectMin();
-
-    ImGui::EndDisabled();
-
-    // City menu popup, anchored under the City button
-    ImGui::SetNextWindowPos(ImVec2(cityBtnMin.x, barRec.y + 38.0f));
-    if (ImGui::BeginPopup("##CityMenu")) {
-        if (ImGui::MenuItem("New regular city")) { g_pendingFileAction = MenuAction::SpawnCity; ImGui::CloseCurrentPopup(); }
-        if (ImGui::MenuItem("New organic city")) { g_pendingFileAction = MenuAction::SpawnCityOrganic; ImGui::CloseCurrentPopup(); }
-        ImGui::Separator();
-        bool panelOpen = city::GetCityEditorState().panelOpen;
-        if (ImGui::MenuItem("City panel", nullptr, &panelOpen)) {
-            city::GetCityEditorState().panelOpen = panelOpen;
-        }
-        ImGui::EndPopup();
-    }
-
-    // File menu popup, anchored under the File button
-    ImGui::SetNextWindowPos(ImVec2(barRec.x + 4.0f, barRec.y + 38.0f));
-    if (ImGui::BeginPopup("##FileMenu")) {
-        if (ImGui::MenuItem("Save")) { g_pendingFileAction = MenuAction::Save; ImGui::CloseCurrentPopup(); }
-        if (ImGui::MenuItem("Save as")) { g_pendingFileAction = MenuAction::SaveAs; ImGui::CloseCurrentPopup(); }
-        if (ImGui::MenuItem("Open scene")) { g_pendingFileAction = MenuAction::OpenScene; ImGui::CloseCurrentPopup(); }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Export...")) { OpenExportDialog(); ImGui::CloseCurrentPopup(); }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Preferences")) { g_showPreferences = true; ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
-    }
-
-    // Transform tool buttons (row 2)
-    ImGui::SetCursorPos(ImVec2(75.0f, 45.0f));
-    constexpr const char* toolNames[] = { "Select", "Move", "Scale", "Rotate" };
-    constexpr TransformTool toolEnums[] = { TransformTool::Select, TransformTool::Move, TransformTool::Scale, TransformTool::Rotate };
-    for (int i = 0; i < 4; ++i) {
-        bool selected = (g_activeTool == toolEnums[i]);
-
-        // One pill per tool: rounded icon tile on the left, label on the right.
-        constexpr float pillH = 34.0f;
-        constexpr float tile = 26.0f;
-        constexpr float padX = 4.0f;
-        constexpr float gap = 8.0f;
-        const float textW = ImGui::CalcTextSize(toolNames[i]).x;
-        const ImVec2 pillSize(padX + tile + gap + textW + 12.0f, pillH);
-
-        ImGui::PushID(i);
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("##tool", pillSize)) g_activeTool = toolEnums[i];
-        const bool hov = ImGui::IsItemHovered();
-        if (hov) MarkHand();
-        ImGui::PopID();
-
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 p1(p0.x + pillSize.x, p0.y + pillSize.y);
-        ImU32 bg = selected ? theme::AccentU32(180)
-                 : hov      ? IM_COL32(63, 67, 78, 255)
-                            : IM_COL32(48, 51, 60, 255);
-        dl->AddRectFilled(p0, p1, bg, 10.0f);
-
-        const ImVec2 t0(p0.x + padX, p0.y + (pillH - tile) * 0.5f);
-        const ImVec2 t1(t0.x + tile, t0.y + tile);
-        dl->AddRectFilled(t0, t1, selected ? IM_COL32(255, 255, 255, 40) : IM_COL32(255, 255, 255, 22), 8.0f);
-        if (ImTextureID tex = ToolTex(i)) {
-            constexpr float icon = 16.0f;
-            const float o = (tile - icon) * 0.5f;
-            dl->AddImage(tex, ImVec2(t0.x + o, t0.y + o), ImVec2(t0.x + o + icon, t0.y + o + icon));
-        }
-        dl->AddText(ImVec2(t1.x + gap, p0.y + (pillH - ImGui::GetTextLineHeight()) * 0.5f),
-                    IM_COL32(232, 232, 238, 255), toolNames[i]);
-
-        if (i < 3) ImGui::SameLine(0.0f, 10.0f);
-    }
-
-    // Play in Player button (launches standalone player), right-aligned next to Play
-    {
-        ImGui::SetCursorPos(ImVec2(barRec.width - 210.0f, 15.0f));
-        if (ImGui::Button("Play in Player", ImVec2(115.0f, 30.0f))) {
-            LaunchPlayer();
-        }
-        ImGui::SameLine(0.0f, 12.0f);
-    }
-
-    // Play/Stop button, right-aligned
-    {
-        const char* playLabel = g_playActive ? "Stop" : "Play";
-        ImVec4 playCol = g_playActive
-            ? ImVec4(200 / 255.0f, 40 / 255.0f, 40 / 255.0f, 1.0f)   // theme::DANGER (approx)
-            : ImVec4(0 / 255.0f, 170 / 255.0f, 90 / 255.0f, 1.0f);   // theme::SUCCESS (approx)
-        ImGui::PushStyleColor(ImGuiCol_Button, playCol);
-        ImGui::SetCursorPos(ImVec2(barRec.width - 85.0f, 15.0f));
-        if (ImGui::Button(playLabel, ImVec2(70.0f, 30.0f))) {
-            g_playTogglePending = true;
-        }
-        ImGui::PopStyleColor();
-    }
-
-    ImGui::End();
-}
 
 void Draw() {
     g_clickConsumedThisFrame = false;
@@ -1645,11 +1278,11 @@ void Draw() {
         const std::string& projectDir = g_presetDropdownListProjectDir;
 
         Vector2 mousePos = GetMousePosition();
-        int visibleCount = (int)items.size();
+        int visibleCount = static_cast<int>(items.size());
         bool clickedItem = false;
 
         for (int i = 0; i < visibleCount; ++i) {
-            Rectangle itemRect = { listRect.x, listRect.y + i * itemHeight,
+            Rectangle itemRect = { listRect.x, listRect.y + static_cast<float>(i) * itemHeight,
                                  listRect.width, itemHeight };
             bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
 
@@ -1731,9 +1364,9 @@ void Draw() {
 
         // Draw items
         Vector2 mousePos = GetMousePosition();
-        int visibleCount = (int)items.size();
+        int visibleCount = static_cast<int>(items.size());
         for (int i = 0; i < visibleCount; ++i) {
-            Rectangle itemRect = { listRect.x, listRect.y + i * itemHeight,
+            Rectangle itemRect = { listRect.x, listRect.y + static_cast<float>(i) * itemHeight,
                                  listRect.width, itemHeight };
             bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
 
@@ -1832,324 +1465,7 @@ void RequestHeightmapImport() {
     terrain::RequestHeightmapImport();
 }
 
-// ---------------------------------------------------------------------------
-// Dear ImGui integration
-// ---------------------------------------------------------------------------
 
-static void ApplyImGuiTheme() {
-    ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding     = 6.0f;
-    s.PopupRounding      = 4.0f;
-    s.FrameRounding      = 4.0f;
-    s.ScrollbarRounding  = 4.0f;
-    s.GrabRounding       = 4.0f;
-    s.TabRounding        = 4.0f;
-    s.WindowBorderSize   = 1.0f;
-    s.WindowPadding      = ImVec2(8.0f, 8.0f);
-    s.FramePadding       = ImVec2(6.0f, 4.0f);
-    s.ItemSpacing        = ImVec2(6.0f, 5.0f);
-    s.ItemInnerSpacing   = ImVec2(6.0f, 4.0f);
-    s.ScrollbarSize      = 13.0f;
-
-    // Mirrors the app's Dark Theme palette in theme:: (BG_*/TEXT_*/ACCENT...)
-    auto rgba = [](int r, int g, int b, int a = 255) -> ImVec4 {
-        return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
-    };
-
-    ImVec4* c = s.Colors;
-    c[ImGuiCol_Text]                 = rgba(232, 232, 238);   // theme::TEXT
-    c[ImGuiCol_TextDisabled]         = rgba(122, 128, 140);   // theme::TEXT_DIM
-    c[ImGuiCol_TextSelectedBg]       = rgba(0, 190, 200, 64); // theme::ACCENT_SOFT
-    c[ImGuiCol_WindowBg]             = rgba(30, 32, 38);      // theme::BG_PANEL
-    c[ImGuiCol_ChildBg]              = rgba(30, 32, 38);
-    c[ImGuiCol_PopupBg]              = rgba(35, 37, 43, 250); // theme::BG_MENU
-    c[ImGuiCol_Border]               = rgba(72, 77, 88);      // theme::BORDER
-    c[ImGuiCol_BorderShadow]         = rgba(0, 0, 0, 60);
-    c[ImGuiCol_FrameBg]              = rgba(21, 23, 28);      // theme::BG_INPUT
-    c[ImGuiCol_FrameBgHovered]       = rgba(27, 29, 36);      // theme::BG_INPUT_HOVER
-    c[ImGuiCol_FrameBgActive]        = rgba(40, 43, 51);      // theme::BG_WIDGET_PRESSED
-    c[ImGuiCol_TitleBg]              = rgba(38, 41, 48);      // theme::BG_TITLE
-    c[ImGuiCol_TitleBgActive]        = rgba(38, 41, 48);
-    c[ImGuiCol_TitleBgCollapsed]     = rgba(25, 27, 32);      // theme::BG_TOP_BAR
-    c[ImGuiCol_MenuBarBg]            = rgba(25, 27, 32);
-    c[ImGuiCol_ScrollbarBg]          = rgba(21, 23, 28, 180);
-    c[ImGuiCol_ScrollbarGrab]        = rgba(72, 77, 88);
-    c[ImGuiCol_ScrollbarGrabHovered] = rgba(104, 110, 122);   // theme::BORDER_STRONG
-    c[ImGuiCol_ScrollbarGrabActive]  = rgba(122, 128, 140);
-    c[ImGuiCol_CheckMark]            = rgba(0, 190, 200);     // theme::ACCENT
-    c[ImGuiCol_SliderGrab]           = rgba(0, 190, 200);
-    c[ImGuiCol_SliderGrabActive]     = rgba(40, 210, 220);    // theme::ACCENT_HOVER
-    c[ImGuiCol_Button]               = rgba(48, 51, 60);      // theme::BG_WIDGET
-    c[ImGuiCol_ButtonHovered]        = rgba(63, 67, 78);      // theme::BG_WIDGET_HOVER
-    c[ImGuiCol_ButtonActive]         = rgba(40, 43, 51);
-    c[ImGuiCol_Header]               = rgba(48, 51, 60);
-    c[ImGuiCol_HeaderHovered]        = rgba(63, 67, 78);
-    c[ImGuiCol_HeaderActive]         = rgba(40, 43, 51);
-    c[ImGuiCol_Separator]            = rgba(56, 60, 70);      // theme::DIVIDER
-    c[ImGuiCol_SeparatorHovered]     = rgba(72, 77, 88);
-    c[ImGuiCol_SeparatorActive]      = rgba(0, 190, 200);
-    c[ImGuiCol_ResizeGrip]           = rgba(56, 60, 70);
-    c[ImGuiCol_ResizeGripHovered]    = rgba(72, 77, 88);
-    c[ImGuiCol_ResizeGripActive]     = rgba(104, 110, 122);
-    c[ImGuiCol_Tab]                  = rgba(35, 37, 43);
-    c[ImGuiCol_TabHovered]           = rgba(0, 190, 200, 100);
-    c[ImGuiCol_TabActive]            = rgba(0, 190, 200, 55);
-    c[ImGuiCol_TabUnfocused]         = rgba(35, 37, 43);
-    c[ImGuiCol_TabUnfocusedActive]   = rgba(0, 190, 200, 35);
-    c[ImGuiCol_TableHeaderBg]        = rgba(38, 41, 48);
-    c[ImGuiCol_TableBorderStrong]    = rgba(72, 77, 88);
-    c[ImGuiCol_TableBorderLight]     = rgba(56, 60, 70);
-    c[ImGuiCol_TableRowBg]           = rgba(30, 32, 38);
-    c[ImGuiCol_TableRowBgAlt]        = rgba(35, 37, 43);
-    c[ImGuiCol_PlotLines]            = rgba(0, 190, 200);
-    c[ImGuiCol_PlotHistogram]        = rgba(0, 190, 200);
-    c[ImGuiCol_ModalWindowDimBg]     = rgba(0, 0, 0, 110);
-
-    ApplyAccentToImGuiStyle();
-}
-
-// Settings of the selected Lighting item, shown over the properties area.
-static void DrawImGuiLightingPanel() {
-    if (g_lightingSel == 0) return;
-    Rectangle rec = GetPropertiesPanelBounds();
-    ImGui::SetNextWindowPos(ImVec2(rec.x, rec.y));
-    ImGui::SetNextWindowSize(ImVec2(rec.width, rec.height));
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
-    ImGui::Begin("##LightingProps", nullptr, flags);
-    ImGui::TextColored(theme::AccentVec(), "LIGHTING");
-    gfx::LightingSettings& L = gfx::Lighting();
-    switch (g_lightingSel) {
-    case 1: {
-        ImGui::TextDisabled("Time");
-        ImGui::Separator();
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##hour", &L.timeOfDay, 0.0f, 24.0f, "");
-        const int totalMin = static_cast<int>(L.timeOfDay * 60.0f + 0.5f) % (24 * 60);
-        ImGui::Text("Game time  %02d:%02d", totalMin / 60, totalMin % 60);
-        if (ImGui::Button("Dawn")) L.timeOfDay = 6.5f;
-        ImGui::SameLine();
-        if (ImGui::Button("Noon")) L.timeOfDay = 12.0f;
-        ImGui::SameLine();
-        if (ImGui::Button("Dusk")) L.timeOfDay = 18.0f;
-        ImGui::SameLine();
-        if (ImGui::Button("Night")) L.timeOfDay = 23.0f;
-        ImGui::Spacing();
-        ImGui::TextDisabled("Day length (real minutes per day)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::DragFloat("##daylen", &L.dayLengthMinutes, 0.1f, 0.0f, 240.0f, L.dayLengthMinutes > 0.0f ? "%.1f min" : "off (time stays put)");
-        ImGui::Spacing();
-        ImGui::TextWrapped("The whole scene follows this time: sun and sky, window and street lights, car and bus lights. It is saved with the scene.");
-        break;
-    }
-    case 2:
-        ImGui::TextDisabled("Sun");
-        ImGui::Separator();
-        ImGui::Checkbox("Follow the time of day", &L.sunFollowsTime);
-        ImGui::TextDisabled(L.sunFollowsTime ? "Direction at noon (compass, degrees)" : "Direction (compass, degrees)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##az", &L.sunAzimuth, 0.0f, 360.0f, "%.0f");
-        ImGui::TextDisabled(L.sunFollowsTime ? "Height at noon" : "Height above the horizon");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##el", &L.sunElevation, 8.0f, 90.0f, "%.0f");
-        ImGui::TextDisabled("Intensity");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##sint", &L.sunIntensity, 0.0f, 3.0f, "%.2f");
-        ImGui::ColorEdit3("Colour", L.sunColor, ImGuiColorEditFlags_NoInputs);
-        ImGui::Spacing();
-        if (L.sunFollowsTime) ImGui::TextWrapped("The sun rises at 6:00, crosses the sky (15 degrees of compass an hour), peaks at the height above at noon and sets at 18:00, turning orange near the horizon. Shadows move with it. Untick to pin the sun in place.");
-        else ImGui::TextWrapped("Pinned: the sun stays where you put it. A low sun gives long shadows. The time of day still dims it at night.");
-        break;
-    case 3:
-        ImGui::TextDisabled("Ambient");
-        ImGui::Separator();
-        ImGui::TextDisabled("Strength (1 = default)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##amb", &L.ambient, 0.0f, 2.0f, "%.2f");
-        ImGui::Spacing();
-        ImGui::TextWrapped("The light that reaches everything, shadows included. Lower it for a moodier scene.");
-        break;
-    case 4: {
-        ImGui::TextDisabled("Sky");
-        ImGui::Separator();
-        if (ImGui::RadioButton("Atmosphere", L.skyMode == 1)) L.skyMode = 1;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("One colour", L.skyMode != 1)) L.skyMode = 0;
-        ImGui::Spacing();
-        if (L.skyMode != 1) {
-            ImGui::ColorEdit3("Daytime sky", L.skyColor, ImGuiColorEditFlags_NoInputs);
-            ImGui::Spacing();
-            ImGui::TextWrapped("The background colour. It darkens towards night, and the fog uses it.");
-            break;
-        }
-        // The same air with different numbers: each preset only sets the sliders below.
-        struct SkyPreset { const char* name; float air[3]; float density, haze; float hazeColor[3]; float ozone; };
-        static const SkyPreset presets[] = {
-            { "Earth",       { 0.175f, 0.410f, 1.0f }, 1.0f, 2.0f, { 1.0f, 1.0f, 1.0f }, 1.0f },
-            { "Clear",       { 0.175f, 0.410f, 1.0f }, 1.0f, 0.6f, { 1.0f, 1.0f, 1.0f }, 1.0f },
-            { "Hazy",        { 0.175f, 0.410f, 1.0f }, 1.1f, 7.0f, { 1.0f, 0.97f, 0.92f }, 1.0f },
-            { "Dusty",       { 1.0f, 0.55f, 0.25f },   0.7f, 6.0f, { 1.0f, 0.70f, 0.45f }, 0.0f },
-            { "Green",       { 0.25f, 1.0f, 0.45f },   1.0f, 1.5f, { 1.0f, 1.0f, 1.0f }, 0.3f },
-            { "Violet",      { 0.62f, 0.30f, 1.0f },   1.2f, 2.0f, { 1.0f, 0.9f, 1.0f }, 0.0f },
-            { "Thin",        { 0.175f, 0.410f, 1.0f }, 0.2f, 0.3f, { 1.0f, 1.0f, 1.0f }, 1.0f },
-        };
-        int col = 0;
-        for (const SkyPreset& p : presets) {
-            if (col++ % 4 != 0) ImGui::SameLine();
-            if (ImGui::Button(p.name)) {
-                for (int i = 0; i < 3; i++) { L.airColor[i] = p.air[i]; L.hazeColor[i] = p.hazeColor[i]; }
-                L.airDensity = p.density; L.haze = p.haze; L.ozone = p.ozone;
-            }
-        }
-        ImGui::Spacing();
-        ImGui::ColorEdit3("What the air scatters", L.airColor, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
-        ImGui::TextDisabled("Air (thin .. thick)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##airdensity", &L.airDensity, 0.0f, 4.0f, "%.2f");
-        ImGui::TextDisabled("Haze");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##haze", &L.haze, 0.0f, 12.0f, "%.2f");
-        ImGui::ColorEdit3("Haze colour", L.hazeColor, ImGuiColorEditFlags_NoInputs);
-        ImGui::TextDisabled("Ozone (blue at dusk)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##ozone", &L.ozone, 0.0f, 3.0f, "%.2f");
-        ImGui::ColorEdit3("Far ground", L.groundColor, ImGuiColorEditFlags_NoInputs);
-        ImGui::Spacing();
-        ImGui::TextDisabled("Sun size");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##sunsize", &L.sunSize, 0.3f, 6.0f, "%.2f");
-        ImGui::TextDisabled("Moon size");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##moonsize", &L.moonSize, 0.3f, 6.0f, "%.2f");
-        ImGui::TextDisabled("Moon phase (new .. full .. new)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##moonphase", &L.moonPhase, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Moonlight");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##moonlight", &L.moonLight, 0.0f, 4.0f, "%.2f");
-        ImGui::TextDisabled("Stars");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##stars", &L.stars, 0.0f, 4.0f, "%.2f");
-        ImGui::Spacing();
-        ImGui::TextWrapped("Air round a planet, lit by the sun: blue overhead, pale at the horizon, red at sunset, and the sunlight on the scene takes its colour from it. The Sun item sets where the sun is and how strong; the moon is opposite it.");
-        break;
-    }
-    case 5:
-        ImGui::TextDisabled("Fog");
-        ImGui::Separator();
-        ImGui::TextDisabled("Density");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##fog", &L.fogDensity, 0.0f, 0.03f, "%.4f");
-        ImGui::TextDisabled("Height it thins over (m)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##fogheight", &L.fogHeight, 0.0f, 1500.0f, L.fogHeight > 0.0f ? "%.0f" : "the same at every height");
-        ImGui::Spacing();
-        ImGui::TextWrapped("Distant things fade into the fog. About 0.004 is a light haze, 0.02 is thick. With a height the fog lies on the ground and the sky shows above it; under an atmosphere sky the sun lights it, and shadows cut shafts through it.");
-        break;
-    case 7:
-        ImGui::TextDisabled("Clouds");
-        ImGui::Separator();
-        if (ImGui::Button("Few")) { L.cloudCoverage = 0.22f; L.cloudDensity = 1.0f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Scattered")) { L.cloudCoverage = 0.45f; L.cloudDensity = 1.0f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Broken")) { L.cloudCoverage = 0.68f; L.cloudDensity = 1.2f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Overcast")) { L.cloudCoverage = 1.0f; L.cloudDensity = 1.5f; }
-        ImGui::Spacing();
-        ImGui::TextDisabled("Cover");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##cloudcover", &L.cloudCoverage, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Thickness of the cloud itself");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##clouddensity", &L.cloudDensity, 0.2f, 3.0f, "%.2f");
-        ImGui::TextDisabled("Base height (m)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##cloudbase", &L.cloudBase, 200.0f, 8000.0f, "%.0f");
-        ImGui::TextDisabled("Tallest clouds (m)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##cloudthick", &L.cloudThickness, 300.0f, 5000.0f, "%.0f");
-        ImGui::TextDisabled("Size");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##cloudscale", &L.cloudScale, 0.3f, 3.0f, "%.2f");
-        ImGui::TextDisabled("Wind (m/s)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##windspeed", &L.windSpeed, 0.0f, 60.0f, "%.0f");
-        ImGui::TextDisabled("Wind blows towards (compass, degrees)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##winddir", &L.windDirection, 0.0f, 360.0f, "%.0f");
-        ImGui::Spacing();
-        if (!(L.hasSky && L.skyMode == 1)) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Clouds need the Sky item set to Atmosphere.");
-        ImGui::TextWrapped("A layer of cloud you can fly through and above. The sun and the sky light it, its shadow drifts over the ground, and the Weather item's cloud cover and rain add to it.");
-        break;
-    case 8: {
-        ImGui::TextDisabled("Picture");
-        ImGui::Separator();
-        if (ImGui::Button("Neutral")) { L.toneCurve = 1; L.contrast = 1.0f; L.saturation = 1.0f; L.temperature = 0.0f; L.vignette = 0.0f; L.filmGrain = 0.0f; L.bloom = 0.4f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Filmic")) { L.toneCurve = 2; L.contrast = 1.04f; L.saturation = 1.05f; L.temperature = 0.05f; L.vignette = 0.25f; L.filmGrain = 0.08f; L.bloom = 0.5f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Soft")) { L.toneCurve = 3; L.contrast = 1.0f; L.saturation = 1.08f; L.temperature = 0.0f; L.vignette = 0.15f; L.filmGrain = 0.0f; L.bloom = 0.6f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Vivid")) { L.toneCurve = 1; L.contrast = 1.1f; L.saturation = 1.25f; L.temperature = 0.0f; L.vignette = 0.1f; L.filmGrain = 0.0f; L.bloom = 0.5f; }
-        ImGui::Spacing();
-        ImGui::TextDisabled("Tone curve");
-        ImGui::SetNextItemWidth(-1.0f);
-        const char* curves[] = { "None (clips)", "Neutral (colours as given)", "ACES filmic", "AgX" };
-        ImGui::Combo("##tonecurve", &L.toneCurve, curves, 4);
-        ImGui::TextDisabled("Exposure (stops)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##exposure", &L.exposure, -4.0f, 4.0f, "%+.2f");
-        ImGui::Checkbox("The eye adapts to the light", &L.autoExposure);
-        ImGui::TextDisabled("Bloom");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##bloom", &L.bloom, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Contrast");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##contrast", &L.contrast, 0.5f, 1.5f, "%.2f");
-        ImGui::TextDisabled("Saturation");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##saturation", &L.saturation, 0.0f, 2.0f, "%.2f");
-        ImGui::TextDisabled("Temperature (cool .. warm)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##temperature", &L.temperature, -1.0f, 1.0f, "%+.2f");
-        ImGui::TextDisabled("Vignette");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##vignette", &L.vignette, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Film grain");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##grain", &L.filmGrain, 0.0f, 1.0f, "%.2f");
-        ImGui::Spacing();
-        ImGui::TextWrapped("How the lit scene becomes the picture. The scene is lit in real light levels (the sun's disc and lamps are far brighter than white paper); the tone curve brings that onto the screen and bloom spreads what is very bright. The eye only adapts under an atmosphere sky. How much the machine spends on all this is in Preferences > Rendering.");
-        break;
-    }
-    case 6:
-        ImGui::TextDisabled("Weather");
-        ImGui::Separator();
-        if (ImGui::Button("Clear")) { L.overcast = 0.0f; L.rain = 0.0f; L.wetGround = 0.0f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Overcast")) { L.overcast = 0.8f; L.rain = 0.0f; L.wetGround = 0.0f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Rain")) { L.overcast = 0.6f; L.rain = 0.5f; }
-        ImGui::SameLine();
-        if (ImGui::Button("Storm")) { L.overcast = 1.0f; L.rain = 1.0f; }
-        ImGui::Spacing();
-        ImGui::TextDisabled("Cloud cover");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##cloud", &L.overcast, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Rain");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##rain", &L.rain, 0.0f, 1.0f, "%.2f");
-        ImGui::TextDisabled("Wet ground (rain wets it too)");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##wet", &L.wetGround, 0.0f, 1.0f, "%.2f");
-        ImGui::Spacing();
-        ImGui::TextWrapped("Clouds dim and soften the sun and grey the sky. Rain falls around the camera, makes roads dark with puddles that mirror the sky, adds haze, and the city's pedestrians put up umbrellas.");
-        break;
-    default: break;
-    }
-    ImGui::End();
-}
 
 void SelectLightingItem(int id) { g_lightingSel = id; }
 void SelectBottomTab(int tab) { g_bottomTabRequest = tab; }
@@ -2185,9 +1501,9 @@ void DrawImGuiFrame(const Camera3D& camera) {
         ImGui::Text("Textures:    %d%s", gfx::GetTextureCount(), gfx::GetStatsSaturated() ? "+" : "");
         ImGui::Text("Rendered:    %d", gfx::GetRenderedEntityCount());
         ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Culled:      %d", gfx::GetCulledEntityCount());
-        int total = gfx::GetRenderedEntityCount() + gfx::GetCulledEntityCount();
-        if (total > 0) {
-            float pct = (float)gfx::GetCulledEntityCount() / total * 100.0f;
+        int entityTotal = gfx::GetRenderedEntityCount() + gfx::GetCulledEntityCount();
+        if (entityTotal > 0) {
+            float pct = static_cast<float>(gfx::GetCulledEntityCount()) / static_cast<float>(entityTotal) * 100.0f;
             ImGui::Text("Cull Rate:   %.1f%%", pct);
         }
         ImGui::Separator();
@@ -2207,9 +1523,9 @@ void DrawImGuiFrame(const Camera3D& camera) {
                                  t.transparentMs + t.postMs + t.twoDMs;
             // Show each pass as a share of the frame so the expensive one is
             // obvious without doing arithmetic against a frame budget.
-            auto pass = [](const char* label, double ms, double total) {
+            auto pass = [](const char* label, double ms, double frameMs) {
                 ImGui::Text("%-12s %7.3f  %5.1f%%", label, ms,
-                            total > 0.0 ? (ms / total) * 100.0 : 0.0);
+                            frameMs > 0.0 ? (ms / frameMs) * 100.0 : 0.0);
             };
             pass("Shadow", t.shadowMs, total);
             pass("Reflection", t.reflectionMs, total);

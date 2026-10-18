@@ -68,8 +68,8 @@ inline ImU32 AccentU32(int alpha = 255) {
 
 } // namespace theme
 
-// Explorer row-type icons: object/model, water, terrain, script.
-enum RowIconType { ROWICON_OBJECT = 0, ROWICON_WATER, ROWICON_TERRAIN, ROWICON_SCRIPT, ROWICON_COUNT };
+// Explorer row-type icons: object, water, terrain, script, group.
+enum RowIconType { ROWICON_OBJECT = 0, ROWICON_WATER, ROWICON_TERRAIN, ROWICON_SCRIPT, ROWICON_GROUP, ROWICON_COUNT };
 // Terrain sculpt tool icons (Raise/Lower/Smooth/Flatten/Paint/None), matching
 // BasicTerrain::Tool's ordering.
 enum TerrainToolIconType { TTOOLICON_RAISE = 0, TTOOLICON_LOWER, TTOOLICON_SMOOTH, TTOOLICON_FLATTEN, TTOOLICON_PAINT, TTOOLICON_ERODE, TTOOLICON_NOISE, TTOOLICON_RAMP, TTOOLICON_NONE, TTOOLICON_COUNT };
@@ -121,6 +121,23 @@ void DrawPathPromptModal();
 extern bool g_showPreferences;
 extern int g_prefsCategory;
 void DrawImGuiPreferencesWindow();
+
+// ui_topbar.cpp: the top bar. Its state lives in ui.cpp, next to the accessors that read it.
+extern Texture2D g_toolIcons[5];
+extern TransformTool g_activeTool;
+extern SnapSettings g_snap;
+extern MenuAction g_pendingFileAction;  // set by the File menu, consumed by ProcessContextMenu()
+extern bool g_playTogglePending;
+extern bool g_importRequested;
+Rectangle GetTopBarBounds();
+void DrawImGuiTopBar();
+
+// ui_lighting.cpp: settings of the Lighting item selected in the explorer.
+void DrawImGuiLightingPanel();
+
+// ui_theme.cpp: Dear ImGui styling.
+void ApplyImGuiTheme();
+void ApplyAccentToImGuiStyle();
 
 // Small drawing and cursor helpers defined in ui.cpp.
 float HoverProgress(uint64_t key, bool hovered);
@@ -256,22 +273,7 @@ void DrawScriptErrorPanel();
 
 // ui_explorer.cpp / ui.cpp (Explorer)
 enum class ExplorerMenuMode { Object, Empty, Script, Model };
-struct ExplorerEntry {
-    ScatteredObject* obj = nullptr;
-    ModelGroup* model = nullptr;
-    class WaterBody* water = nullptr;
-    BasicTerrain* basicTerrain = nullptr;
-    class terrain::Terrain* legacyTerrain = nullptr;
-    bool isHeader = false;
-    int objRowIndex = -1;
-};
 extern int g_explorerAnchorIndex;
-extern bool g_explorerDragActive;
-extern std::vector<ScatteredObject*> g_explorerDragObjects;
-extern bool g_explorerDragPending;
-extern Vector2 g_explorerDragStart;
-extern ModelGroup* g_explorerDropTarget;
-extern bool g_explorerDropValid;
 extern ExplorerMenuMode g_explorerMenuMode;
 extern ScatteredObject* g_explorerMenuObject;
 extern bool g_explorerMenuOpen;
@@ -293,13 +295,16 @@ extern int g_scriptRenameIndex;
 extern std::set<std::string> g_scriptSel;
 extern int g_scriptSelAnchor;
 extern BasicTerrain* g_selectedTerrain;
-std::vector<ExplorerEntry> BuildExplorerEntries();
-int ExplorerMenuItemCount();
 Rectangle GetExplorerPanelBounds();
 ScatteredObject* KeepPrimary(const std::vector<ScatteredObject*>& selection, ScatteredObject* candidate);
 ImTextureID RowTex(RowIconType i);
-const char* ExplorerMenuItemLabel(int i);
-void PerformExplorerDrop(const std::vector<ScatteredObject*>& dragged, ModelGroup* target);
+// A plugin's own PNG (absolute path), loaded on first use and kept for the session; 0 when it cannot be loaded.
+ImTextureID PluginIconTex(const std::string& path);
+ModelGroup* CreateEmptyGroup(ModelGroup* parent);
+void UngroupModel(ModelGroup* model);
+std::vector<ScatteredObject*> DissolveModelTree(ModelGroup* model);
+void MoveObjectsToGroup(const std::vector<ScatteredObject*>& dragged, ModelGroup* target, ScatteredObject* ref, bool after);
+bool MoveGroupTo(ModelGroup* g, ModelGroup* newParent, ModelGroup* ref, bool after);
 void DrawImGuiExplorer();
 void DrawImGuiExplorerMenu();
 

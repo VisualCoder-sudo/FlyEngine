@@ -696,6 +696,37 @@ std::string EditObjectScript(ScatteredObject* obj) {
     return file;
 }
 
+std::string AddObjectScript(ScatteredObject* obj) {
+    if (!obj) return {};
+    if (obj->script.empty()) {
+        EditObjectScript(obj);
+        return obj->script;
+    }
+    // "Cube", "Cube2", "Cube3"...: the first free class name on this object.
+    const std::string base = MakeClassName(obj->GetName());
+    std::string className = base;
+    for (int n = 2; obj->HasScript(className); ++n) className = base + std::to_string(n);
+    obj->AddScript(className);
+    obj->runOnPlay = true;
+    std::string file = MaterializeScript(className);
+    if (!file.empty()) RequestOpen(file);
+    return className;
+}
+
+std::string EditObjectScriptNamed(ScatteredObject* obj, const std::string& className) {
+    if (!obj || className.empty()) return {};
+    std::string file = MaterializeScript(MakeClassName(className));
+    if (!file.empty()) RequestOpen(file);
+    return file;
+}
+
+std::string ChooseEditorForObjectScriptNamed(const std::string& className) {
+    if (className.empty()) return {};
+    std::string file = MaterializeScript(MakeClassName(className));
+    if (!file.empty()) RequestChooseEditor(file);
+    return file;
+}
+
 std::string EditStandaloneScript(const std::string& scriptName,
                                  const std::string& typeName,
                                  std::string* outClassName /* = nullptr */) {

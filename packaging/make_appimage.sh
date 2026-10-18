@@ -1,5 +1,5 @@
 #!/bin/sh
-# Packs a Linux build directory (the exe/ folder from the CMake build) into Flyengine-x86_64.AppImage.
+# Packs a Linux build directory (the export/<platform>/ folder from the CMake build) into Flyengine-x86_64.AppImage.
 # Meant to run inside the oldest distro you want to support (e.g. debian:12) so the glibc requirement stays low:
 #   podman run --rm -v <repo>:/src:ro -v <exe-dir>:/in:ro -v <outdir>:/out docker.io/library/debian:12 sh /src/packaging/make_appimage.sh
 # Needs the runtime libraries installed so ldd can resolve them (apt install libx11-6 libxi6 libxcursor1 libssl3 zlib1g).

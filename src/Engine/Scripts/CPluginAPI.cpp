@@ -11,6 +11,7 @@
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
+#include "../../../include/Engine/Frontend/PluginHost.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 
 #include <raylib.h>
@@ -561,6 +562,185 @@ static void api_ui_set_accent_color(CP_Color color) {
     ui::SetAccentColor(Color{ channel(color.r), channel(color.g), channel(color.b), 255 });
 }
 
+// Editor camera and viewport mouse
+static void api_camera_enter_topdown(CP_Vec3 center, float view_height) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    if (host && host->enterTopDown) host->enterTopDown(ToVec3(center), view_height);
+}
+static void api_camera_set_topdown_view(CP_Vec3 center, float view_height) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    if (host && host->setTopDown) host->setTopDown(ToVec3(center), view_height);
+}
+static void api_camera_exit_topdown(void) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    if (host && host->exitTopDown) host->exitTopDown();
+}
+static bool api_camera_is_topdown(void) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    return host && host->isTopDown && host->isTopDown();
+}
+static bool api_mouse_ground_point(float plane_y, CP_Vec3* out_point) {
+    if (!g_engine || !out_point) return false;
+    Ray ray = GetMouseRay(GetMousePosition(), g_engine->GetCamera());
+    if (fabsf(ray.direction.y) < 1e-4f) return false;
+    float t = (plane_y - ray.position.y) / ray.direction.y;
+    if (t < 0.0f) return false;
+    *out_point = CP_Vec3{ ray.position.x + ray.direction.x * t, plane_y, ray.position.z + ray.direction.z * t };
+    return true;
+}
+static bool api_mouse_over_ui(void) { return ui::IsMouseOverUI(); }
+static void api_viewport_claim(bool claimed) { pluginhost::SetViewportClaimed(claimed); }
+static CP_Vec2 api_world_to_screen(CP_Vec3 pos) {
+    if (!g_engine) return CP_Vec2{0, 0};
+    return FromVec2(GetWorldToScreen(ToVec3(pos), g_engine->GetCamera()));
+}
+
+// Overlay drawing
+static void api_draw_line3d(CP_Vec3 a, CP_Vec3 b, CP_Color color) { DrawLine3D(ToVec3(a), ToVec3(b), ToColor(color)); }
+static void api_draw_box_outline3d(CP_Vec3 center, CP_Vec3 size, CP_Color color) {
+    DrawCubeWires(ToVec3(center), size.x, size.y, size.z, ToColor(color));
+}
+static void api_ui_draw_text_at(CP_Vec3 pos, const char* text, CP_Color color) {
+    if (!g_engine || !text) return;
+    Vector2 s = GetWorldToScreen(ToVec3(pos), g_engine->GetCamera());
+    ImGui::GetForegroundDrawList()->AddText(ImVec2(s.x, s.y), ImGui::ColorConvertFloat4ToU32(ImVec4(color.r, color.g, color.b, color.a)), text);
+}
+
+// Scene parts and groups. Handles are checked against the live scene on every use: undo, load and
+// stop-play replace every object and group.
+static std::map<uint64_t, ModelGroup*> g_groupMap;
+static uint64_t g_nextGroupHandle = 1;
+
+static CP_GroupID MakeGroupHandle(ModelGroup* g) {
+    if (!g) return 0;
+    for (auto& [h, p] : g_groupMap) if (p == g) return h;
+    uint64_t h = g_nextGroupHandle++;
+    g_groupMap[h] = g;
+    return h;
+}
+static ModelGroup* GetGroup(CP_GroupID h) {
+    auto it = g_groupMap.find(h);
+    if (it == g_groupMap.end() || !pluginhost::IsLiveGroup(it->second)) return nullptr;
+    return it->second;
+}
+
+static CP_EntityID api_entity_create_shaped(CP_Shape shape, CP_Vec3 pos, CP_Vec3 size, CP_Color color, const char* name) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    if (!host || !host->spawn) return 0;
+    ScatteredObject* obj = host->spawn(static_cast<ShapeType>(std::clamp<int>(shape, 0, 3)), ToVec3(pos), ToVec3(size),
+                                       ToColor(color), name ? name : "Object");
+    return obj ? MakeHandle(obj) : 0;
+}
+static void api_entity_remove(CP_EntityID id) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    ScatteredObject* obj = GetObject(id);
+    RemoveHandle(id);
+    if (!host || !host->remove || !obj || !g_engine) return;
+    for (auto& e : g_engine->GetEntities()) {
+        if (e.get() == static_cast<Entity*>(obj)) { host->remove(obj); return; }
+    }
+}
+
+static CP_GroupID api_group_create(const char* name, CP_GroupID parent) {
+    return MakeGroupHandle(pluginhost::CreateGroup(name ? name : "Group", GetGroup(parent)));
+}
+static void api_group_add_entity(CP_GroupID group, CP_EntityID entity) {
+    pluginhost::AddObjectToGroup(GetGroup(group), GetObject(entity));
+}
+static void api_group_delete(CP_GroupID group, bool delete_members) {
+    if (ModelGroup* g = GetGroup(group)) pluginhost::DeleteGroup(g, delete_members);
+    // The group and its sub-groups are gone; their handles must not resolve to a recycled address.
+    for (auto it = g_groupMap.begin(); it != g_groupMap.end();) {
+        if (!pluginhost::IsLiveGroup(it->second)) it = g_groupMap.erase(it); else ++it;
+    }
+}
+static void api_group_set_name(CP_GroupID group, const char* name) {
+    if (ModelGroup* g = GetGroup(group)) g->name = name ? name : "Group";
+}
+static void api_group_set_locked(CP_GroupID group, bool locked) {
+    if (ModelGroup* g = GetGroup(group)) g->locked = locked;
+}
+static void api_group_set_plugin(CP_GroupID group, const char* tag, const char* data) {
+    if (ModelGroup* g = GetGroup(group)) {
+        g->pluginTag = tag ? tag : "";
+        g->pluginData = (tag && *tag && data) ? data : "";
+    }
+}
+static const char* api_group_get_plugin_tag(CP_GroupID group) {
+    static thread_local std::string cache;
+    ModelGroup* g = GetGroup(group);
+    cache = g ? g->pluginTag : std::string();
+    return cache.c_str();
+}
+static const char* api_group_get_plugin_data(CP_GroupID group) {
+    static thread_local std::string cache;
+    ModelGroup* g = GetGroup(group);
+    cache = g ? g->pluginData : std::string();
+    return cache.c_str();
+}
+static CP_GroupID api_group_find_by_tag(const char* tag, int index) {
+    if (!tag || index < 0) return 0;
+    auto found = pluginhost::FindGroupsByTag(tag);
+    return (size_t)index < found.size() ? MakeGroupHandle(found[(size_t)index]) : 0;
+}
+
+static void api_push_undo(void) { ui::PushUndo(); }
+
+static void api_explorer_register_group_kind(const char* tag, const char* icon_path, const CP_GroupMenuItem* items, int count) {
+    if (!tag || !*tag) return;
+    std::vector<pluginhost::GroupKindItem> list;
+    for (int i = 0; items && i < count; ++i) {
+        if (!items[i].label || !items[i].on_click) continue;
+        void (*fn)(CP_GroupID) = items[i].on_click;
+        list.push_back({ items[i].label, [fn](ModelGroup* g) { fn(MakeGroupHandle(g)); } });
+    }
+    pluginhost::RegisterGroupKind(tag, icon_path ? icon_path : "", std::move(list));
+}
+static void api_ui_add_menu_item(const char* menu, const char* label, void (*on_click)(void)) {
+    if (!menu || !label || !on_click) return;
+    pluginhost::AddTopMenuItem(menu, label, [on_click] { on_click(); });
+}
+
+// Editor modes
+static void api_mode_register(const CP_EditorMode* mode) {
+    if (!mode || !mode->id) return;
+    pluginhost::RegisterMode(mode->id, mode->label ? mode->label : mode->id, mode->on_enter, mode->on_exit);
+}
+static void api_mode_enter(const char* id) { if (id) pluginhost::RequestMode(id); }
+static void api_mode_exit(void) { pluginhost::RequestMode(""); }
+static bool api_mode_is_active(const char* id) { return id && pluginhost::ActiveModeId() == id; }
+
+static bool api_camera_get_topdown_view(CP_Vec3* center, float* view_height) {
+    pluginhost::SceneHost* host = pluginhost::GetSceneHost();
+    Vector3 c{};
+    float h = 0;
+    if (!host || !host->getTopDown || !host->getTopDown(c, h)) return false;
+    if (center) *center = FromVec3(c);
+    if (view_height) *view_height = h;
+    return true;
+}
+static CP_Vec2 api_screen_size(void) { return CP_Vec2{ (float)GetScreenWidth(), (float)GetScreenHeight() }; }
+
+// Number fields: the value is edited on a copy and written back only when the edit is finished, so a plugin can rebuild
+// geometry on commit instead of on every keystroke.
+static bool api_ui_wants_keyboard(void) { return ImGui::GetIO().WantTextInput; }
+static bool api_ui_input_float(const char* label, float* value, float step) {
+    float v = *value;
+    const bool changed = ImGui::InputFloat(label, &v, step, step * 4.0f, "%.3f");
+    const bool done = ImGui::IsItemDeactivatedAfterEdit() || (changed && !ImGui::IsItemActive());
+    if (done) *value = v;
+    return done;
+}
+static bool api_ui_input_int(const char* label, int* value) {
+    int v = *value;
+    const bool changed = ImGui::InputInt(label, &v);
+    const bool done = ImGui::IsItemDeactivatedAfterEdit() || (changed && !ImGui::IsItemActive());
+    if (done) *value = v;
+    return done;
+}
+static bool api_ui_selectable(const char* label, bool selected) { return ImGui::Selectable(label, selected); }
+static bool api_ui_item_deactivated_after_edit(void) { return ImGui::IsItemDeactivatedAfterEdit(); }
+
 // Asset System (stubs)
 static CP_AssetHandle api_asset_load(const char* path, int type) { (void)path; (void)type; return 0; }
 static void api_asset_unload(CP_AssetHandle handle) { (void)handle; }
@@ -756,6 +936,49 @@ static CP_EngineAPI g_engine_api = {
     .get_project_name = api_get_project_name,
 
     .ui_set_accent_color = api_ui_set_accent_color,
+
+    .camera_enter_topdown = api_camera_enter_topdown,
+    .camera_set_topdown_view = api_camera_set_topdown_view,
+    .camera_exit_topdown = api_camera_exit_topdown,
+    .camera_is_topdown = api_camera_is_topdown,
+    .mouse_ground_point = api_mouse_ground_point,
+    .mouse_over_ui = api_mouse_over_ui,
+    .viewport_claim = api_viewport_claim,
+    .world_to_screen = api_world_to_screen,
+
+    .draw_line3d = api_draw_line3d,
+    .draw_box_outline3d = api_draw_box_outline3d,
+    .ui_draw_text_at = api_ui_draw_text_at,
+
+    .entity_create_shaped = api_entity_create_shaped,
+    .entity_remove = api_entity_remove,
+
+    .group_create = api_group_create,
+    .group_add_entity = api_group_add_entity,
+    .group_delete = api_group_delete,
+    .group_set_name = api_group_set_name,
+    .group_set_locked = api_group_set_locked,
+    .group_set_plugin = api_group_set_plugin,
+    .group_get_plugin_tag = api_group_get_plugin_tag,
+    .group_get_plugin_data = api_group_get_plugin_data,
+    .group_find_by_tag = api_group_find_by_tag,
+
+    .push_undo = api_push_undo,
+
+    .mode_register = api_mode_register,
+    .mode_enter = api_mode_enter,
+    .mode_exit = api_mode_exit,
+    .mode_is_active = api_mode_is_active,
+
+    .camera_get_topdown_view = api_camera_get_topdown_view,
+    .screen_size = api_screen_size,
+    .ui_wants_keyboard = api_ui_wants_keyboard,
+    .ui_input_float = api_ui_input_float,
+    .ui_input_int = api_ui_input_int,
+    .ui_selectable = api_ui_selectable,
+    .ui_item_deactivated_after_edit = api_ui_item_deactivated_after_edit,
+    .explorer_register_group_kind = api_explorer_register_group_kind,
+    .ui_add_menu_item = api_ui_add_menu_item,
 };
 
 } // namespace
@@ -772,6 +995,11 @@ void CP_Internal_SetEngine(void* engine) {
 
 void CP_Internal_SetScriptRuntime(void* runtime) {
     g_scriptRuntime = static_cast<ScriptRuntime*>(runtime);
+}
+
+void CP_Internal_InvalidateHandles(void) {
+    g_entityMap.clear();
+    g_groupMap.clear();
 }
 
 // Provide the vtable to plugins

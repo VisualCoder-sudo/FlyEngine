@@ -7,6 +7,7 @@
 #include "sokol_log.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace rli {
@@ -185,6 +186,8 @@ void GfxInit(int width, int height) {
     d.uniform_buffer_size = 64 << 20;
     d.vulkan.descriptor_buffer_size = 32 << 20;
     sg_setup(&d);
+    // FLY_GFX_STATS=1 logs sokol's per-frame counters every 120 frames.
+    if (std::getenv("FLY_GFX_STATS")) sg_enable_stats();
 
     g = GfxState{};
     g.initialized = true;
@@ -288,6 +291,20 @@ void GfxBeginFrame() {
     }
 }
 
+static void LogGfxStats() {
+    const sg_frame_stats& f = sg_query_stats().prev_frame;
+    TraceLog(LOG_INFO,
+             "[gfx] frame %u: passes %u, draws %u, pipeline %u, bindings %u, uniforms %u (%u KB), "
+             "update_buf %u (%u KB), append_buf %u (%u KB), update_img %u (%u KB), "
+             "new buffers %u, new pipelines %u (cached %zu)",
+             f.frame_index, f.num_passes, f.num_draw, f.num_apply_pipeline, f.num_apply_bindings,
+             f.num_apply_uniforms, f.size_apply_uniforms >> 10,
+             f.num_update_buffer, f.size_update_buffer >> 10,
+             f.num_append_buffer, f.size_append_buffer >> 10,
+             f.num_update_image, f.size_update_image >> 10,
+             f.buffers.allocated, f.pipelines.allocated, Gfx().pipelines.size());
+}
+
 void GfxEndFrame() {
     GfxState& g = Gfx();
     if (!g.initialized) return;
@@ -307,6 +324,7 @@ void GfxEndFrame() {
     pass.swapchain = sglue_swapchain();
     pass.label = "fly-present";
     sg_begin_pass(&pass);
+    ResetAppliedState();
     ShaderRec* blit = GetShader(g.blitShader);
     if (blit && blit->shader.id) {
         PipelineKey key{};
@@ -320,18 +338,19 @@ void GfxEndFrame() {
         sg_pipeline_desc pd{};
         pd.shader = blit->shader;
         sg_pipeline pip = GetPipeline(key, pd);
-        sg_apply_pipeline(pip);
+        ApplyPipelineCached(pip);
         sg_bindings bind{};
         const TextureRec* tex = GetTextureForBinding(main.colorTex);
         bind.views[0] = tex->view;
         bind.samplers[0] = GetSampler(TEXTURE_FILTER_POINT, TEXTURE_WRAP_CLAMP, false, false);
-        sg_apply_bindings(&bind);
+        ApplyBindingsCached(bind);
         sg_draw(0, 3, 1);
     }
     sg_end_pass();
     sg_commit();
     g.frameActive = false;
     g.frameCounter++;
+    if (sg_stats_enabled() && g.frameCounter % 120 == 0) LogGfxStats();
     ApplyDeferredTextureUpdates();
     TrimBufferPool();
     ProcessPendingScreenshots();
@@ -444,6 +463,39 @@ static uint64_t HashPipelineKey(const PipelineKey& key) {
     return h;
 }
 
+void ResetAppliedState() {
+    GfxState& g = Gfx();
+    g.appliedPipeline = sg_pipeline{};
+    g.bindingsApplied = false;
+}
+
+void InvalidateBindings() { Gfx().bindingsApplied = false; }
+
+// FLY_NO_STATE_CACHE=1 applies pipeline and bindings on every draw (debugging aid).
+static bool StateCacheDisabled() {
+    static const bool off = std::getenv("FLY_NO_STATE_CACHE") != nullptr;
+    return off;
+}
+
+void ApplyPipelineCached(sg_pipeline pip) {
+    GfxState& g = Gfx();
+    if (StateCacheDisabled()) { sg_apply_pipeline(pip); return; }
+    // sokol wants bindings re-applied after every sg_apply_pipeline().
+    if (g.appliedPipeline.id == pip.id && g.bindingsApplied) return;
+    sg_apply_pipeline(pip);
+    g.appliedPipeline = pip;
+    g.bindingsApplied = false;
+}
+
+void ApplyBindingsCached(const sg_bindings& bind) {
+    GfxState& g = Gfx();
+    if (StateCacheDisabled()) { sg_apply_bindings(&bind); return; }
+    if (g.bindingsApplied && std::memcmp(&g.appliedBindings, &bind, sizeof(sg_bindings)) == 0) return;
+    sg_apply_bindings(&bind);
+    g.appliedBindings = bind;
+    g.bindingsApplied = true;
+}
+
 sg_pipeline FindPipeline(const PipelineKey& key) {
     GfxState& g = Gfx();
     auto it = g.pipelines.find(HashPipelineKey(key));
@@ -536,6 +588,7 @@ void EnsurePass() {
     }
     pass.label = (g.currentTarget == g.mainTarget) ? "fly-main" : "fly-offscreen";
     sg_begin_pass(&pass);
+    ResetAppliedState();
     t.clearColorPending = false;
     t.clearDepthPending = false;
     if (TextureRec* c = GetTexture(t.colorTex)) c->rendered = true;
@@ -751,12 +804,12 @@ void DrawFullscreen(Shader shader, int blendMode) {
     key.format = g.passFormat;
     sg_pipeline_desc pd{};
     pd.shader = sh->shader;
-    sg_apply_pipeline(GetPipeline(key, pd));
+    ApplyPipelineCached(GetPipeline(key, pd));
 
     SetLinearTargetUniform(*sh);
     sg_bindings bind{};
     ResolveShaderTextures(*sh, nullptr, bind);
-    sg_apply_bindings(&bind);
+    ApplyBindingsCached(bind);
     ApplyShaderUniforms(*sh);
     sg_draw(0, 3, 1);
 }
