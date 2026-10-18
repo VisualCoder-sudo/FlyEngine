@@ -4,14 +4,13 @@
 #   podman run --rm -v <repo>:/src:ro -v <exe-dir>:/in:ro -v <outdir>:/out docker.io/library/debian:12 sh /src/packaging/make_appimage.sh
 # Needs the runtime libraries installed so ldd can resolve them (apt install libx11-6 libxi6 libxcursor1 libssl3 zlib1g).
 set -e
-TAG=${FLY_TAG:-deb}
 IN=${IN:-/in}; OUT=${OUT:-/out}; SRC=${SRC:-/src}
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wget file patchelf binutils libx11-6 libxi6 libxcursor1 libssl3 zlib1g >/dev/null
 
 A=/tmp/Flyengine.AppDir
 rm -rf $A && mkdir -p $A/usr/bin $A/usr/lib $A/usr/share/flyengine
-cp $IN/*_$TAG $A/usr/bin/
+find $IN -maxdepth 1 -type f -exec cp {} $A/usr/bin/ \;
 cp -r $IN/assets $IN/ScriptingSDK $A/usr/share/flyengine/
 
 # Bundle every library the binaries need except the ones that must come from the host: libc and friends, the C++
@@ -41,15 +40,15 @@ if mkdir -p "$DATA" 2>/dev/null; then
     done
     cd "$DATA"
 fi
-exec "$HERE/usr/bin/Flyengine_TAG" "$@"
+exec "$HERE/usr/bin/Flyengine" "$@"
 R
-sed -i "s/TAG/$TAG/" $A/AppRun && chmod +x $A/AppRun
+chmod +x $A/AppRun
 cat > $A/flyengine.desktop <<D
 [Desktop Entry]
 Type=Application
 Name=Flyengine
 Comment=3D game engine and editor
-Exec=Flyengine_$TAG
+Exec=Flyengine
 Icon=flyengine
 Terminal=false
 Categories=Development;IDE;Graphics;

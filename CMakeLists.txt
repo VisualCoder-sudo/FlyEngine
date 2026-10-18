@@ -453,7 +453,7 @@ set(_fly_exe_targets Flyengine FlyPlayer flyexport)
 if(FLY_HAS_FALLBACK)
     list(APPEND _fly_exe_targets Flyengine_fallback FlyPlayer_fallback)
 endif()
-# Platform tag appended to the copied names: _win, _arch, _deb (other distros: _linux, macOS: _mac).
+# Platform tag picks the export/ subfolder: win, arch, deb (other distros: linux, macOS: mac).
 if(WIN32)
     set(FLY_PLATFORM_TAG win)
 elseif(APPLE)
@@ -470,7 +470,7 @@ else()
         endif()
     endif()
 endif()
-set(FLY_PLATFORM_TAG "${FLY_PLATFORM_TAG}" CACHE STRING "Suffix for executables copied to FLY_EXE_DIR")
+set(FLY_PLATFORM_TAG "${FLY_PLATFORM_TAG}" CACHE STRING "Platform tag selecting the export/ subfolder")
 # Output layout: export/windows, export/debian, export/arch (export/linux, export/macos elsewhere).
 set(_fly_platform_dirs_win windows)
 set(_fly_platform_dirs_deb debian)
@@ -496,7 +496,7 @@ foreach(t ${_fly_exe_targets})
     add_dependencies(fly_collect_exe ${t})
     add_custom_command(TARGET fly_collect_exe POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${t}>"
-            "${FLY_EXE_DIR}/$<TARGET_FILE_BASE_NAME:${t}>_${FLY_PLATFORM_TAG}${CMAKE_EXECUTABLE_SUFFIX}")
+            "${FLY_EXE_DIR}/$<TARGET_FILE_NAME:${t}>")
 endforeach()
 
 # --- flyplugin CLI tool ----------------------------------------------------
