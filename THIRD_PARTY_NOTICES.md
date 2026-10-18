@@ -17,6 +17,7 @@ Each library remains under its own license; the full license texts ship with the
 | Library | Author | License | Location |
 |---|---|---|---|
 | [Box3D](https://github.com/erincatto/box3d) | Erin Catto | MIT | `extern/box3d/` |
+| [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | The Khronos Group | Apache-2.0 | `src/Engine/Backend/vulkanh/` |
 
 ## Assets, models, textures, shaders
 
@@ -48,7 +49,3 @@ Each library remains under its own license; the full license texts ship with the
 | [miniz](https://github.com/richgel999/miniz) | Rich Geldreich and contributors | MIT | `extern/miniz/` |
 | [libcurl](https://curl.se/) | Daniel Stenberg and contributors | curl license (MIT-style) | `curl/` |
 | [OpenSSL](https://www.openssl.org/) (Linux, FlyCloud TLS; system library) | The OpenSSL Project | Apache-2.0 | system |
-
-## Vendored but not currently used by the engine sources
-
-[Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) and Vulkan validation layers (Khronos, Apache-2.0).

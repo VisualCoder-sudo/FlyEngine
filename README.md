@@ -148,6 +148,16 @@ This installs the binary, `assets/` and `shaders/` under
 `/usr/local/share/flyengine`, a `.desktop` entry, the hicolor icon set, and a
 MIME type so double-clicking a `.flyproj` file opens the editor.
 
+### AppImage
+
+`packaging/build_appimage.sh` compiles inside a `debian:12` container (needs podman) and writes
+`export/Flyengine-x86_64.AppImage`, a single file that runs on most distros:
+
+```sh
+sh packaging/build_appimage.sh
+./export/Flyengine-x86_64.AppImage
+```
+
 ### Relocatable tarball
 
 `packaging/make_tarball.sh` builds a runtime-only tarball that can be unpacked
