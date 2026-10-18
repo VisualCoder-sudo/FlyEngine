@@ -453,31 +453,16 @@ set(_fly_exe_targets Flyengine FlyPlayer flyexport)
 if(FLY_HAS_FALLBACK)
     list(APPEND _fly_exe_targets Flyengine_fallback FlyPlayer_fallback)
 endif()
-# Platform tag picks the export/ subfolder: win, arch, deb (other distros: linux, macOS: mac).
+# Dev builds are copied to export/windows, export/linux or export/macos. The Linux release is the AppImage from
+# packaging/build_appimage.sh, which lands in export/.
 if(WIN32)
-    set(FLY_PLATFORM_TAG win)
+    set(FLY_PLATFORM_TAG windows)
 elseif(APPLE)
-    set(FLY_PLATFORM_TAG mac)
+    set(FLY_PLATFORM_TAG macos)
 else()
     set(FLY_PLATFORM_TAG linux)
-    if(EXISTS /etc/os-release)
-        file(STRINGS /etc/os-release _fly_osr REGEX "^ID(_LIKE)?=")
-        string(TOLOWER "${_fly_osr}" _fly_osr)
-        if(_fly_osr MATCHES "arch")
-            set(FLY_PLATFORM_TAG arch)
-        elseif(_fly_osr MATCHES "debian|ubuntu")
-            set(FLY_PLATFORM_TAG deb)
-        endif()
-    endif()
 endif()
-set(FLY_PLATFORM_TAG "${FLY_PLATFORM_TAG}" CACHE STRING "Platform tag selecting the export/ subfolder")
-# Output layout: export/windows, export/debian, export/arch (export/linux, export/macos elsewhere).
-set(_fly_platform_dirs_win windows)
-set(_fly_platform_dirs_deb debian)
-set(_fly_platform_dirs_arch arch)
-set(_fly_platform_dirs_linux linux)
-set(_fly_platform_dirs_mac macos)
-set(FLY_EXE_DIR "${CMAKE_SOURCE_DIR}/export/${_fly_platform_dirs_${FLY_PLATFORM_TAG}}" CACHE PATH "Where built executables are copied")
+set(FLY_EXE_DIR "${CMAKE_SOURCE_DIR}/export/${FLY_PLATFORM_TAG}" CACHE PATH "Where built executables are copied")
 
 add_custom_target(fly_collect_exe ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${FLY_EXE_DIR}"
