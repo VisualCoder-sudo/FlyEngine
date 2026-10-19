@@ -60,13 +60,52 @@ static Rectangle g_terrainToolDropdownAnchor = { 0 };
 
 Rectangle GetTerrainPanelBounds() { return GetPanelBounds(PanelId::Terrain); }
 
+// typedMax: a number typed into the box may go past the slider's range, up to this limit (default: the range itself).
 static void TerrainSlider(const char* label, float x, float y, float w,
-                          float& value, float mn, float mx, const char* fmt, uint64_t key) {
+                          float& value, float mn, float mx, const char* fmt, uint64_t key, float typedMax = -1.0e30f) {
+    if (typedMax < mx) typedMax = mx;
     // Label
     DrawTextArial(label, x, y + 4.0f, 12.0f, theme::TEXT_MUTED);
 
-    Rectangle track = { x + 86.0f, y + 6.0f, w - 86.0f - 56.0f, 12.0f };
+    const float boxW = 60.0f;
+    Rectangle track = { x + 86.0f, y + 6.0f, w - 86.0f - boxW - 8.0f, 12.0f };
+    Rectangle box = { x + w - boxW, y + 1.0f, boxW, 22.0f };
     Vector2 mouse = GetMousePosition();
+
+    // Typed entry: click the value to type a number; Enter or clicking away applies it (clamped to the slider range, or typedMax where a slider allows more).
+    static uint64_t numKey = 0;
+    static char numBuf[32] = "";
+    static int numCursor = 0, numSel = -1;
+    bool typing = (numKey == key);
+    if (typing && g_activeField != FIELD_TERRAIN_NUMBER) {   // blurred by a click elsewhere
+        if (numBuf[0] != '\0') value = std::clamp(std::strtof(numBuf, nullptr), mn, typedMax);
+        numKey = 0;
+        typing = false;
+    }
+    const bool boxHover = CheckCollisionPointRec(mouse, box);
+    if (boxHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !typing) {
+        numKey = key;
+        typing = true;
+        g_activeField = FIELD_TERRAIN_NUMBER;
+        snprintf(numBuf, sizeof(numBuf), "%.*g", 7, value);
+        numCursor = static_cast<int>(strlen(numBuf));
+        numSel = 0;   // select all so typing replaces the number
+    }
+    if (typing) {
+        g_activeFieldRect = box;
+        bool commit = false;
+        TextEditKeys(numBuf, static_cast<int>(sizeof(numBuf)), numCursor, numSel, commit);
+        TextEditMouse(numBuf, numCursor, numSel, box, box.x + 6.0f, 12.0f, true);
+        if (commit) {
+            if (numBuf[0] != '\0') {
+                const float v = std::strtof(numBuf, nullptr);
+                if (std::isfinite(v)) value = std::clamp(v, mn, typedMax);
+            }
+            numKey = 0;
+            typing = false;
+            g_activeField = FIELD_NONE;
+        }
+    }
 
     float t = (mx > mn) ? (value - mn) / (mx - mn) : 0.0f;
     if (t < 0.0f) t = 0.0f;
@@ -92,10 +131,24 @@ static void TerrainSlider(const char* label, float x, float y, float w,
     Vector2 knob = { track.x + track.width * t, track.y + track.height * 0.5f };
     DrawCircleV(knob, hovered ? 8.0f : 7.0f, hovered ? theme::ACCENT_HOVER : theme::ACCENT);
 
-    char buf[48];
-    snprintf(buf, sizeof(buf), fmt, value);
-    float tw2 = MeasureTextArial(buf, 12.0f);
-    DrawTextArial(buf, x + w - tw2 - 4.0f, y + 5.0f, 12.0f, theme::TEXT);
+    // Value box
+    DrawRectangleRounded(box, 0.15f, 4, typing ? theme::BG_INPUT : Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, boxHover ? 1.0f : 0.0f));
+    DrawRectangleLinesEx(box, typing ? 2.0f : 1.0f, typing ? theme::ACCENT : theme::BORDER);
+    if (typing) {
+        DrawTextSel(numBuf, numCursor, numSel, box.x + 6.0f, box.y + 2.0f, box.height - 4.0f, 12.0f, Fade(theme::ACCENT, 0.35f));
+        DrawTextArial(numBuf, box.x + 6.0f, box.y + 4.0f, 12.0f, theme::TEXT);
+        char sub[32] = { 0 };
+        memcpy(sub, numBuf, static_cast<size_t>(numCursor));
+        if (static_cast<int>(GetTime() * 2.5) % 2 == 0) {
+            const float cx = box.x + 6.0f + MeasureTextArial(sub, 12.0f);
+            DrawLineEx({ cx, box.y + 4.0f }, { cx, box.y + box.height - 4.0f }, 1.5f, theme::ACCENT);
+        }
+    } else {
+        char buf[48];
+        snprintf(buf, sizeof(buf), fmt, value);
+        DrawTextArial(buf, box.x + 6.0f, box.y + 4.0f, 12.0f, theme::TEXT);
+    }
+    if (boxHover) MarkIbeam();
 }
 
 static bool TerrainCheckbox(float x, float y, const char* label, bool value, uint64_t key) {
@@ -291,11 +344,6 @@ void DrawTerrainToolPanel() {
         br.noiseSeed = brBasic.noiseSeed;
         br.noiseScale = brBasic.noiseScale;
         // BasicTerrain doesn't have erosion settings in brush, use defaults
-    }
-
-    // Safety: if a terrain is selected but tool is None, default to Raise
-    if ((useChunked || tBasic) && br.tool == BasicTerrain::Tool::None && g_terrainTab == 0) {
-        br.tool = BasicTerrain::Tool::Raise;
     }
 
     const float pad = 14.0f;
@@ -845,7 +893,7 @@ void DrawTerrainToolPanel() {
                     if (smallButton({ x, y, bw, 22.0f }, "Fill all", base + 12u)) foliage::FillMask(tBasic, (int)ri, true);
                     if (smallButton({ x + bw + gap, y, bw, 22.0f }, "Clear all", base + 13u)) foliage::FillMask(tBasic, (int)ri, false);
                     y += 28.0f;
-                    TerrainSlider("Brush size", x, y, innerW, pb.radius, 2.0f, 100.0f, "%.0f m", base + 14u); y += 26.0f;
+                    TerrainSlider("Brush size", x, y, innerW, pb.radius, 2.0f, 100.0f, "%.0f m", base + 14u, 500.0f); y += 26.0f;
                     TerrainSlider("Brush strength", x, y, innerW, pb.strength, 5.0f, 100.0f, "%.0f", base + 15u); y += 26.0f;
                     TerrainSlider("Brush hardness", x, y, innerW, pb.hardness, 0.0f, 1.0f, "%.2f", 12000u + (uint64_t)ri); y += 26.0f;
                     DrawTextArial("Drag on the terrain. Ctrl erases, Shift paints faster.", x, y, 10.0f, theme::TEXT_DIM);
@@ -860,7 +908,7 @@ void DrawTerrainToolPanel() {
                 TerrainSlider("Max size", x, y, innerW, r.maxScale, 0.2f, 4.0f, "%.2f", base + 6u); y += 26.0f;
                 if (r.maxScale < r.minScale) r.maxScale = r.minScale;
                 TerrainSlider("Max slope", x, y, innerW, r.maxSlope, 0.0f, 90.0f, "%.0f deg", base + 7u); y += 26.0f;
-                TerrainSlider("Distance", x, y, innerW, r.viewDistance, 10.0f, 2000.0f, "%.0f m", base + 8u); y += 26.0f;
+                TerrainSlider("Distance", x, y, innerW, r.viewDistance, 10.0f, 2000.0f, "%.0f m", base + 8u, 10000.0f); y += 26.0f;
                 TerrainSlider("Fade start", x, y, innerW, r.fadeStart, 0.0f, 0.95f, "%.2f", 12100u + (uint64_t)ri * 2u); y += 26.0f;
                 TerrainSlider("Far keep", x, y, innerW, r.farKeep, 0.0f, 1.0f, "%.2f", 12101u + (uint64_t)ri * 2u); y += 26.0f;
                 TerrainSlider("LOD 1 at", x, y, innerW, r.lod1, 0.0f, 1.0f, "%.2f", 12200u + (uint64_t)ri * 2u); y += 26.0f;
@@ -950,8 +998,8 @@ void DrawTerrainToolPanel() {
     y += 34.0f;
 
     // Brush sliders
-    TerrainSlider("Size",     x, y, innerW, br.radius,       4.0f, 200.0f, "%.0f m", 9201u); y += 32.0f;
-    TerrainSlider("Strength", x, y, innerW, br.strength,     2.0f, 200.0f, "%.0f",   9202u); y += 32.0f;
+    TerrainSlider("Size",     x, y, innerW, br.radius,       4.0f, 200.0f, "%.0f m", 9201u, 500.0f); y += 32.0f;
+    TerrainSlider("Strength", x, y, innerW, br.strength,     2.0f, 200.0f, "%.0f",   9202u, 1000.0f); y += 32.0f;
     TerrainSlider("Hardness", x, y, innerW, br.hardness,     0.0f, 1.0f,   "%.2f",   9203u); y += 32.0f;
 
     // Target height only matters when flattening (row always reserved)
@@ -1133,24 +1181,76 @@ void DrawTerrainToolPanel() {
         }
         y += 28.0f;
 
-        // Reset flat button
-        Rectangle resetBtn = { x, y, 110.0f, 26.0f };
-        bool rHov = CheckCollisionPointRec(mouse, resetBtn);
-        float rt = HoverProgress(9302u, rHov);
-        DrawRectangleRounded(resetBtn, 0.18f, 4, Mix(theme::BG_WIDGET, theme::BG_WIDGET_PRESSED, rt));
-        DrawRectangleLinesEx(resetBtn, rHov ? 2.0f : 1.0f, rHov ? theme::DANGER : theme::BORDER);
-        float rbw = MeasureTextArial("Reset Flat", 12.0f);
-        DrawTextArial("Reset Flat", resetBtn.x + (resetBtn.width - rbw) * 0.5f, resetBtn.y + 6.0f, 12.0f,
-                      rHov ? theme::DANGER_HOVER : theme::TEXT_MUTED);
-        if (rHov) MarkHand();
-        if (rHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            propBasic->GenerateFlat(0.0f);
+        // Reset flat button: wipes every height and all paint, so it asks first.
+        static BasicTerrain* resetConfirmFor = nullptr;
+        if (resetConfirmFor != propBasic) resetConfirmFor = nullptr;
+        if (!resetConfirmFor) {
+            Rectangle resetBtn = { x, y, 110.0f, 26.0f };
+            bool rHov = CheckCollisionPointRec(mouse, resetBtn);
+            float rt = HoverProgress(9302u, rHov);
+            DrawRectangleRounded(resetBtn, 0.18f, 4, Mix(theme::BG_WIDGET, theme::BG_WIDGET_PRESSED, rt));
+            DrawRectangleLinesEx(resetBtn, rHov ? 2.0f : 1.0f, rHov ? theme::DANGER : theme::BORDER);
+            float rbw = MeasureTextArial("Reset Flat", 12.0f);
+            DrawTextArial("Reset Flat", resetBtn.x + (resetBtn.width - rbw) * 0.5f, resetBtn.y + 6.0f, 12.0f,
+                          rHov ? theme::DANGER_HOVER : theme::TEXT_MUTED);
+            if (rHov) MarkHand();
+            if (rHov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) resetConfirmFor = propBasic;
+        } else {
+            DrawTextArial("Erase all sculpting and paint? This can't be undone.", x, y, 11.0f, theme::DANGER_HOVER);
+            y += 18.0f;
+            const char* labels[2] = { "Reset", "Cancel" };
+            for (int bi = 0; bi < 2; ++bi) {
+                Rectangle b = { x + bi * 86.0f, y, 80.0f, 26.0f };
+                bool hov = CheckCollisionPointRec(mouse, b);
+                float ht = HoverProgress(9640u + bi, hov);
+                DrawRectangleRounded(b, 0.18f, 4, Mix(theme::BG_WIDGET, theme::BG_WIDGET_PRESSED, ht));
+                DrawRectangleLinesEx(b, hov ? 2.0f : 1.0f, hov ? (bi == 0 ? theme::DANGER : theme::ACCENT) : theme::BORDER);
+                float lw = MeasureTextArial(labels[bi], 12.0f);
+                DrawTextArial(labels[bi], b.x + (b.width - lw) * 0.5f, b.y + 6.0f, 12.0f,
+                              hov ? theme::TEXT : theme::TEXT_MUTED);
+                if (hov) MarkHand();
+                if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (bi == 0) propBasic->GenerateFlat(0.0f);
+                    resetConfirmFor = nullptr;
+                }
+            }
         }
 
         // Hint about selection state
-        DrawTextArial(propBasic->editActive ? "Editing: LMB drag sculpt" : "Click terrain to edit",
+        if (!resetConfirmFor) DrawTextArial(propBasic->editActive ? "Editing: LMB drag sculpt" : "Click terrain to edit",
                       x + 126.0f, y + 6.0f, 11.0f,
                       propBasic->editActive ? theme::SUCCESS : theme::TEXT_DIM);
+        y += resetConfirmFor ? 52.0f : 34.0f;
+
+        // Size: sliders (or typed numbers) edit pending values; the terrain resizes when they are released or Enter is pressed.
+        {
+            static BasicTerrain* sizeFor = nullptr;
+            static float sizeW = 0.0f, sizeL = 0.0f, sizeH = 0.0f;
+            const float curW = propBasic->GetWidth() * propBasic->GetScale();
+            const float curL = propBasic->GetDepth() * propBasic->GetScale();
+            const float curH = propBasic->GetMaxHeight();
+            if (sizeFor != propBasic) { sizeFor = propBasic; sizeW = curW; sizeL = curL; sizeH = curH; }
+
+            DrawTextArial("SIZE", x, y, 11.0f, theme::TEXT_DIM);
+            DrawLine(static_cast<int>(x + 34.0f), static_cast<int>(y + 7.0f),
+                     static_cast<int>(x + innerW), static_cast<int>(y + 7.0f), theme::DIVIDER);
+            y += 18.0f;
+            const float cell = propBasic->GetScale();
+            TerrainSlider("Width",  x, y, innerW, sizeW, 64.0f, 8192.0f, "%.0f m", 9631u, 100000.0f); y += 28.0f;
+            TerrainSlider("Length", x, y, innerW, sizeL, 64.0f, 8192.0f, "%.0f m", 9632u, 100000.0f); y += 28.0f;
+            TerrainSlider("Height", x, y, innerW, sizeH, 10.0f, 2000.0f, "%.0f m", 9633u, 10000.0f); y += 30.0f;
+
+            // Applies as soon as a slider is let go (a resize reallocates the grid, so not every drag frame).
+            const bool changed = std::fabs(sizeW - curW) >= cell * 0.5f || std::fabs(sizeL - curL) >= cell * 0.5f
+                              || std::fabs(sizeH - curH) >= 0.5f;
+            if (changed && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && g_activeField != FIELD_TERRAIN_NUMBER) {
+                propBasic->Resize(sizeW, sizeL, sizeH);
+                sizeW = propBasic->GetWidth() * propBasic->GetScale();
+                sizeL = propBasic->GetDepth() * propBasic->GetScale();
+                sizeH = propBasic->GetMaxHeight();
+            }
+            y += 4.0f;
+        }
     } else if (propChunked) {
         snprintf(buf, sizeof(buf), "%d x %d chunks", propChunked->gridWidth, propChunked->gridDepth);
         infoRow("Grid", buf, sizeof(buf));

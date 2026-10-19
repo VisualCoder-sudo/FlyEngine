@@ -336,6 +336,75 @@ void BasicTerrain::Reshape(int newWidth, int newDepth, float newScale,
     MarkAllDirty();
 }
 
+void BasicTerrain::Resize(float worldWidth, float worldLength, float newMaxHeight) {
+    // The mesh uses 16-bit indices, so a grid may hold at most 256 x 256 samples. Bigger worlds keep that grid and
+    // get coarser cells instead; a world that fits keeps the current cell size.
+    constexpr int kMaxCells = 256;
+    const float oldScale = scale;
+    const float newScale = std::max({ oldScale, worldWidth / kMaxCells, worldLength / kMaxCells });
+    const int newW = std::clamp((int)std::lround(worldWidth / newScale), 2, kMaxCells);
+    const int newD = std::clamp((int)std::lround(worldLength / newScale), 2, kMaxCells);
+    const int oldW = width, oldD = depth;
+    const int oldSW = splatWidth, oldSD = splatDepth;
+
+    std::vector<float> oldHeights = std::move(heightmap);
+    std::vector<uint8_t> oldSplat = std::move(splatmap);
+
+    // Texture repeat follows the world width so the texels keep their size.
+    const float newTiling = textureTiling * (newW * newScale) / (oldW * oldScale);
+    Reshape(newW, newD, newScale, minHeight, std::max(newMaxHeight, minHeight + 1.0f), newTiling);
+    // Reshape drops the albedo; put the default one back.
+    const std::string texPath = platform::ResolveAsset("assets/PresetTextures/LeafyGrass.qoi");
+    if (!texPath.empty()) {
+        Image img = LoadImage(texPath.c_str());
+        if (img.data) {
+            terrainTexture = LoadTextureFromImage(img);
+            SetTextureWrap(terrainTexture, TEXTURE_WRAP_REPEAT);
+            UnloadImage(img);
+        }
+    }
+
+    // Everything is carried over by world position (the terrain grows/shrinks around its centre), so a changed cell
+    // size resamples instead of shifting the ground.
+    for (int z = 0; z < newD; z++) {
+        const float oz = (z * newScale - newD * newScale * 0.5f) / oldScale + oldD * 0.5f;   // in old cells
+        for (int x = 0; x < newW; x++) {
+            const float ox = (x * newScale - newW * newScale * 0.5f) / oldScale + oldW * 0.5f;
+            float h = 0.0f;
+            if (ox >= 0.0f && oz >= 0.0f && ox <= oldW - 1 && oz <= oldD - 1) {
+                const int x0 = (int)ox, z0 = (int)oz;
+                const int x1 = std::min(x0 + 1, oldW - 1), z1 = std::min(z0 + 1, oldD - 1);
+                const float fx = ox - x0, fz = oz - z0;
+                const float h00 = oldHeights[(size_t)z0 * oldW + x0], h10 = oldHeights[(size_t)z0 * oldW + x1];
+                const float h01 = oldHeights[(size_t)z1 * oldW + x0], h11 = oldHeights[(size_t)z1 * oldW + x1];
+                const float a = h00 + (h10 - h00) * fx, b = h01 + (h11 - h01) * fx;
+                h = a + (b - a) * fz;
+            }
+            heightmap[(size_t)z * newW + x] = std::clamp(h, minHeight, maxHeight);
+        }
+    }
+
+    for (int z = 0; z < splatDepth; z++) {
+        const float wz = ((z + 0.5f) / splatDepth - 0.5f) * newD * newScale;
+        const float cz = wz / oldScale + oldD * 0.5f;
+        const int sz = (int)std::floor(cz / oldD * oldSD);
+        for (int x = 0; x < splatWidth; x++) {
+            const float wx = ((x + 0.5f) / splatWidth - 0.5f) * newW * newScale;
+            const float cx = wx / oldScale + oldW * 0.5f;
+            const int sx = (int)std::floor(cx / oldW * oldSW);
+            uint8_t* dst = &splatmap[((size_t)z * splatWidth + x) * 4];
+            if (cx >= 0.0f && cz >= 0.0f && sx >= 0 && sx < oldSW && sz >= 0 && sz < oldSD) {
+                const uint8_t* src = &oldSplat[((size_t)sz * oldSW + sx) * 4];
+                dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+            } else {
+                dst[0] = 255; dst[1] = 0; dst[2] = 0; dst[3] = 0;
+            }
+        }
+    }
+    genBoxInitialized = false;
+    MarkAllDirty();
+}
+
 bool BasicTerrain::ReadInstance(std::istream& is, BasicTerrain& t) {
     std::string name;
     if (!ReadString(is, name)) return false;

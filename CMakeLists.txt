@@ -216,18 +216,18 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ScenePersistence.cpp
         src/Engine/Backend/VisualScript.cpp
         src/Engine/Frontend/VisualScriptEditor.cpp
-        src/Engine/Graphics.cpp
+        src/Graphics/Graphics.cpp
         src/Engine/CityMeshes.cpp
         src/Engine/FrameStats.cpp
-        src/Engine/Reflections.cpp
-        src/Engine/Lighting.cpp
-        src/Engine/Shadows.cpp
+        src/Graphics/Reflections.cpp
+        src/Graphics/Lighting.cpp
+        src/Graphics/Shadows.cpp
         src/Engine/CityInstancing.cpp
         src/Engine/ShapeBatch.cpp
-        src/Engine/Particles.cpp
-        src/Engine/PostFX.cpp
-        src/Engine/Atmosphere.cpp
-        src/Engine/Clouds.cpp
+        src/Graphics/Particles.cpp
+        src/Graphics/PostFX.cpp
+        src/Graphics/Atmosphere.cpp
+        src/Graphics/Clouds.cpp
         src/Engine/LoadingScreen.cpp
         src/Engine/GameUI.cpp
         src/Engine/Scripts/CommandConsole.cpp
@@ -247,8 +247,8 @@ add_library(FlyEngineCore STATIC
         src/Engine/Backend/Benchmark.cpp
         src/Engine/Backend/CrashReporter.cpp
         src/Engine/TextureManager.cpp
-        src/Engine/Occlusion.cpp
-        src/Engine/Vfs.cpp
+        src/Graphics/Occlusion.cpp
+        src/Graphics/Vfs.cpp
         src/Engine/Export/PackArchive.cpp
         src/Engine/Export/PeIcon.cpp
         src/Engine/Export/ExportManager.cpp

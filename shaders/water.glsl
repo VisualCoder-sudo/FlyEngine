@@ -489,7 +489,10 @@ void main() {
     // Lighting (linear light; the sun's glints are far brighter than the water, and bloom).
     // Water in the shade of a building or bridge gets none of the sun: no diffuse, no glints.
     vec3 sunLight = vsSceneB.xyz * (1.0 - ShadowCalculation(worldPos, N));
-    vec3 diffuse = vec3(vsSceneA.w) + smoothstep(0.0, 0.01, NdotL) * sunLight;
+    // A wave face turned from a low sun must not drop to ambient light alone through a hard edge (it printed
+    // flat dark patches on the sea): water scatters light, so the sun's share fades in softly and keeps a floor.
+    float sunWrap = 0.45 + 0.55 * smoothstep(-0.35, 0.3, dot(N, L));
+    vec3 diffuse = vec3(vsSceneA.w) + sunWrap * sunLight;
     // A tight lobe, soft-capped: the sun's reflection path stays a field of glints
     // instead of flooding to flat white once the bloom spreads it.
     float spec = pow(NdotH, 400.0) * 6.0 + pow(NdotH, 64.0) * 0.25;

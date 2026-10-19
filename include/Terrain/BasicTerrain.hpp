@@ -81,6 +81,10 @@ public:
     // constructor.
     void Reshape(int newWidth, int newDepth, float newScale,
                  float newMinHeight, float newMaxHeight, float newTiling);
+    // Changes the terrain's footprint (world metres) and top height while keeping
+    // the cell size and everything already sculpted/painted in place; new ground
+    // is flat and uses paint layer 0. Grows/shrinks around the terrain's centre.
+    void Resize(float worldWidth, float worldLength, float newMaxHeight);
     void MarkAllDirty() { meshDirty = true; splatmapDirty = true; paintColorDirty = true; ++revision; }
     // Counts every change to the heights or the painted layers; things built from the ground (foliage) watch it.
     uint32_t GetRevision() const { return revision; }

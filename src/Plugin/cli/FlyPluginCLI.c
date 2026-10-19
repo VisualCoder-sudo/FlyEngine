@@ -4,7 +4,7 @@
  * Usage: flyplugin <command> [args]
  */
 
-#include "PluginLoader.h"
+#include "./Engine/Plugin/PluginLoader.h"
 #include "../../../include/Engine/Plugin/PluginManifest.h"
 #include "VersionCompat.h"
 #include <stdio.h>

@@ -2,7 +2,7 @@
 #include "../../include/Graphics/Lighting.hpp"
 #include "../../include/Graphics/PostFX.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
-#include "ShadowsInternal.hpp"
+#include "../Engine/ShadowsInternal.hpp"
 #include "raymath.h"
 #include "rlgl.h"
 #include <atomic>

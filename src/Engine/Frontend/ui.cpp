@@ -573,8 +573,11 @@ void SetSelectedTerrain(BasicTerrain* t) {
     if (t) {
         t->isSelected = true;
         BasicTerrain::SetActive(t);
+        if (BasicTerrain::GetBrush().tool == BasicTerrain::Tool::None)
+            BasicTerrain::GetBrush().tool = BasicTerrain::Tool::Raise;
     } else {
         BasicTerrain::SetActive(nullptr);
+        BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None;
     }
     g_activeField = FIELD_NONE;
     g_showColorPickerWindow = false;
@@ -815,7 +818,8 @@ static void GetContextMenuBounds(Rectangle& mainRec, Rectangle& subRec) {
         subRec = { 0.0f, 0.0f, 0.0f, 0.0f };
     } else {
         constexpr float mainWidth = 200.0f;
-        constexpr float mainHeight = 64.0f;
+        // Water's menu is just the Delete row; everything else keeps the two-row height.
+        const float mainHeight = g_isWaterTarget ? 33.0f : 64.0f;
         constexpr float subWidth = 130.0f;
         constexpr float subHeight = static_cast<float>(kSpawnMenuItemCount) * 30.0f + 8.0f;
 

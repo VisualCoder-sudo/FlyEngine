@@ -413,14 +413,14 @@ The old `shaders/*.vert` / `*.frag` files are no longer used.
 ## Sky, light and the picture
 
 The scene is lit in linear light into a float render target and turned into the
-picture by a chain of full-screen passes (`src/Engine/PostFX.cpp`,
+picture by a chain of full-screen passes (`src/Graphics/PostFX.cpp`,
 `shaders/post.glsl`). What a scene looks like is set in the Explorer's
 **Lighting** section and saved with the scene; how much of the machine it may
 use is set in **Preferences > Rendering** and kept per machine. A new project
 starts with the atmosphere sky, clouds, a clear Weather item and the Picture item
 already in its Lighting section.
 
-- **Sky** (`src/Engine/Atmosphere.cpp`, `shaders/sky.glsl`): one colour, or an
+- **Sky** (`src/Graphics/Atmosphere.cpp`, `shaders/sky.glsl`): one colour, or an
   *Atmosphere*: air round a planet that scatters the sun's light (after
   Hillaire, 2020). Blue overhead, pale horizon, red sunsets and the blue of dusk
   come out of a few numbers (what the air scatters, how thick it is, haze,
@@ -428,7 +428,7 @@ already in its Lighting section.
   from the same tables. The presets (*Earth, Clear, Hazy, Dusty, Green, Violet,
   Thin*) only set those numbers. The sky has a sun disc, a moon with phases
   opposite the sun, and stars that turn with the time.
-- **Clouds** (`src/Engine/Clouds.cpp`, `shaders/clouds.glsl`): a layer of
+- **Clouds** (`src/Graphics/Clouds.cpp`, `shaders/clouds.glsl`): a layer of
   volumetric cloud in the atmosphere sky that can be flown through and above.
   Cover, thickness, base height, size and wind are settings; the Weather item's
   cloud cover and rain add to it. The clouds' shadow drifts over the ground and
