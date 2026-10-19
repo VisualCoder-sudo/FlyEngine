@@ -55,6 +55,23 @@ std::string HostDistro() {
     return std::string();
 }
 
+// A single line of text for export.cfg / .desktop: control characters (newlines especially) would inject extra lines.
+std::string OneLine(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) out += (c < 0x20 || c == 0x7F) ? ' ' : (char)c;
+    return out;
+}
+
+// The child of `dir` whose name equals `name` ignoring case (so Scripts/ and scripts/ both work); `dir/name` if none.
+fs::path FindChildCI(const fs::path& dir, const std::string& name) {
+    std::error_code ec;
+    const std::string want = Lower(name);
+    for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (Lower(it->path().filename().string()) == want) return it->path();
+    }
+    return dir / name;
+}
+
 std::string SanitizeName(const std::string& name) {
     std::string out;
     for (unsigned char c : name) out += (std::isalnum(c) || c == '-' || c == '_' || c == '.') ? (char)c : '_';
@@ -68,12 +85,15 @@ bool Excluded(const fs::path& rel) {
         const std::string p = part.string();
         if (!p.empty() && p[0] == '.') return true;                       // .build, .texture caches, .pending_imports ...
     }
-    const std::string first = rel.empty() ? std::string() : rel.begin()->string();
+    const std::string first = rel.empty() ? std::string() : Lower(rel.begin()->string());   // folder names match in any case
     if (first == "plugins") return true;
     const std::string name = rel.filename().string();
     if (name == "export.cfg" || name == "compile_flags.txt") return true;
+    if (Lower(name) == "fcloud_config.json") return true;               // FlyCloud server_url + plaintext api_key
+    const std::string lext = Lower(rel.extension().string());
+    if (lext == ".pem" || lext == ".key") return true;                  // private keys / certificates
     if (EndsWith(name, "_temp.flyproj")) return true;
-    if (first == "Scripts") {
+    if (first == "scripts") {
         const std::string ext = Lower(rel.extension().string());
         if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp" || ext == ".hxx") return true;
     }
@@ -280,9 +300,9 @@ struct UserCode {
 
 UserCode FindUserCode(const fs::path& project) {
     UserCode code;
-    CollectSources(project / "Scripts", code.scripts);
+    CollectSources(FindChildCI(project, "Scripts"), code.scripts);
     std::error_code ec;
-    const fs::path pluginsDir = project / "plugins";
+    const fs::path pluginsDir = FindChildCI(project, "plugins");
     // Layouts: plugins/<name>/src, plus the editor's older plugins/nat/<name> and plugins/lib/<name>.
     std::vector<fs::path> pluginDirs;
     for (auto it = fs::directory_iterator(pluginsDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
@@ -392,7 +412,7 @@ std::string BuildPlayerWithUserCode(const fs::path& project, const UserCode& cod
     if (!code.scripts.empty()) {
         // The script module (entry point renamed so it can sit inside the executable) and the user's scripts.
         addJob(kit.dir + "/sdk/src/fly_module.cpp", { "-DFlyScript_GetModule=FlyScript_GetModule_Static" });
-        for (const std::string& s : code.scripts) addJob(s, { "-I" + (project / "Scripts").string() });
+        for (const std::string& s : code.scripts) addJob(s, { "-I" + FindChildCI(project, "Scripts").string() });
     }
     for (const UserCode::Plugin& p : code.plugins) {
         for (const std::string& s : p.sources) {
@@ -679,6 +699,10 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
             continue;
         }
         if (!it->is_regular_file(e2)) continue;
+        if (rel.generic_string().find('\\') != std::string::npos) {   // the pack and the game's file system treat '\\' as '/': such a name could never match (or could climb out of Assets/)
+            say("Warning: skipped '" + rel.generic_string() + "' (backslash in the file name).");
+            continue;
+        }
         pack::Entry e;
         e.path = rel.generic_string();
         e.diskPath = it->path().string();
@@ -696,7 +720,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     if (cfg.assetsFolder) {
         std::vector<pack::Entry> kept;
         for (pack::Entry& e : entries) {
-            if (e.path.rfind("assets/", 0) == 0 && e.path.size() > 7) externals.push_back({ e.path, e.diskPath });
+            if (Lower(e.path.substr(0, 7)) == "assets/" && e.path.size() > 7) externals.push_back({ e.path, e.diskPath });
             else kept.push_back(std::move(e));
         }
         entries = std::move(kept);
@@ -751,8 +775,8 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     // --- How the game presents itself, and the graphics settings chosen now.
     {
         std::ostringstream cfgText;
-        cfgText << "projectFile " << flyproj << "\nname " << U8Path(flyproj).stem().string()
-                << "\ntitle " << (cfg.windowTitle.empty() ? U8Path(flyproj).stem().string() : cfg.windowTitle)
+        cfgText << "projectFile " << OneLine(flyproj) << "\nname " << OneLine(U8Path(flyproj).stem().string())
+                << "\ntitle " << (cfg.windowTitle.empty() ? OneLine(U8Path(flyproj).stem().string()) : OneLine(cfg.windowTitle))
                 << "\nwidth " << cfg.windowWidth << "\nheight " << cfg.windowHeight
                 << "\nfullscreen " << (cfg.fullscreen ? 1 : 0) << "\nexe " << SanitizeName(cfg.exeName) << "\n";
         pack::Entry meta;
@@ -810,7 +834,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         std::ofstream(U8Path(cfg.outputDir) / (base + ".png"), std::ios::binary)
             .write((const char*)icon.bytes.data(), (std::streamsize)icon.bytes.size());
         std::ofstream(U8Path(cfg.outputDir) / (base + ".desktop"))
-            << "[Desktop Entry]\nType=Application\nName=" << (cfg.windowTitle.empty() ? base : cfg.windowTitle)
+            << "[Desktop Entry]\nType=Application\nName=" << (cfg.windowTitle.empty() ? base : OneLine(cfg.windowTitle))
             << "\nExec=./" << base << "\nIcon=./" << base << ".png\nStartupWMClass=" << base << "\nTerminal=false\nCategories=Game;\n";
         say("Wrote " + base + ".png and " + base + ".desktop (launcher entry; edit Exec/Icon to absolute paths when installing).");
     }

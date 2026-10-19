@@ -255,7 +255,8 @@ ExternalReport MountExternal(const std::string& folder, const std::string& prefi
         const std::string under = rel.compare(0, prefix.size(), prefix) == 0 ? rel.substr(prefix.size()) : rel;
         const fs::path disk = U8Path(folder) / U8Path(under);
         std::error_code e2;
-        if (!g.active || !fs::is_regular_file(disk, e2) || fs::file_size(disk, e2) != f.size) {
+        const bool climbs = ("/" + under + "/").find("/../") != std::string::npos;   // never read outside the folder
+        if (climbs || !g.active || !fs::is_regular_file(disk, e2) || fs::file_size(disk, e2) != f.size) {
             report.missing.push_back(rel);
             continue;
         }
