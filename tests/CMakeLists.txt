@@ -333,3 +333,8 @@ set_tests_properties(water PROPERTIES LABELS needs_display)
 # is not registered with ctest: build/tests/terrain_io_fuzz_test
 add_executable(terrain_io_fuzz_test terrain_io_fuzz_test.cpp)
 target_link_libraries(terrain_io_fuzz_test PRIVATE FlyEngineCore FlyRL)
+
+# Windows/FlyCloud review pass: Windows command-line quoting, reserved exe names, FlyCloud helpers (offline). No window.
+add_executable(windows_cloud_test windows_cloud_test.cpp)
+target_link_libraries(windows_cloud_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME windows_cloud COMMAND windows_cloud_test)

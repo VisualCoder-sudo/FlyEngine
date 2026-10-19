@@ -55,6 +55,9 @@
 // FlyPlayer is a GUI-subsystem program, so it has no console of its own. When it is started from a
 // terminal, join that terminal so printf/fprintf output (scene load errors, "[Player]" lines) is visible.
 static void AttachParentConsole() {
+    // Already redirected to a file or pipe (a test harness, `> log.txt`): attaching would replace that.
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) return;
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
     FILE* f = nullptr;
     freopen_s(&f, "CONOUT$", "w", stdout);

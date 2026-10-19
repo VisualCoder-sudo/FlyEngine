@@ -5,6 +5,7 @@
 // ScriptLauncher.cpp (probing vswhere.exe).
 
 #include "Engine/Platform/Platform.hpp"
+#include "Engine/Platform/PlatformInternal.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -32,18 +33,8 @@ namespace platform {
 
 namespace {
 
-// Build a single command line. Arguments are quoted only when they contain
-// whitespace or a quote, which is enough for the tools we launch.
-std::string QuoteArg(const std::string& a) {
-    if (a.find_first_of(" \t\"") == std::string::npos) return a;
-    std::string out = "\"";
-    for (char c : a) {
-        if (c == '"') out += '\\';
-        out += c;
-    }
-    out += '"';
-    return out;
-}
+// Build a single command line (see internal::QuoteWindowsArg for the rules).
+std::string QuoteArg(const std::string& a) { return internal::QuoteWindowsArg(a); }
 
 } // namespace
 
@@ -90,27 +81,33 @@ ProcessResult RunProcessCapture(const std::string& exe,
     result.launched = true;
 
     // Drain on a timeout loop rather than a single blocking ReadFile, so we
-    // never wedge if the child stalls.
-    const DWORD start = GetTickCount();
+    // never wedge if the child stalls. Output is drained before every exit and
+    // timeout check: a child that writes and exits between two polls would
+    // otherwise lose its last lines (a compiler's error messages), and one that
+    // never stops writing would never time out.
+    const ULONGLONG start = GetTickCount64();
     char buf[4096];
+    bool exited = false, timedOut = false;
     for (;;) {
-        DWORD avail = 0;
-        if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &avail, nullptr)) break;
-        if (avail > 0) {
+        for (;;) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) break;
             DWORD got = 0;
-            if (ReadFile(readPipe, buf, sizeof(buf), &got, nullptr) && got > 0) {
-                result.output.append(buf, got);
-                continue;
-            }
+            if (!ReadFile(readPipe, buf, sizeof(buf), &got, nullptr) || got == 0) break;
+            result.output.append(buf, got);
         }
-        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
-        if (timeoutMs > 0 && (GetTickCount() - start) > static_cast<DWORD>(timeoutMs)) {
+        if (exited) break;
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) { exited = true; continue; }   // one more drain
+        if (timeoutMs > 0 && (GetTickCount64() - start) > static_cast<ULONGLONG>(timeoutMs)) {
             TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);   // so the exit code below is the real one, not STILL_ACTIVE
+            timedOut = true;
             break;
         }
         Sleep(5);
     }
     CloseHandle(readPipe);
+    if (timedOut) result.error = "timed out after " + std::to_string(timeoutMs) + "ms";
 
     DWORD code = 1;
     if (GetExitCodeProcess(pi.hProcess, &code)) result.exitCode = static_cast<int>(code);

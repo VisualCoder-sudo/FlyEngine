@@ -848,6 +848,7 @@ void OpenURL(const char* url) {
     if (!url) return;
     if (std::strchr(url, '\'') != nullptr) return;   // refuse to build a broken shell command
 #if defined(_WIN32)
+    if (std::strpbrk(url, "\"\r\n") != nullptr) return;   // a quote would end the quoted argument and let the rest run as commands
     std::string cmd = std::string("explorer \"") + url + "\"";
 #else
     std::string cmd = std::string("xdg-open '") + url + "' >/dev/null 2>&1 &";

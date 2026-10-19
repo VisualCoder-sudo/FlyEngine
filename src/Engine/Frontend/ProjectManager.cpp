@@ -305,6 +305,10 @@ namespace detail {
 
     // $HOME with a sane fallback so the app never builds paths off an empty root.
     std::string HomeDirectory() {
+#ifdef _WIN32
+        // HOME is normally unset on Windows; without this the delete guard compared against the working directory.
+        if (const char* profile = std::getenv("USERPROFILE"); profile && *profile) return std::string(profile);
+#endif
         if (const char* home = std::getenv("HOME"); home && *home) return std::string(home);
         return std::string(".");
     }

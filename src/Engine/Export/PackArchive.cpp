@@ -65,7 +65,11 @@ bool BuildExecutable(const std::string& srcExe, const std::string& dstExe, const
     fs::copy_file(src, tmp, fs::copy_options::overwrite_existing, ec);
     if (ec) { error = "Could not copy the player executable: " + ec.message(); return false; }
 
-    FILE* out = std::fopen(tmp.string().c_str(), "ab");
+#if defined(_WIN32)
+    FILE* out = _wfopen(tmp.c_str(), L"ab");   // tmp.string() would be the ANSI form, which loses non-ASCII folder names
+#else
+    FILE* out = std::fopen(tmp.c_str(), "ab");
+#endif
     if (!out) { error = "Could not open " + tmp.string() + " for writing"; fs::remove(tmp, ec); return false; }
     FLY_FSEEK(out, 0, SEEK_END);
     const int64_t archiveStart = FLY_FTELL(out);
