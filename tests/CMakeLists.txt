@@ -328,3 +328,8 @@ add_executable(water_test water_test.cpp)
 target_link_libraries(water_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME water COMMAND water_test)
 set_tests_properties(water PROPERTIES LABELS needs_display)
+
+# Terrain readers/importers reject corrupt input (bad headers, sizes, non-square RAW16, NaN). Opens a window, so it
+# is not registered with ctest: build/tests/terrain_io_fuzz_test
+add_executable(terrain_io_fuzz_test terrain_io_fuzz_test.cpp)
+target_link_libraries(terrain_io_fuzz_test PRIVATE FlyEngineCore FlyRL)

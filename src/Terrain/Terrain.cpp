@@ -213,6 +213,9 @@ BoundingBox Terrain::GetCullBounds() const {
 
 void Terrain::InitializeChunks() {
     DestroyChunks();
+    // Old undo/redo entries index the previous chunk layout and carry heightmaps
+    // of the previous resolution; restoring one onto the new chunks would corrupt them.
+    ClearUndoRedo();
     
     gridWidth = std::max(1, (int)ceilf(size.x / chunkWorldSize));
     gridDepth = std::max(1, (int)ceilf(size.z / chunkWorldSize));
@@ -749,6 +752,16 @@ bool Terrain::ReadChunkData(std::istream& in, TerrainChunk& chunk) {
     in.read(reinterpret_cast<char*>(&ch), sizeof(ch));
     if (!in) return false;
 
+    // Sizes come from the file. A known chunk was sized by InitializeChunks, so
+    // the record must match it exactly (a mismatch would leave a heightmap the
+    // mesh builder indexes out of range); a record being skipped only needs a
+    // sane cap so a corrupt size cannot demand gigabytes.
+    constexpr uint32_t kSkipCap = 64u * 1024u * 1024u;
+    if (chunk.heightmap.empty() ? ch.originalSize > kSkipCap
+                                : ch.originalSize != chunk.heightmap.size() * sizeof(uint16_t)) return false;
+    if (ch.hasSplatmap && (chunk.splatmap.empty() ? ch.splatmapOriginalSize > kSkipCap
+                                                  : ch.splatmapOriginalSize != chunk.splatmap.size())) return false;
+
     chunk.chunkCoord = { (float)ch.chunkX, (float)ch.chunkZ };
 
     std::vector<uint16_t> quantized(ch.originalSize / sizeof(uint16_t));
@@ -827,6 +840,20 @@ bool Terrain::ReadFromStream(std::istream& in) {
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
     if (!in) return false;
     if (header.magic[0] != 'F') return false; // must be a terrain payload
+
+    // Reject a corrupt header before it reaches InitializeChunks: a zero/huge
+    // resolution or chunk size would divide by zero, overflow the chunk and
+    // heightmap sizes, or ask for gigabytes.
+    if (header.chunkResolution < 2 || header.chunkResolution > 1025) return false;
+    if (!std::isfinite(header.chunkWorldSize) || !(header.chunkWorldSize > 0.0f)) return false;
+    if (!std::isfinite(header.sizeX) || !std::isfinite(header.sizeZ) ||
+        !(header.sizeX > 0.0f) || !(header.sizeZ > 0.0f)) return false;
+    if (header.layerCount > 256) return false;
+    {
+        const double gw = std::max(1.0, std::ceil((double)header.sizeX / header.chunkWorldSize));
+        const double gd = std::max(1.0, std::ceil((double)header.sizeZ / header.chunkWorldSize));
+        if (gw > 1024.0 || gd > 1024.0 || gw * gd > 16384.0) return false;
+    }
 
     // Apply settings.
     chunkResolution = header.chunkResolution;
