@@ -135,6 +135,45 @@ void WaterBody::InitializeShader() {
     }
 }
 
+// Non-finite or out-of-range values (hand-edited or corrupt scene, Inspector typo) would
+// reach the shader's octave loop and the CPU wave query: octaves 0 divides 0/0 in the
+// fbm normalisation, a huge count hangs the GPU.
+void WaterBody::SetNoiseParams(const NoiseParams& p) {
+    const NoiseParams d;
+    noise = p;
+    auto fin = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+    noise.amplitude = fin(p.amplitude, d.amplitude);
+    noise.frequency = fin(p.frequency, d.frequency);
+    noise.speed = fin(p.speed, d.speed);
+    noise.direction.x = fin(p.direction.x, d.direction.x);
+    noise.direction.y = fin(p.direction.y, d.direction.y);
+    noise.persistence = fin(p.persistence, d.persistence);
+    noise.lacunarity = fin(p.lacunarity, d.lacunarity);
+    noise.octaves = std::clamp(p.octaves, 1, 12);
+    MarkMeshDirty();
+}
+
+void WaterBody::SetRippleParams(const RippleParams& p) {
+    const RippleParams d;
+    ripple = p;
+    auto fin = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+    ripple.waveSpeed = fin(p.waveSpeed, d.waveSpeed);
+    ripple.damping = fin(p.damping, d.damping);
+    ripple.wakeStrength = std::max(0.0f, fin(p.wakeStrength, d.wakeStrength));
+    ripple.splashStrength = std::max(0.0f, fin(p.splashStrength, d.splashStrength));
+    ripple.foamLifetime = std::clamp(fin(p.foamLifetime, d.foamLifetime), 0.2f, 60.0f);
+    ripple.maxDisplacement = std::clamp(fin(p.maxDisplacement, d.maxDisplacement), 0.05f, 50.0f);
+    ripple.sprayAmount = std::clamp(fin(p.sprayAmount, d.sprayAmount), 0.0f, 5.0f);
+}
+
+void WaterBody::SetUnderwaterParams(const UnderwaterParams& p) {
+    const UnderwaterParams d;
+    auto fin = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+    underwater.range = std::max(0.0f, fin(p.range, d.range));
+    underwater.murk = std::max(0.0f, fin(p.murk, d.murk));
+    underwater.darken = std::clamp(fin(p.darken, d.darken), 0.0f, 1.0f);
+}
+
 void WaterBody::RebuildMesh() {
     ReleaseGpuResources();
     meshDirty = true;
@@ -604,6 +643,14 @@ void WaterBody::Draw() {
     RecentreRipples(camera.position.x, camera.position.z);
     StepRipples(GetFrameTime());
     UploadRippleTexture();
+
+    // Chunk meshes bake the body's bounds into their vertices (edge clamping + UVs), so a
+    // move or resize leaves the old edge clamped in place and opens a hole where the body
+    // grew. Drop them (UpdateChunks prewarms) before they are scanned this frame.
+    if (farShellBuilt && (lastShellSize.x != size.x || lastShellSize.z != size.z ||
+                          lastShellPos.x != position.x || lastShellPos.z != position.z)) {
+        ReleaseGpuResources();
+    }
 
     UpdateChunks(camera);
 

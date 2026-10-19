@@ -120,7 +120,7 @@ public:
     void SetTransparency(float t) { transparency = Clamp(t, 0.0f, 1.0f); }
 
     const NoiseParams& GetNoiseParams() const { return noise; }
-    void SetNoiseParams(const NoiseParams& p) { noise = p; MarkMeshDirty(); }
+    void SetNoiseParams(const NoiseParams& p);  // sanitised: octaves 1..12, non-finite values reset
 
     const FoamParams& GetFoamParams() const { return foam; }
     void SetFoamParams(const FoamParams& p) { foam = p; }
@@ -132,7 +132,7 @@ public:
     void SetReflectionParams(const ReflectionParams& p) { reflection = p; }
 
     const UnderwaterParams& GetUnderwaterParams() const { return underwater; }
-    void SetUnderwaterParams(const UnderwaterParams& p) { underwater = p; }
+    void SetUnderwaterParams(const UnderwaterParams& p);  // clamped to the Inspector's ranges
 
     const GridParams& GetGridParams() const { return grid; }
     void SetGridParams(const GridParams& p) { grid = p; MarkMeshDirty(); }
@@ -158,7 +158,7 @@ public:
         float sprayAmount = 1.0f;    // droplet count multiplier
     };
     const RippleParams& GetRippleParams() const { return ripple; }
-    void SetRippleParams(const RippleParams& p) { ripple = p; }
+    void SetRippleParams(const RippleParams& p);  // clamped to the Inspector's ranges
 
     // Call every physics step for a body touching the water. `id` identifies
     // the body so its path can be interpolated (no gaps at high speed).
