@@ -508,13 +508,22 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
     VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     pci.queueFamilyIndex = _sg.vk.queue_family_index;
     VkCommandPool pool = 0;
-    vkCreateCommandPool(dev, &pci, 0, &pool);
+    if (vkCreateCommandPool(dev, &pci, 0, &pool) != VK_SUCCESS) {
+        vkFreeMemory(dev, mem, 0);
+        vkDestroyBuffer(dev, buf, 0);
+        return false;
+    }
     VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
     VkCommandBuffer cmd = 0;
-    vkAllocateCommandBuffers(dev, &cai, &cmd);
+    if (vkAllocateCommandBuffers(dev, &cai, &cmd) != VK_SUCCESS) {
+        vkDestroyCommandPool(dev, pool, 0);
+        vkFreeMemory(dev, mem, 0);
+        vkDestroyBuffer(dev, buf, 0);
+        return false;
+    }
     VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &cbi);

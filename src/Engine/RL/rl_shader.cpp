@@ -93,6 +93,9 @@ sg_shader ProgramShader(const ProgramInfo* prog) {
         shd = sg_make_shader(desc);
         if (sg_query_shader_state(shd) != SG_RESOURCESTATE_VALID) {
             TraceLog(LOG_WARNING, "SHADER: [%s] failed to compile for %s", prog->name, GetGraphicsBackendName());
+            // Not cached, so a later load (e.g. after a hot reload fix) retries.
+            sg_destroy_shader(shd);
+            return sg_shader{};
         }
     } else {
         TraceLog(LOG_WARNING, "SHADER: [%s] has no code for %s", prog->name, GetGraphicsBackendName());
@@ -124,8 +127,20 @@ void InvalidateProgramShader(const char* name) {
     if (!name) return;
     auto it = g_programShaders.find(name);
     if (it == g_programShaders.end()) return;
+    BatchFlush(); // queued draws still reference the old shader
+    DropPipelinesForShader(it->second.id);
     sg_destroy_shader(it->second);
     g_programShaders.erase(it);
+    // Re-resolve every live Shader built from this program so none keeps the dead handle.
+    const ProgramInfo* prog = FindProgramLive(name);
+    if (!prog) return;
+    const sg_shader fresh = ProgramShader(prog);
+    for (ShaderRec& sh : Shaders()) {
+        if (sh.alive && sh.program && std::strcmp(sh.program->name, name) == 0) {
+            sh.program = prog;
+            sh.shader = fresh;
+        }
+    }
 }
 
 std::vector<ShaderRec>& Shaders() {

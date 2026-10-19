@@ -251,6 +251,7 @@ struct GfxState {
     std::unordered_map<uint32_t, sg_sampler> samplers;
     // Pipelines keyed by a hash of every state that is baked into a sokol pipeline.
     std::unordered_map<uint64_t, sg_pipeline> pipelines;
+    std::unordered_map<uint64_t, uint32_t> pipelineShader; // pipeline hash -> sg_shader id it was built with
 
     unsigned int defaultShader = 0;
     unsigned int blitShader = 0;
@@ -300,6 +301,8 @@ struct PipelineKey {
 sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& descTemplate);
 // Cache lookup only; id 0 on a miss (lets callers skip building the template).
 sg_pipeline FindPipeline(const PipelineKey& key);
+// Destroys every cached pipeline built with sg_shader `shaderId` (call before destroying that shader).
+void DropPipelinesForShader(uint32_t shaderId);
 // Redundant-state filters for the hot draw path. Cache is dropped at every pass boundary.
 void ApplyPipelineCached(sg_pipeline pip);
 void ApplyBindingsCached(const sg_bindings& bind);

@@ -145,6 +145,12 @@ unsigned int CreatePendingTexture(const Image& source) {
     GfxState& g = Gfx();
     if (!g.initialized || !source.data || source.width <= 0 || source.height <= 0) return 0;
     const FormatMapping fm = MapFormat(source.format);
+    // GetPixelDataSize() returns 0 when the size does not fit an int: reject before copying anything.
+    if (GetPixelDataSize(source.width, source.height, source.format) <= 0 ||
+        (fm.convertTo >= 0 && GetPixelDataSize(source.width, source.height, fm.convertTo) <= 0)) {
+        TraceLog(LOG_WARNING, "TEXTURE: image %ix%i is too large", source.width, source.height);
+        return 0;
+    }
     Image img = source;
     Image converted{};
     if (fm.convertTo >= 0) {
@@ -208,6 +214,7 @@ void UnloadTexture(Texture2D texture) {
     if (texture.id == 0 || texture.id == Gfx().whiteTexture) return;
     TextureRec* t = GetTexture(texture.id);
     if (!t || t->attachment) return;
+    BatchFlush(); // queued draws may reference this id, which gets recycled
     DestroyTexture(texture.id);
 }
 

@@ -179,7 +179,8 @@ struct CP_TypeInfo {
     // Fields would be here in a full implementation
 };
 
-// Permissions (bitmask)
+// Permissions (bitmask). Declarative only today: the editor loads plugins
+// in-process with its own permissions and does not enforce these.
 typedef enum {
     CP_PERM_NONE       = 0,
     CP_PERM_MEMORY     = 1 << 0,  // Custom allocators

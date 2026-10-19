@@ -560,7 +560,25 @@ sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& tmpl) {
         TraceLog(LOG_WARNING, "RL: pipeline creation failed (shader %u)", key.shader);
     }
     g.pipelines[h] = p;
+    g.pipelineShader[h] = key.shader;
     return p;
+}
+
+void DropPipelinesForShader(uint32_t shaderId) {
+    GfxState& g = Gfx();
+    for (auto it = g.pipelineShader.begin(); it != g.pipelineShader.end();) {
+        if (it->second == shaderId) {
+            auto p = g.pipelines.find(it->first);
+            if (p != g.pipelines.end()) {
+                sg_destroy_pipeline(p->second);
+                g.pipelines.erase(p);
+            }
+            it = g.pipelineShader.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    ResetAppliedState();
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +798,7 @@ bool IsRenderTextureValid(RenderTexture2D target) {
 void UnloadRenderTexture(RenderTexture2D target) {
     GfxState& g = Gfx();
     if (!IsRenderTextureValid(target) || target.id == g.mainTarget) return;
+    BatchFlush(); // queued draws may sample this target's texture id, which gets recycled
     if (g.currentTarget == target.id) EndTextureMode();
     DestroyTarget(g.targets[target.id]);
     g.freeTargets.push_back(target.id);

@@ -3,6 +3,11 @@
  * 
  * Uses Unix domain sockets (Linux) / Named pipes (Windows) for message passing
  * between engine host and plugin processes.
+ *
+ * NOTE: nothing on the editor's plugin load path uses this today. The editor
+ * (NativeScriptHost) dlopen()s plugins in-process with the editor's own
+ * permissions; sandboxing, manifest permissions and identity validation only
+ * run in the flyplugin CLI/loader (and flyplugin run is a stub).
  */
 
 #ifndef PLUGIN_IPC_H

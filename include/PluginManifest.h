@@ -16,7 +16,7 @@
 
 typedef enum {
     PLUGIN_TYPE_UNKNOWN = 0,
-    PLUGIN_TYPE_NAT,    // Native C/C++ plugin (sandboxed process)
+    PLUGIN_TYPE_NAT,    // Native C/C++ plugin (the editor dlopen()s it in-process, unsandboxed)
     PLUGIN_TYPE_FPC,    // FPC script plugin (editor only)
     PLUGIN_TYPE_LIB,    // Static/dynamic library (in-process)
 } PluginType;
@@ -68,9 +68,9 @@ typedef struct {
         char* entry_point;         // e.g., "src/main.c"
         char** exports;            // Function names exported
         int exports_count;
-        char** permissions;        // Permission strings
+        char** permissions;        // Permission strings (parsed only; not enforced by the editor)
         int permissions_count;
-        struct {
+        struct {                   // Parsed only; used by flyplugin, not applied when the editor loads the plugin
             bool isolate_process;
             int max_memory_mb;
             bool allow_threads;
