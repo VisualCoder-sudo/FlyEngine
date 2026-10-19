@@ -193,7 +193,8 @@ enum FieldID {
     FIELD_WATER_FOAM_INTENSITY, FIELD_WATER_FOAM_SCALE, FIELD_WATER_FOAM_THRESHOLD,
     FIELD_WATER_DETAIL_INTENSITY, FIELD_WATER_DETAIL_SCALE,
     FIELD_WATER_REFLECT_STRENGTH, FIELD_WATER_REFLECT_DISTORTION,
-    FIELD_WATER_WAKE_STRENGTH, FIELD_WATER_SPLASH_STRENGTH, FIELD_WATER_FOAM_LIFE, FIELD_WATER_SPRAY_AMOUNT
+    FIELD_WATER_WAKE_STRENGTH, FIELD_WATER_SPLASH_STRENGTH, FIELD_WATER_FOAM_LIFE, FIELD_WATER_SPRAY_AMOUNT,
+    FIELD_WATER_UNDER_RANGE, FIELD_WATER_UNDER_MURK, FIELD_WATER_UNDER_DARKEN
 };
 
 constexpr float kScriptPanelHeaderH = 26.0f;
@@ -249,6 +250,7 @@ extern bool g_waterInteractOpen;
 extern bool g_waterNoiseOpen;
 extern bool g_waterReflectOpen;
 extern bool g_waterWakeOpen;
+extern bool g_waterUnderOpen;
 extern ScriptBuildState g_scriptBuildState;
 extern std::vector<ScriptDiagnostic> g_scriptDiagnostics;
 extern double g_scriptBuildStarted;

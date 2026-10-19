@@ -48,7 +48,7 @@ struct PostState {
     int fgLightLoc = -1, fgLightDirLoc = -1, fgMultiLoc = -1, fgFogLoc = -1, fgHazeLoc = -1, fgFogSunLoc = -1, fgFogAmbLoc = -1, fgParamsLoc = -1;
     int fgLightVPLoc = -1, fgDepthLoc = -1, fgShadowLoc = -1, fgExposureLoc = -1, fgCloudShadowLoc = -1, fgCloudShadowTexLoc = -1;
     Shader compositeShader{};
-    int cpCamDepthLoc = -1, cpTexelLoc = -1, cpParamsLoc = -1, cpSceneLoc = -1, cpDepthLoc = -1, cpFogLoc = -1;
+    int cpUnderLoc = -1, cpCamDepthLoc = -1, cpTexelLoc = -1, cpParamsLoc = -1, cpSceneLoc = -1, cpDepthLoc = -1, cpFogLoc = -1;
     int cpCloudTexelLoc = -1, cpCloudLoc = -1, cpOcclusionLoc = -1;
     RenderTexture2D ao{}, aoBlur{};     // half size (the fog target's size: the composite reads both the same way)
     Shader aoShader{}, aoBlurShader{};
@@ -455,6 +455,7 @@ void InitPostFX() {
 
     ps.compositeShader = LoadShaderProgram("post_composite");
     ps.cpCamDepthLoc = GetShaderLocation(ps.compositeShader, "camDepth");
+    ps.cpUnderLoc = GetShaderLocation(ps.compositeShader, "cpUnder");
     ps.cpTexelLoc = GetShaderLocation(ps.compositeShader, "cpTexel");
     ps.cpParamsLoc = GetShaderLocation(ps.compositeShader, "cpParams");
     ps.cpSceneLoc = GetShaderLocation(ps.compositeShader, "sceneTex");
@@ -554,6 +555,12 @@ void BeginScene(const Camera3D& camera) {
     ps.sceneActive = true;
 }
 
+namespace {
+struct UnderwaterView { Vector3 tint{}; float murk = 0.0f; } underwater;
+}
+
+void SetUnderwaterView(Vector3 tint, float murk) { underwater = { tint, murk }; }
+
 void EndScene() {
     if (!ps.sceneActive) return;
     EndTextureMode();
@@ -568,8 +575,10 @@ void EndScene() {
     if (fog) RenderFog();
     const bool ao = quality.ambientOcclusion && !ps.view.ortho;
     if (ao) RenderAO();
-    if (fog || ao || clouds.id != 0) {
+    const bool under = underwater.murk > 0.0f;
+    if (fog || ao || under || clouds.id != 0) {
         SetVec4(ps.compositeShader, ps.cpCamDepthLoc, ps.view.depth);
+        SetVec4(ps.compositeShader, ps.cpUnderLoc, { underwater.tint.x, underwater.tint.y, underwater.tint.z, underwater.murk });
         SetVec4(ps.compositeShader, ps.cpTexelLoc, { 1.0f / (float)ps.width, 1.0f / (float)ps.height,
                                                     1.0f / (float)ps.fog.texture.width, 1.0f / (float)ps.fog.texture.height });
         SetVec4(ps.compositeShader, ps.cpCloudTexelLoc, { clouds.id != 0 ? 1.0f / (float)clouds.width : 1.0f, clouds.id != 0 ? 1.0f / (float)clouds.height : 1.0f, 0.0f, 0.0f });
@@ -582,6 +591,7 @@ void EndScene() {
         Pass(ps.hdr, ps.compositeShader);
         src = ps.hdr.texture;
     }
+    underwater = {};
 
     if (ps.taa) src = ResolveTemporal(src);
     else ps.historyValid = false;

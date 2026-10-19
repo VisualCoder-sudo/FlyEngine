@@ -306,6 +306,7 @@ layout(binding=0) uniform fs_composite_params {
     vec4 cpTexel;       // xy = 1 / scene size, zw = 1 / fog size
     vec4 cpCloudTexel;  // xy = 1 / cloud target size
     vec4 cpParams;      // x = 1: fog, y = 1: clouds, z = how strongly ambient occlusion darkens (0 = off)
+    vec4 cpUnder;       // rgb = the water's colour when the camera is under water, w = its fog per metre (0 = not under water)
 };
 layout(binding=0) uniform texture2D sceneTex;
 layout(binding=0) uniform sampler sceneTex_smp;
@@ -363,6 +364,13 @@ void main() {
     if (cpParams.x > 0.5) {
         vec4 fog = AtDepth(fogTex, cpTexel.zw, d);
         c = c * fog.a + fog.rgb;
+    }
+    if (cpUnder.w > 0.0) {
+        // Under water: the view is filtered by, and fades into, the water's colour. The sky
+        // (nothing hit) is as far as it gets.
+        float dist = rawDepth < 0.999999 ? d : 1000.0;
+        float t = exp(-cpUnder.w * dist);
+        c = c * mix(vec3(1.0), cpUnder.rgb * 1.5 + 0.25, 1.0 - t) * t + cpUnder.rgb * (1.0 - t);
     }
     fragColor = vec4(c, 1.0);
 }

@@ -220,6 +220,7 @@ bool g_waterFoamOpen = true;
 bool g_waterDetailOpen = true;
 bool g_waterReflectOpen = true;
 bool g_waterWakeOpen = true;
+bool g_waterUnderOpen = true;
 
 // Screen rect of the currently active number field
 Rectangle g_activeFieldRect = { 0.0f, 0.0f, 0.0f, 0.0f };

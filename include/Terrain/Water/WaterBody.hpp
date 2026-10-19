@@ -45,6 +45,16 @@ public:
         float _pad = 0.0f;
     };
 
+    // What the camera sees while inside this water. The picture takes the water's
+    // colour and gets murkier and darker with depth below the surface. The effect
+    // only exists between the surface and `range` metres down, so a shallow puddle
+    // (small range) never tints a camera that is not actually in it.
+    struct UnderwaterParams {
+        float range = 12.0f;    // depth (m) below the surface the effect reaches; 0 = off
+        float murk = 0.12f;     // fog per metre of sight line: higher = less clarity
+        float darken = 0.7f;    // 0..1: how much darker it gets at the bottom of the range
+    };
+
     struct GridParams {
         int baseResolution = 64;
         int maxResolution = 256;
@@ -120,6 +130,9 @@ public:
 
     const ReflectionParams& GetReflectionParams() const { return reflection; }
     void SetReflectionParams(const ReflectionParams& p) { reflection = p; }
+
+    const UnderwaterParams& GetUnderwaterParams() const { return underwater; }
+    void SetUnderwaterParams(const UnderwaterParams& p) { underwater = p; }
 
     const GridParams& GetGridParams() const { return grid; }
     void SetGridParams(const GridParams& p) { grid = p; MarkMeshDirty(); }
@@ -277,6 +290,7 @@ private:
     DetailParams detail;
     ReflectionParams reflection;
     GridParams grid;
+    UnderwaterParams underwater;
 
     // Rendering
     Shader shader = { 0 };

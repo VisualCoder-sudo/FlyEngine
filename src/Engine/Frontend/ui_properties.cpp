@@ -658,6 +658,7 @@ static float PropertiesContentHeight() {
         h += group(g_waterDetailOpen, 2.0f);    // Surface detail: Intensity, Scale
         h += group(g_waterReflectOpen, 2.0f);   // Reflections: Strength, Distortion
         h += group(g_waterWakeOpen, 4.0f);      // Wake & spray: Wake, Splash, Foam life, Spray
+        h += group(g_waterUnderOpen, 3.0f);     // Underwater: Range, Murk, Darken
         h += 10.0f;
         return h;
     }
@@ -866,6 +867,22 @@ if (g_selection.size() > 1) {
             y += rowHeight;
             float valRD = r.distortion;
             if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_REFLECT_DISTORTION, valRD, "Distortion:", labelX)) { r.distortion = valRD; w->SetReflectionParams(r); }
+            y += rowHeight;
+        }
+        y += groupGap;
+
+        // Underwater (what the camera sees inside this water)
+        y = DrawGroupHeader(panelRec, y, "Underwater", g_waterUnderOpen, 111);
+        if (g_waterUnderOpen) {
+            WaterBody::UnderwaterParams u = w->GetUnderwaterParams();
+            float valUR = u.range;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_UNDER_RANGE, valUR, "Range (m):", labelX)) { u.range = std::max(0.0f, valUR); w->SetUnderwaterParams(u); }
+            y += rowHeight;
+            float valUM = u.murk;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_UNDER_MURK, valUM, "Murk:", labelX)) { u.murk = std::max(0.0f, valUM); w->SetUnderwaterParams(u); }
+            y += rowHeight;
+            float valUD = u.darken;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_WATER_UNDER_DARKEN, valUD, "Darken:", labelX)) { u.darken = std::clamp(valUD, 0.0f, 1.0f); w->SetUnderwaterParams(u); }
             y += rowHeight;
         }
         y += groupGap;

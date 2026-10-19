@@ -19,6 +19,10 @@ void BeginScene(const Camera3D& camera);
 void EndScene();
 bool IsSceneActive();
 
+// The camera is inside water this frame: `tint` is the water's colour (linear light, already
+// dimmed for depth), `murk` the fog per metre of sight line. Set before EndScene(); cleared by it.
+void SetUnderwaterView(Vector3 tint, float murk);
+
 // How much of the machine the picture may use. Not part of a scene: it is the
 // player's (or the editor user's) choice, see the Rendering preferences.
 struct RenderQuality {

@@ -267,6 +267,32 @@ void Engine::Draw() {
     if (onDrawOverlay3D) {
         onDrawOverlay3D();
     }
+    // Camera inside a water body: tint the picture with its colour, murkier and darker the
+    // deeper it is, but only within the body's underwater range below the surface.
+    {
+        float bestMurk = 0.0f;
+        for (WaterBody* water : WaterBody::GetInstances()) {
+            if (!water) continue;
+            const WaterBody::UnderwaterParams& uw = water->GetUnderwaterParams();
+            if (uw.range <= 0.0f || uw.murk <= 0.0f) continue;
+            const BoundingBox cb = { { camera.position.x - 0.01f, camera.position.y - 0.01f, camera.position.z - 0.01f },
+                                     { camera.position.x + 0.01f, camera.position.y + 0.01f, camera.position.z + 0.01f } };
+            if (!water->IntersectsXZ(cb)) continue;
+            const float depth = water->GetHeightAt(camera.position.x, camera.position.z) - camera.position.y;
+            if (depth <= 0.0f || depth >= uw.range) continue;
+            const float frac = depth / uw.range;
+            const float edge = std::min(1.0f, (1.0f - frac) * 8.0f);   // eases out over the last eighth of the range
+            const float fade = std::min(1.0f, depth * 4.0f);           // and in over the first quarter metre
+            const float murk = uw.murk * (0.5f + frac) * edge * fade;
+            if (murk <= bestMurk) continue;
+            bestMurk = murk;
+            const Vector3 sun = gfx::SunRadiance();
+            const float day = std::min(1.0f, std::max(sun.x, std::max(sun.y, sun.z)));
+            const float light = (0.12f + 0.45f * day) * (1.0f - std::clamp(uw.darken, 0.0f, 1.0f) * frac);
+            const Vector3 col = gfx::SrgbToLinear(water->GetBaseColor());
+            gfx::SetUnderwaterView({ col.x * light, col.y * light, col.z * light }, murk);
+        }
+    }
     gfx::EndScene();
     double pPost = GetTime();
 
