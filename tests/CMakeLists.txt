@@ -316,3 +316,8 @@ add_executable(numpad_enter_test numpad_enter_test.cpp)
 target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
 target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
 add_test(NAME numpad_enter COMMAND numpad_enter_test)
+
+# Windows/FlyCloud review pass: Windows command-line quoting, reserved exe names, FlyCloud helpers (offline). No window.
+add_executable(windows_cloud_test windows_cloud_test.cpp)
+target_link_libraries(windows_cloud_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME windows_cloud COMMAND windows_cloud_test)

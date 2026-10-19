@@ -3,6 +3,7 @@
 #include <string>
 #include <thread>
 #include <functional>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -34,13 +35,25 @@ public:
         const std::string& project_name_hint = ""
     ) {
         std::thread([=]() {
+            // One command at a time: two pushes would share (and delete) .temp_export.zip, and every command
+            // read-modify-writes fcloud_config.json.
+            std::unique_lock<std::mutex> busy(CommandMutex(), std::try_to_lock);
+            if (!busy.owns_lock()) {
+                on_log("! Another fcloud command is still running. Wait for it to finish.", true);
+                return;
+            }
             try {
                 std::vector<std::string> args = Tokenize(full_command);
                 if (args.empty() || args[0] != "fcloud") return;
 
                 std::string config_path = project_root + "/fcloud_config.json";
-                nlohmann::json cfg = LoadConfig(config_path);
-                std::string server_url = ConfigGetString(cfg, "server_url", DefaultServerUrl());
+                bool config_ok = true;
+                nlohmann::json cfg = LoadConfig(config_path, config_ok);
+                if (!config_ok) {
+                    on_log("✕ fcloud_config.json is not a valid JSON object. Fix or delete it, then retry (it was left untouched).", true);
+                    return;
+                }
+                std::string server_url = NormalizeServerUrl(ConfigGetString(cfg, "server_url", DefaultServerUrl()));
                 if (server_url.empty()) {
                     on_log("✕ No server configured. Set \"server_url\" in fcloud_config.json or the FLYENGINE_CLOUD_URL environment variable.", true);
                     return;
@@ -111,6 +124,10 @@ public:
             if (args.size() >= 2 && args[1] == "push") {
                 std::string msg = GetArgValue(args, "-m", "Auto-update build");
                 std::string version = GetArgValue(args, "-v", "");
+                if (!version.empty() && !IsValidVersion(version)) {
+                    on_log("✕ Usage: fcloud push -v <major.minor.patch> -m \"<message>\"", true);
+                    return;
+                }
 
                 if (!PreflightCheck(server_url, api_key, on_log)) return;
 
@@ -163,6 +180,51 @@ public:
     }
 
 private:
+    static std::mutex& CommandMutex() {
+        static std::mutex m;
+        return m;
+    }
+
+    // Collects a response body, refusing more than 8 MB: every reply this client expects is a small JSON
+    // object, so a bigger one is a broken or hostile server. Returning less than was offered aborts the
+    // transfer with CURLE_WRITE_ERROR.
+    static size_t WriteBody(char* ptr, size_t sz, size_t nm, void* userdata) {
+        constexpr size_t kMaxBody = 8u << 20;
+        std::string* data = static_cast<std::string*>(userdata);
+        const size_t n = sz * nm;
+        if (n > kMaxBody || data->size() > kMaxBody - n) return 0;
+        data->append(ptr, n);
+        return n;
+    }
+
+    // Trims blanks and trailing '/' so "https://host/" does not build "https://host//api/...".
+    static std::string NormalizeServerUrl(std::string url) {
+        auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+        while (!url.empty() && (blank(url.back()) || url.back() == '/')) url.pop_back();
+        size_t first = 0;
+        while (first < url.size() && blank(url[first])) ++first;
+        return url.substr(first);
+    }
+
+    static bool IsValidVersion(const std::string& v) {
+        return std::regex_match(v, std::regex(R"(\d+\.\d+\.\d+)"));
+    }
+
+    // Files that must never go into a push: hidden and import files, the config (plaintext API key, in any
+    // folder and any letter case) and private keys/certificates. Mirrors the export's exclusion list.
+    // `rel` uses '/' separators.
+    static bool IsUploadExcluded(const std::string& rel) {
+        std::string lower = rel;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (lower.rfind(".", 0) == 0 || lower.find(".import") != std::string::npos) return true;
+        const size_t slash = lower.find_last_of('/');
+        const std::string name = slash == std::string::npos ? lower : lower.substr(slash + 1);
+        if (name == "fcloud_config.json") return true;
+        const size_t dot = name.find_last_of('.');
+        const std::string ext = dot == std::string::npos ? std::string() : name.substr(dot);
+        return ext == ".pem" || ext == ".key";
+    }
+
     static void PrintHelp(LogCallback on_log) {
         on_log("FlyCloud Command Syntax:", false);
         on_log("  fcloud --help                           Print command usage", false);
@@ -250,10 +312,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-            data->append((char*)ptr, sz * nm);
-            return sz * nm;
-        });
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
         CURLcode res = curl_easy_perform(curl);
@@ -318,10 +377,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-            data->append((char*)ptr, sz * nm);
-            return sz * nm;
-        });
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
         if (curl_easy_perform(curl) == CURLE_OK) {
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -357,6 +413,7 @@ private:
         std::string response_buf;
         long http_code = 0;
 
+        CURLcode res = CURLE_FAILED_INIT;
         if (curl) {
             struct curl_slist* headers = curl_slist_append(NULL, ("Authorization: Bearer " + api_key).c_str());
             curl_easy_setopt(curl, CURLOPT_URL, (server_url + "/api/preflight").c_str());
@@ -364,20 +421,23 @@ private:
             curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);   // without it a server that accepts and stalls hangs the command forever
 
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-                data->append((char*)ptr, sz * nm);
-                return sz * nm;
-            });
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
-            if (curl_easy_perform(curl) == CURLE_OK) {
+            res = curl_easy_perform(curl);
+            if (res == CURLE_OK) {
                 curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
             }
             curl_slist_free_all(headers);
             curl_easy_cleanup(curl);
         }
 
+        if (res != CURLE_OK) {
+            on_log("✕ Server unreachable at " + server_url + " (" + curl_easy_strerror(res) + ").", true);
+            return;
+        }
         if (http_code == 200) {
             try {
                 auto data = nlohmann::json::parse(response_buf);
@@ -411,6 +471,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
         curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, void* userdata) -> size_t {
             (void)ptr; (void)userdata;
@@ -465,10 +526,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-            data->append((char*)ptr, sz * nm);
-            return sz * nm;
-        });
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
         CURLcode res = curl_easy_perform(curl);
@@ -560,8 +618,7 @@ private:
             if (!entry.is_regular_file()) continue;
             std::string path = entry.path().generic_string();
             std::string rel = std::filesystem::relative(entry.path(), project_root).generic_string();
-            if (rel.rfind(".", 0) == 0 || rel.find(".import") != std::string::npos) continue;
-            if (rel == "fcloud_config.json") continue;   // holds the plaintext API key: never upload it
+            if (IsUploadExcluded(rel)) continue;
             if (!mz_zip_writer_add_file(&zip, rel.c_str(), path.c_str(), NULL, 0, MZ_BEST_COMPRESSION)) {
                 zip_ok = false;
                 zip_failed = rel;
@@ -598,10 +655,7 @@ private:
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-                data->append((char*)ptr, sz * nm);
-                return sz * nm;
-            });
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
             perform_code = curl_easy_perform(curl);
@@ -758,10 +812,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-            data->append((char*)ptr, sz * nm);
-            return sz * nm;
-        });
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
         CURLcode res = curl_easy_perform(curl);
@@ -878,10 +929,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t sz, size_t nm, std::string* data) -> size_t {
-            data->append((char*)ptr, sz * nm);
-            return sz * nm;
-        });
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBody);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
 
         CURLcode res = curl_easy_perform(curl);
@@ -942,9 +990,19 @@ private:
         return "";
     }
 
-    static nlohmann::json LoadConfig(const std::string& path) {
-        if (!std::filesystem::exists(path)) return nlohmann::json::object();
-        try { std::ifstream f(path); return nlohmann::json::parse(f); } catch (...) { return nlohmann::json::object(); }
+    // A missing file is an empty config. A file that is not a JSON object sets ok=false so the caller stops
+    // instead of saving an empty config over what the user wrote.
+    static nlohmann::json LoadConfig(const std::string& path, bool& ok) {
+        ok = true;
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec)) return nlohmann::json::object();
+        try {
+            std::ifstream f(path);
+            nlohmann::json j = nlohmann::json::parse(f);
+            if (j.is_object()) return j;
+        } catch (...) {}
+        ok = false;
+        return nlohmann::json::object();
     }
 
     static std::string ConfigGetString(const nlohmann::json& cfg, const std::string& key, const std::string& def) {
@@ -960,9 +1018,18 @@ private:
         return c;
     }
 
+    // Written to a temp file and renamed over the config, so a failed write cannot truncate the API key away.
     static void SaveConfig(const std::string& path, const nlohmann::json& cfg) {
-        std::ofstream f(path);
-        f << cfg.dump(4);
+        const std::string tmp = path + ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::trunc);
+            f << cfg.dump(4);
+            f.flush();
+            if (!f.good()) { std::error_code ec; std::filesystem::remove(tmp, ec); return; }
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, path, ec);
+        if (ec) std::filesystem::remove(tmp, ec);
     }
 };
 
