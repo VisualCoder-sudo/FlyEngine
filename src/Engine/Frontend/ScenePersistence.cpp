@@ -281,7 +281,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
             }
             // Foliage rules ride along in their own sidecar. With none left, an old file must not outlive them.
             const std::string folFile = baseDir + "/foliage.cfg";
-            if (!foliage::SaveFile(folFile)) {
+            if (!foliage::SaveFile(folFile, baseDir)) {
                 std::error_code rmEc;
                 std::filesystem::remove(folFile, rmEc);
             }
@@ -816,7 +816,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 ui::LogAlways("[terrain] loaded %d BasicTerrain(s) from %s", loaded, btFile.c_str());
             }
             if (loaded > 0) {
-                const int planted = foliage::LoadFile(baseDir + "/foliage.cfg");
+                const int planted = foliage::LoadFile(baseDir + "/foliage.cfg", baseDir);
                 if (planted > 0) ui::LogAlways("[terrain] foliage rules restored for %d terrain(s)", planted);
             }
         }

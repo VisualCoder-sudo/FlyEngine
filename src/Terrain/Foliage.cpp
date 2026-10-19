@@ -4,6 +4,8 @@
 #include "../../include/Engine/Lighting.hpp"
 #include "../Engine/GraphicsInternal.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
+#include "../../include/Engine/Backend/FbxModel.hpp"
+#include "../../include/Engine/Backend/ModelImport.hpp"
 #include "raymath.h"
 #include <algorithm>
 #include <array>
@@ -12,6 +14,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <set>
@@ -31,10 +35,51 @@ const char* const kKindNames[(int)Kind::Count] = { "Grass", "Flowers", "Bush", "
 // How tall the unit mesh of each kind is at scale 1, in metres.
 const float kBaseHeight[(int)Kind::Count] = { 0.7f, 0.55f, 1.3f, 7.0f, 9.0f, 0.9f };
 
-bool CastsShadow(Kind k) { return k == Kind::Bush || k == Kind::Tree || k == Kind::Pine || k == Kind::Rock; }
+// The type registry: the built-in plants first (id == Kind), then the model types.
+std::vector<Type>& Types() {
+    static std::vector<Type> types = [] {
+        std::vector<Type> v;
+        for (int k = 0; k < (int)Kind::Count; k++) {
+            Type t;
+            t.name = kKindNames[k];
+            t.builtin = k;
+            t.height = kBaseHeight[k];
+            t.castsShadow = k == (int)Kind::Bush || k == (int)Kind::Tree || k == (int)Kind::Pine || k == (int)Kind::Rock;
+            v.push_back(t);
+        }
+        return v;
+    }();
+    return types;
+}
+int ClampType(int id) { return id >= 0 && id < (int)Types().size() ? id : 0; }
+const Type& TypeRef(int id) { return Types()[(size_t)ClampType(id)]; }
+int VariantCount(int id) { const Type& t = TypeRef(id); return t.builtin >= 0 ? 1 : std::max(1, (int)t.variants.size()); }
+
+bool CastsShadow(int type) { return TypeRef(type).castsShadow; }
+bool Thins(int type) { const int b = TypeRef(type).builtin; return b == (int)Kind::Grass || b == (int)Kind::Flowers; }   // blades, not solid shapes
+float TypeHeight(int type) { return TypeRef(type).height; }
 // Plants are placed and culled in squares: small for the dense low plants, big for the sparse tall ones.
-float CellSize(const Rule& r) { return r.kind == Kind::Grass || r.kind == Kind::Flowers ? 12.0f : 32.0f; }
-bool Thins(Kind k) { return k == Kind::Grass || k == Kind::Flowers; }   // blades, not solid shapes
+float CellSize(const Rule& r) { return Thins(r.type) || TypeHeight(r.type) < 1.0f ? 12.0f : 32.0f; }
+
+// Cumulative pick chances of a type's variants, ending at 1. All weights zero picks them evenly.
+std::vector<float> Cumulative(const Type& t) {
+    const size_t n = t.builtin >= 0 ? 1 : std::max<size_t>(1, t.variants.size());
+    auto weight = [&](size_t i) { return t.builtin >= 0 || i >= t.variants.size() ? 1.0f : std::max(0.0f, t.variants[i].weight); };
+    float total = 0.0f;
+    for (size_t i = 0; i < n; i++) total += weight(i);
+    std::vector<float> cum;
+    float run = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        run += total > 0.0f ? weight(i) / total : 1.0f / (float)n;
+        cum.push_back(run);
+    }
+    cum.back() = 1.0f;
+    return cum;
+}
+int PickVariant(const std::vector<float>& cum, float u) {
+    for (size_t i = 0; i < cum.size(); i++) if (u < cum[i]) return (int)i;
+    return (int)cum.size() - 1;
+}
 
 // ---- hashing ---------------------------------------------------------------
 
@@ -67,6 +112,7 @@ struct MeshBuilder {
     std::vector<float> pos, nrm, uv;
     std::vector<unsigned char> col;
     std::vector<unsigned short> idx;
+    bool twoSided = true;
 
     int Vertex(Vector3 p, Vector3 n, Color c, float sway) {
         n = Vector3Normalize(n);
@@ -77,9 +123,9 @@ struct MeshBuilder {
         return (int)pos.size() / 3 - 1;
     }
     void Tri(int a, int b, int c) {
-        if (idx.size() + 6 > 65000) return;
-        idx.insert(idx.end(), { (unsigned short)a, (unsigned short)b, (unsigned short)c,
-                                (unsigned short)a, (unsigned short)c, (unsigned short)b });
+        if (a > 65535 || b > 65535 || c > 65535) return;   // indices are 16 bit
+        idx.insert(idx.end(), { (unsigned short)a, (unsigned short)b, (unsigned short)c });
+        if (twoSided) idx.insert(idx.end(), { (unsigned short)a, (unsigned short)c, (unsigned short)b });
     }
     void Quad(int a, int b, int c, int d) { Tri(a, b, c); Tri(a, c, d); }
 
@@ -216,8 +262,6 @@ void AddCone(MeshBuilder& mb, float y0, float height, float radius, int sides, C
 }
 
 constexpr int kLods = 3;
-Mesh g_mesh[(int)Kind::Count][kLods];   // each kind at full detail, about half and the barest silhouette
-bool g_meshReady = false;
 Texture2D g_white = {};
 
 // The mesh of one kind at one level of detail (0 = full). Farther levels use fewer, bigger parts, so a far field keeps
@@ -292,27 +336,186 @@ Mesh BuildMesh(Kind kind, int lod) {
     return mb.Build();
 }
 
-void BuildMeshes() {
-    if (g_meshReady) return;
-    g_meshReady = true;
-    for (int k = 0; k < (int)Kind::Count; k++)
-        for (int l = 0; l < kLods; l++) g_mesh[k][l] = BuildMesh((Kind)k, l);
+// ---- model types -----------------------------------------------------------
 
+bool LoadModelFile(const std::string& path, Model& out) {
+    out = {};
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext == ".fbx") {
+        if (!LoadFBXIntoModel(path, out)) { out = {}; return false; }
+    } else {
+        out = LoadModel(path.c_str());
+    }
+    if (out.meshCount <= 0 || !out.meshes) {
+        if (out.meshes) UnloadModel(out);
+        out = {};
+        return false;
+    }
+    return true;
+}
+
+// A stand-in drawn where a model cannot be loaded: a lumpy purple boulder one metre tall.
+Mesh BuildPlaceholder(bool twoSided) {
+    MeshBuilder mb;
+    mb.twoSided = twoSided;
+    AddBlob(mb, { 0.0f, 0.5f, 0.0f }, { 0.4f, 0.5f, 0.4f }, 1, 0.2f, 17, { 90, 40, 100, 255 }, { 190, 100, 200, 255 }, 0.0f, 0.0f);
+    return mb.Build();
+}
+
+// Reads a model file into one mesh a metre tall, rooted at the origin: every sub-mesh is merged, the model is stood on
+// y = 0 and centred over the origin, and its colours come from the vertex colours, the material colour and (sampled per
+// vertex) the diffuse texture. Plants are drawn untextured, so this is where a model gets its look. `ok` says whether it
+// loaded; if not a placeholder comes back.
+Mesh BuildModelMesh(const Type& type, const Variant& variant, bool& ok) {
+    ok = false;
+    Model model;
+    if (variant.model.empty() || !LoadModelFile(variant.model, model)) {
+        TraceLog(LOG_WARNING, "FOLIAGE: could not load model %s", variant.model.c_str());
+        return BuildPlaceholder(type.twoSided);
+    }
+
+    std::vector<Vector3> P, N;
+    std::vector<Color> C;
+    std::vector<int> tris;
+    std::map<unsigned, Image> images;   // diffuse textures read back to the CPU, by GL id
+    for (int mi = 0; mi < model.meshCount; mi++) {
+        const Mesh& m = model.meshes[mi];
+        if (!m.vertices || m.vertexCount <= 0) continue;
+        if (P.size() + (size_t)m.vertexCount > 65535) {
+            TraceLog(LOG_WARNING, "FOLIAGE: %s has more than 65535 vertices; the rest is left out", variant.model.c_str());
+            break;
+        }
+        const int mat = model.meshMaterial ? model.meshMaterial[mi] : 0;
+        const Material* material = model.materials && mat >= 0 && mat < model.materialCount ? &model.materials[mat] : nullptr;
+        const Color matColor = material ? material->maps[MATERIAL_MAP_DIFFUSE].color : WHITE;
+        const Image* img = nullptr;
+        if (material && m.texcoords && material->maps[MATERIAL_MAP_DIFFUSE].texture.id > 0) {
+            const unsigned id = material->maps[MATERIAL_MAP_DIFFUSE].texture.id;
+            auto it = images.find(id);
+            if (it == images.end()) it = images.emplace(id, LoadImageFromTexture(material->maps[MATERIAL_MAP_DIFFUSE].texture)).first;
+            if (it->second.data) img = &it->second;
+        }
+        const int base = (int)P.size();
+        for (int i = 0; i < m.vertexCount; i++) {
+            P.push_back(Vector3Transform({ m.vertices[i * 3], m.vertices[i * 3 + 1], m.vertices[i * 3 + 2] }, model.transform));
+            N.push_back(m.normals ? Vector3{ m.normals[i * 3], m.normals[i * 3 + 1], m.normals[i * 3 + 2] } : Vector3{ 0.0f, 0.0f, 0.0f });
+            float r = matColor.r / 255.0f, g = matColor.g / 255.0f, b = matColor.b / 255.0f;
+            if (m.colors) { r *= m.colors[i * 4] / 255.0f; g *= m.colors[i * 4 + 1] / 255.0f; b *= m.colors[i * 4 + 2] / 255.0f; }
+            if (img) {
+                float u = m.texcoords[i * 2], v = m.texcoords[i * 2 + 1];
+                u -= std::floor(u); v -= std::floor(v);
+                const Color t = GetImageColor(*img, std::min(img->width - 1, (int)(u * (float)img->width)), std::min(img->height - 1, (int)(v * (float)img->height)));
+                r *= t.r / 255.0f; g *= t.g / 255.0f; b *= t.b / 255.0f;
+            }
+            C.push_back({ (unsigned char)(Clamp(r, 0.0f, 1.0f) * 255.0f), (unsigned char)(Clamp(g, 0.0f, 1.0f) * 255.0f), (unsigned char)(Clamp(b, 0.0f, 1.0f) * 255.0f), 255 });
+        }
+        const int triCount = m.indices ? m.triangleCount : m.vertexCount / 3;
+        const size_t firstTri = tris.size();
+        for (int t = 0; t < triCount * 3; t++) tris.push_back(base + (m.indices ? (int)m.indices[t] : t));
+        if (!m.normals) {   // no normals in the file: flat ones from the faces
+            for (size_t t = firstTri; t + 2 < tris.size(); t += 3) {
+                const Vector3 n = Vector3CrossProduct(Vector3Subtract(P[(size_t)tris[t + 1]], P[(size_t)tris[t]]), Vector3Subtract(P[(size_t)tris[t + 2]], P[(size_t)tris[t]]));
+                for (size_t k = 0; k < 3; k++) N[(size_t)tris[t + k]] = Vector3Add(N[(size_t)tris[t + k]], n);
+            }
+        }
+    }
+    for (auto& [id, image] : images) UnloadImage(image);
+    UnloadModel(model);
+    if (P.empty() || tris.empty()) return BuildPlaceholder(type.twoSided);
+
+    Vector3 lo = P[0], hi = P[0];
+    for (const Vector3& p : P) { lo = Vector3Min(lo, p); hi = Vector3Max(hi, p); }
+    float height = hi.y - lo.y;
+    if (height < 1e-4f) height = std::max(hi.x - lo.x, hi.z - lo.z);
+    if (height < 1e-4f) height = 1.0f;
+    const float inv = 1.0f / height, cx = (lo.x + hi.x) * 0.5f, cz = (lo.z + hi.z) * 0.5f;
+
+    MeshBuilder mb;
+    mb.twoSided = type.twoSided;
+    for (size_t i = 0; i < P.size(); i++) {
+        const Vector3 p = { (P[i].x - cx) * inv, (P[i].y - lo.y) * inv, (P[i].z - cz) * inv };
+        mb.Vertex(p, Vector3Length(N[i]) > 1e-6f ? N[i] : Vector3{ 0.0f, 1.0f, 0.0f }, C[i], type.wind ? p.y : 0.0f);
+    }
+    for (size_t t = 0; t + 2 < tris.size(); t += 3) mb.Tri(tris[t], tris[t + 1], tris[t + 2]);
+    ok = true;
+    return mb.Build();
+}
+
+// ---- meshes on the GPU, per type ------------------------------------------
+
+struct TypeGpu {
+    bool ready = false;
+    bool ownLods = false;                             // built-ins have a mesh per level of detail; models share one
+    std::vector<std::array<Mesh, kLods>> meshes;      // [variant][lod]
+    std::vector<bool> loaded;
+};
+
+std::vector<TypeGpu>& Gpu() { static std::vector<TypeGpu> g; return g; }
+
+void EnsureWhite() {
+    if (g_white.id != 0) return;
     Image white = GenImageColor(2, 2, WHITE);
     g_white = LoadTextureFromImage(white);
     UnloadImage(white);
 }
 
+void FreeTypeGpu(int id) {
+    auto& g = Gpu();
+    if (id < 0 || id >= (int)g.size() || !g[(size_t)id].ready) return;
+    TypeGpu& tg = g[(size_t)id];
+    for (auto& v : tg.meshes)
+        for (size_t l = 0; l < (size_t)kLods; l++)
+            if (tg.ownLods || l == 0) { UnloadMesh(v[l]); v[l] = {}; }
+    tg = TypeGpu{};
+}
+
+TypeGpu& EnsureType(int id) {
+    id = ClampType(id);
+    auto& g = Gpu();
+    if (g.size() < Types().size()) g.resize(Types().size());
+    TypeGpu& tg = g[(size_t)id];
+    if (tg.ready) return tg;
+    const Type& ty = Types()[(size_t)id];
+    tg.ready = true;
+    tg.ownLods = ty.builtin >= 0;
+    const int n = VariantCount(id);
+    tg.meshes.resize((size_t)n);
+    tg.loaded.assign((size_t)n, true);
+    for (size_t v = 0; v < (size_t)n; v++) {
+        if (ty.builtin >= 0) {
+            for (size_t l = 0; l < (size_t)kLods; l++) tg.meshes[v][l] = BuildMesh((Kind)ty.builtin, (int)l);
+        } else {
+            bool ok = false;
+            const Mesh m = v < ty.variants.size() ? BuildModelMesh(ty, ty.variants[v], ok) : BuildPlaceholder(ty.twoSided);
+            tg.loaded[v] = ok;
+            for (size_t l = 0; l < (size_t)kLods; l++) tg.meshes[v][l] = m;   // no simplified levels yet: all share the full mesh
+        }
+    }
+    return tg;
+}
+
 // ---- settings and caches ---------------------------------------------------
 
-struct Cell {
+// The plants of one model variant in a cell: one instance buffer, one draw call.
+struct Sub {
     unsigned vbo = 0;
     int count = 0;
+    std::vector<float> rank;           // each plant's fade rank, ascending (the instances are in this order)
+};
+
+struct Cell {
+    std::vector<Sub> subs;             // one per variant of the rule's type
+    int count = 0;                     // all variants together
     Vector2 min{}, max{};
     float top = 0.0f, bottom = 0.0f;   // the ground's lowest and highest plant, for culling
     float builtRank = 2.0f;            // only plants ranked below this were placed (far cells keep just the ones that survive the fade)
-    std::vector<float> rank;           // each plant's fade rank, ascending (the instances are in this order)
 };
+
+void ReleaseCell(Cell& cell) {
+    for (Sub& s : cell.subs) if (s.vbo) gfx::DestroyInstanceBuffer(s.vbo);
+    cell.subs.clear();
+}
 
 // Plants are given a rank in [0, kRankMax]; at distance d a plant stays while its rank is below this threshold, so the
 // ones with the lowest ranks last longest. The shader tests the same thing per instance.
@@ -345,14 +548,14 @@ int64_t CellKey(int cx, int cz) { return ((int64_t)cx << 32) ^ (int64_t)(uint32_
 
 void FreeCells(TerrainState& st) {
     for (auto& map : st.cells)
-        for (auto& [key, cell] : map) if (cell.vbo) gfx::DestroyInstanceBuffer(cell.vbo);
+        for (auto& [key, cell] : map) ReleaseCell(cell);
     st.cells.clear();
     st.dirty.clear();
     g_instances = 0;
     for (auto& [t, s] : StateMap()) for (auto& map : s.cells) for (auto& [k, c] : map) g_instances += c.count;
 }
 
-struct Plant { Vector3 pos; float scale; float yaw; float tintT; float heightVar; float rank; };
+struct Plant { Vector3 pos; float scale; float yaw; float tintT; float heightVar; float rank; int variant; };
 
 float Signature(const BasicTerrain& t) {
     return t.position.x * 1.3f + t.position.y * 2.9f + t.position.z * 4.1f + (float)t.GetWidth() * 0.37f + (float)t.GetDepth() * 0.73f + t.GetScale() * 5.3f;
@@ -365,7 +568,8 @@ void ScatterCell(const BasicTerrain& t, const Rule& r, int cx, int cz, float den
     if (x0 > t.position.x + halfW || x0 + kCell < t.position.x - halfW || z0 > t.position.z + halfD || z0 + kCell < t.position.z - halfD) return;
     const int want = std::min(kMaxPerCell, (int)std::lround(r.density * densityScale / 100.0f * kCell * kCell));
     if (want <= 0 || (r.painted && !r.mask)) return;
-    Rng rng(Mix(Mix((uint32_t)r.seed * 7919u + (uint32_t)r.kind, (uint32_t)cx), (uint32_t)cz));
+    Rng rng(Mix(Mix((uint32_t)r.seed * 7919u + (uint32_t)ClampType(r.type), (uint32_t)cx), (uint32_t)cz));
+    const std::vector<float> cum = Cumulative(TypeRef(r.type));
     const uint8_t* splat = t.GetSplatData();
     const int sw = t.GetSplatWidth(), sd = t.GetSplatDepth();
     const float extentX = t.GetWidth() * t.GetScale(), extentZ = t.GetDepth() * t.GetScale();
@@ -397,18 +601,20 @@ void ScatterCell(const BasicTerrain& t, const Rule& r, int cx, int cz, float den
         p.heightVar = 0.85f + 0.3f * hv;
         uint32_t xb, zb;
         std::memcpy(&xb, &x, 4); std::memcpy(&zb, &z, 4);
-        p.rank = (float)(Mix(xb, zb) & 0xffffff) / 16777216.0f * kRankMax;
+        const uint32_t placeHash = Mix(xb, zb);
+        p.rank = (float)(placeHash & 0xffffff) / 16777216.0f * kRankMax;
+        p.variant = cum.size() > 1 ? PickVariant(cum, (float)(Hash(placeHash ^ 0x68e31da4u) & 0xffffff) / 16777216.0f) : 0;
         if (p.rank >= maxRank) continue;
         out.push_back(p);
     }
 }
 
 Matrix PlantMatrix(const Rule& r, const Plant& p) {
-    const float base = kBaseHeight[(int)r.kind] * p.scale;
-    const bool grassy = Thins(r.kind);
+    const float base = TypeHeight(r.type) * p.scale;
+    const bool grassy = Thins(r.type);
     const float width = grassy ? p.scale * 0.9f : base;
     const Vector3 scale = { width, grassy ? base * p.heightVar : base, width };
-    Matrix m = gfx::ComposeTRS(scale, MatrixRotateY(p.yaw), p.pos);
+    Matrix m = gfx::ComposeTRS(scale, MatrixRotateY(p.yaw), { p.pos.x, p.pos.y - TypeRef(r.type).sink * p.scale, p.pos.z });
     const Color tint = LerpColor(r.tintA, r.tintB, p.tintT);
     m.m3 = tint.r / 255.0f; m.m7 = tint.g / 255.0f; m.m11 = tint.b / 255.0f; m.m15 = p.rank;   // tint and fade rank ride in the w of the columns
     return m;
@@ -422,21 +628,25 @@ void BuildCell(const BasicTerrain& t, const Rule& r, float densityScale, int cx,
     cell.builtRank = maxRank;
     cell.min = { (float)cx * kCell, (float)cz * kCell };
     cell.max = { cell.min.x + kCell, cell.min.y + kCell };
-    cell.count = (int)plants.size();
+    cell.count = 0;
     if (plants.empty()) return;
-    std::vector<Matrix> xf;
-    xf.reserve(plants.size());
+    const size_t variants = (size_t)VariantCount(r.type);
+    std::vector<std::vector<Matrix>> xf(variants);
+    cell.subs.assign(variants, Sub{});
     cell.bottom = 1e9f; cell.top = -1e9f;
-    cell.rank.clear();
-    cell.rank.reserve(plants.size());
-    for (const Plant& p : plants) {
-        xf.push_back(PlantMatrix(r, p));
-        cell.rank.push_back(p.rank);
+    for (const Plant& p : plants) {   // ranks ascend, so each variant's instances do too
+        const size_t v = std::min((size_t)std::max(p.variant, 0), variants - 1);
+        xf[v].push_back(PlantMatrix(r, p));
+        cell.subs[v].rank.push_back(p.rank);
         cell.bottom = std::min(cell.bottom, p.pos.y);
-        cell.top = std::max(cell.top, p.pos.y + kBaseHeight[(int)r.kind] * p.scale);
+        cell.top = std::max(cell.top, p.pos.y + TypeHeight(r.type) * p.scale);
     }
-    cell.vbo = gfx::CreateInstanceBuffer(xf);
-    if (!cell.vbo) cell.count = 0;
+    for (size_t v = 0; v < variants; v++) {
+        if (xf[v].empty()) continue;
+        cell.subs[v].vbo = gfx::CreateInstanceBuffer(xf[v]);
+        if (cell.subs[v].vbo) cell.subs[v].count = (int)xf[v].size();
+        cell.count += cell.subs[v].count;
+    }
 }
 
 // Is any of the cell inside the view? A cone round the view direction, wide enough for the whole frame.
@@ -481,14 +691,14 @@ bool KindFromName(const char* name, Kind& out) {
 
 bool SameRule(const Rule& a, const Rule& b) {
     auto same = [](Color x, Color y) { return x.r == y.r && x.g == y.g && x.b == y.b; };
-    return a.kind == b.kind && a.enabled == b.enabled && a.layer == b.layer && a.minWeight == b.minWeight && a.density == b.density &&
+    return a.type == b.type && a.enabled == b.enabled && a.layer == b.layer && a.minWeight == b.minWeight && a.density == b.density &&
            a.minScale == b.minScale && a.maxScale == b.maxScale && a.maxSlope == b.maxSlope && a.minAltitude == b.minAltitude &&
            a.maxAltitude == b.maxAltitude && a.viewDistance == b.viewDistance && a.seed == b.seed && same(a.tintA, b.tintA) && same(a.tintB, b.tintB) && a.painted == b.painted;
 }
 
 Rule DefaultRule(Kind kind) {
     Rule r;
-    r.kind = kind;
+    r.type = (int)kind;
     switch (kind) {
         case Kind::Grass:   r.density = 600.0f; r.minScale = 0.7f; r.maxScale = 1.3f; r.maxSlope = 40.0f; r.viewDistance = 250.0f;
                             r.tintA = { 255, 255, 235, 255 }; r.tintB = { 215, 255, 200, 255 }; r.fadeStart = 0.2f; r.farKeep = 0.1f; break;
@@ -505,6 +715,59 @@ Rule DefaultRule(Kind kind) {
         default: break;
     }
     return r;
+}
+
+Rule DefaultRuleForType(int type) {
+    type = ClampType(type);
+    const Type& ty = TypeRef(type);
+    if (ty.builtin >= 0) return DefaultRule((Kind)ty.builtin);
+    // A model: start from the built-in plant of about its size.
+    Rule r = DefaultRule(ty.height > 2.5f ? Kind::Tree : (ty.height > 0.8f ? Kind::Bush : Kind::Flowers));
+    r.type = type;
+    r.seed = 10 + type;
+    r.tintA = r.tintB = { 255, 255, 255, 255 };
+    r.viewDistance = Clamp(ty.height * 80.0f, 60.0f, 600.0f);
+    return r;
+}
+
+// ---- types -----------------------------------------------------------------
+
+int TypeCount() { return (int)Types().size(); }
+Type& TypeAt(int id) { return Types()[(size_t)ClampType(id)]; }
+
+int FindType(const std::string& name) {
+    const auto& types = Types();
+    for (size_t i = 0; i < types.size(); i++) if (types[i].name == name) return (int)i;
+    return -1;
+}
+
+void TypeChanged(int id, bool remesh) {
+    if (remesh) FreeTypeGpu(ClampType(id));
+    for (auto& [t, st] : StateMap()) FreeCells(st);
+}
+
+int AddType(const Type& type) {
+    Type t = type;
+    t.builtin = -1;
+    if (t.name.empty()) t.name = "Plant";
+    int id = FindType(t.name);
+    if (id >= 0 && id < kBuiltinTypes) { t.name += " (model)"; id = FindType(t.name); }
+    if (id >= 0) { Types()[(size_t)id] = t; TypeChanged(id); return id; }
+    Types().push_back(t);
+    return (int)Types().size() - 1;
+}
+
+int TypeTriangles(int id, int lod, int variant) {
+    if (ClampType(id) != id) return 0;
+    TypeGpu& tg = EnsureType(id);
+    if (variant < 0 || variant >= (int)tg.meshes.size()) return 0;
+    return tg.meshes[(size_t)variant][(size_t)std::clamp(lod, 0, kLods - 1)].triangleCount;
+}
+
+bool TypeVariantLoaded(int id, int variant) {
+    if (ClampType(id) != id) return false;
+    TypeGpu& tg = EnsureType(id);
+    return variant >= 0 && variant < (int)tg.loaded.size() && tg.loaded[(size_t)variant];
 }
 
 Settings& For(BasicTerrain* terrain) { return SettingsMap()[terrain]; }
@@ -575,7 +838,7 @@ void DropCells(const BasicTerrain* t, int rule, float x0, float z0, float x1, fl
         for (int cx = (int)std::floor(x0 / kCell); cx <= (int)std::floor(x1 / kCell); cx++) {
             auto it = cells.find(CellKey(cx, cz));
             if (it == cells.end()) continue;
-            if (it->second.vbo) gfx::DestroyInstanceBuffer(it->second.vbo);
+            ReleaseCell(it->second);
             g_instances -= it->second.count;
             cells.erase(it);
         }
@@ -632,7 +895,7 @@ void FillMask(BasicTerrain* t, int rule, bool filled) {
 
 void Draw(const Camera3D& camera, bool shadowPass) {
     if (SettingsMap().empty() || !gfx::detail::ShapeInstancedReady() || gfx::IsInReflectionPass()) return;
-    BuildMeshes();
+    EnsureWhite();
     if (g_white.id == 0) return;
 
     Material& mat = gfx::detail::ShapeInstancedMaterial();
@@ -683,14 +946,14 @@ void Draw(const Camera3D& camera, bool shadowPass) {
         for (size_t ri = 0; ri < set.rules.size(); ri++) {
             const Rule& r = set.rules[ri];
             if (!r.enabled || r.density <= 0.0f) continue;
-            if (shadowPass && !CastsShadow(r.kind)) continue;
+            if (shadowPass && !CastsShadow(r.type)) continue;
             const float kCell = CellSize(r);
             const float full = r.viewDistance * set.distance;
             const float range = shadowPass ? std::min(full, 90.0f) : full;
             auto& cells = st.cells[ri];
             if (g_fadeLoc >= 0 && g_camLoc >= 0) {
                 const Vector4 fade = { Clamp(r.fadeStart, 0.0f, 0.98f) * range, range, r.farKeep, 1.0f };
-                const Vector4 cam = { camera.position.x, camera.position.z, Thins(r.kind) ? 2.2f : 1.0f, 0.0f };   // z: how much the thinning plants grow to hold the ground
+                const Vector4 cam = { camera.position.x, camera.position.z, Thins(r.type) ? 2.2f : 1.0f, 0.0f };   // z: how much the thinning plants grow to hold the ground
                 SetShaderValue(mat.shader, g_fadeLoc, &fade, SHADER_UNIFORM_VEC4);
                 SetShaderValue(mat.shader, g_camLoc, &cam, SHADER_UNIFORM_VEC4);
                 fadeSet = true;
@@ -705,7 +968,7 @@ void Draw(const Camera3D& camera, bool shadowPass) {
                     d = st.dirty.erase(d);
                     const float dist = DistanceToRect(camera, (float)cx * kCell, (float)cz * kCell, kCell);
                     Cell& cell = cells[CellKey(cx, cz)];
-                    if (cell.vbo) gfx::DestroyInstanceBuffer(cell.vbo);
+                    ReleaseCell(cell);
                     g_instances -= cell.count;
                     cell = Cell{};
                     if (dist > range) { cells.erase(CellKey(cx, cz)); continue; }
@@ -727,34 +990,39 @@ void Draw(const Camera3D& camera, bool shadowPass) {
                         Cell probe;
                         probe.min = { (float)cx * kCell, (float)cz * kCell };
                         probe.max = { probe.min.x + kCell, probe.min.y + kCell };
-                        probe.bottom = t->position.y + t->GetMinHeight(); probe.top = t->position.y + t->GetMaxHeight() + kBaseHeight[(int)r.kind] * r.maxScale;
+                        probe.bottom = t->position.y + t->GetMinHeight(); probe.top = t->position.y + t->GetMaxHeight() + TypeHeight(r.type) * r.maxScale;
                         if (CellInView(camera, probe, fwd.x, fwd.y, fwd.z, tanHalf) || dist <= kCell) todo.push_back({ dist, cx, cz });
                     }
                     if (it == cells.end()) continue;
                     Cell& cell = it->second;
-                    if (cell.count <= 0 || !cell.vbo) continue;
+                    if (cell.count <= 0) continue;
                     if (!shadowPass && !CellInView(camera, cell, fwd.x, fwd.y, fwd.z, tanHalf)) continue;   // nothing behind or beside you is drawn
                     // Only the plants that survive the fade at the cell's nearest edge (they come first); the shader
                     // fades each one at its own distance.
                     const float keepBelow = RankThreshold(r, DistanceToCell(camera, cell), range);
-                    const int n = (int)(std::lower_bound(cell.rank.begin(), cell.rank.end(), keepBelow) - cell.rank.begin());
-                    if (n <= 0) continue;
                     // Farther cells use a lower-detail mesh (the distances are the rule's, as shares of its draw distance).
                     const float cellDist = DistanceToCell(camera, cell);
                     const int lod = cellDist >= r.lod2 * range ? 2 : (cellDist >= r.lod1 * range ? 1 : 0);
-                    const Mesh& mesh = g_mesh[(int)r.kind][lod];
-                    DrawMeshInstancedBuffer(mesh, mat, cell.vbo, n);
-                    gfx::IncrementDrawCallCount(1);
-                    gfx::AddMeshCount(1);
-                    gfx::AddTriangleCount(mesh.triangleCount * n);
-                    if (!shadowPass) g_drawn += n;
+                    const TypeGpu& gpu = EnsureType(r.type);
+                    for (size_t v = 0; v < cell.subs.size() && v < gpu.meshes.size(); v++) {
+                        const Sub& sub = cell.subs[v];
+                        if (!sub.vbo) continue;
+                        const int n = (int)(std::lower_bound(sub.rank.begin(), sub.rank.end(), keepBelow) - sub.rank.begin());
+                        if (n <= 0) continue;
+                        const Mesh& mesh = gpu.meshes[v][(size_t)lod];
+                        DrawMeshInstancedBuffer(mesh, mat, sub.vbo, n);
+                        gfx::IncrementDrawCallCount(1);
+                        gfx::AddMeshCount(1);
+                        gfx::AddTriangleCount(mesh.triangleCount * n);
+                        if (!shadowPass) g_drawn += n;
+                    }
                 }
             }
             std::sort(todo.begin(), todo.end(), [](const Todo& a, const Todo& b) { return a.dist < b.dist; });
             for (const Todo& job : todo) {
                 if (builds >= 1 && GetTime() - now > kBuildSeconds) break;
                 Cell& cell = cells[CellKey(job.cx, job.cz)];
-                if (cell.vbo) gfx::DestroyInstanceBuffer(cell.vbo);
+                ReleaseCell(cell);
                 g_instances -= cell.count;
                 cell = Cell{};
                 BuildCell(*t, r, set.density, job.cx, job.cz, std::min(RankThreshold(r, job.dist, range) + 0.35f, 2.0f), cell);
@@ -765,7 +1033,7 @@ void Draw(const Camera3D& camera, bool shadowPass) {
             // Free what the camera has left far behind.
             for (auto it = cells.begin(); it != cells.end();) {
                 if (DistanceToCell(camera, it->second) > range * 1.4f + kCell) {
-                    if (it->second.vbo) gfx::DestroyInstanceBuffer(it->second.vbo);
+                    ReleaseCell(it->second);
                     g_instances -= it->second.count;
                     it = cells.erase(it);
                 } else ++it;
@@ -787,10 +1055,7 @@ void Shutdown() {
     for (auto& [t, st] : StateMap()) FreeCells(st);
     StateMap().clear();
     SettingsMap().clear();
-    if (g_meshReady) {
-        for (auto& kind : g_mesh) for (Mesh& m : kind) { UnloadMesh(m); m = {}; }
-        g_meshReady = false;
-    }
+    for (size_t i = 0; i < Gpu().size(); i++) FreeTypeGpu((int)i);
     if (g_white.id) { UnloadTexture(g_white); g_white = {}; }
     g_instances = g_drawn = 0;
     g_windLoc = -2;
@@ -798,26 +1063,37 @@ void Shutdown() {
     g_camLoc = -2;
 }
 
-int MeshTriangles(Kind kind, int lod) {
-    BuildMeshes();
-    return g_mesh[(int)kind][std::clamp(lod, 0, kLods - 1)].triangleCount;
-}
+int MeshTriangles(Kind kind, int lod) { return TypeTriangles((int)kind, lod); }
 
 int InstanceCount() { return g_instances; }
 int DrawnCount() { return g_drawn; }
 
 // ---- persistence -----------------------------------------------------------
 
-bool Write(std::ostream& out) {
+bool Write(std::ostream& out, const std::string& baseDir) {
     const auto& terrains = BasicTerrain::GetInstances();
-    out << "FOLIAGE 3\n";
+    out << "FOLIAGE 4\n";
+    // The model types the rules use come first, so a rule can name them.
+    std::set<int> used;
+    for (const BasicTerrain* t : terrains) {
+        auto it = SettingsMap().find(t);
+        if (it == SettingsMap().end()) continue;
+        for (const Rule& r : it->second.rules) if (TypeRef(r.type).builtin < 0) used.insert(ClampType(r.type));
+    }
+    for (int id : used) {
+        const Type& ty = TypeRef(id);
+        out << "TYPE " << std::quoted(ty.name) << ' ' << ty.height << ' ' << (ty.castsShadow ? 1 : 0) << ' ' << (ty.wind ? 1 : 0) << ' '
+            << (ty.twoSided ? 1 : 0) << ' ' << ty.sink << ' ' << ty.variants.size();
+        for (const Variant& v : ty.variants) out << ' ' << std::quoted(PathRelativeTo(v.model, baseDir)) << ' ' << v.weight;
+        out << '\n';
+    }
     for (size_t i = 0; i < terrains.size(); i++) {
         auto it = SettingsMap().find(terrains[i]);
         if (it == SettingsMap().end() || it->second.rules.empty()) continue;
         const Settings& s = it->second;
         out << "TERRAIN " << i << ' ' << (s.enabled ? 1 : 0) << ' ' << s.wind << ' ' << s.rules.size() << ' ' << s.density << ' ' << s.distance << '\n';
         for (const Rule& r : s.rules) {
-            out << "RULE " << KindName(r.kind) << ' ' << (r.enabled ? 1 : 0) << ' ' << r.layer << ' ' << r.minWeight << ' ' << r.density << ' '
+            out << "RULE " << std::quoted(TypeRef(r.type).name) << ' ' << (r.enabled ? 1 : 0) << ' ' << r.layer << ' ' << r.minWeight << ' ' << r.density << ' '
                 << r.minScale << ' ' << r.maxScale << ' ' << r.maxSlope << ' ' << r.minAltitude << ' ' << r.maxAltitude << ' ' << r.viewDistance << ' '
                 << r.seed << ' ' << (int)r.tintA.r << ' ' << (int)r.tintA.g << ' ' << (int)r.tintA.b << ' '
                 << (int)r.tintB.r << ' ' << (int)r.tintB.g << ' ' << (int)r.tintB.b << ' '
@@ -837,11 +1113,11 @@ bool Write(std::ostream& out) {
     return (bool)out;
 }
 
-int Read(std::istream& in) {
+int Read(std::istream& in, const std::string& baseDir) {
     const auto& terrains = BasicTerrain::GetInstances();
     std::string tag;
     int version = 0;
-    if (!(in >> tag >> version) || tag != "FOLIAGE" || version < 1 || version > 3) return 0;
+    if (!(in >> tag >> version) || tag != "FOLIAGE" || version < 1 || version > 4) return 0;
     int configured = 0;
     BasicTerrain* current = nullptr;
     int remaining = 0;
@@ -862,9 +1138,35 @@ int Read(std::istream& in) {
                 configured++;
                 Invalidate(current);
             }
+        } else if (tag == "TYPE") {
+            Type ty; int shadow = 1, wind = 1, twoSided = 1; size_t count = 0;
+            if (!(in >> std::quoted(ty.name) >> ty.height >> shadow >> wind >> twoSided >> ty.sink >> count)) break;
+            ty.castsShadow = shadow != 0; ty.wind = wind != 0; ty.twoSided = twoSided != 0;
+            ty.height = std::clamp(ty.height, 0.05f, 200.0f);
+            bool good = true;
+            for (size_t i = 0; i < count && good; i++) {
+                Variant v;
+                if (!(in >> std::quoted(v.model) >> v.weight)) { good = false; break; }
+                v.model = ResolveStoredAssetPath(v.model, baseDir);
+                ty.variants.push_back(v);
+            }
+            if (!good) break;
+            // Unchanged since it was added (the same project loaded again): leave its meshes alone.
+            const int have = FindType(ty.name);
+            bool same = have >= kBuiltinTypes;
+            if (same) {
+                const Type& o = TypeRef(have);
+                same = o.variants.size() == ty.variants.size() && o.height == ty.height && o.castsShadow == ty.castsShadow && o.wind == ty.wind &&
+                       o.twoSided == ty.twoSided && o.sink == ty.sink;
+                for (size_t i = 0; same && i < ty.variants.size(); i++) same = o.variants[i].model == ty.variants[i].model && o.variants[i].weight == ty.variants[i].weight;
+            }
+            if (!same) AddType(ty);
         } else if (tag == "RULE") {
             std::string kindName; Rule r; int enabled = 1, ar, ag, ab, br, bg, bb;
-            if (!(in >> kindName >> enabled >> r.layer >> r.minWeight >> r.density >> r.minScale >> r.maxScale >> r.maxSlope >> r.minAltitude
+            bool named = true;
+            if (version >= 4) named = (bool)(in >> std::quoted(kindName)); else named = (bool)(in >> kindName);
+            if (!named) break;
+            if (!(in >> enabled >> r.layer >> r.minWeight >> r.density >> r.minScale >> r.maxScale >> r.maxSlope >> r.minAltitude
                      >> r.maxAltitude >> r.viewDistance >> r.seed >> ar >> ag >> ab >> br >> bg >> bb)) break;
             if (version >= 2) {
                 int painted = 0; size_t runs = 0;
@@ -887,7 +1189,9 @@ int Read(std::istream& in) {
                     r.mask = mask;
                 }
             }
-            if (!KindFromName(kindName.c_str(), r.kind) || !current) continue;
+            Kind builtinKind;
+            r.type = version < 4 ? (KindFromName(kindName.c_str(), builtinKind) ? (int)builtinKind : -1) : FindType(kindName);
+            if (r.type < 0 || !current) continue;
             r.enabled = enabled != 0;
             r.tintA = { (unsigned char)Clamp((float)ar, 0, 255), (unsigned char)Clamp((float)ag, 0, 255), (unsigned char)Clamp((float)ab, 0, 255), 255 };
             r.tintB = { (unsigned char)Clamp((float)br, 0, 255), (unsigned char)Clamp((float)bg, 0, 255), (unsigned char)Clamp((float)bb, 0, 255), 255 };
@@ -900,18 +1204,18 @@ int Read(std::istream& in) {
     return configured;
 }
 
-bool SaveFile(const std::string& path) {
+bool SaveFile(const std::string& path, const std::string& baseDir) {
     bool any = false;
     for (BasicTerrain* t : BasicTerrain::GetInstances()) any = any || Has(t);
     if (!any) return false;
     std::ofstream out(path);
-    return out && Write(out);
+    return out && Write(out, baseDir);
 }
 
-int LoadFile(const std::string& path) {
+int LoadFile(const std::string& path, const std::string& baseDir) {
     platform::InputStream in(path);
     if (!in) return 0;
-    return Read(in);
+    return Read(in, baseDir);
 }
 
 } // namespace foliage

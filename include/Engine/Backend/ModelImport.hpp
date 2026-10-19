@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "../Platform/Platform.hpp"
 
 // Result of copying a model file into the active project. `storedPath` is the
 // path to persist in the scene file: relative to the project directory (with
@@ -19,6 +20,8 @@ struct ImportResult {
 // (empty means the user cancelled).
 bool BeginChooseModelOpenPath(const std::string& startDir = std::string());
 bool BeginChooseTexturePath(const std::string& startDir = std::string());
+// The same model picker for a dialog owned by someone else (polled with their own `purpose`).
+bool BeginChooseModelFor(platform::DialogPurpose purpose, const std::string& title, const std::string& startDir = std::string());
 
 // Copies `sourcePath` plus its textures (OBJ .mtl + map_* textures, GLTF
 // external buffers/images) into <projectFolder>/assets/3D/<name>[_N]/

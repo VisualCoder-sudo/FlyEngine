@@ -52,6 +52,7 @@ int g_terrainToolDropdownActiveTool = -1;
 
 // ---------------------------------------------------------------------------
 static int g_terrainTab = 0; // 0 = Sculpt tab, 1 = Generate tab, 2 = Foliage tab
+static int g_foliagePickType = -1; // Foliage tab: the model type a picked file is added to as a variant; -1 = it makes a new type
 static float g_terrainPanelScrollY = 0.0f;
 static float g_terrainPanelContentHeight = 0.0f; // measured at the end of the previous frame's draw
 bool g_terrainToolDropdownOpen = false;
@@ -704,6 +705,44 @@ void DrawTerrainToolPanel() {
         } else {
             foliage::Settings& fs = foliage::For(tBasic);
             const foliage::Settings fsBefore = fs;
+            // New plants start unpainted: nothing grows until you paint it with the brush.
+            auto addRule = [&](int typeId) {
+                foliage::Rule nr = foliage::DefaultRuleForType(typeId);
+                nr.painted = true;
+                fs.rules.push_back(nr);
+                const int added = (int)fs.rules.size() - 1;
+                foliage::FillMask(tBasic, added, false);
+                foliage::SetPaintTarget(tBasic, added);
+                BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None;
+                ui::SetSelectedTerrain(tBasic);
+            };
+            // A model came back from the file dialog: it joins the type it was picked for, or starts a new type.
+            {
+                std::string picked;
+                if (platform::PollDialogResult({ platform::DialogPurpose::PickFoliageModel }, picked) && !picked.empty()) {
+                    const ::project::Info& proj = ::project::GetCurrentProject();
+                    std::string stored = picked;
+                    if (!proj.path.empty()) {   // copied into the project, so the project carries its plants
+                        const ImportResult imp = ImportModel(picked, proj.path, proj.name);
+                        if (imp.ok) stored = ResolveStoredAssetPath(imp.storedPath, proj.path);
+                        else LogAlways("[foliage] import failed: %s", imp.error.c_str());
+                    }
+                    const int target = g_foliagePickType;
+                    g_foliagePickType = -1;
+                    if (target >= foliage::kBuiltinTypes && target < foliage::TypeCount()) {
+                        foliage::TypeAt(target).variants.push_back({ stored, 1.0f });
+                        foliage::TypeChanged(target);
+                    } else {
+                        foliage::Type nt;
+                        nt.name = std::filesystem::path(picked).stem().string();
+                        if (nt.name.empty()) nt.name = "Plant";
+                        const std::string stem = nt.name;
+                        for (int n = 2; foliage::FindType(nt.name) >= 0; n++) nt.name = stem + " " + std::to_string(n);
+                        nt.variants.push_back({ stored, 1.0f });
+                        addRule(foliage::AddType(nt));
+                    }
+                }
+            }
             DrawTextArial("ADD a plant, then drag on the terrain to paint it.", x, y, 11.0f, theme::TEXT_DIM);
             y += 18.0f;
             if (TerrainCheckbox(x, y, "Foliage on", fs.enabled, 9700u)) fs.enabled = !fs.enabled;
@@ -730,22 +769,20 @@ void DrawTerrainToolPanel() {
             y += 16.0f;
             {
                 const float gap = 5.0f, bw = (innerW - gap * 2.0f) / 3.0f;
-                for (int k = 0; k < (int)foliage::Kind::Count; k++) {
+                const int typeCount = std::min(foliage::TypeCount(), 70);
+                for (int k = 0; k < typeCount; k++) {
                     const float bx = x + (float)(k % 3) * (bw + gap);
                     const float by = y + (float)(k / 3) * 28.0f;
-                    if (smallButton({ bx, by, bw, 24.0f }, foliage::KindName((foliage::Kind)k), 9710u + (uint64_t)k)) {
-                        // New plants start unpainted: nothing grows until you paint it with the brush.
-                        foliage::Rule nr = foliage::DefaultRule((foliage::Kind)k);
-                        nr.painted = true;
-                        fs.rules.push_back(nr);
-                        const int added = (int)fs.rules.size() - 1;
-                        foliage::FillMask(tBasic, added, false);
-                        foliage::SetPaintTarget(tBasic, added);
-                        BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None;
-                        ui::SetSelectedTerrain(tBasic);
-                    }
+                    std::string label = foliage::TypeAt(k).name;   // cut to fit the button
+                    while (label.size() > 3 && MeasureTextArial(label.c_str(), 11.0f) > bw - 10.0f) { label.pop_back(); if (MeasureTextArial((label + "..").c_str(), 11.0f) <= bw - 10.0f) { label += ".."; break; } }
+                    if (smallButton({ bx, by, bw, 24.0f }, label.c_str(), 9710u + (uint64_t)k)) addRule(k);
                 }
-                y += 58.0f;
+                y += (float)((typeCount + 2) / 3) * 28.0f + 2.0f;
+                if (smallButton({ x, y, innerW, 24.0f }, "Import model plant...", 9790u)) {
+                    g_foliagePickType = -1;
+                    BeginChooseModelFor(platform::DialogPurpose::PickFoliageModel, "Choose a plant model");
+                }
+                y += 32.0f;
             }
 
             int removeIndex = -1;
@@ -754,10 +791,49 @@ void DrawTerrainToolPanel() {
                 const uint64_t base = 9800u + (uint64_t)ri * 16u;
                 DrawLine(static_cast<int>(x), static_cast<int>(y), static_cast<int>(x + innerW), static_cast<int>(y), theme::DIVIDER);
                 y += 8.0f;
-                if (TerrainCheckbox(x, y, foliage::KindName(r.kind), r.enabled, base)) r.enabled = !r.enabled;
+                if (TerrainCheckbox(x, y, foliage::TypeAt(r.type).name.c_str(), r.enabled, base)) r.enabled = !r.enabled;
                 if (smallButton({ x + innerW - 64.0f, y - 2.0f, 64.0f, 22.0f }, "Remove", base + 1u)) removeIndex = (int)ri;
                 y += 28.0f;
                 if (!r.enabled) continue;
+                if (foliage::TypeAt(r.type).builtin < 0) {   // a model type: its models and look
+                    foliage::Type& ty = foliage::TypeAt(r.type);
+                    const foliage::Type before = ty;
+                    const uint64_t tk = 14000u + (uint64_t)ri * 256u;
+                    int removeVariant = -1;
+                    for (size_t vi = 0; vi < ty.variants.size(); vi++) {
+                        foliage::Variant& v = ty.variants[vi];
+                        const uint64_t vk = tk + (uint64_t)vi * 4u;
+                        std::string label = std::filesystem::path(v.model).filename().string();
+                        const float room = innerW - (ty.variants.size() > 1 ? 30.0f : 0.0f);
+                        while (label.size() > 3 && MeasureTextArial(label.c_str(), 11.0f) > room) label.pop_back();
+                        DrawTextArial(label.c_str(), x, y + 3.0f, 11.0f, foliage::TypeVariantLoaded(r.type, (int)vi) ? theme::TEXT_MUTED : theme::TEXT_DIM);
+                        if (ty.variants.size() > 1 && smallButton({ x + innerW - 24.0f, y, 24.0f, 20.0f }, "X", vk)) removeVariant = (int)vi;
+                        y += 22.0f;
+                        TerrainSlider("Chance", x, y, innerW, v.weight, 0.0f, 10.0f, "%.1f", vk + 1u); y += 26.0f;
+                    }
+                    if (removeVariant >= 0) ty.variants.erase(ty.variants.begin() + removeVariant);
+                    if (smallButton({ x, y, innerW, 22.0f }, "Add another model...", tk + 250u)) {
+                        g_foliagePickType = r.type;
+                        BeginChooseModelFor(platform::DialogPurpose::PickFoliageModel, "Choose a plant model");
+                    }
+                    y += 28.0f;
+                    TerrainSlider("Height", x, y, innerW, ty.height, 0.1f, 40.0f, "%.1f m", tk + 240u); y += 26.0f;
+                    TerrainSlider("Sink", x, y, innerW, ty.sink, -0.5f, 2.0f, "%.2f m", tk + 241u); y += 26.0f;
+                    if (TerrainCheckbox(x, y, "Casts shadows", ty.castsShadow, tk + 242u)) ty.castsShadow = !ty.castsShadow;
+                    y += 24.0f;
+                    if (TerrainCheckbox(x, y, "Sways in wind", ty.wind, tk + 243u)) ty.wind = !ty.wind;
+                    y += 24.0f;
+                    if (TerrainCheckbox(x, y, "Two-sided", ty.twoSided, tk + 244u)) ty.twoSided = !ty.twoSided;
+                    y += 28.0f;
+                    // New models and the look flags load the meshes again; the other sliders only place the plants again.
+                    bool models = before.variants.size() != ty.variants.size() || before.wind != ty.wind || before.twoSided != ty.twoSided;
+                    bool placed = before.height != ty.height || before.sink != ty.sink || before.castsShadow != ty.castsShadow;
+                    for (size_t vi = 0; vi < ty.variants.size() && vi < before.variants.size(); vi++) {
+                        models = models || before.variants[vi].model != ty.variants[vi].model;
+                        placed = placed || before.variants[vi].weight != ty.variants[vi].weight;
+                    }
+                    if (models || placed) foliage::TypeChanged(r.type, models);
+                }
                 {
                     const float gap = 5.0f, bw = (innerW - gap) / 2.0f;
                     if (smallButton({ x, y, bw, 22.0f }, r.painted ? "Grow on: Brush" : "Grow on: Layer", base + 10u)) {
@@ -790,7 +866,7 @@ void DrawTerrainToolPanel() {
                     TerrainSlider("Layer", x, y, innerW, layerF, -1.0f, 3.0f, "%.0f", base + 2u); r.layer = (int)std::lround(layerF); y += 26.0f;
                     TerrainSlider("Painted", x, y, innerW, r.minWeight, 0.0f, 1.0f, "%.2f", base + 3u); y += 26.0f;
                 }
-                TerrainSlider("Density", x, y, innerW, r.density, 0.0f, r.kind == foliage::Kind::Grass ? 3000.0f : (r.kind == foliage::Kind::Flowers ? 300.0f : 60.0f), "%.1f", base + 4u); y += 26.0f;
+                TerrainSlider("Density", x, y, innerW, r.density, 0.0f, foliage::TypeAt(r.type).builtin == (int)foliage::Kind::Grass ? 3000.0f : (foliage::TypeAt(r.type).builtin == (int)foliage::Kind::Flowers || foliage::TypeAt(r.type).height < 0.8f ? 300.0f : 60.0f), "%.1f", base + 4u); y += 26.0f;
                 TerrainSlider("Min size", x, y, innerW, r.minScale, 0.2f, 3.0f, "%.2f", base + 5u); y += 26.0f;
                 TerrainSlider("Max size", x, y, innerW, r.maxScale, 0.2f, 4.0f, "%.2f", base + 6u); y += 26.0f;
                 if (r.maxScale < r.minScale) r.maxScale = r.minScale;

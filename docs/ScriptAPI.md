@@ -36,3 +36,5 @@ Hard physics impacts already kick up dust by themselves.
 ## Foliage
 
 Not scripted. Set up per terrain in the terrain panel's **Foliage** tab; saved as `foliage.cfg` beside `basicterrain.bt`.
+
+Besides the six built-in plants, **Import model plant...** makes a plant type from your own 3D model (obj, glb, gltf, fbx). The model is copied into the project. Use **Add another model...** on the type to give it variants: each plant picks one at random by its Chance, so one rule grows a mix of different trees or rocks. A model is scaled to the type's Height; its colours come from the vertex colours, the material colour and the diffuse texture (sampled per vertex, plants are drawn untextured).

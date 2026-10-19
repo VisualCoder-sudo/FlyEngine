@@ -11,6 +11,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <sstream>
 
@@ -102,12 +104,73 @@ int main() {
         CHECK(after.rules.size() == before.rules.size());
         CHECK(std::fabs(after.wind - before.wind) < 1e-4f);
         for (size_t i = 0; i < after.rules.size() && i < before.rules.size(); i++) {
-            CHECK(after.rules[i].kind == before.rules[i].kind);
+            CHECK(after.rules[i].type == before.rules[i].type);
             CHECK(std::fabs(after.rules[i].density - before.rules[i].density) < 1e-3f);
             CHECK(after.rules[i].tintB.g == before.rules[i].tintB.g);
             CHECK(after.rules[i].layer == before.rules[i].layer);
             CHECK(std::fabs(after.rules[i].lod1 - before.rules[i].lod1) < 1e-4f && std::fabs(after.rules[i].lod2 - before.rules[i].lod2) < 1e-4f);
         }
+    }
+
+    // Model types: an .obj becomes a plant type with several variants; a missing model is replaced by a placeholder, the
+    // type survives a save round trip with its paths relative to the project folder.
+    {
+        const std::string cwd = std::filesystem::current_path().string();
+        {
+            std::ofstream obj("foliage_test_cube.obj");   // a 2 m cube standing off the origin
+            obj << "v 3 1 0\nv 5 1 0\nv 5 3 0\nv 3 3 0\nv 3 1 2\nv 5 1 2\nv 5 3 2\nv 3 3 2\n"
+                   "f 1 3 2\nf 1 4 3\nf 5 6 7\nf 5 7 8\nf 1 5 8\nf 1 8 4\nf 2 3 7\nf 2 7 6\nf 4 8 7\nf 4 7 3\nf 1 2 6\nf 1 6 5\n";
+        }
+        foliage::Type ty;
+        ty.name = "TestCube";
+        ty.height = 2.0f;
+        ty.variants = { { cwd + "/foliage_test_cube.obj", 3.0f }, { cwd + "/missing_model.obj", 1.0f } };
+        const int id = foliage::AddType(ty);
+        CHECK(id >= foliage::kBuiltinTypes && foliage::FindType("TestCube") == id);
+        CHECK(foliage::FindType("Tree") == (int)foliage::Kind::Tree);
+        CHECK(foliage::TypeVariantLoaded(id, 0));
+        CHECK(!foliage::TypeVariantLoaded(id, 1));
+        CHECK(foliage::TypeTriangles(id, 0, 0) == 24);   // 12 triangles, drawn from both sides
+        CHECK(foliage::TypeTriangles(id, 0, 1) > 0);     // the placeholder
+        ty.twoSided = false;
+        foliage::AddType(ty);                            // same name: replaced, meshes loaded again
+        CHECK(foliage::FindType("TestCube") == id && foliage::TypeTriangles(id, 0, 0) == 12);
+
+        const size_t rulesBefore = set.rules.size();
+        foliage::Rule rule = foliage::DefaultRuleForType(id);
+        rule.layer = -1; rule.density = 5.0f;
+        std::vector<Vector3> grown;
+        foliage::Scatter(*t, rule, -60.0f, -60.0f, 60.0f, 60.0f, grown);
+        CHECK(grown.size() > 100);
+        set.rules.push_back(rule);
+
+        std::stringstream ss;
+        CHECK(foliage::Write(ss, cwd));
+        const std::string text = ss.str();
+        CHECK(text.find("FOLIAGE 4") == 0);
+        CHECK(text.find("TYPE \"TestCube\"") != std::string::npos);
+        CHECK(text.find(cwd) == std::string::npos);      // saved relative
+        foliage::TypeAt(id).variants.clear();
+        foliage::TypeAt(id).height = 9.0f;
+        CHECK(foliage::Read(ss, cwd) == 1);
+        const foliage::Type& back = foliage::TypeAt(foliage::FindType("TestCube"));
+        CHECK(back.variants.size() == 2 && std::fabs(back.height - 2.0f) < 1e-4f && !back.twoSided);
+        CHECK(back.variants.size() == 2 && std::fabs(back.variants[0].weight - 3.0f) < 1e-4f);
+        CHECK(back.variants.size() == 2 && std::filesystem::equivalent(back.variants[0].model, cwd + "/foliage_test_cube.obj"));
+        CHECK(foliage::For(t).rules.size() == rulesBefore + 1 && foliage::For(t).rules.back().type == id);
+
+        // Files from before model types (version 3, rules named by kind) still load.
+        std::stringstream old("FOLIAGE 3\nTERRAIN 0 1 0.6 1 1 1\nRULE Pine 1 0 0.35 0.7 0.8 1.5 38 -10000 10000 600 5 235 245 235 255 255 255 0.7 0.7 0 0.25 0.55 0\n");
+        CHECK(foliage::Read(old) == 1);
+        CHECK(foliage::For(t).rules.size() == 1 && foliage::For(t).rules[0].type == (int)foliage::Kind::Pine);
+        set.rules.clear();
+        for (foliage::Kind k : { foliage::Kind::Grass, foliage::Kind::Flowers, foliage::Kind::Bush, foliage::Kind::Tree, foliage::Kind::Pine, foliage::Kind::Rock }) {
+            foliage::Rule r = foliage::DefaultRule(k);
+            r.layer = -1;
+            set.rules.push_back(r);
+        }
+        set.rules[0].lod1 = 0.1f; set.rules[0].lod2 = 0.3f;
+        std::filesystem::remove("foliage_test_cube.obj");
     }
 
     // ---- pictures ----

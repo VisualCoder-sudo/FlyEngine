@@ -22,8 +22,37 @@ enum class Kind { Grass, Flowers, Bush, Tree, Pine, Rock, Count };
 const char* KindName(Kind k);
 bool KindFromName(const char* name, Kind& out);
 
+// A kind of plant a rule can grow. The first six types are the built-in procedural plants (type id == Kind); the rest are
+// made from imported 3D models. A model type holds one or more model variants, and each plant picks one by weight, so a
+// single rule can grow a mix of different trees or rocks.
+struct Variant {
+    std::string model;          // path of the model file (obj, glb, gltf, fbx, ...)
+    float weight = 1.0f;        // how often it is picked, relative to the other variants
+};
+
+struct Type {
+    std::string name;
+    int builtin = -1;           // the Kind this is (procedural), or -1 for a model type
+    std::vector<Variant> variants;
+    float height = 3.0f;        // model types: how tall a plant of size 1 is, in metres
+    bool castsShadow = true;
+    bool wind = true;           // bends in the wind (more towards the top of the model)
+    bool twoSided = true;       // drawn from both sides (leaf cards, thin meshes); off for closed solids like rocks
+    float sink = 0.0f;          // metres the model is pushed into the ground (at size 1)
+};
+
+constexpr int kBuiltinTypes = (int)Kind::Count;
+
+int TypeCount();
+Type& TypeAt(int id);                       // the registry never shrinks, so ids stay valid
+int FindType(const std::string& name);      // -1 when there is none
+int AddType(const Type& type);              // a type with that name is replaced; returns its id
+void TypeChanged(int id, bool remesh = true);   // edited: plants are placed again, and with `remesh` the models are loaded again too
+int TypeTriangles(int id, int lod, int variant = 0);   // triangles of one variant (loads it if needed); 0 when it has none
+bool TypeVariantLoaded(int id, int variant);           // false when the model failed to load (a placeholder is drawn)
+
 struct Rule {
-    Kind kind = Kind::Grass;
+    int type = 0;               // an id from the type registry
     bool enabled = true;
     int layer = 0;              // terrain texture layer (0..3) the plants grow on; -1 = everywhere
     float minWeight = 0.35f;    // how much of that layer must be painted at a spot (0..1)
@@ -64,6 +93,8 @@ struct Settings {
 
 // A sensible rule for a kind (density, size, distance, tints).
 Rule DefaultRule(Kind kind);
+// The same for any type; model types get tall-plant settings scaled to their height.
+Rule DefaultRuleForType(int type);
 
 // The settings of one terrain, created empty on first use. Has() says whether it has any.
 Settings& For(BasicTerrain* terrain);
@@ -82,10 +113,12 @@ int DrawnCount();                           // plants drawn last frame
 
 // Saved with the project as foliage.cfg beside basicterrain.bt, one block per terrain (by position in the terrain
 // list). Read() applies to the terrains that exist at that point.
-bool Write(std::ostream& out);
-int Read(std::istream& in);
-bool SaveFile(const std::string& path);     // false when there is nothing to save or it cannot be written
-int LoadFile(const std::string& path);      // terrains configured
+// Model types are saved in the same file; their model paths are written relative to `baseDir` (the project folder) so a
+// project can move, and read back against it. An empty baseDir keeps paths as they are.
+bool Write(std::ostream& out, const std::string& baseDir = std::string());
+int Read(std::istream& in, const std::string& baseDir = std::string());
+bool SaveFile(const std::string& path, const std::string& baseDir = std::string());   // false when there is nothing to save or it cannot be written
+int LoadFile(const std::string& path, const std::string& baseDir = std::string());    // terrains configured
 
 constexpr int kMaskRes = 512;
 

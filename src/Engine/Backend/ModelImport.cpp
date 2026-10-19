@@ -329,6 +329,10 @@ bool BeginChooseModelOpenPath(const std::string& startDir) {
                                          startDir, ModelFilters());
 }
 
+bool BeginChooseModelFor(platform::DialogPurpose purpose, const std::string& title, const std::string& startDir) {
+    return platform::BeginOpenFileDialog(purpose, title, startDir, ModelFilters());
+}
+
 bool BeginChooseTexturePath(const std::string& startDir) {
     return platform::BeginOpenFileDialog(platform::DialogPurpose::ImportTexture, "Import Texture",
                                          startDir, TextureFilters());
