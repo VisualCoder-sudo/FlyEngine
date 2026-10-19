@@ -334,7 +334,7 @@ float WaterBody::GetRippleHeightAt(float x, float z) const {
     const float cs = RIPPLE_WINDOW / RIPPLE_N;
     const float gx = (x - rippleOriginX) / cs - 0.5f;
     const float gz = (z - rippleOriginZ) / cs - 0.5f;
-    if (gx < 0.0f || gz < 0.0f || gx >= N - 1 || gz >= N - 1) return 0.0f;
+    if (!(gx >= 0.0f && gz >= 0.0f && gx < N - 1 && gz < N - 1)) return 0.0f;  // also rejects NaN
     const int ix = (int)gx, iz = (int)gz;
     const float fx = gx - ix, fz = gz - iz;
     const size_t i = (size_t)iz * N + ix;

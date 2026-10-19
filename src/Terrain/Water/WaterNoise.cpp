@@ -175,7 +175,7 @@ float FBM3D(float x, float y, float z, int octaves, float persistence, float lac
         frequency *= lacunarity;
     }
 
-    return value / maxValue;
+    return maxValue > 0.0f ? value / maxValue : 0.0f;  // 0 octaves would be 0/0
 }
 
 float FBM2D(float x, float y, int octaves, float persistence, float lacunarity, int seed) {
@@ -191,7 +191,7 @@ float FBM2D(float x, float y, int octaves, float persistence, float lacunarity, 
         frequency *= lacunarity;
     }
 
-    return value / maxValue;
+    return maxValue > 0.0f ? value / maxValue : 0.0f;  // 0 octaves would be 0/0
 }
 
 } // namespace WaterNoise

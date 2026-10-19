@@ -316,3 +316,10 @@ add_executable(numpad_enter_test numpad_enter_test.cpp)
 target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
 target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
 add_test(NAME numpad_enter COMMAND numpad_enter_test)
+
+# Water: FBM with no octaves, setter clamping, and every water field round-trips through the scene file. Opens a
+# window (WaterBody loads its shader), so ctest needs a display (label needs_display): build/tests/water_test
+add_executable(water_test water_test.cpp)
+target_link_libraries(water_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME water COMMAND water_test)
+set_tests_properties(water PROPERTIES LABELS needs_display)
