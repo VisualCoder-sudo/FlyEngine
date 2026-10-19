@@ -300,3 +300,8 @@ target_link_libraries(terrain_crack_test PRIVATE FlyEngineCore FlyRL)
 add_executable(model_animator_test model_animator_test.cpp)
 target_link_libraries(model_animator_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME model_animator COMMAND model_animator_test)
+
+# Plugin VersionCompat: SemVer parsing, prerelease ordering, ranges, API check. Standalone C, no engine.
+add_executable(version_compat_test version_compat_test.c ${CMAKE_CURRENT_SOURCE_DIR}/../src/Plugin/VersionCompat.c)
+target_include_directories(version_compat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+add_test(NAME version_compat COMMAND version_compat_test)

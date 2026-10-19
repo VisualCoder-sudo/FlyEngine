@@ -40,6 +40,7 @@ namespace {
 
 FlyEventHook g_eventHook = nullptr;
 int g_traceLogLevel = LOG_INFO;
+bool g_windowFocused = true;   // kept from sokol_app FOCUSED/UNFOCUSED events
 std::mt19937 g_rng{ std::random_device{}() };
 
 double NowSeconds() {
@@ -201,7 +202,11 @@ void DispatchEvent(const sapp_event* ev) {
             c.wheel.y += ev->scroll_y * scale;
             break;
         }
+        case SAPP_EVENTTYPE_FOCUSED:
+            g_windowFocused = true;
+            break;
         case SAPP_EVENTTYPE_UNFOCUSED:
+            g_windowFocused = false;
             // Key-up events are lost while unfocused; release everything so no
             // key or button stays stuck down.
             std::fill(std::begin(c.keyDown), std::end(c.keyDown), false);
@@ -350,7 +355,7 @@ bool WindowShouldClose(void) {
 
 bool IsWindowReady(void) { return Core().windowOpen; }
 bool IsWindowFullscreen(void) { return Core().windowOpen && sapp_is_fullscreen(); }
-bool IsWindowFocused(void) { return Core().windowOpen; }
+bool IsWindowFocused(void) { return Core().windowOpen && rli::g_windowFocused; }
 
 void ToggleFullscreen(void) {
     if (Core().windowOpen) sapp_toggle_fullscreen();
@@ -393,8 +398,9 @@ int GetRenderWidth(void) { return GetScreenWidth(); }
 int GetRenderHeight(void) { return GetScreenHeight(); }
 int GetMonitorCount(void) { return 1; }
 int GetCurrentMonitor(void) { return 0; }
-int GetMonitorWidth(int) { return flyapp_monitor_width(); }
-int GetMonitorHeight(int) { return flyapp_monitor_height(); }
+// Only the monitor the window is on is queried (GetMonitorCount() is 1), so any other index reports 0 like raylib does.
+int GetMonitorWidth(int monitor) { return monitor == 0 ? flyapp_monitor_width() : 0; }
+int GetMonitorHeight(int monitor) { return monitor == 0 ? flyapp_monitor_height() : 0; }
 
 void SetEventHook(FlyEventHook hook) { g_eventHook = hook; }
 void SetShaderHotReload(bool enabled) { rli::SetShaderHotReloadEnabled(enabled); }
@@ -422,8 +428,9 @@ void EndDrawing(void) {
         double now = GetTime();
         if (now < target) {
             const double remaining = target - now;
-            if (remaining > 0.002) {
-                std::this_thread::sleep_for(std::chrono::duration<double>(remaining - 0.001));
+            // Sleep for all but the last ~200 us; the short yield loop below absorbs the sleep overshoot.
+            if (remaining > 0.0005) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(remaining - 0.0002));
             }
             while (GetTime() < target) {
                 std::this_thread::yield();

@@ -25,6 +25,13 @@ static const char* skip_digits(const char* s) {
     return s;
 }
 
+// One numeric field: must start with a digit (strtol alone would accept " 1" and "-1").
+static bool parse_num(const char** pp, int* out) {
+    if (!isdigit((unsigned char)**pp)) return false;
+    *out = (int)strtol(*pp, (char**)pp, 10);
+    return true;
+}
+
 SemVer* SemVer_Parse(const char* version_str) {
     if (!version_str) return NULL;
     
@@ -34,17 +41,15 @@ SemVer* SemVer_Parse(const char* version_str) {
     const char* p = version_str;
     
     // Parse major
-    v->major = strtol(p, (char**)&p, 10);
-    if (p == version_str || *p != '.') goto error;
+    if (!parse_num(&p, &v->major) || *p != '.') goto error;
     p++;
     
     // Parse minor
-    v->minor = strtol(p, (char**)&p, 10);
-    if (p == version_str + 1 || *p != '.') goto error;
+    if (!parse_num(&p, &v->minor) || *p != '.') goto error;
     p++;
     
     // Parse patch
-    v->patch = strtol(p, (char**)&p, 10);
+    if (!parse_num(&p, &v->patch)) goto error;
     
     // Parse prerelease
     if (*p == '-') {
@@ -77,6 +82,39 @@ void SemVer_Free(SemVer* v) {
     free(v);
 }
 
+// SemVer precedence of two prerelease strings: dot-separated identifiers left to right, numeric ones by value and
+// below alphanumeric ones, alphanumeric ones in ASCII order; if all shared identifiers are equal, more fields win.
+static int compare_prerelease(const char* a, const char* b) {
+    while (*a || *b) {
+        if (!*a) return -1;
+        if (!*b) return 1;
+        size_t la = strcspn(a, "."), lb = strcspn(b, ".");
+        bool na = true, nb = true;
+        for (size_t i = 0; i < la; i++) if (!isdigit((unsigned char)a[i])) na = false;
+        for (size_t i = 0; i < lb; i++) if (!isdigit((unsigned char)b[i])) nb = false;
+        int c = 0;
+        if (na && nb) {
+            const char* ta = a; size_t xa = la;
+            const char* tb = b; size_t xb = lb;
+            while (xa > 1 && *ta == '0') { ta++; xa--; }
+            while (xb > 1 && *tb == '0') { tb++; xb--; }
+            if (xa != xb) c = xa < xb ? -1 : 1;
+            else c = memcmp(ta, tb, xa);
+        } else if (na != nb) {
+            c = na ? -1 : 1;
+        } else {
+            size_t m = la < lb ? la : lb;
+            c = memcmp(a, b, m);
+            if (c == 0 && la != lb) c = la < lb ? -1 : 1;
+        }
+        if (c != 0) return c < 0 ? -1 : 1;
+        a += la; b += lb;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+    }
+    return 0;
+}
+
 int SemVer_Compare(const SemVer* a, const SemVer* b) {
     if (!a || !b) return 0;
     
@@ -88,7 +126,7 @@ int SemVer_Compare(const SemVer* a, const SemVer* b) {
     if (a->prerelease && !b->prerelease) return -1;
     if (!a->prerelease && b->prerelease) return 1;
     if (a->prerelease && b->prerelease) {
-        return strcmp(a->prerelease, b->prerelease);
+        return compare_prerelease(a->prerelease, b->prerelease);
     }
     
     return 0;
@@ -152,7 +190,8 @@ static bool check_tilde_range(const SemVer* v, const char* range) {
 }
 
 static bool check_wildcard_range(const SemVer* v, const char* range) {
-    // 1.x or 1.2.x
+    // "*", "x" (anything), 1.x or 1.2.x
+    if (strcmp(range, "*") == 0 || strcmp(range, "x") == 0 || strcmp(range, "X") == 0) return true;
     int major = -1, minor = -1;
     sscanf(range, "%d.%d", &major, &minor);
     
@@ -218,7 +257,7 @@ int VersionCompat_CheckAPI(const char* plugin_api_version, const char* engine_ap
     if (!pv || !ev) {
         if (pv) SemVer_Free(pv);
         if (ev) SemVer_Free(ev);
-        return 0;  // Parse error - assume compatible
+        return 1;  // Parse error - cannot vouch for compatibility, so report incompatible
     }
     
     int result = 0;

@@ -549,7 +549,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+        return false;
+    }
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     // Loading a scene rebuilds model containers from scratch. The old ones are only set aside: until this load
@@ -1101,7 +1104,10 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+        return false;
+    }
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);

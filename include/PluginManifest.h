@@ -95,6 +95,9 @@ typedef struct {
         enum { LINK_STATIC, LINK_DYNAMIC } link_type;
     } lib;
     
+    // Optional "version" in the manifest; when present it must equal id.json's Version.
+    char* version;
+
     // Metadata (common)
     struct {
         char* description;
