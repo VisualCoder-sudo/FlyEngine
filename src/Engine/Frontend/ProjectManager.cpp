@@ -1009,6 +1009,8 @@ namespace {
 void SetCurrentProject(const Info& info) { g_currentProject = info; }
 const Info& GetCurrentProject() { return g_currentProject; }
 
+static void InstallTutorialPlugin(const std::string& projectFolder);
+
 Info ShowProjectManager() {
     InitWindow(kW, kH, "Flyengine - Project Manager");
     SetWindowMinSize(kMinW, kMinH);
@@ -1347,6 +1349,7 @@ Info ShowProjectManager() {
                     std::error_code ec;
                     const bool exists = fs::exists(U8Path(GetProjectFilePath(name)), ec);
                     if (exists || CreateProjectFileInternal(name, "CoinDash")) {
+                        InstallTutorialPlugin(folder);
                         result.name = name;
                         result.path = folder;
                         result.templateName = "CoinDash";
@@ -1431,6 +1434,32 @@ static bool CopyTemplateDeps(const std::string& templateProjectFile, const std::
         if (ec) return false;
     }
     return !ec;
+}
+
+// The tutorial's sample plugin: its source, the API header and a README go into <project>/plugins/nat/HelloPlugin/,
+// and it is built so the editor loads it on startup. A missing compiler is not an error: the tour says how to build it.
+static void InstallTutorialPlugin(const std::string& projectFolder) {
+    const fs::path dir = fs::path(U8Path(projectFolder)) / "plugins" / "nat" / "HelloPlugin";
+    std::error_code ec;
+    if (fs::exists(dir / "src" / "hello_plugin.c", ec)) return;
+    const std::string src = platform::ResolveAsset("assets/tutorial/HelloPlugin/hello_plugin.c");
+    const std::string hdr = platform::ResolveAsset("assets/tutorial/HelloPlugin/include/CPluginAPI.h");
+    const std::string readme = platform::ResolveAsset("assets/tutorial/HelloPlugin/README.md");
+    if (src.empty() || hdr.empty()) return;
+    fs::create_directories(dir / "src", ec);
+    fs::create_directories(dir / "include", ec);
+    fs::create_directories(dir / "build", ec);
+    fs::copy_file(U8Path(src), dir / "src" / "hello_plugin.c", fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(U8Path(hdr), dir / "include" / "CPluginAPI.h", fs::copy_options::overwrite_existing, ec);
+    if (!readme.empty()) fs::copy_file(U8Path(readme), dir / "README.md", fs::copy_options::overwrite_existing, ec);
+#ifdef _WIN32
+    const std::string cc = "gcc", lib = "hello_plugin.dll";
+    const std::vector<std::string> args = { "-shared", "-I", (dir / "include").string(), "-o", (dir / "build" / lib).string(), (dir / "src" / "hello_plugin.c").string() };
+#else
+    const std::string cc = "cc", lib = "hello_plugin.so";
+    const std::vector<std::string> args = { "-shared", "-fPIC", "-I", (dir / "include").string(), "-o", (dir / "build" / lib).string(), (dir / "src" / "hello_plugin.c").string() };
+#endif
+    platform::RunProcessCapture(cc, args, 20000);
 }
 
 bool CreateProjectFileInternal(const std::string& name, const std::string& templateName) {

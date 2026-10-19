@@ -43,10 +43,16 @@ const Step kSteps[] = {
       "The Lighting section controls time of day, sun, sky, fog, weather and clouds.",
       "##LightingProps", ClosePrefs },
     { "Plugins (CPluginAPI)",
-      "Plugins extend the editor with new menu items and tools. They are written in plain C "
-      "against include/CPluginAPI.h and loaded from your plugins folder.\n\n"
-      "Preferences > Plugins lists what is installed and lets you enable or disable each one.",
-      "##Preferences", ShowPlugins },
+      "Plugins extend the editor with menus, windows and tools. This project already has one: open the "
+      "Plugins menu in the top bar and pick \"Hello Plugin\".\n\n"
+      "A plugin is a shared library built against include/CPluginAPI.h. It lives in "
+      "<project>/plugins/nat/<name>/build/ and the editor loads it at startup and reloads it when the file changes. "
+      "Open plugins/nat/HelloPlugin/src/hello_plugin.c - it is commented line by line - edit it, rebuild with "
+      "the command at its top, and watch it reload.\n\n"
+      "Where to get plugins: there is no store. A plugin is a folder, so copy it into your project's plugins/nat/ "
+      "(build it if it ships source). Find them on the engine's GitHub page or from other developers, and only "
+      "install ones you trust - they run with the editor's permissions.",
+      "##TopBar", ClosePrefs },
     { "C++ code for your game",
       "Gameplay is C++. Write a script in your project's Scripts folder with the fly SDK "
       "(ScriptingSDK/include/fly.hpp) and mark it with FLY_SCRIPT. The editor compiles it and "
