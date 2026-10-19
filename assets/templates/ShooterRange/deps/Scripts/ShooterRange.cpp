@@ -7,7 +7,7 @@
 //   * particles and decals: sparks and bullet holes where a shot lands
 //   * ShowText(): score, time and ammo on screen
 //
-// Controls:  Space = shoot   R = reload (or restart when the round is over)
+// Controls:  F = shoot   R = reload (or restart when the round is over)
 // Nearer targets are worth less. Hit all you can before the time runs out.
 
 #include "fly.hpp"
@@ -82,7 +82,7 @@ struct ShooterRange : Script {
             ShowText(buf, "Top Left");
         };
         status();
-        ShowText("Space shoot   R reload", "Bottom Center", 8.0f);
+        ShowText("F shoot   R reload", "Bottom Center", 8.0f);
 
         while (true) {
             const float dt = DeltaTime();
@@ -106,7 +106,7 @@ struct ShooterRange : Script {
                 }
 
                 // ---- shoot along the view ----
-                if (KeyPressed("Space") && ammo > 0 && reloadFor <= 0.0f) {
+                if (KeyPressed("F") && ammo > 0 && reloadFor <= 0.0f) {
                     ammo--;
                     shots++;
                     const Game::Camera::View v = Game::Camera::Get();
