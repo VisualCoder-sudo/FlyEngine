@@ -150,6 +150,7 @@ private:
         ScatteredObject* object = nullptr; // null for standalone scripts
         int standaloneIndex = -1;
         std::string className;
+        bool stopPending = false; // asked to stop while its own tick was running: destroyed once that tick returns
     };
 
     Engine* m_engine = nullptr;
@@ -165,6 +166,7 @@ private:
     const FlyScriptModule* m_module = nullptr;
     std::vector<RunningScript> m_running;
     bool m_ticking = false;  // inside the per-frame tick loop
+    void* m_executing = nullptr; // the instance whose tick is running right now
     std::vector<std::string> m_hiddenClasses;
     bool m_pendingPlay = false;
     bool m_pendingStop = false;
