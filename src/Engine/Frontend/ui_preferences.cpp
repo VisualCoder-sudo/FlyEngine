@@ -63,15 +63,16 @@ static void DrawPrefsSidebarButton(const char* label, int index, bool enabled = 
     ImGui::PopStyleColor(4);
 }
 
-// A full-width accent-colored row: label on the left, a control on the right.
-// Returns the screen position just past the row so callers can keep stacking.
+// True until the first row of a tab is drawn, so that row gets no separator above it. Each tab resets it.
+static bool g_prefsFirstRow = true;
+
+// A full-width row with a separator line above it: label on the left, a control on the right.
 static void DrawPrefsSettingRowBegin(const char* label) {
+    if (!g_prefsFirstRow) ImGui::Separator();
+    g_prefsFirstRow = false;
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 rowPos = ImGui::GetCursorScreenPos();
     float rowHeight = 30.0f;
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        rowPos, ImVec2(rowPos.x + avail.x, rowPos.y + rowHeight),
-        theme::AccentU32());
     ImGui::SetCursorScreenPos(ImVec2(rowPos.x + 8.0f, rowPos.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f));
     ImGui::TextUnformatted(label);
     ImGui::SameLine(avail.x - 150.0f);
@@ -79,6 +80,7 @@ static void DrawPrefsSettingRowBegin(const char* label) {
 }
 
 static void DrawPreferencesGeneralTab() {
+    g_prefsFirstRow = true;
     DrawPrefsSettingRowBegin("Language");
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.5f, 0.54f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.5f, 0.5f, 0.54f, 1.0f));
@@ -90,6 +92,7 @@ static void DrawPreferencesGeneralTab() {
 
 // How much of the machine the picture may use (gfx::RenderQuality). Kept per machine, not per scene.
 static void DrawPreferencesRenderingTab() {
+    g_prefsFirstRow = true;
     gfx::RenderQuality& q = gfx::Quality();
     bool changed = false;
     const auto combo = [&](const char* label, const char* id, int* value, const char* const* items, int count) {
@@ -245,6 +248,7 @@ static void DrawLoadingLookEditor(const char* id, loading::Look& l, bool& change
 }
 
 static void DrawPreferencesLoadingTab() {
+    g_prefsFirstRow = true;
     loading::Settings& s = loading::GetSettings();
     bool changed = false;
     static int which = 0;       // 0 = the editor's, 1 = the player's
