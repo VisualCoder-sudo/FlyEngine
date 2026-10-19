@@ -287,6 +287,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Backend/miniaudio_impl.c
         src/Engine/Backend/stb/stb_vorbis.c
         src/Engine/Backend/FbxModel.cpp
+        src/Engine/Backend/ModelAnimator.cpp
         src/CityGen/City.cpp
         src/CityGen/CityGeometry.cpp
         src/CityGen/CityEditor.cpp

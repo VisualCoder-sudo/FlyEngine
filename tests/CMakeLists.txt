@@ -285,3 +285,8 @@ target_link_libraries(terrain_tabs_test PRIVATE FlyEngineCore FlyRL)
 # build/tests/terrain_crack_test [terrain.bt]
 add_executable(terrain_crack_test terrain_crack_test.cpp)
 target_link_libraries(terrain_crack_test PRIVATE FlyEngineCore FlyRL)
+
+# Skeletal animation: CPU skinning of a shared model into per-object meshes. No window.
+add_executable(model_animator_test model_animator_test.cpp)
+target_link_libraries(model_animator_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME model_animator COMMAND model_animator_test)

@@ -92,6 +92,8 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
     // v27: further scripts attached to the object (the first one is stored above).
     file << ' ' << object->extraScripts.size();
     for (const auto& name : object->extraScripts) file << ' ' << std::quoted(name);
+    // v30: skeletal animation (clip name, loop, speed, playing).
+    file << ' ' << std::quoted(object->animClip) << ' ' << (int)object->animLoop << ' ' << object->animSpeed << ' ' << (int)object->animPlay;
     file << '\n';
 }
 } // namespace
@@ -493,6 +495,12 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
             if (!(file >> std::quoted(name))) return false;
             if (!name.empty()) object->extraScripts.push_back(std::move(name));
         }
+    }
+    if (version >= 30) {
+        int loop = 1, play = 1;
+        if (!(file >> std::quoted(object->animClip) >> loop >> object->animSpeed >> play)) return false;
+        object->animLoop = loop != 0;
+        object->animPlay = play != 0;
     }
 
     out = std::move(object);

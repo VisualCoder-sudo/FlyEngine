@@ -576,6 +576,10 @@ void DrawMeshInstancedBuffer(Mesh mesh, Material material, unsigned int instance
     DrawMeshInternal(mesh, material, MatrixIdentity(), sg_buffer{ instanceBuffer }, 0, instances);
 }
 
+unsigned long long GetRenderFrameIndex(void) {
+    return (unsigned long long)Gfx().frameCounter;
+}
+
 // ---------------------------------------------------------------------------
 // rlgl pieces used by raylib's model module
 // ---------------------------------------------------------------------------

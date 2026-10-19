@@ -76,6 +76,9 @@ struct SharedModelEntry {
     Model model{};
     Vector3 extent{ 1.0f, 1.0f, 1.0f };   // pre-normalization size of the mesh
     std::string diffuseFile;               // base-colour texture found beside the model
+    ModelAnimation* anims = nullptr;       // skeletal clips (file space), owned
+    int animCount = 0;
+    Matrix norm{};                         // file space -> normalized mesh space
     std::unordered_map<int, std::shared_ptr<const pcoll::Collider>> colliders;   // by accuracy
     int refs = 0;
 };
@@ -276,6 +279,7 @@ Texture2D ScatteredObject::GetTexture() const {
 
 void ScatteredObject::ReleaseModel() {
     if (!hasOwnModel) return;
+    animator.reset();   // frees its private meshes; the clips below may go with the shared entry
     // Private materials array only; meshes belong to the shared entry.
     if (model.materials != nullptr) {
         for (int i = 0; i < model.materialCount; ++i) MemFree(model.materials[i].maps);
@@ -287,6 +291,7 @@ void ScatteredObject::ReleaseModel() {
         // array, which UnloadModel is about to free.
         TechTools::MemoryTracker::Instance().UntrackModel(it->second.model);
         UnloadModel(it->second.model);
+        if (it->second.anims) UnloadModelAnimations(it->second.anims, it->second.animCount);
         g_sharedModels.erase(it);
     }
     model = Model{};
@@ -364,7 +369,19 @@ bool ScatteredObject::SetModel(const std::string& path) {
         // Normalize once, here: every user sees the same [-0.5, 0.5] mesh and
         // scales it through its own `size`.
         SharedModelEntry entry;
-        entry.extent = NormalizeMeshVertices(loaded, ModelBounds(loaded));
+        const BoundingBox loadedBounds = ModelBounds(loaded);
+        entry.extent = NormalizeMeshVertices(loaded, loadedBounds);
+        {
+            // The same affine map NormalizeMeshVertices applied, for the skeleton.
+            const Vector3 inv = { 1.0f / entry.extent.x, 1.0f / entry.extent.y, 1.0f / entry.extent.z };
+            entry.norm = MatrixMultiply(MatrixScale(inv.x, inv.y, inv.z),
+                MatrixTranslate(-loadedBounds.min.x * inv.x - 0.5f, -loadedBounds.min.y * inv.y - 0.5f,
+                                -loadedBounds.min.z * inv.z - 0.5f));
+        }
+        if (!IsFBXPath(path) && loaded.skeleton.boneCount > 0 && loaded.boneMatrices) {
+            entry.anims = LoadModelAnimations(path.c_str(), &entry.animCount);
+            if (!entry.anims) entry.animCount = 0;
+        }
         entry.model = loaded;
         entry.diffuseFile = diffuseFile;
 
@@ -393,6 +410,16 @@ bool ScatteredObject::SetModel(const std::string& path) {
     hasOwnModel = true;
     geometryVersion++;
 
+    animator.reset();
+    if (shared.animCount > 0) {
+        auto anim = std::make_unique<ModelAnimator>();
+        if (anim->Init(shared.model, shared.anims, shared.animCount, shared.norm)) {
+            model.meshes = anim->Meshes();
+            animator = std::move(anim);
+            ApplyAnimation();
+        }
+    }
+
     // The materials are fresh copies, so re-bind the object's texture. Draw()
     // does this lazily and asynchronously instead of decoding it here.
     if (!texturePath.empty()) textureNeedsBind = true;
@@ -400,6 +427,33 @@ bool ScatteredObject::SetModel(const std::string& path) {
 }
 
 const std::string& ScatteredObject::GetModelPath() const { return modelPath; }
+
+void ScatteredObject::ApplyAnimation() {
+    if (!animator) return;
+    int clip = animClip.empty() ? 0 : animator->FindClip(animClip.c_str());
+    if (clip < 0) clip = 0;   // the saved clip is gone from the file: fall back to the first
+    animator->Play(clip, animLoop, animSpeed);
+    if (!animPlay) animator->Stop();
+}
+
+bool ScatteredObject::PlayAnimation(int clip, bool loop, float speed) {
+    if (!animator || clip < 0 || clip >= animator->ClipCount()) return false;
+    animClip = animator->ClipName(clip);
+    animLoop = loop;
+    animSpeed = speed;
+    animPlay = true;
+    ApplyAnimation();
+    return true;
+}
+
+void ScatteredObject::StopAnimation() {
+    animPlay = false;
+    ApplyAnimation();
+}
+
+bool ScatteredObject::PlayAnimation(const std::string& name, bool loop, float speed) {
+    return animator && PlayAnimation(animator->FindClip(name.c_str()), loop, speed);
+}
 
 bool ScatteredObject::HasModel() const { return hasOwnModel; }
 
@@ -455,6 +509,10 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     // The clone shares the source's mesh data (one copy in memory and on the
     // GPU); only its materials are private.
     if (hasOwnModel && !modelPath.empty()) {
+        copy->animClip = animClip;
+        copy->animLoop = animLoop;
+        copy->animPlay = animPlay;
+        copy->animSpeed = animSpeed;
         copy->SetModel(modelPath);
         *copy->GetSizePtr() = size;
     }
@@ -552,6 +610,19 @@ void ScatteredObject::Draw() {
     drawColor.a = (unsigned char)(color.a * (1.0f - transparency));
 
     if (hasOwnModel) {
+        if (animator) {
+            // Once per rendered frame, however many passes draw the object (a
+            // vertex buffer takes one update per frame).
+            const unsigned long long frame = GetRenderFrameIndex();
+            if (frame != animFrame) {
+                const double now = GetTime();
+                const float dt = animFrame == ~0ull ? 0.0f : (float)std::min(now - animTime, 0.1);
+                animFrame = frame;
+                animTime = now;
+                animator->Advance(dt);
+                animator->Skin();
+            }
+        }
         Matrix rotMat = useRenderRotation
             ? renderRotation
             : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
@@ -582,6 +653,8 @@ void ScatteredObject::Draw() {
             DrawModel(model, Vector3Zero(), 1.0f, WHITE);
             rlDisableWireMode();
             model.transform = gfx::ComposeTRS(size, rotMat, pos);
+        } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
+            gfx::DrawModelOutline(model, model.transform);
         }
         return;
     }
@@ -600,6 +673,8 @@ void ScatteredObject::Draw() {
 
     if (isSelected && !ui::IsPlayActive()) {
         DrawShapeModel(shape, pos, size, rotMat, WHITE, GetTexture(), true);
+    } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
+        gfx::DrawModelOutline(gfx::GetShapeModel(shape), gfx::ComposeTRS(size, rotMat, pos));
     }
 }
 
@@ -653,8 +728,6 @@ BoundingBox ModelGroup::GetBounds() const {
     auto merge = [&](const BoundingBox& m) {
         if (!first) {
             box = m;
-        } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
-            gfx::DrawModelOutline(model, model.transform);
             first = true;
             return;
         }
@@ -673,8 +746,6 @@ BoundingBox ModelGroup::GetBounds() const {
         if (c.min.x == c.max.x && c.min.y == c.max.y && c.min.z == c.max.z &&
             child->members.empty() && child->children.empty()) continue;
         merge(c);
-    } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
-        gfx::DrawModelOutline(gfx::GetShapeModel(shape), gfx::ComposeTRS(size, rotMat, pos));
     }
     if (!first) {
         box.min = { 0.0f, 0.0f, 0.0f };

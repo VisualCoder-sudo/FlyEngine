@@ -1546,6 +1546,8 @@ void BasicTerrain::Draw() {
         }
     }
 
+    gfx::UploadWaterShadows(s_terrainShader);   // the sun's shadow cascades (not only water uses them)
+
     DrawModel(model, position, 1.0f, WHITE);
     gfx::IncrementDrawCallCount(1);
     gfx::AddMeshCount(1);

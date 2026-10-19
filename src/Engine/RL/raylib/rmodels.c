@@ -6530,7 +6530,9 @@ static ModelAnimation *LoadModelAnimationsGLTF(const char *fileName, int *animCo
             Transform worldTransform = { 0 };
             cgltf_float cgltf_worldTransform[16] = { 0 };
             cgltf_node *node = skin.joints[0];
-            cgltf_node_transform_world(node->parent, cgltf_worldTransform);
+            // A root joint has no parent node (FlyEngine: that crashed here); its world transform is then identity
+            if (node->parent != NULL) cgltf_node_transform_world(node->parent, cgltf_worldTransform);
+            else for (int i = 0; i < 16; i++) cgltf_worldTransform[i] = (i%5 == 0)? 1.0f : 0.0f;
             Matrix worldMatrix = {
                 cgltf_worldTransform[0], cgltf_worldTransform[4], cgltf_worldTransform[8], cgltf_worldTransform[12],
                 cgltf_worldTransform[1], cgltf_worldTransform[5], cgltf_worldTransform[9], cgltf_worldTransform[13],

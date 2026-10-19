@@ -1764,7 +1764,8 @@ RLAPI void SetProjectionJitter(float x, float y);                     // Shifts 
 RLAPI Vector2 GetRenderTargetSize(void);                             // Size in pixels of the target being drawn into (the window, or the BeginTextureMode() target)
 RLAPI Texture2D LoadTexture3D(const void *data, int width, int height, int depth, int format); // Volume texture (GRAYSCALE or R8G8B8A8), bilinear, repeating
 RLAPI void DrawMeshInstancedBuffer(Mesh mesh, Material material, unsigned int instanceBuffer, int instances); // Instanced draw from a persistent rlLoadVertexBuffer() of column-major float16 transforms
-RLAPI bool IsRenderOriginTopLeft(void);                               // True when render targets are stored top-down (Vulkan/D3D11)
+RLAPI unsigned long long GetRenderFrameIndex(void);                   // Frames rendered so far; a vertex buffer may be updated once per frame
+RLAPI bool IsRenderOriginTopLeft(void);                              // True when render targets are stored top-down (Vulkan/D3D11)
 RLAPI const char *GetGraphicsBackendName(void);                       // "OpenGL", "Vulkan", "D3D11"
 typedef bool (*FlyEventHook)(const void *sappEvent);                  // Receives every sapp_event before raylib input does
 RLAPI void SetEventHook(FlyEventHook hook);

@@ -1,6 +1,7 @@
 #pragma once
 #include "Entity.hpp"
 #include "Frustum.hpp"
+#include "ModelAnimator.hpp"
 #include "../PhysicsCollision.hpp"
 #include "raylib.h"
 #include "raymath.h"
@@ -119,6 +120,23 @@ public:
     // True once SetModel(path) will not block (prefetch finished, or none pending).
     static bool IsModelReady(const std::string& path);
     const std::string& GetModelPath() const;
+
+    // Skeletal animation: imported glTF/IQM/M3D models that carry clips play the
+    // first one in a loop. FBX models are baked to their bind pose and have none.
+    int GetAnimationCount() const { return animator ? animator->ClipCount() : 0; }
+    const char* GetAnimationName(int clip) const { return animator ? animator->ClipName(clip) : ""; }
+    int GetCurrentAnimation() const { return animator ? animator->CurrentClip() : -1; }
+    bool IsAnimationPlaying() const { return animator && animator->IsPlaying(); }
+    bool PlayAnimation(int clip, bool loop = true, float speed = 1.0f);
+    bool PlayAnimation(const std::string& name, bool loop = true, float speed = 1.0f);
+    void StopAnimation();
+    // Chosen clip, saved with the scene and applied whenever the model attaches
+    // (also before it has loaded). Empty = the model's first clip.
+    std::string animClip;
+    bool animLoop = true;
+    bool animPlay = true;      // false = held on the clip's first frame
+    float animSpeed = 1.0f;
+    void ApplyAnimation();     // pushes the four settings above into the animator
     // Absolute path of the texture that came with the model file (empty if none).
     const std::string& GetModelDiffuseFile() const { return modelDiffuseFile; }
     bool HasModel() const;
@@ -150,6 +168,7 @@ public:
     float GetYaw() const;
 
     bool isSelected = false;
+    bool isHovered = false;   // editor only: the cursor is over it, drawn with the hover outline
 
     // Editor grouping: the model this object belongs to, or nullptr when it is
     // a standalone top-level object. Owned by the editor, never freed here.
@@ -168,7 +187,6 @@ public:
     // `script` is the first script; `extraScripts` are the others (an object can carry several).
     std::string script;
     std::vector<std::string> extraScripts;
-    bool isHovered = false;   // editor only: the cursor is over it, drawn with the hover outline
     bool runOnPlay = true;
 
     // Every attached script class, primary first.
@@ -239,6 +257,9 @@ private:
     std::string modelPath;
     bool hasOwnModel = false;
     std::string sharedModelKey;     // key into the shared mesh cache
+    std::unique_ptr<ModelAnimator> animator;   // private skinned meshes; null for static models
+    unsigned long long animFrame = ~0ull;      // render frame the pose was last advanced on
+    double animTime = 0.0;
     Vector3 modelExtent{ 1.0f, 1.0f, 1.0f };
     std::string modelDiffuseFile;   // base-colour texture shipped with the model (abs path)
     void ReleaseModel();

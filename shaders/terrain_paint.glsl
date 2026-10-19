@@ -1,7 +1,9 @@
 // BasicTerrain splat-painting shader: four albedo layers blended by an RGBA
-// splatmap, sunlight plus sky and ground ambient, in linear light.
+// splatmap, sunlight plus sky and ground ambient, in linear light. The sun's shadow cascades
+// (shaders/fly_shadow.glsl) shade it the way they shade every lit mesh.
 @module terrain_paint
 @include fly_common.glsl
+@include fly_shadow.glsl
 
 @vs vs
 @include_block fly_clip
@@ -37,19 +39,24 @@ layout(binding=1) uniform fs_params {
     vec3 ambientGround;     // linear light bounced off the ground (on what faces down)
     float _pad1;
     vec4 cloudShadow;       // where the clouds' shadow texture lies on the world (see CloudLight in lit.glsl); w = 0: no clouds
+    vec4 sunDir;            // xyz = unit vector the sunlight travels along, w = shadow cascade count (0 = shadows off)
+    mat4 shadowVP[4];       // world to shadow-map space, one per cascade
 };
-layout(binding=0) uniform texture2D splatmap;
-layout(binding=0) uniform sampler splatmap_smp;
-layout(binding=1) uniform texture2D albedoTex0;
-layout(binding=1) uniform sampler albedoTex0_smp;
-layout(binding=2) uniform texture2D albedoTex1;
-layout(binding=2) uniform sampler albedoTex1_smp;
-layout(binding=3) uniform texture2D albedoTex2;
-layout(binding=3) uniform sampler albedoTex2_smp;
-layout(binding=4) uniform texture2D albedoTex3;
-layout(binding=4) uniform sampler albedoTex3_smp;
-layout(binding=5) uniform texture2D cloudShadowTex;
-layout(binding=5) uniform sampler cloudShadowTex_smp;
+// Bindings 0..5 belong to the shadow cascades (fly_shadow.glsl), so the terrain's own textures sit above them.
+layout(binding=6) uniform texture2D splatmap;
+layout(binding=6) uniform sampler splatmap_smp;
+layout(binding=7) uniform texture2D albedoTex0;
+layout(binding=7) uniform sampler albedoTex0_smp;
+layout(binding=8) uniform texture2D albedoTex1;
+layout(binding=8) uniform sampler albedoTex1_smp;
+layout(binding=9) uniform texture2D albedoTex2;
+layout(binding=9) uniform sampler albedoTex2_smp;
+layout(binding=10) uniform texture2D albedoTex3;
+layout(binding=10) uniform sampler albedoTex3_smp;
+layout(binding=11) uniform texture2D cloudShadowTex;
+layout(binding=11) uniform sampler cloudShadowTex_smp;
+@include_block fly_rt_uv
+@include_block fly_shadow
 in vec3 worldPos;
 in vec3 worldNormal;
 in vec2 texCoord;
@@ -76,6 +83,7 @@ void main() {
         vec2 q = worldPos.xz + L.xz * (max(cloudShadow.w - worldPos.y, 0.0) / max(L.y, 0.12));
         sun *= textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
     }
+    sun *= 1.0 - ShadowCalculation(worldPos, N);
     vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * sun);
     fragColor = vec4(color, 1.0);
 }

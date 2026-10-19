@@ -666,6 +666,7 @@ static float PropertiesContentHeight() {
     float h = 50.0f; // below the title strip
     h += group(true, 6.0f);               // General (color + anchored + can collide + collision + transparency + mass)
     if (g_selectedObject && g_selectedObject->HasModel()) h += rowHeight; // mesh info line
+    if (g_selectedObject && g_selectedObject->GetAnimationCount() > 0) h += rowHeight; // animation row
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
     if (g_selectedObject && g_selectedObject->HasModel() && !g_playActive) h += rowHeight; // browse / clear row
     if (g_selectedObject) h += group(g_waterInteractOpen, 3.0f);  // Water Interactions
@@ -1123,6 +1124,55 @@ if (g_selection.size() > 1) {
             if (slash != std::string::npos) meshName = meshName.substr(slash + 1);
             DrawTextArial("Mesh:", labelX, y + 6.0f, 14.0f, theme::TEXT_MUTED);
             DrawTextArial(FitTextToWidth(meshName, 13.0f, inputWidth).c_str(), inputX, y + 6.0f, 13.0f, theme::TEXT);
+        }
+
+        // --- Animation (imported models that carry skeletal clips) ---
+        if (g_selectedObject && g_selectedObject->GetAnimationCount() > 0) {
+            y += rowHeight;
+            DrawTextArial("Anim:", labelX, y + 6.0f, 14.0f, theme::TEXT_MUTED);
+            const int clipCount = g_selectedObject->GetAnimationCount();
+            const float playW = 24.0f, gap = 4.0f;
+            // Clip button: click = next clip, right click = previous.
+            const Rectangle clipBtn = { inputX, y + 2.0f, inputWidth - playW - gap, 22.0f };
+            const Rectangle playBtn = { inputX + inputWidth - playW, y + 2.0f, playW, 22.0f };
+
+            const bool clipHovered = CheckCollisionPointRec(mouse, clipBtn);
+            const float clipT = HoverProgress(210, clipHovered);
+            DrawRectangleRounded(clipBtn, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, clipT));
+            DrawRectangleLinesEx(clipBtn, clipHovered ? 2.0f : 1.0f, clipHovered ? theme::ACCENT : theme::BORDER);
+            if (clipHovered) MarkHand();
+            int cur = g_selectedObject->GetCurrentAnimation();
+            if (cur < 0) cur = 0;
+            const std::string clipLabel = std::to_string(cur + 1) + "/" + std::to_string(clipCount) + "  " +
+                (*g_selectedObject->GetAnimationName(cur) ? g_selectedObject->GetAnimationName(cur) : "(unnamed)");
+            DrawTextArial(FitTextToWidth(clipLabel, 12.0f, clipBtn.width - 12.0f).c_str(), clipBtn.x + 6.0f, clipBtn.y + 4.0f, 12.0f, theme::TEXT);
+            if (clipHovered && clipCount > 1) {
+                int next = -1;
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) next = (cur + 1) % clipCount;
+                else if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) next = (cur + clipCount - 1) % clipCount;
+                if (next >= 0) {
+                    g_selectedObject->PlayAnimation(next, g_selectedObject->animLoop, g_selectedObject->animSpeed);
+                    Log("'%s' animation = %s", g_selectedObject->GetName().c_str(), g_selectedObject->GetAnimationName(next));
+                }
+            }
+
+            // Play / pause toggle.
+            const bool playHovered = CheckCollisionPointRec(mouse, playBtn);
+            const bool playing = g_selectedObject->animPlay;
+            DrawRectangleRounded(playBtn, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, HoverProgress(211, playHovered)));
+            DrawRectangleLinesEx(playBtn, playHovered ? 2.0f : 1.0f, playHovered ? theme::ACCENT : theme::BORDER);
+            if (playHovered) MarkHand();
+            const float cx = playBtn.x + playBtn.width * 0.5f, cy = playBtn.y + playBtn.height * 0.5f;
+            if (playing) {
+                DrawRectangle((int)(cx - 5.0f), (int)(cy - 5.0f), 3, 10, theme::TEXT);
+                DrawRectangle((int)(cx + 2.0f), (int)(cy - 5.0f), 3, 10, theme::TEXT);
+            } else {
+                DrawTriangle({ cx - 4.0f, cy - 6.0f }, { cx - 4.0f, cy + 6.0f }, { cx + 6.0f, cy }, theme::TEXT);
+            }
+            if (playHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (playing) g_selectedObject->StopAnimation();
+                else g_selectedObject->PlayAnimation(cur, g_selectedObject->animLoop, g_selectedObject->animSpeed);
+            }
         }
 
         // --- Texture (for both primitives and imported meshes) ---
