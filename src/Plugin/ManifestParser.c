@@ -117,10 +117,23 @@ static bool parse_dependencies(cJSON* obj, PluginIdentity* id) {
 }
 
 static PluginType parse_type(const char* str) {
+    if (!str) return PLUGIN_TYPE_UNKNOWN;
     if (strcmp(str, "nat") == 0) return PLUGIN_TYPE_NAT;
     if (strcmp(str, "fpc") == 0) return PLUGIN_TYPE_FPC;
     if (strcmp(str, "lib") == 0) return PLUGIN_TYPE_LIB;
     return PLUGIN_TYPE_UNKNOWN;
+}
+
+// Reads an open file into a NUL-terminated heap buffer. NULL on any seek/size/alloc/read failure.
+static char* read_whole_file(FILE* f) {
+    if (fseek(f, 0, SEEK_END) != 0) return NULL;
+    long sz = ftell(f);
+    if (sz < 0 || fseek(f, 0, SEEK_SET) != 0) return NULL;
+    char* data = malloc((size_t)sz + 1);
+    if (!data) return NULL;
+    if (fread(data, 1, (size_t)sz, f) != (size_t)sz) { free(data); return NULL; }
+    data[sz] = '\0';
+    return data;
 }
 
 PluginIdentity* PluginIdentity_ParseFromFile(const char* filepath, char** error_out) {
@@ -129,13 +142,12 @@ PluginIdentity* PluginIdentity_ParseFromFile(const char* filepath, char** error_
         if (error_out) *error_out = strdup("Failed to open id.json");
         return NULL;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* data = malloc(sz + 1);
-    fread(data, 1, sz, f);
-    data[sz] = '\0';
+    char* data = read_whole_file(f);
     fclose(f);
+    if (!data) {
+        if (error_out) *error_out = strdup("Failed to read id.json");
+        return NULL;
+    }
     
     cJSON* root = cJSON_Parse(data);
     free(data);
@@ -295,13 +307,12 @@ PluginManifest* PluginManifest_ParseFromFile(const char* filepath, PluginType ty
         if (error_out) *error_out = strdup("Failed to open manifest file");
         return NULL;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* data = malloc(sz + 1);
-    fread(data, 1, sz, f);
-    data[sz] = '\0';
+    char* data = read_whole_file(f);
     fclose(f);
+    if (!data) {
+        if (error_out) *error_out = strdup("Failed to read manifest file");
+        return NULL;
+    }
     
     cJSON* root = cJSON_Parse(data);
     free(data);
@@ -323,6 +334,7 @@ PluginManifest* PluginManifest_ParseFromFile(const char* filepath, PluginType ty
             return NULL;
     }
     
+    m->version = cJSON_GetString(root, "version", false);
     parse_metadata(root, m);
     cJSON_Delete(root);
     return m;
@@ -342,6 +354,7 @@ void PluginManifest_Free(PluginManifest* m) {
     free_string_array(m->lib.exports, m->lib.exports_count);
     free(m->lib.header_path);
     
+    free(m->version);
     free(m->metadata.description);
     free(m->metadata.license);
     free(m->metadata.icon);
@@ -358,7 +371,14 @@ bool PluginIdentity_Validate(const PluginIdentity* id, const PluginManifest* man
         return false;
     }
     
-    // Version must match (would need manifest version - for now just check manifest exists)
+    if (manifest->version && id->version && strcmp(manifest->version, id->version) != 0) {
+        if (error_out) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "Version mismatch: id.json Version='%s' but manifest version='%s'", id->version, manifest->version);
+            *error_out = strdup(buf);
+        }
+        return false;
+    }
     if (id->type == PLUGIN_TYPE_NAT && !manifest->nat.entry_point) {
         if (error_out) *error_out = strdup("NAT plugin missing entry_point in manifest");
         return false;

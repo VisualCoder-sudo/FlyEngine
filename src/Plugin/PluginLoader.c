@@ -269,8 +269,14 @@ static bool load_fpc_plugin(PluginLoader* loader, PluginInfo* info, char** error
 bool PluginLoader_Load(PluginLoader* loader, const char* plugin_name) {
     if (!loader || !plugin_name) return false;
     
-    // Check already loaded
-    if (find_loaded(loader, plugin_name)) return true;
+    // Already loaded counts as success; an entry left by an earlier failed attempt is dropped so the load retries.
+    LoadedPlugin* existing = find_loaded(loader, plugin_name);
+    if (existing && existing->state != PLUGIN_STATE_ERROR) return true;
+    if (existing) {
+        free(existing->error_message);
+        *existing = loader->loaded_plugins[--loader->loaded_count];
+        memset(&loader->loaded_plugins[loader->loaded_count], 0, sizeof(LoadedPlugin));
+    }
     
     // Find in discovered
     PluginInfo* info = find_discovered(loader, plugin_name);
@@ -306,6 +312,7 @@ bool PluginLoader_Load(PluginLoader* loader, const char* plugin_name) {
             success = false;
     }
     
+    if (!success && !error) error = strdup("Plugin failed to load");
     if (!success && error) {
         // Store error in a temporary loaded plugin for reporting
         LoadedPlugin* lp = &loader->loaded_plugins[loader->loaded_count++];
@@ -356,6 +363,7 @@ void PluginLoader_Unload(PluginLoader* loader, const char* plugin_name) {
         dlclose(lp->handle);
         lp->handle = NULL;
     }
+    free(lp->error_message);
     
     // Remove from array (swap with last)
     loader->loaded_count--;

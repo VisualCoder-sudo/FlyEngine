@@ -50,6 +50,7 @@ namespace detail {
 
     const char* kSignature = "FLYENGINE_PROJECT";
     constexpr int kVersion = 1;
+    constexpr int kMaxSceneVersion = 30;   // keep in step with ScenePersistence.cpp
 
     namespace theme {
         constexpr Color BG         = Color{ 24, 26, 32, 255 };
@@ -82,11 +83,31 @@ namespace detail {
         return MeasureTextEx(g_font, text, size, 1.0f).x;
     }
 
+    // Shortens `text` to fit `maxW` with a trailing "...", cutting only at UTF-8 code point boundaries.
+    // Binary search over the cut point: O(log n) measurements instead of one per removed character.
+    std::string EllipsizeU(const std::string& text, float size, float maxW) {
+        if (MeasureTextU(text.c_str(), size) <= maxW) return text;
+        std::vector<size_t> cuts;   // byte offsets where a code point starts
+        for (size_t i = 0; i < text.size(); ++i) if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) cuts.push_back(i);
+        size_t lo = 0, hi = cuts.size();   // largest k in [0, hi) such that the first k code points + "..." fit
+        while (lo + 1 < hi) {
+            const size_t mid = (lo + hi) / 2;
+            if (MeasureTextU((text.substr(0, cuts[mid]) + "...").c_str(), size) <= maxW) lo = mid; else hi = mid;
+        }
+        return text.substr(0, cuts.empty() ? 0 : cuts[lo]) + "...";
+    }
+
     std::string TrimCopy(std::string s) {
         size_t b = s.find_first_not_of(" \t\r\n");
         if (b == std::string::npos) return "";
         size_t e = s.find_last_not_of(" \t\r\n");
         return s.substr(b, e - b + 1);
+    }
+
+    // Last path component, ignoring trailing separators ("/a/b/" -> "b").
+    std::string LastComponent(std::string path) {
+        while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) path.pop_back();
+        return path.substr(path.find_last_of("\\/") + 1);
     }
 
     std::string BaseDirOf(const std::string& path) {
@@ -182,7 +203,13 @@ namespace detail {
         std::istringstream head(line);
         std::string sig;
         int ver = 0;
-        if (!(head >> sig >> ver) || sig != kSignature || ver != kVersion) return false;
+        if (!(head >> sig >> ver) || sig != kSignature) return false;
+        if (ver > kVersion) {
+            ui::LogAlways("[project] %s was made with a newer Flyengine (project format %d, this build reads %d).",
+                          projectFile.c_str(), ver, kVersion);
+            return false;
+        }
+        if (ver != kVersion) return false;
         // Header fields are dispatched by key rather than by line position, so a
         // file with a reordered or hand-added field still loads.
         bool inScene = false;
@@ -195,7 +222,24 @@ namespace detail {
             else if (key == "Created") out.created = atoll(value.c_str());
             else if (key == "Modified") out.modified = atoll(value.c_str());
         }
-        return inScene;
+        if (!inScene) return false;
+        // Cheap sanity check of the scene signature line, so a truncated or foreign file is not listed as healthy.
+        // The stream is put back where it was; if it cannot seek, the check is skipped.
+        const std::istream::pos_type scenePos = scene.tellg();
+        if (scenePos != std::istream::pos_type(-1)) {
+            std::string sceneSig;
+            int sceneVer = 0;
+            const bool ok = static_cast<bool>(scene >> sceneSig >> sceneVer);
+            scene.clear();
+            scene.seekg(scenePos);
+            if (!ok || sceneSig != "SIMPLE_ENGINE_BUILD" || sceneVer < 1) return false;
+            if (sceneVer > kMaxSceneVersion) {
+                ui::LogAlways("[project] %s was made with a newer Flyengine (scene format %d, this build reads %d).",
+                              projectFile.c_str(), sceneVer, kMaxSceneVersion);
+                return false;
+            }
+        }
+        return true;
     }
 
     // Locates the .flyproj that makes `folder` a project. The canonical name is
@@ -205,7 +249,7 @@ namespace detail {
     // Returns an empty string when there is none, or more than one to choose from.
     std::string FindProjectFile(const std::string& folder) {
         if (folder.empty()) return std::string();
-        const std::string name = folder.substr(folder.find_last_of("\\/") + 1);
+        const std::string name = LastComponent(folder);
         const std::string preferred = JoinPath(folder, name + ".flyproj");
         if (FileExists(preferred.c_str())) return preferred;
 
@@ -294,7 +338,9 @@ namespace detail {
     // Refuses anything that isn't plainly a project folder: the recent list can hold any folder the user opened,
     // and a name like ".." or a parent folder that merely contains one .flyproj must never take the surrounding
     // directory with it.
-    bool DeleteFolderRecursive(const std::string& path) {
+    bool DeleteFolderRecursive(const std::string& rawPath) {
+        std::string path = rawPath;
+        while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) path.pop_back();
         if (path.empty()) return false;
         std::error_code ec;
         const fs::path folder = fs::weakly_canonical(U8Path(path), ec);
@@ -475,6 +521,7 @@ namespace detail {
         std::string desc;
         std::string author;
         Texture2D thumb = { 0 };
+        std::string thumbFile;   // baked lazily, the first time the picker opens
     };
 
     std::string TemplatesRoot() { return platform::ResolveAsset("assets/templates"); }
@@ -585,11 +632,19 @@ namespace detail {
             if (!fs::exists(dir / (t.id + ".flyproj"), ec)) continue;
             t.name = t.id;
             ReadTemplateData((dir / "data.json").string(), t);
-            t.thumb = BakeThumbnail((dir / "thumbnail.png").string(), t.name, t.desc);
+            t.thumbFile = (dir / "thumbnail.png").string();
             list.push_back(std::move(t));
         }
         std::sort(list.begin(), list.end(), [](const TemplateInfo& a, const TemplateInfo& b) { return a.name < b.name; });
         return list;
+    }
+
+    // Decoding and blurring the thumbnails is the slow part of LoadTemplates, so it waits until they are shown.
+    void BakeTemplateThumbnails(std::vector<TemplateInfo>& list) {
+        for (TemplateInfo& t : list) {
+            if (t.thumb.id == 0 && !t.thumbFile.empty()) t.thumb = BakeThumbnail(t.thumbFile, t.name, t.desc);
+            t.thumbFile.clear();
+        }
     }
 
     void UnloadTemplates(std::vector<TemplateInfo>& list) {
@@ -779,6 +834,12 @@ bool IsValidProjectName(const std::string& name) {
         if (strchr("<>:\"/\\|?*", c)) return false;
         if ((unsigned char)c < 32) return false;
     }
+    // Windows reserved device names, with or without an extension ("con", "NUL.txt", "com1").
+    std::string stem = name.substr(0, name.find('.'));
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    for (char& c : stem) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") return false;
+    if (stem.size() == 4 && (stem.compare(0, 3, "COM") == 0 || stem.compare(0, 3, "LPT") == 0) && stem[3] >= '1' && stem[3] <= '9') return false;
     return true;
 }
 
@@ -966,7 +1027,7 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     const std::string existing = detail::FindProjectFile(projectFolder);
     const std::string projectFile = existing.empty()
         ? detail::JoinPath(projectFolder,
-              projectFolder.substr(projectFolder.find_last_of("\\/") + 1) + ".flyproj")
+              detail::LastComponent(projectFolder) + ".flyproj")
         : existing;
     {
         detail::SceneSource scene;
@@ -1006,7 +1067,7 @@ std::string SaveProjectFileTemp(const std::string& projectFolder, const std::vec
                                 const std::vector<std::unique_ptr<ModelGroup>>& models,
                                 terrain::Terrain* terrain) {
     HeaderFields fields;
-    const std::string name = projectFolder.substr(projectFolder.find_last_of("\\/") + 1);
+    const std::string name = detail::LastComponent(projectFolder);
     const std::string tempFile = detail::JoinPath(projectFolder, name + "_temp.flyproj");
     {
         detail::SceneSource scene;
@@ -1089,7 +1150,7 @@ Info ShowProjectManager() {
     // recentPaths is the on-disk truth; `recent` is the same list decorated with the
     // header info needed for rendering (display name + whether the folder still exists).
     std::vector<std::string> recentPaths = LoadRecentPaths();
-    struct Entry { std::string path; std::string name; bool missing; };
+    struct Entry { std::string path; std::string name; bool missing; std::string shownName, shownPath; float shownW = -1.0f; };
     auto refreshRecent = [&]() {
         std::vector<Entry> entries;
         entries.reserve(recentPaths.size());
@@ -1245,16 +1306,17 @@ Info ShowProjectManager() {
                     DrawRectangleRec(row, ROWHoverColor());
                 }
 
-                const Entry& e = recent[idx];
-                DrawTextU(e.name.c_str(), row.x + 8, row.y + 4, 15,
-                    e.missing ? theme::DANGER : theme::TEXT);
-
-                // Truncate the long path from the right so the tail stays readable.
-                std::string p = e.path;
+                Entry& e = recent[idx];
+                // Truncated text is cached per row and only recomputed when the panel width changes.
                 const float maxW = lw - 48.0f;
-                while (!p.empty() && MeasureTextU(p.c_str(), 11) > maxW) p.pop_back();
-                if (p != e.path) p += "...";
-                DrawTextU(p.c_str(), row.x + 8, row.y + 22, 11,
+                if (e.shownW != maxW) {
+                    e.shownName = EllipsizeU(e.name, 15, maxW);
+                    e.shownPath = EllipsizeU(e.path, 11, maxW);
+                    e.shownW = maxW;
+                }
+                DrawTextU(e.shownName.c_str(), row.x + 8, row.y + 4, 15,
+                    e.missing ? theme::DANGER : theme::TEXT);
+                DrawTextU(e.shownPath.c_str(), row.x + 8, row.y + 22, 11,
                     e.missing ? theme::DANGER : theme::TEXT_MUTED);
 
                 if (hovered) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
@@ -1301,7 +1363,14 @@ Info ShowProjectManager() {
         }
         if (deleteClicked && selected >= 0 && selected < static_cast<int>(recent.size())
             && !recent[selected].missing) {
-            if (recent[selected].path == GetCurrentProject().path) {
+            // Compare canonical paths (trailing separators stripped) so a trailing slash cannot sneak past the check.
+            const auto canon = [](std::string q) {
+                while (q.size() > 1 && (q.back() == '\\' || q.back() == '/')) q.pop_back();
+                std::error_code cec;
+                return fs::weakly_canonical(U8Path(q), cec);
+            };
+            const std::string& curPath = GetCurrentProject().path;
+            if (recent[selected].path == curPath || (!curPath.empty() && canon(recent[selected].path) == canon(curPath))) {
                 fail("This project is currently open, Close it first");
             } else {
                 deletePath = recent[selected].path;
@@ -1417,6 +1486,7 @@ Info ShowProjectManager() {
         if (!modal) DrawFolderPromptFallback(promptField);
 
         if (pickerOpen) {
+            BakeTemplateThumbnails(templates);
             const int action = DrawTemplatePicker(templates, chosenTemplate, pickerScroll, !pickerJustOpened);
             if (action != 0) pickerOpen = false;
         }
