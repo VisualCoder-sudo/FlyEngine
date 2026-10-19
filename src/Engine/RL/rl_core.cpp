@@ -138,6 +138,11 @@ void DispatchEvent(const sapp_event* ev) {
                     c.keyPressedEvt[k] = true;
                     c.keyQueue.push_back(k);
                 }
+                // The numpad Enter also counts as Enter, so every KEY_ENTER check (and script/plugin key) accepts both.
+                if (k == KEY_KP_ENTER) {
+                    if (ev->key_repeat) c.keyRepeat[KEY_ENTER] = true;
+                    else { c.keyDown[KEY_ENTER] = true; c.keyPressedEvt[KEY_ENTER] = true; }
+                }
             }
             break;
         }
@@ -146,6 +151,7 @@ void DispatchEvent(const sapp_event* ev) {
             if (k > 0 && k < kMaxKeys) {
                 c.keyDown[k] = false;
                 c.keyReleasedEvt[k] = true;
+                if (k == KEY_KP_ENTER) { c.keyDown[KEY_ENTER] = false; c.keyReleasedEvt[KEY_ENTER] = true; }
             }
             break;
         }

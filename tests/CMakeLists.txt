@@ -310,3 +310,9 @@ add_test(NAME model_animator COMMAND model_animator_test)
 add_executable(version_compat_test version_compat_test.c ${CMAKE_CURRENT_SOURCE_DIR}/../src/Plugin/VersionCompat.c)
 target_include_directories(version_compat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 add_test(NAME version_compat COMMAND version_compat_test)
+
+# Keypad Enter is Enter: the input layer sets KEY_ENTER state for KEY_KP_ENTER events. No window.
+add_executable(numpad_enter_test numpad_enter_test.cpp)
+target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
+target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
+add_test(NAME numpad_enter COMMAND numpad_enter_test)

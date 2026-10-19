@@ -533,7 +533,7 @@ void DrawPathPromptModal() {
         if (cancel) p.cancel = true;
 
         // Enter submits, Escape dismisses.
-        if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+        if (ImGui::IsItemHovered() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
             if (p.buffer[0] != '\0' && FileExists(p.buffer)) p.accept = true;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) p.cancel = true;
