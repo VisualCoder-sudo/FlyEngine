@@ -316,3 +316,8 @@ add_executable(numpad_enter_test numpad_enter_test.cpp)
 target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
 target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
 add_test(NAME numpad_enter COMMAND numpad_enter_test)
+
+# Terrain readers/importers reject corrupt input (bad headers, sizes, non-square RAW16, NaN). Opens a window, so it
+# is not registered with ctest: build/tests/terrain_io_fuzz_test
+add_executable(terrain_io_fuzz_test terrain_io_fuzz_test.cpp)
+target_link_libraries(terrain_io_fuzz_test PRIVATE FlyEngineCore FlyRL)

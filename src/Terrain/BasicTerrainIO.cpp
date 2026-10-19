@@ -34,6 +34,7 @@
 #include "miniz.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <istream>
@@ -178,6 +179,9 @@ bool ReadBlock(std::istream& is, std::vector<unsigned char>& out, size_t expecte
         return true;
     }
 
+    // `stored` is also file-controlled: a deflated block can never be larger
+    // than the compress bound of the raw size, so cap it before allocating.
+    if (stored > bound) return false;
     std::vector<unsigned char> comp(stored);
     if (!is.read(reinterpret_cast<char*>(comp.data()), static_cast<std::streamsize>(comp.size()))) {
         return false;
@@ -346,8 +350,8 @@ bool BasicTerrain::ReadInstance(std::istream& is, BasicTerrain& t) {
     // for an arbitrary reserve(). kSplatMaxDim already caps the splatmap, and
     // the heightmap gets the same treatment.
     if (w < 1 || d < 1 || w > 8192 || d > 8192) return false;
-    if (!(scale > 0.0f)) return false;
-    if (!(maxH > minH)) return false;
+    if (!(scale > 0.0f) || !std::isfinite(scale)) return false;
+    if (!(maxH > minH) || !std::isfinite(minH) || !std::isfinite(maxH)) return false;
 
     Vector3 pos{};
     if (!ReadF32(is, pos.x) || !ReadF32(is, pos.y) || !ReadF32(is, pos.z)) return false;
