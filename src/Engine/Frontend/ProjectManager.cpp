@@ -1482,6 +1482,11 @@ static void InstallTutorialPlugin(const std::string& projectFolder) {
     fs::copy_file(U8Path(src), dir / "src" / "hello_plugin.c", fs::copy_options::overwrite_existing, ec);
     fs::copy_file(U8Path(hdr), dir / "include" / "CPluginAPI.h", fs::copy_options::overwrite_existing, ec);
     if (!readme.empty()) fs::copy_file(U8Path(readme), dir / "README.md", fs::copy_options::overwrite_existing, ec);
+    // id.json, plugin.json and icon.png make it a valid plugin for `flyplugin validate`.
+    for (const char* meta : { "id.json", "plugin.json", "icon.png" }) {
+        const std::string from = platform::ResolveAsset(std::string("assets/tutorial/HelloPlugin/") + meta);
+        if (!from.empty()) fs::copy_file(U8Path(from), dir / meta, fs::copy_options::overwrite_existing, ec);
+    }
 #ifdef _WIN32
     const std::string cc = "gcc", lib = "hello_plugin.dll";
     const std::vector<std::string> args = { "-shared", "-I", (dir / "include").string(), "-o", (dir / "build" / lib).string(), (dir / "src" / "hello_plugin.c").string() };
@@ -1505,6 +1510,14 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
         if (fs::exists(U8Path(projectFile), ec) || !detail::FindProjectFile(projectFolder).empty()) return false;
     }
 
+    // A named template must exist; check before anything is written.
+    const std::string templateId = templateName.empty() ? "Blank" : templateName;
+    const std::string templateFile = TemplateProjectFile(templateId);
+    if (templateFile.empty() && templateId != "Blank") {
+        TraceLog(LOG_WARNING, "PROJECT: unknown template '%s'", templateId.c_str());
+        return false;
+    }
+
     // Create directories (project root, assets, assets/3D)
     detail::EnsureDirectory(projectFolder);
     detail::EnsureDirectory(assetsFolder);
@@ -1516,13 +1529,13 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
 
     HeaderFields fields;
     fields.name = name;
-    fields.templateName = templateName.empty() ? "Blank" : templateName;
+    fields.templateName = templateId;
     fields.created = detail::TimeNow();
     fields.modified = fields.created;
 
     WriteProjectHeader(out, fields);
     // A template starts from its scene and deps/.
-    if (const std::string sample = TemplateProjectFile(fields.templateName); !sample.empty()) {
+    if (const std::string& sample = templateFile; !sample.empty()) {
         HeaderFields sampleFields;
         SceneSource scene;
         if (!ReadProjectFileAt(sample, sampleFields, scene)) return false;

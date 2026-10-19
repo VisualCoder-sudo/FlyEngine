@@ -195,6 +195,17 @@ PluginIdentity* PluginIdentity_ParseFromFile(const char* filepath, char** error_
         return NULL;
     }
     
+    // Name becomes part of the .so path: only [A-Za-z0-9_-], no separators or "..".
+    bool name_ok = id->name[0] != '\0';
+    for (const char* c = id->name; name_ok && *c; c++) {
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_' || *c == '-')) name_ok = false;
+    }
+    if (!name_ok) {
+        PluginIdentity_Free(id);
+        if (error_out) *error_out = strdup("Name in id.json must be non-empty and contain only letters, digits, '_' and '-'");
+        return NULL;
+    }
+    
     // Validate date format (basic YYYY-MM-DD check)
     if (strlen(id->date_created) != 10 || id->date_created[4] != '-' || id->date_created[7] != '-') {
         PluginIdentity_Free(id);

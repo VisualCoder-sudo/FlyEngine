@@ -40,6 +40,7 @@ Ray GetScreenToWorldRay(Vector2 position, Camera camera) {
 
 Ray GetScreenToWorldRayEx(Vector2 position, Camera camera, int width, int height) {
     Ray ray{};
+    if (width <= 0 || height <= 0) return ray; // zero-size window: avoid dividing by zero
     const float x = (2.0f * position.x) / (float)width - 1.0f;
     const float y = 1.0f - (2.0f * position.y) / (float)height;
     const Matrix matView = MatrixLookAt(camera.position, camera.target, camera.up);

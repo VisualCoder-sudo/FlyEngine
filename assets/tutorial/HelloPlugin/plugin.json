@@ -1,0 +1,10 @@
+{
+  "entry_point": "hello_plugin",
+  "exports": [],
+  "permissions": [],
+  "sandbox": {
+    "isolate_process": false,
+    "max_memory_mb": 256,
+    "allow_threads": false
+  }
+}
