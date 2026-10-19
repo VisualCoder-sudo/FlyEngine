@@ -164,8 +164,11 @@ void WriteCompileFlags(const fs::path& scriptsDir, const fs::path& sdkInclude) {
     out << want;
 }
 
+// Quoted for a line of a .bat file, where a literal % must be written %%.
 std::string QuoteForCmd(const std::string& s) {
-    return "\"" + s + "\"";
+    std::string out = "\"";
+    for (char c : s) { if (c == '%') out += '%'; out += c; }
+    return out + "\"";
 }
 
 // A failed build must always carry an Error diagnostic, so the UI has

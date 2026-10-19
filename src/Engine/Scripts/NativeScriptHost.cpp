@@ -702,6 +702,8 @@ bool NativeScriptHost::InitializeScripts(const std::string& projectPath) {
     std::error_code ec;
     fs::create_directories(p / "Scripts", ec);
 
+    vscript::WriteSnippetSources(m_projectPath);   // flush an edit the editor's idle timer hasn't written yet (no-op when unchanged)
+
     m_sourceStamp = scriptCompiler::SourcesStamp(m_projectPath);
     if (!scriptCompiler::HasSources(m_projectPath)) {
         ui::LogAlways("[Scripts] No scripts in %s", (p / "Scripts").string().c_str());

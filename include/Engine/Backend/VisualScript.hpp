@@ -131,7 +131,7 @@ bool AllowsFanOut(NodeType t);                     // event nodes: one output pi
 bool AllowsFanIn(NodeType t);                      // End: its input may take several wires
 void ConnectData(int from, int to, int toPin, int fromPin = 0);   // replaces any wire already entering that input pin
 void RemoveExtraProperty(int nodeId, int index);  // drops a Change node's extra property and re-numbers its value wires
-void SanitizeDataLinks();                        // drops value wires whose pins no longer exist (a snippet lost a pin)
+void SanitizeDataLinks();                        // drops value wires and exec wires whose pins no longer exist (a snippet or Sequence lost a pin)
 int SnippetInputs(const Node& n);                // Code Snippet pin counts, clamped to 0..6
 int SnippetOutputs(const Node& n);
 int DataInputCount(const Node& n);               // the node's own count: DataInputCount(type), or the snippet's pins
@@ -182,7 +182,9 @@ std::vector<std::string> UiIds();                   // the ids the scripts' UI n
 // Code Snippet nodes. Inside the snippet: In(i) / InNum(i) / InBool(i) / InVec3(i) read what was wired into input pin i
 // when the flow reached the node, and Out(i, value) sets output pin i for the nodes wired after it. Their C++ is written to Scripts/.visualscript/snippets.cpp as one hidden fly::Script class per
 // node, compiled with the project's other scripts, and started by the node. Errors point at "Code Snippet <Graph>/<n>"
-// with line numbers counted from the snippet's own first line.
+// with line numbers counted from the snippet's own first line. Pin values are kept per node (by class name), not per
+// running instance: if the same node is reached again while an earlier run is still going, or the graph runs on several
+// objects, the runs share (and overwrite) the same In/Out values.
 inline constexpr const char* kSnippetClassPrefix = "VSnip_";
 std::string SnippetClassName(const std::string& graphName, int nodeId);
 std::string GenerateSnippetSource();                          // "" when no graph has a snippet

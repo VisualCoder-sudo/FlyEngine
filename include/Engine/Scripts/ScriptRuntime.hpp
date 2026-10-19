@@ -137,7 +137,8 @@ public:
     // Starts a Visual Script Code Snippet's generated class. False if it isn't compiled into the loaded library.
     bool StartSnippet(const std::string& className);
     // Values wired into / out of a Code Snippet node, keyed by its generated class name. Inputs are what the node's
-    // pins held when the flow reached it; outputs are the latest value the snippet set (empty until it does).
+    // pins held when the flow reached it; outputs are the latest value the snippet set (empty until it does). One slot per
+    // class (per node), shared by every run of that node, not per script instance.
     void SetSnippetInputs(const std::string& className, std::vector<std::string> values);
     std::string SnippetInput(const std::string& className, int pin) const;
     void SetSnippetOutput(const std::string& className, int pin, const std::string& value);
