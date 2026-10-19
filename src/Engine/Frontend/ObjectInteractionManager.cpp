@@ -1308,30 +1308,26 @@ void ObjectInteractionManager::Update(float dt) {
     // Ctrl+D duplicate / Delete-Backspace delete. Ctrl is swallowed by text
     // fields/console/script editor, so those are skipped via IsEditingText().
     const bool ctrlDown = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool duplicateRequested = ui::ConsumeDuplicateRequest();
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen() && !selectedObjects.empty()) {
-        if (ctrlDown && IsKeyPressed(KEY_D)) {
+        if ((ctrlDown && IsKeyPressed(KEY_D)) || duplicateRequested) {
             PushUndoNow();
             std::vector<ScatteredObject*> copies;
-            std::vector<ModelGroup*> parentModels;
+            std::vector<ScatteredObject*> sources;
             ScatteredObject* newPrimary = nullptr;
             for (auto* obj : selectedObjects) {
                 if (!obj) continue;
                 auto copy = obj->Clone();
                 ScatteredObject* np = copy.get();
                 copies.push_back(np);
-                parentModels.push_back(obj->parentModel);
+                sources.push_back(obj);
                 if (!newPrimary) newPrimary = np;
                 objects.push_back(np);
                 engine.AddEntity(std::move(copy));
             }
-            // Duplicates inherit their source's grouping so a copy stays in the
-            // same model, next to the original.
-            for (size_t i = 0; i < copies.size(); ++i) {
-                if (parentModels[i]) {
-                    parentModels[i]->members.push_back(copies[i]);
-                    copies[i]->parentModel = parentModels[i];
-                }
-            }
+            // Duplicates stay grouped: a fully selected group is copied as a group.
+            ui::PlaceDuplicates(sources, copies);
+            ui::SuppressExplorerReveal();
             ui::SetSelection(copies, newPrimary);
             return;
         }

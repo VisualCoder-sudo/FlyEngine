@@ -595,6 +595,10 @@ std::vector<ScatteredObject*> ConsumePendingDelete() {
     return pending;
 }
 
+static bool g_duplicateRequested = false;
+void RequestDuplicate() { g_duplicateRequested = true; }
+bool ConsumeDuplicateRequest() { bool r = g_duplicateRequested; g_duplicateRequested = false; return r; }
+
 TransformTool GetActiveTool() {
     return g_activeTool;
 }

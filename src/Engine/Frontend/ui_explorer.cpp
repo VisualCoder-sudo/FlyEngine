@@ -120,6 +120,9 @@ std::vector<MenuItem> s_menuItems;
 // every other group is highlighted from the selection itself.
 ModelGroup* s_selGroup = nullptr;
 
+// A selection made by clicking a group row must not unfold that group.
+bool s_skipReveal = false;
+
 bool GroupExists(const ModelGroup* g) {
     if (!g || !g_sceneModels) return false;
     for (const auto& m : *g_sceneModels) if (m.get() == g) return true;
@@ -526,6 +529,7 @@ void BuildObjectMenu(ScatteredObject* obj) {
     // Insert > Script attaches another script to the object right-clicked on.
     s_menuItems.push_back(MakeInsertMenu(singleSel ? obj : nullptr));
     if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); });
+    AddMenu("Duplicate", [] { RequestDuplicate(); }, false);
     if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); });
     const bool hide = !obj->hidden;
     AddMenu(hide ? "Hide" : "Show", [hide] { ForEachSelected([hide](ScatteredObject* o) { o->hidden = hide; }); });
@@ -552,6 +556,7 @@ void BuildObjectScriptMenu(ScatteredObject* obj, const std::string& name) {
 
 void BuildModelMenu(ModelGroup* model) {
     AddMenu("Rename", [model] { BeginRename(model); }, false);
+    AddMenu("Duplicate", [] { RequestDuplicate(); }, false);
     // A plugin-owned group: the plugin's items, and no way to take it apart or unlock it from here.
     if (const pluginhost::GroupKind* kind = pluginhost::FindGroupKind(model->pluginTag)) {
         for (const auto& item : kind->items) AddMenu(item.label.c_str(), [run = item.run, model] { run(model); }, false);
@@ -813,6 +818,7 @@ void HandleGroupRow(ModelGroup* g, const std::vector<ScatteredObject*>& all, boo
     ScatteredObject* first = all.empty() ? nullptr : all.front();
     if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
         s_selGroup = g;
+        s_skipReveal = true;
         if (ctrl) {
             std::vector<ScatteredObject*> next = g_selection;
             if (selected) {
@@ -824,7 +830,10 @@ void HandleGroupRow(ModelGroup* g, const std::vector<ScatteredObject*>& all, boo
             g_explorerAnchorIndex = IndexInOrder(first);
             SetSelection(next, KeepPrimary(next, g_primarySelection));
         } else if (shift && g_explorerAnchorIndex >= 0 && first) {
-            SelectRange(g_explorerAnchorIndex, IndexInOrder(first), first);
+            // Below the anchor the range runs to the group's last object, so the whole group is included.
+            const int fi = IndexInOrder(first);
+            const int li = IndexInOrder(all.back());
+            SelectRange(g_explorerAnchorIndex, g_explorerAnchorIndex <= fi ? std::max(fi, li) : fi, first);
         } else {
             SetSelection(all, first);
             g_explorerAnchorIndex = IndexInOrder(first);
@@ -837,6 +846,7 @@ void HandleGroupRow(ModelGroup* g, const std::vector<ScatteredObject*>& all, boo
         if (!selected) {
             SetSelection(all, first);
             s_selGroup = g;
+            s_skipReveal = true;
         }
         s_ctx.rightClickHandled = true;
         OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Model, first, -1, g);
@@ -956,7 +966,11 @@ void DrawGroupNode(ModelGroup* g, int depth, bool ancestorMatched) {
         HandleGroupRow(g, all, selected, r);
     }
 
-    if (!open) return;
+    if (!open) {
+        // Folded rows still count for Shift-range selection.
+        for (auto* o : all) s_ctx.order.push_back(o);
+        return;
+    }
     // Copy: an action in this frame (drop, delete) must not invalidate what we iterate.
     const std::vector<ModelGroup*> kids = g->children;
     const std::vector<ScatteredObject*> mem = g->members;
@@ -969,6 +983,8 @@ void DrawGroupNode(ModelGroup* g, int depth, bool ancestorMatched) {
 }
 
 } // namespace
+
+void SuppressExplorerReveal() { s_skipReveal = true; }
 
 void DrawImGuiExplorer() {
     Rectangle panelRec = GetExplorerPanelBounds();
@@ -1009,7 +1025,7 @@ void DrawImGuiExplorer() {
             : static_cast<const void*>(terrain::GetTerrainEditorState().selectedTerrainLegacy);
         if (g_primarySelection != s_seenPrimary) {
             s_seenPrimary = g_primarySelection;
-            if (g_primarySelection) RevealObject(g_primarySelection);
+            if (g_primarySelection && !s_skipReveal) RevealObject(g_primarySelection);
         } else if (g_selectedWater != s_seenWater && g_selectedWater) {
             s_seenWater = g_selectedWater;
             SetOpen("#Water", true);
@@ -1019,6 +1035,7 @@ void DrawImGuiExplorer() {
             SetOpen("#Terrain", true);
             s_scrollTarget = terrainNow;
         }
+        s_skipReveal = false;
         s_seenWater = g_selectedWater;
         s_seenTerrain = terrainNow;
     }

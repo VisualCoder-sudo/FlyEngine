@@ -3,6 +3,8 @@
 #include "ui_internal.hpp"
 #include <algorithm>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ui {
 
@@ -95,6 +97,60 @@ void UngroupModel(ModelGroup* model) {
     if (up) up->RemoveChild(model);
     g_sceneModels->erase(std::remove_if(g_sceneModels->begin(), g_sceneModels->end(),
         [&](const std::unique_ptr<ModelGroup>& m) { return m.get() == model; }), g_sceneModels->end());
+}
+
+// Copies a group tree. Members are replaced by their duplicates from `map`; a member without one is skipped.
+static ModelGroup* CloneGroupTree(const ModelGroup* src, ModelGroup* parent,
+                                  const std::unordered_map<ScatteredObject*, ScatteredObject*>& map) {
+    ModelGroup* g = CreateEmptyGroup(parent);
+    if (!g) return nullptr;
+    g->name = src->name;
+    g->hidden = src->hidden;
+    g->locked = src->locked;
+    g->pluginTag = src->pluginTag;
+    g->pluginData = src->pluginData;
+    for (auto* m : src->members) {
+        auto it = map.find(m);
+        if (it == map.end()) continue;
+        g->members.push_back(it->second);
+        it->second->parentModel = g;
+    }
+    const std::vector<ModelGroup*> kids = src->children;
+    for (auto* c : kids) CloneGroupTree(c, g, map);
+    return g;
+}
+
+// Ctrl+D: puts each duplicate in a group. A group whose objects were all duplicated is copied as a whole
+// (nested groups included) next to the original; anything else joins its source's group.
+void PlaceDuplicates(const std::vector<ScatteredObject*>& sources, const std::vector<ScatteredObject*>& copies) {
+    if (!g_sceneModels || sources.size() != copies.size()) return;
+    std::unordered_map<ScatteredObject*, ScatteredObject*> map;
+    for (size_t i = 0; i < sources.size(); ++i) map[sources[i]] = copies[i];
+
+    auto fully = [&](const ModelGroup* g) {
+        std::vector<ScatteredObject*> all;
+        g->CollectObjects(all);
+        if (all.empty()) return false;
+        for (auto* o : all) if (!map.count(o)) return false;
+        return true;
+    };
+    std::unordered_set<ScatteredObject*> done;
+    for (auto* src : sources) {
+        if (!src || done.count(src)) continue;
+        ModelGroup* best = nullptr;
+        for (ModelGroup* g = src->parentModel; g; g = g->parent) if (fully(g)) best = g;
+        if (best) {
+            std::vector<ScatteredObject*> all;
+            best->CollectObjects(all);
+            for (auto* o : all) done.insert(o);
+            CloneGroupTree(best, best->parent, map);
+        } else if (src->parentModel) {
+            ScatteredObject* c = map[src];
+            src->parentModel->members.push_back(c);
+            c->parentModel = src->parentModel;
+        }
+        done.insert(src);
+    }
 }
 
 bool CanGroupSelection() { return g_sceneModels && g_selection.size() >= 2; }

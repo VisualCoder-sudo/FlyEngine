@@ -89,10 +89,17 @@ void GroupSelectedObjects();
 bool CanGroupSelection();
 bool UngroupSelection(bool dryRun = false);
 void UngroupModelContaining(ScatteredObject* member);
+// Ctrl+D: groups the duplicates (copies[i] came from sources[i]); fully duplicated groups are copied whole.
+void PlaceDuplicates(const std::vector<ScatteredObject*>& sources, const std::vector<ScatteredObject*>& copies);
 // Explorer actions that need to remove entities defer the actual deletion to
 // the interaction manager (which owns the engine + object vector).
 void RequestDelete(const std::vector<ScatteredObject*>& targets);
 std::vector<ScatteredObject*> ConsumePendingDelete();
+// Explorer "Duplicate": same as Ctrl+D on the current selection, run by the interaction manager.
+void RequestDuplicate();
+// The next selection change will not unfold the explorer to its row (duplicates stay as folded as the source).
+void SuppressExplorerReveal();
+bool ConsumeDuplicateRequest();
 
 // Transform tools getter
 TransformTool GetActiveTool();
