@@ -1011,7 +1011,10 @@ void DrawScriptManager(const SceneListing& scene) {
             if (ImGui::BeginMenu("Rename current")) {
                 if (ImGui::IsWindowAppearing()) std::snprintf(g_nameBuf, sizeof(g_nameBuf), "%s", NameAt(CurrentIndex()).c_str());
                 if (ImGui::InputText("##rn", g_nameBuf, sizeof(g_nameBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    const std::string oldKey = NameAt(CurrentIndex());
                     RenameCurrent(g_nameBuf);
+                    const std::string newKey = NameAt(CurrentIndex());
+                    if (newKey != oldKey && scene.renameScript) scene.renameScript(oldKey, newKey);   // the graph is already renamed, so RenameKey can't do it
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::EndMenu();

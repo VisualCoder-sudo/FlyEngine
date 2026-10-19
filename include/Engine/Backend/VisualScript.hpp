@@ -246,6 +246,7 @@ namespace vscript {
 struct SceneListing {
     std::string projectDir;   // the project folder: Play Sound's file browser starts here and stores paths relative to it
     std::function<void(const std::string&)> deleteScript;   // deletes a script for real (graph, entry, file)
+    std::function<void(const std::string&, const std::string&)> renameScript;   // the current graph was renamed (old, new): its Explorer entry follows
     std::vector<std::string> existingScripts;   // scripts already in the scene, offered by "Open existing"
     struct Group { std::string name; std::vector<std::string> members; };
     std::vector<Group> groups;

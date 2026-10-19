@@ -500,6 +500,7 @@ bool NativeScriptHost::LoadPlugin(const std::string& pluginPath) {
             plugin->loadFailed = true;
             plugin->errorMessage = "on_load returned error code: " + std::to_string(result);
             ui::LogAlways("[NativeScriptHost] ERROR: %s on_load failed with code %d", pluginPath.c_str(), result);
+            pluginhost::RemoveModesOf(plugin->entry);   // it may have registered before failing; those point into the library
             UnloadLibrary(plugin->handle);
             plugin->handle = nullptr;
             return false;
@@ -532,6 +533,7 @@ bool NativeScriptHost::LoadStaticPlugin(const char* name, CP_PluginEntry* (*getE
         pluginhost::SetLoadingOwner(nullptr);
         if (result != 0) {
             ui::LogAlways("[NativeScriptHost] ERROR: built-in plugin %s on_load failed with code %d", plugin->name.c_str(), result);
+            pluginhost::RemoveModesOf(plugin->entry);   // drop whatever it registered before failing
             return false;
         }
     }
@@ -580,6 +582,8 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
         UnloadLibrary(plugin->handle);
         plugin->handle = nullptr;
     }
+    plugin->entry = nullptr;   // points into the unloaded library; stays null if the reload below fails
+    plugin->loaded = false;
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
@@ -621,6 +625,8 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
         if (result != 0) {
             plugin->loadFailed = true;
             plugin->errorMessage = "on_load failed after reload: " + std::to_string(result);
+            pluginhost::RemoveModesOf(plugin->entry);
+            plugin->entry = nullptr;
             UnloadLibrary(plugin->handle);
             plugin->handle = nullptr;
             plugin->loaded = false;
@@ -638,10 +644,11 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
 
 void NativeScriptHost::CheckHotReload() {
     for (auto& plugin : plugins) {
-        if (!plugin->loaded) continue;
+        if (!plugin->loaded && !plugin->loadFailed) continue;   // a failed reload is retried once the file changes again
         
         uint64_t currentTime = this->GetFileWriteTime(plugin->path);
         if (currentTime != plugin->lastWriteTime && currentTime != 0) {
+            plugin->lastWriteTime = currentTime;   // a failed reload waits for the next change instead of retrying every frame
             ui::LogAlways("[NativeScriptHost] Detected change in %s, reloading...", plugin->name.c_str());
             ReloadPlugin(plugin->name);
         }
@@ -951,6 +958,8 @@ bool NativeScriptHost::StartScript(const std::string& className, ScatteredObject
 }
 
 void NativeScriptHost::DestroyRunning(RunningScript& rs) {
+    // A script stopping itself (StopScript on its own object) must not be destroyed under its own feet.
+    if (m_ticking && rs.instance && rs.instance == m_executing) { rs.stopPending = true; return; }
     if (rs.instance && rs.cls) rs.cls->destroy(rs.instance);
     rs.instance = nullptr;
 }
@@ -966,11 +975,13 @@ void NativeScriptHost::TickScripts(float dt) {
             continue;
         }
         m_runtime->SetScriptSelf(obj);
+        m_executing = m_running[i].instance;
         const int alive = CallScriptTick(m_running[i].cls, m_running[i].instance, dt);
+        m_executing = nullptr;
         if (alive == -1) {
             ui::LogAlways("[Scripts] %s crashed and was stopped.", m_running[i].className.c_str());
             m_running[i].instance = nullptr; // state is unknown; leak rather than call into it again
-        } else if (!alive) {
+        } else if (!alive || m_running[i].stopPending) {
             DestroyRunning(m_running[i]);
         }
     }
