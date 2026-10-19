@@ -178,6 +178,30 @@ typedef struct FlyApi {
     void      (*MoveEmitter)(unsigned emitter, float x, float y, float z, float dx, float dy, float dz);
     void      (*StopEmitter)(unsigned emitter);
     void      (*SpawnDecal)(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
+
+    /* Prefabs. Added after the gameplay set: fly.hpp checks `size` first. */
+    FlyHandle (*SpawnPrefab)(const char* file, float x, float y, float z); /* project-relative .flyprefab; its pivot lands at x y z. Returns its first object, 0 = failed */
+
+    /* In-game UI: widgets made by id and drawn over the 3D view. Added after prefabs: fly.hpp checks `size` first.
+     * kind: 0 panel, 1 text, 2 bar, 3 image. anchor: 0..8 = TopLeft TopCenter TopRight Left Center Right BottomLeft
+     * BottomCenter BottomRight, 9 = Fill. Sizes and offsets are in pixels of a 1280x720 screen, scaled to the window. */
+    short     (*UICreate)(const char* id, int kind);                /* 1 if the widget exists afterwards */
+    void      (*UISetLayout)(const char* id, int anchor, float x, float y, float w, float h);
+    void      (*UISetColor)(const char* id, unsigned char r, unsigned char g, unsigned char b, unsigned char a,
+                            unsigned char r2, unsigned char g2, unsigned char b2, unsigned char a2);   /* bars: fill, then background */
+    void      (*UISetText)(const char* id, const char* text, float fontSize);   /* fontSize <= 0 keeps the size */
+    void      (*UISetValue)(const char* id, float value);           /* bars: 0..1 */
+    void      (*UISetImage)(const char* id, const char* file);      /* project-relative */
+    void      (*UISetVisible)(const char* id, short visible);
+    void      (*UIRemove)(const char* id);
+    void      (*UISetFont)(const char* id, const char* font);       /* "" / "Sans", "Serif", "Mono", "Pixel", or a project .ttf / .otf */
+    /* Reading widgets back. All of them give "nothing" (0, "", -1) for an id that does not exist. */
+    short     (*UIExists)(const char* id);
+    float     (*UIGetValue)(const char* id);                        /* a bar's 0..1 */
+    int       (*UIGetText)(const char* id, char* out, int capacity);/* length of the text (it is cut to fit `capacity`, always 0-terminated); -1 = no such widget */
+    short     (*UIGetVisible)(const char* id);
+    short     (*UIGetLayout)(const char* id, float* out6);          /* anchor x y w h fontSize; 1 if the widget exists */
+    short     (*UIGetColor)(const char* id, unsigned char* out8);   /* r g b a, then the bar background r g b a; 1 if it exists */
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

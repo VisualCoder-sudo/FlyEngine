@@ -3,6 +3,7 @@
 #include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Engine/GameUI.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include <algorithm>
 #include <iomanip>
@@ -18,6 +19,9 @@
 #include <set>
 
 namespace vscript {
+
+bool IsUiTarget(const std::string& t) { return t.size() > 3 && t.compare(0, 3, "UI/") == 0; }
+std::string UiTargetId(const std::string& t) { return IsUiTarget(t) ? t.substr(3) : std::string(); }
 
 namespace {
 std::vector<Graph> g_scripts;
@@ -155,6 +159,13 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::PlaySound) n.value = "1";   // the sound options default to off (see SoundOption)
     else if (type == NodeType::SetVolume) n.value = "1";
     else if (type == NodeType::ShowText) { n.value = "Hello"; n.prop = "Top Center"; n.target = "3"; }
+    else if (type == NodeType::UIText) { n.target = "label"; n.value = "Hello"; n.prop = "Top Left"; SoundOptionRef(n, "offset", "(20, 20)"); SoundOptionRef(n, "size", "28"); SoundOptionRef(n, "color", "(255, 255, 255)"); SoundOptionRef(n, "font", "Sans"); }
+    else if (type == NodeType::UIPanel) { n.target = "panel"; n.prop = "Top Left"; SoundOptionRef(n, "offset", "(20, 20)"); SoundOptionRef(n, "size", "(200, 60)"); SoundOptionRef(n, "color", "(0, 0, 0, 140)"); }
+    else if (type == NodeType::UIBar) { n.target = "bar"; n.value = "1"; n.prop = "Bottom Left"; SoundOptionRef(n, "offset", "(20, -20)"); SoundOptionRef(n, "size", "(240, 22)"); SoundOptionRef(n, "color", "(80, 200, 90)"); SoundOptionRef(n, "background", "(0, 0, 0, 160)"); }
+    else if (type == NodeType::UIImage) { n.target = "image"; n.prop = "Top Left"; SoundOptionRef(n, "offset", "(20, 20)"); SoundOptionRef(n, "size", "(0, 0)"); SoundOptionRef(n, "color", "(255, 255, 255)"); }
+    else if (type == NodeType::UISet) { n.target = "label"; n.prop = "Text"; n.value = "Hello"; }
+    else if (type == NodeType::UIRemove) n.target = "label";
+    else if (type == NodeType::UIGet) { n.target = "label"; n.prop = "Text"; }
     else if (type == NodeType::KeyDown) n.prop = "Space";
     else if (type == NodeType::AddToVariable) { n.target = "flag"; n.value = "1"; }
     else if (type == NodeType::EveryN) n.value = "1";
@@ -197,7 +208,7 @@ bool IsEvent(NodeType t) {
 }
 
 bool IsPure(NodeType t) {
-    return (t >= NodeType::GetVariable && t <= NodeType::Raycast) ||
+    return t == NodeType::UIGet || (t >= NodeType::GetVariable && t <= NodeType::Raycast) ||
            (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN) ||
            t == NodeType::GamepadButtonDown || t == NodeType::GamepadAxis;
 }
@@ -256,6 +267,12 @@ int DataInputCount(NodeType t) {
         case NodeType::SetVelocity: case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport:
         case NodeType::PlaySound: case NodeType::SetVolume: case NodeType::ShowText: case NodeType::SetWorld:
         case NodeType::StopSound: return 1;   // Stop Sound's one is its "Sound" input
+        case NodeType::UIText: case NodeType::UIBar: return 7;     // one pin per row of the node, top to bottom
+        case NodeType::UIImage: return 6;
+        case NodeType::UIPanel: return 5;
+        case NodeType::UISet: return 3;
+        case NodeType::UIGet: return 2;
+        case NodeType::UIRemove: return 1;
         default: return 0;
     }
 }
@@ -279,6 +296,13 @@ const char* DataInputLabel(NodeType t, int pin) {
         case NodeType::PlaySound: case NodeType::SetVolume: return pin == 0 ? "Volume" : "";
         case NodeType::StopSound: return "Sound";
         case NodeType::ShowText: return "Text";
+        case NodeType::UIText: { static const char* const l[] = { "Id", "Text", "Anchor", "Offset", "Font Size", "Colour", "Font" }; return pin >= 0 && pin < 7 ? l[pin] : ""; }
+        case NodeType::UIPanel: { static const char* const l[] = { "Id", "Anchor", "Offset", "Size", "Colour" }; return pin >= 0 && pin < 5 ? l[pin] : ""; }
+        case NodeType::UIBar: { static const char* const l[] = { "Id", "Value", "Anchor", "Offset", "Size", "Colour", "Background" }; return pin >= 0 && pin < 7 ? l[pin] : ""; }
+        case NodeType::UIImage: { static const char* const l[] = { "Id", "File", "Anchor", "Offset", "Size", "Tint" }; return pin >= 0 && pin < 6 ? l[pin] : ""; }
+        case NodeType::UISet: { static const char* const l[] = { "Id", "Property", "Value" }; return pin >= 0 && pin < 3 ? l[pin] : ""; }
+        case NodeType::UIGet: return pin == 0 ? "Id" : "Read";
+        case NodeType::UIRemove: return "Id";
         default: return pin == 0 ? "A" : "B";
     }
 }
@@ -419,6 +443,31 @@ const std::vector<std::string>& HudPositions() {
     return p;
 }
 
+const std::vector<std::string>& UiAnchors() {
+    static const std::vector<std::string> a = { "Top Left", "Top Center", "Top Right", "Left", "Center", "Right",
+                                                "Bottom Left", "Bottom Center", "Bottom Right", "Fill" };
+    return a;
+}
+const std::vector<std::string>& UiSetProperties() {
+    static const std::vector<std::string> p = { "Text", "Value", "Visible", "Color", "Background", "Font", "Font Size", "Anchor",
+                                                 "Offset", "Size", "Image" };
+    return p;
+}
+std::vector<std::string> UiIds() {
+    std::vector<std::string> ids;
+    for (const Graph& g : g_scripts)
+        for (const Node& n : g.nodes)
+            if ((n.type == NodeType::UIText || n.type == NodeType::UIPanel || n.type == NodeType::UIBar || n.type == NodeType::UIImage) &&
+                !n.target.empty() && std::find(ids.begin(), ids.end(), n.target) == ids.end())
+                ids.push_back(n.target);
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+const std::vector<std::string>& UiGetProperties() {
+    static const std::vector<std::string> p = { "Exists", "Text", "Value", "Visible", "Color", "Background", "Font Size", "Anchor", "Offset", "Size" };
+    return p;
+}
+
 const std::vector<std::string>& ShapeNames() {
     static const std::vector<std::string> s = { "Cube", "Sphere", "Cylinder", "Wedge" };
     return s;
@@ -463,6 +512,13 @@ const char* TypeName(NodeType t) {
         case NodeType::PlaySound: return "Play Sound";
         case NodeType::SetVolume: return "Set Volume";
         case NodeType::ShowText: return "Show Text";
+        case NodeType::UIText: return "UI Text";
+        case NodeType::UIPanel: return "UI Panel";
+        case NodeType::UIBar: return "UI Bar";
+        case NodeType::UIImage: return "UI Image";
+        case NodeType::UISet: return "Set UI";
+        case NodeType::UIRemove: return "Remove UI";
+        case NodeType::UIGet: return "Get UI";
         case NodeType::SetWorld: return "Set World Property";
         case NodeType::CodeSnippet: return "Code Snippet";
         case NodeType::KeyDown: return "Is Key Down";
@@ -508,6 +564,13 @@ const char* NodeHelp(NodeType t) {
         case NodeType::PlaySound: return "Plays a sound file from your project at the chosen volume (0 to 1). Pick an object to make the sound come from it, fading out over its Range. Muffle makes walls between it and you muffle it; Echo adds the room's echo (these need an object).";
         case NodeType::StopSound: return "Stops a sound that is playing. Wire a Play Sound's Sound output into its Sound input to stop exactly that sound (same file, same object), or pick a file and an object yourself.";
         case NodeType::SetVolume: return "Sets the master volume, 0 to 1.";
+        case NodeType::UIText: return "Shows text on the game screen. Give it an id; running it again with the same id changes that text. Pick a Font from the list: Sans, Serif, Mono, Pixel (the blocky one), or any .ttf / .otf you put in your project's assets/Fonts folder. Offset moves it right and down from its anchor, in pixels of a 1280 x 720 screen.";
+        case NodeType::UIPanel: return "Shows a filled rectangle on the game screen, for a backdrop. Colour is (r, g, b) or (r, g, b, a).";
+        case NodeType::UIBar: return "Shows a bar filled to a value from 0 to 1 (health, progress). Colour is the fill, Background what shows behind it.";
+        case NodeType::UIImage: return "Shows a picture from your project (like assets/ui/heart.png). Size (0, 0) keeps the picture's own size.";
+        case NodeType::UISet: return "Changes something on a UI item that is already on screen: its Text, Bar value, Visible (true/false), Colour, Background, Font, Font Size, Anchor, Offset, Size or Image. Wire a value in to update it every frame.";
+        case NodeType::UIGet: return "Reads something from a UI item: whether it Exists, its Text, bar Value, Visible, Colour, Background, Font Size, Anchor, Offset or Size. Empty if there is no such item.";
+        case NodeType::UIRemove: return "Takes a UI item off the screen. An empty id removes all of them.";
         case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
         case NodeType::Destroy: return "Removes an object from the scene.";
         case NodeType::Clone: return "Makes a copy of an object. The Setup output configures the copy before it appears.";
@@ -684,10 +747,173 @@ std::string TargetName(const std::string& path) {
 
 struct HudLine { std::string text; float left = -1.0f; };   // left < 0: stays until replaced
 std::map<std::string, HudLine> g_hud;                     // keyed by screen position
+// What Change / Set UI nodes asked of each UI item, in order: kept until Play ends, and put on top of the item every time a
+// UI node makes or refreshes it, so a Change that runs first (or a UI node that runs again) cannot undo it.
+std::map<std::string, std::vector<std::pair<std::string, std::string>>> g_uiOverrides;
 SoundPlayer g_soundPlayer;
 SoundStopper g_soundStopper;
 
 bool Truthy(const std::string& v) { return !v.empty() && v != "0" && v != "false"; }
+
+std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth);
+
+bool IsUiNode(NodeType t) { return t >= NodeType::UIText && t <= NodeType::UIGet; }
+
+// What an unwired pin of a UI node holds: the field its row edits. Pin numbers are the rows, top to bottom.
+std::string UiLiteral(const Node& n, int pin) {
+    auto opt = [&](const char* key, const char* fallback) { return SoundOption(n, key, fallback); };
+    switch (n.type) {
+        case NodeType::UIText:
+            return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(20, 20)")
+                 : pin == 4 ? opt("size", "28") : pin == 5 ? opt("color", "(255, 255, 255)") : opt("font", "Sans");
+        case NodeType::UIPanel:
+            return pin == 0 ? n.target : pin == 1 ? n.prop : pin == 2 ? opt("offset", "(20, 20)") : pin == 3 ? opt("size", "(200, 60)") : opt("color", "(0, 0, 0, 140)");
+        case NodeType::UIBar:
+            return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(20, -20)")
+                 : pin == 4 ? opt("size", "(240, 22)") : pin == 5 ? opt("color", "(80, 200, 90)") : opt("background", "(0, 0, 0, 160)");
+        case NodeType::UIImage:
+            return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(20, 20)")
+                 : pin == 4 ? opt("size", "(0, 0)") : opt("color", "(255, 255, 255)");
+        case NodeType::UISet: return pin == 0 ? n.target : pin == 1 ? n.prop : n.value;
+        case NodeType::UIGet: return pin == 0 ? n.target : n.prop;
+        default: return n.target;   // Remove UI
+    }
+}
+
+// "(1, 2)" or "(r, g, b, a)": the numbers in a tuple; missing ones are 0.
+std::vector<float> Numbers(const std::string& s) {
+    std::vector<float> out;
+    std::string cur;
+    auto flush = [&] { if (!cur.empty()) out.push_back(static_cast<float>(std::atof(cur.c_str()))); cur.clear(); };
+    for (char c : s) {
+        if (c == ',' || c == '(' || c == ')') flush();
+        else if (!std::isspace(static_cast<unsigned char>(c))) cur += c;
+    }
+    flush();
+    return out;
+}
+Color ParseUiColor(const std::string& s, Color fallback) {
+    const std::vector<float> v = Numbers(s);
+    if (v.size() < 3) return fallback;
+    auto byte = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 255.0f)); };
+    return { byte(v[0]), byte(v[1]), byte(v[2]), v.size() > 3 ? byte(v[3]) : static_cast<unsigned char>(255) };
+}
+
+// What a Get UI node / a Get Property node on "UI/<id>" reads; "" if the widget is not there ("Exists" says so).
+std::string ReadUiProperty(const std::string& id, const std::string& prop) {
+    gameui::Info i;
+    const bool there = gameui::Get(id, i);
+    if (prop == "Exists") return there ? "true" : "false";
+    if (!there) return {};
+    auto num = [](float f) { char b[32]; std::snprintf(b, sizeof(b), "%g", f); return std::string(b); };
+    auto col = [](Color c) { return "(" + std::to_string(c.r) + ", " + std::to_string(c.g) + ", " + std::to_string(c.b) + (c.a == 255 ? std::string() : ", " + std::to_string(c.a)) + ")"; };
+    if (prop == "Text") return i.text;
+    if (prop == "Value") return num(i.value);
+    if (prop == "Visible") return i.visible ? "true" : "false";
+    if (prop == "Color") return col(i.color);
+    if (prop == "Background") return col(i.color2);
+    if (prop == "Font") return i.font;
+    if (prop == "Font Size") return num(i.fontSize);
+    if (prop == "Anchor") { const auto& a = UiAnchors(); const size_t k = static_cast<size_t>(i.anchor); return k < a.size() ? a[k] : std::string(); }
+    if (prop == "Offset") return "(" + num(i.x) + ", " + num(i.y) + ")";
+    if (prop == "Size") return "(" + num(i.w) + ", " + num(i.h) + ")";
+    if (prop == "Image") return i.image;
+    return {};
+}
+
+// Changes one part of a widget; used by Set UI and by Change nodes aimed at "UI/<id>".
+void ApplyUiPropertyNow(const std::string& id, const std::string& prop, const std::string& text) {
+    if (prop == "Text") gameui::SetText(id, text, 0.0f);
+    else if (prop == "Value") gameui::SetValue(id, static_cast<float>(std::atof(text.c_str())));
+    else if (prop == "Visible") gameui::SetVisible(id, Truthy(text));
+    else if (prop == "Color") gameui::SetPrimaryColor(id, ParseUiColor(text, WHITE));
+    else if (prop == "Font") gameui::SetFont(id, text);
+    else if (prop == "Image") gameui::SetImage(id, text);
+    else if (prop == "Background" || prop == "Font Size" || prop == "Anchor" || prop == "Offset" || prop == "Size") {
+        gameui::Info i;
+        if (!gameui::Get(id, i)) return;
+        if (prop == "Background") gameui::SetColor(id, i.color, ParseUiColor(text, i.color2));
+        else if (prop == "Font Size") gameui::SetText(id, i.text, static_cast<float>(std::atof(text.c_str())));
+        else {
+            const std::vector<float> v = Numbers(text);
+            if (prop == "Anchor") {
+                const auto& anchors = UiAnchors();
+                const auto at = std::find(anchors.begin(), anchors.end(), text);
+                if (at != anchors.end()) gameui::SetLayout(id, static_cast<gameui::Anchor>(at - anchors.begin()), i.x, i.y, i.w, i.h);
+            } else if (prop == "Offset" && v.size() >= 2) gameui::SetLayout(id, i.anchor, v[0], v[1], i.w, i.h);
+            else if (prop == "Size" && v.size() >= 2) gameui::SetLayout(id, i.anchor, i.x, i.y, v[0], v[1]);
+        }
+    }
+}
+
+// Change / Set UI: the item gets the value now (if a UI node has made it) and keeps it from then on, whenever a UI node makes
+// or refreshes the item, and even if the item does not exist yet.
+void ApplyUiProperty(const std::string& id, const std::string& prop, const std::string& text) {
+    if (id.empty() || prop.empty()) return;
+    auto& list = g_uiOverrides[id];
+    const auto it = std::find_if(list.begin(), list.end(), [&](const auto& kv) { return kv.first == prop; });
+    if (it != list.end()) it->second = text; else list.emplace_back(prop, text);
+    gameui::Info there;
+    if (gameui::Get(id, there)) ApplyUiPropertyNow(id, prop, text);
+}
+
+// Puts the recorded overrides on a freshly made or refreshed item.
+void ApplyUiOverrides(const std::string& id) {
+    const auto it = g_uiOverrides.find(id);
+    if (it == g_uiOverrides.end()) return;
+    for (const auto& [prop, text] : it->second) ApplyUiPropertyNow(id, prop, text);
+}
+
+// The UI nodes: they make or change a gameui widget named by the node's id. Every field can be wired (see UiLiteral).
+void RunUiNode(ScriptRuntime& rt, int gi, const Node& n) {
+    auto in = [&](int pin) { return Input(rt, gi, n, pin, 0); };
+    const std::string id = in(0);
+    if (n.type == NodeType::UIRemove) {
+        if (id.empty()) { gameui::Clear(); g_uiOverrides.clear(); }
+        else { gameui::Remove(id); g_uiOverrides.erase(id); }
+        return;
+    }
+    if (id.empty()) { ui::Log("[script] UI node #%d has no id", n.id); return; }
+    if (n.type == NodeType::UISet) {
+        ApplyUiProperty(id, in(1), in(2));
+        return;
+    }
+
+    // Pins by node: Text  Id Text Anchor Offset FontSize Colour Font     Panel  Id Anchor Offset Size Colour
+    //               Bar   Id Value Anchor Offset Size Colour Background   Image  Id File Anchor Offset Size Tint
+    int pAnchor = 2, pOffset = 3, pSize = 4, pColor = 5, pBack = -1, pMain = 1;   // pMain: the text, bar value or image file
+    gameui::Kind kind = gameui::Kind::Text;
+    if (n.type == NodeType::UIPanel) { kind = gameui::Kind::Panel; pAnchor = 1; pOffset = 2; pSize = 3; pColor = 4; pMain = -1; }
+    else if (n.type == NodeType::UIBar) { kind = gameui::Kind::Bar; pBack = 6; }
+    else if (n.type == NodeType::UIImage) { kind = gameui::Kind::Image; }
+    else { pSize = -1; }   // Text: pin 4 is the font size, there is no size
+    gameui::Create(id, kind);
+
+    const auto& anchors = UiAnchors();
+    const std::string anchorName = in(pAnchor);
+    const auto at = std::find(anchors.begin(), anchors.end(), anchorName);
+    const gameui::Anchor anchor = at == anchors.end() ? gameui::Anchor::TopLeft : static_cast<gameui::Anchor>(at - anchors.begin());
+    const std::vector<float> offset = Numbers(in(pOffset));
+    const float ox = offset.size() > 0 ? offset[0] : 0.0f, oy = offset.size() > 1 ? offset[1] : 0.0f;
+    float w = 0.0f, h = 0.0f;
+    if (pSize >= 0) {
+        const std::vector<float> size = Numbers(in(pSize));
+        w = size.size() > 0 ? size[0] : 0.0f;
+        h = size.size() > 1 ? size[1] : 0.0f;
+    }
+    gameui::SetLayout(id, anchor, ox, oy, w, h);
+
+    const Color fallback = kind == gameui::Kind::Panel ? Color{ 0, 0, 0, 140 } : kind == gameui::Kind::Bar ? Color{ 80, 200, 90, 255 } : WHITE;
+    gameui::SetColor(id, ParseUiColor(in(pColor), fallback), pBack >= 0 ? ParseUiColor(in(pBack), Color{ 0, 0, 0, 160 }) : Color{ 0, 0, 0, 160 });
+    const std::string main = pMain >= 0 ? in(pMain) : std::string();
+    if (kind == gameui::Kind::Text) {
+        gameui::SetText(id, main, static_cast<float>(std::atof(in(4).c_str())));
+        gameui::SetFont(id, in(6));
+    }
+    else if (kind == gameui::Kind::Bar) gameui::SetValue(id, static_cast<float>(std::atof(main.c_str())));
+    else if (kind == gameui::Kind::Image) gameui::SetImage(id, main);
+    ApplyUiOverrides(id);   // what Change / Set UI asked for wins over this node's own fields
+}
 
 // "Workspace/Group/Cube#2": the second object named Cube.
 ScatteredObject* FindTarget(ScriptRuntime& rt, const std::string& path) {
@@ -779,6 +1005,7 @@ std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) 
             break;
         }
     if (n.type == NodeType::CodeSnippet) return {};   // an unwired snippet input is empty (its `value` is the code)
+    if (IsUiNode(n.type)) return UiLiteral(n, pin);
     if (n.type == NodeType::Change && pin >= 1 && pin <= static_cast<int>(n.extra.size())) return n.extra[pin - 1].second;
     if (IsPure(n.type)) return pin == 0 ? n.target : pin == 1 ? n.value : n.prop;
     if (n.type == NodeType::Branch) {   // unwired Branch tests the variable named in its field
@@ -877,6 +1104,7 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
         }
         case NodeType::Time: return NumStr(n.prop == "Time Since Play" ? g_time : g_dt);
         case NodeType::ObjectExists: return FindTarget(rt, n.target) ? "true" : "false";
+        case NodeType::UIGet: return ReadUiProperty(in(0), in(1));
         case NodeType::Raycast: {
             std::string error;
             std::string hit = rt.RayCastName(in(0), in(1), static_cast<float>(num(2)), error);
@@ -884,6 +1112,7 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
             return hit;
         }
         case NodeType::GetProperty: {
+            if (IsUiTarget(n.target)) return ReadUiProperty(UiTargetId(n.target), n.prop);
             ScatteredObject* obj = FindTarget(rt, n.target);
             std::string out;
             if (!obj) ui::Log("[script] No object '%s'", TargetName(n.target).c_str());
@@ -897,6 +1126,7 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
 void ApplyProperty(ScriptRuntime& rt, const std::string& target, const std::string& prop, const std::string& value) {
     if (prop.empty()) return;
     std::string result;
+    if (IsUiTarget(target)) { ApplyUiProperty(UiTargetId(target), prop, value); return; }
     if (IsWorldGroup(target)) {
         if (!console::RunLine("game." + target + "." + prop + " = " + value, &result))
             ui::Log("[script] %s", result.c_str());
@@ -1001,6 +1231,11 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 stack.push_back({ n->id, 0 });
                 break;
             }
+            case NodeType::UIText: case NodeType::UIPanel: case NodeType::UIBar: case NodeType::UIImage:
+            case NodeType::UISet: case NodeType::UIRemove:
+                RunUiNode(rt, gi, *n);
+                stack.push_back({ n->id, 0 });
+                break;
             case NodeType::SetVolume:
                 SetMasterVolumeLevel(static_cast<float>(std::atof(Input(rt, gi, *n, 0, 0).c_str())));
                 stack.push_back({ n->id, 0 });
@@ -1092,7 +1327,7 @@ void FireEvents(ScriptRuntime& rt, NodeType type) {
 }
 
 void Run(ScriptRuntime& rt) {
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_every.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear();
     g_dt = 0.0f; g_time = 0.0f;
     FireEvents(rt, NodeType::Start);
 }
@@ -1137,7 +1372,7 @@ void Tick(ScriptRuntime& rt, float dt) {
 
 void Stop(ScriptRuntime& rt) {
     FireEvents(rt, NodeType::OnStop);
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_every.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear();
 }
 
 std::vector<int> SetupChainNodes() {

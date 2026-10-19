@@ -7,6 +7,7 @@
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
@@ -554,6 +555,23 @@ void BuildObjectScriptMenu(ScatteredObject* obj, const std::string& name) {
     s_menuItems.insert(s_menuItems.begin(), std::move(insert));
 }
 
+// Writes the group (nested groups included) to assets/Prefabs/<name>.flyprefab; a name already taken gets _2, _3...
+static void SaveGroupAsPrefab(const ModelGroup* model) {
+    const std::string& projectDir = ::project::GetCurrentProject().path;
+    if (projectDir.empty()) { LogAlways("Open a project before saving a prefab"); return; }
+    std::string base;
+    for (unsigned char c : model->name) base += (std::isalnum(c) || c == '-' || c == '_') ? (char)c : '_';
+    if (base.empty()) base = "Prefab";
+    const std::filesystem::path dir = std::filesystem::path(projectDir) / "assets" / "Prefabs";
+    std::filesystem::path file = dir / (base + ".flyprefab");
+    std::error_code ec;
+    for (int n = 2; std::filesystem::exists(file, ec); ++n) file = dir / (base + "_" + std::to_string(n) + ".flyprefab");
+    if (SavePrefabToFile(*model, file.generic_string(), projectDir))
+        LogAlways("Saved prefab assets/Prefabs/%s", file.filename().string().c_str());
+    else
+        LogAlways("Could not save the prefab (is the group empty?)");
+}
+
 void BuildModelMenu(ModelGroup* model) {
     AddMenu("Rename", [model] { BeginRename(model); }, false);
     AddMenu("Duplicate", [] { RequestDuplicate(); }, false);
@@ -575,6 +593,7 @@ void BuildModelMenu(ModelGroup* model) {
         SetOpen(GroupKey(model), true);
         BeginRename(g);
     });
+    AddMenu("Save as Prefab", [model] { SaveGroupAsPrefab(model); }, false);
     AddMenu("Ungroup", [model] { UngroupModel(model); if (s_selGroup == model) s_selGroup = nullptr; });
     AddMenu(model->hidden ? "Show" : "Hide", [model] { model->hidden = !model->hidden; });
     AddMenu(model->locked ? "Unlock" : "Lock", [model] { model->locked = !model->locked; });

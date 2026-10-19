@@ -5,6 +5,7 @@
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
+#include "../../include/Engine/GameUI.hpp"
 #include "../../include/Engine/Audio.hpp"
 #include "../../include/Engine/Particles.hpp"
 #include "../../include/Terrain/Foliage.hpp"
@@ -305,6 +306,7 @@ void Engine::Draw() {
         if (!isPlayerBuild) { const Rectangle mid = ui::GetConsoleBarArea(); area = { mid.x, 126.0f, mid.width, (float)GetScreenHeight() - 126.0f }; }
         gfx::DrawLoadingStatus(area);
         vscript::DrawHud(area.x, area.y, area.width, area.height);   // Show Text messages
+        gameui::Draw(area.x, area.y, area.width, area.height);       // fly::UI widgets
     }
 
     // ImGui pass (draws after every raylib overlay so it stays on top)

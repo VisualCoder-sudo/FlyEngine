@@ -10,6 +10,7 @@
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Particles.hpp"
+#include "../../../include/Engine/GameUI.hpp"
 #include "../../../ScriptingSDK/include/FlyScriptABI.h"
 #include "raymath.h"
 
@@ -801,6 +802,72 @@ FLY_API void FlyNative_MoveEmitter(unsigned emitter, float x, float y, float z, 
 FLY_API void FlyNative_StopEmitter(unsigned emitter) { FLY_TRY { fx::StopEmitter((int)emitter); } FLY_CATCH() }
 FLY_API void FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds) {
     FLY_TRY { fx::Decal({ x, y, z }, { nx, ny, nz }, size, { r, g, b, a }, seconds); } FLY_CATCH()
+}
+
+FLY_API unsigned long long FlyNative_SpawnPrefab(const char* file, float x, float y, float z) {
+    FLY_TRY {
+        ScriptRuntime* rt = ActiveRuntime();
+        return (rt && file) ? MakeHandle(rt->SpawnPrefab(file, { x, y, z })) : 0;
+    } FLY_CATCH(return 0;)
+}
+
+FLY_API short FlyNative_UICreate(const char* id, int kind) {
+    FLY_TRY {
+        if (!id || kind < 0 || kind > static_cast<int>(gameui::Kind::Image)) return 0;
+        return gameui::Create(id, static_cast<gameui::Kind>(kind)) ? 1 : 0;
+    } FLY_CATCH(return 0;)
+}
+FLY_API void FlyNative_UISetLayout(const char* id, int anchor, float x, float y, float w, float h) {
+    FLY_TRY {
+        if (id && anchor >= 0 && anchor < static_cast<int>(gameui::Anchor::Count)) gameui::SetLayout(id, static_cast<gameui::Anchor>(anchor), x, y, w, h);
+    } FLY_CATCH()
+}
+FLY_API void FlyNative_UISetColor(const char* id, unsigned char r, unsigned char g, unsigned char b, unsigned char a, unsigned char r2, unsigned char g2, unsigned char b2, unsigned char a2) {
+    FLY_TRY { if (id) gameui::SetColor(id, { r, g, b, a }, { r2, g2, b2, a2 }); } FLY_CATCH()
+}
+FLY_API void FlyNative_UISetText(const char* id, const char* text, float fontSize) {
+    FLY_TRY { if (id) gameui::SetText(id, text ? text : "", fontSize); } FLY_CATCH()
+}
+FLY_API void FlyNative_UISetValue(const char* id, float value) { FLY_TRY { if (id) gameui::SetValue(id, value); } FLY_CATCH() }
+FLY_API void FlyNative_UISetImage(const char* id, const char* file) { FLY_TRY { if (id) gameui::SetImage(id, file ? file : ""); } FLY_CATCH() }
+FLY_API void FlyNative_UISetVisible(const char* id, short visible) { FLY_TRY { if (id) gameui::SetVisible(id, visible != 0); } FLY_CATCH() }
+FLY_API void FlyNative_UIRemove(const char* id) { FLY_TRY { if (id) gameui::Remove(id); } FLY_CATCH() }
+FLY_API void FlyNative_UISetFont(const char* id, const char* font) { FLY_TRY { if (id) gameui::SetFont(id, font ? font : ""); } FLY_CATCH() }
+
+FLY_API short FlyNative_UIExists(const char* id) {
+    FLY_TRY { gameui::Info i; return id && gameui::Get(id, i) ? 1 : 0; } FLY_CATCH(return 0;)
+}
+FLY_API float FlyNative_UIGetValue(const char* id) {
+    FLY_TRY { gameui::Info i; return id && gameui::Get(id, i) ? i.value : 0.0f; } FLY_CATCH(return 0.0f;)
+}
+FLY_API int FlyNative_UIGetText(const char* id, char* out, int capacity) {
+    FLY_TRY {
+        gameui::Info i;
+        if (out && capacity > 0) out[0] = '\0';
+        if (!id || !gameui::Get(id, i)) return -1;
+        if (out && capacity > 0) { std::strncpy(out, i.text.c_str(), static_cast<size_t>(capacity) - 1); out[capacity - 1] = '\0'; }
+        return static_cast<int>(i.text.size());
+    } FLY_CATCH(return -1;)
+}
+FLY_API short FlyNative_UIGetVisible(const char* id) {
+    FLY_TRY { gameui::Info i; return id && gameui::Get(id, i) && i.visible ? 1 : 0; } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_UIGetLayout(const char* id, float* out6) {
+    FLY_TRY {
+        gameui::Info i;
+        if (!id || !out6 || !gameui::Get(id, i)) return 0;
+        out6[0] = static_cast<float>(i.anchor); out6[1] = i.x; out6[2] = i.y; out6[3] = i.w; out6[4] = i.h; out6[5] = i.fontSize;
+        return 1;
+    } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_UIGetColor(const char* id, unsigned char* out8) {
+    FLY_TRY {
+        gameui::Info i;
+        if (!id || !out8 || !gameui::Get(id, i)) return 0;
+        out8[0] = i.color.r; out8[1] = i.color.g; out8[2] = i.color.b; out8[3] = i.color.a;
+        out8[4] = i.color2.r; out8[5] = i.color2.g; out8[6] = i.color2.b; out8[7] = i.color2.a;
+        return 1;
+    } FLY_CATCH(return 0;)
 }
 
 // FindObject and GetSelf

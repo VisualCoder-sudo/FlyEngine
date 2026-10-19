@@ -1149,7 +1149,10 @@ void ObjectInteractionManager::Update(float dt) {
     {
         std::string spawnPath;
         Vector3 spawnAt;
-        if (ui::ConsumeModelSpawnRequest(spawnPath, spawnAt)) SpawnModelAt(spawnPath, spawnAt);
+        if (ui::ConsumeModelSpawnRequest(spawnPath, spawnAt)) {
+            if (std::filesystem::path(spawnPath).extension() == ".flyprefab") SpawnPrefabAt(spawnPath, spawnAt);
+            else SpawnModelAt(spawnPath, spawnAt);
+        }
     }
     PumpPendingSpawns();
 
@@ -2281,6 +2284,26 @@ void ObjectInteractionManager::SpawnModelAt(const std::string& absModelPath, Vec
     ScatteredObject::PrefetchModel(absModelPath);
     pendingSpawns.push_back({ absModelPath, pos });
     ui::LogAlways("Loading %s...", std::filesystem::path(absModelPath).filename().string().c_str());
+}
+
+// A prefab is read straight away (its meshes load like a scene's). The copy lands where the drag ended, grouped as saved.
+void ObjectInteractionManager::SpawnPrefabAt(const std::string& absPrefabPath, Vector3 pos) {
+    PushUndoNow();
+    std::vector<ScatteredObject*> made;
+    ScriptRuntime* rt = GetActiveRuntime();
+    if (rt && rt->HasWorld()) {
+        rt->SpawnPrefab(absPrefabPath, pos, &made);
+    } else {
+        ModelGroup* root = nullptr;
+        if (!SpawnPrefabFromFile(engine, objects, models, absPrefabPath, project::GetCurrentProject().path, pos, &made, &root)) made.clear();
+    }
+    if (made.empty()) {
+        ui::LogAlways("Could not load prefab: %s", absPrefabPath.c_str());
+        return;
+    }
+    ui::SuppressExplorerReveal();
+    ui::SetSelection(made, made.front());
+    ui::LogAlways("Placed prefab %s", std::filesystem::path(absPrefabPath).stem().string().c_str());
 }
 
 void ObjectInteractionManager::PumpPendingSpawns() {

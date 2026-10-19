@@ -106,6 +106,10 @@ public:
     void DestroyObject(ScatteredObject* obj);                 // scene list, physics body and engine entity
     ScatteredObject* CloneObject(ScatteredObject* source, bool deferSpawn = false);   // copy added to the scene; null if impossible
     void FinishCreate(ScatteredObject* obj);                  // gives an object made with deferSpawn its physics body
+    // Adds a prefab (.flyprefab, project-relative or absolute) to the scene with its pivot at `at`. While playing the
+    // objects get physics bodies and their scripts start, and they are taken out again when play stops. Returns the
+    // prefab's first object (null if the file is missing or not a prefab); `outObjects` gets all of them.
+    ScatteredObject* SpawnPrefab(const std::string& file, Vector3 at, std::vector<ScatteredObject*>* outObjects = nullptr);
     bool AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError);
     // Name of the first object a ray hits ("" for none). Needs the simulation.
     std::string RayCastName(const std::string& origin, const std::string& dir, float maxDistance, std::string& outError);
@@ -154,7 +158,7 @@ public:
     void RollbackCreatedObjects();
     // Drops the play-created list without touching the objects: called when the
     // editor restores its pre-play scene snapshot, which frees them itself.
-    void ForgetCreatedObjects() { playCreatedObjects.clear(); }
+    void ForgetCreatedObjects() { playCreatedObjects.clear(); playCreatedGroups.clear(); }
 
     // Plugin registration (for native C/C++ plugins)
     void RegisterPluginEntry(const FlyPluginEntry* entry) { (void)entry; /* TODO: store for multi-plugin support */ }
@@ -172,6 +176,7 @@ private:
 
     std::vector<StandaloneScript> standaloneScripts;
     std::vector<ScatteredObject*> playCreatedObjects;
+    std::vector<ModelGroup*> playCreatedGroups;   // the groups prefabs spawned during play made
 
     // World settings (game.Lighting/Rendering/Camera/Physics) as they were when
     // play started, put back when it stops.

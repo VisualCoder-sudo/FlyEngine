@@ -120,6 +120,7 @@ private:
     // Spawns an already-in-project model file at a world position. The mesh is
     // parsed on a worker thread; the object appears a few frames later.
     void SpawnModelAt(const std::string& absModelPath, Vector3 pos);
+    void SpawnPrefabAt(const std::string& absPrefabPath, Vector3 pos);
     void PumpPendingSpawns();
     void CompleteSpawn(const std::string& absModelPath, Vector3 pos);
     struct PendingSpawn { std::string path; Vector3 pos; };

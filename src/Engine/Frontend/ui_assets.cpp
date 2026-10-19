@@ -798,8 +798,12 @@ static bool RaycastGroundPlane(Vector2 mousePos, const Camera3D& camera, Vector3
     return true;
 }
 
+static bool IsPrefabFilePath(const std::string& path) {
+    return std::filesystem::path(path).extension() == ".flyprefab";
+}
+
 static void SpawnImportedModelAt(const std::string& modelPath, Vector3 worldPos) {
-    if (!IsMeshFilePath(modelPath)) return;
+    if (!IsMeshFilePath(modelPath) && !IsPrefabFilePath(modelPath)) return;   // a prefab rides the same request
     g_spawnPath = modelPath;
     g_spawnPos = worldPos;
     g_spawnRequested = true;

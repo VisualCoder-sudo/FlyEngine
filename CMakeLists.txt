@@ -229,6 +229,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Atmosphere.cpp
         src/Engine/Clouds.cpp
         src/Engine/LoadingScreen.cpp
+        src/Engine/GameUI.cpp
         src/Engine/Scripts/CommandConsole.cpp
         src/Engine/Backend/fcloudint.cpp
         src/Engine/PhysicsSimulation.cpp

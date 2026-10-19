@@ -481,6 +481,163 @@ inline void Decal(Vec3 position, Vec3 normal, float size, ColorRGBA color = { 20
     if (detail::HaveGameplay()) detail::Api()->SpawnDecal(position.x, position.y, position.z, normal.x, normal.y, normal.z, size, color.r, color.g, color.b, color.a, seconds);
 }
 
+// ---- prefabs ---------------------------------------------------------------
+
+namespace detail {
+inline bool HavePrefabs() { return Api()->size >= offsetof(FlyApi, SpawnPrefab) + sizeof(void*); }
+}
+
+// Prefabs saved from the editor (Explorer > right-click a group > Save as Prefab) live in assets/Prefabs.
+namespace Prefab {
+// Adds a copy of the prefab with its pivot (middle of its footprint, lowest point) at `position`. Returns the
+// prefab's first object, or an invalid Object if the file is missing. While playing, the copy and its scripts start
+// at once, and it is removed again when play stops. `file` is project-relative: "assets/Prefabs/Tree.flyprefab".
+inline Object Spawn(const std::string& file, Vec3 position) {
+    return detail::HavePrefabs() ? Object(detail::Api()->SpawnPrefab(file.c_str(), position.x, position.y, position.z)) : Object();
+}
+}
+
+// ---- in-game UI ------------------------------------------------------------
+
+namespace detail {
+inline bool HaveUI() { return Api()->size >= offsetof(FlyApi, UIRemove) + sizeof(void*); }
+inline bool HaveUIFont() { return Api()->size >= offsetof(FlyApi, UISetFont) + sizeof(void*); }
+}
+
+// Panels, text, bars and images drawn over the 3D view, made by id. Sizes and offsets are in pixels of a 1280 x 720
+// screen and scale with the window. Everything is removed when play starts and stops.
+//
+//   UI::Text("score", "Score: 0", { UI::Anchor::TopRight, -20, 20 });
+//   UI::Bar("hp", 1.0f, { UI::Anchor::BottomLeft, 20, -20, 240, 22 }, { 200, 40, 40 });
+//   ...each frame:  UI::SetText("score", "Score: " + std::to_string(score));  UI::SetValue("hp", health / 100.0f);
+namespace UI {
+// Where a widget sits in the screen. x and y move it right and down from there (so a right-anchored widget wants a
+// negative x). Fill covers the whole screen, x and y as the margin.
+enum class Anchor { TopLeft, TopCenter, TopRight, Left, Center, Right, BottomLeft, BottomCenter, BottomRight, Fill };
+// w and h are ignored by text, which is as big as its letters. An image with w and h 0 keeps its own size.
+struct Layout { Anchor anchor = Anchor::TopLeft; float x = 0, y = 0, w = 0, h = 0; };
+
+namespace detail {
+inline bool Make(const std::string& id, int kind, Layout l) {
+    if (!fly::detail::HaveUI() || !fly::detail::Api()->UICreate(id.c_str(), kind)) return false;
+    fly::detail::Api()->UISetLayout(id.c_str(), static_cast<int>(l.anchor), l.x, l.y, l.w, l.h);
+    return true;
+}
+inline void Color(const std::string& id, ColorRGBA a, ColorRGBA b) {
+    fly::detail::Api()->UISetColor(id.c_str(), a.r, a.g, a.b, a.a, b.r, b.g, b.b, b.a);
+}
+inline bool HaveQuery() { return fly::detail::Api()->size >= offsetof(FlyApi, UIGetColor) + sizeof(void*); }
+}
+
+// A UI item on screen, found by its id. Reads and changes any part of it directly; the setters return the widget, so
+// calls chain. Cheap to make and copy (it only holds the id), and safe to keep: if the item is gone, reads give
+// empty values and changes do nothing. Reading and the per-part setters (SetOffset, SetFontSize ...) need an engine
+// with UI queries; on an older one they do nothing.
+//
+//   UI::Widget hp = UI::Find("hp");
+//   hp.SetValue(hp.Value() - 0.1f).SetColor({ 220, 60, 60 });
+//   UI::Find("score").SetText("Score: " + std::to_string(score)).SetFontSize(32).SetOffset(-30, 24);
+class Widget {
+public:
+    Widget() = default;
+    explicit Widget(std::string id) : m_id(std::move(id)) {}
+    const std::string& Id() const { return m_id; }
+
+    // ---- reading
+    bool Exists() const { return detail::HaveQuery() && fly::detail::Api()->UIExists(m_id.c_str()) != 0; }
+    explicit operator bool() const { return Exists(); }
+    std::string Text() const {
+        if (!detail::HaveQuery()) return {};
+        const int n = fly::detail::Api()->UIGetText(m_id.c_str(), nullptr, 0);
+        if (n <= 0) return {};
+        std::vector<char> buf(static_cast<size_t>(n) + 1, '\0');
+        fly::detail::Api()->UIGetText(m_id.c_str(), buf.data(), n + 1);
+        return std::string(buf.data());
+    }
+    float Value() const { return detail::HaveQuery() ? fly::detail::Api()->UIGetValue(m_id.c_str()) : 0.0f; }
+    bool Visible() const { return detail::HaveQuery() && fly::detail::Api()->UIGetVisible(m_id.c_str()) != 0; }
+    Layout GetLayout() const { Layout l; float v[6]; Read(v, l); return l; }
+    float FontSize() const { Layout l; float v[6] = {}; Read(v, l); return v[5]; }
+    ColorRGBA Color() const { ColorRGBA c, b; Colors(c, b); return c; }
+    ColorRGBA Background() const { ColorRGBA c, b; Colors(c, b); return b; }
+
+    // ---- changing
+    Widget& SetText(const std::string& text) { if (fly::detail::HaveUI()) fly::detail::Api()->UISetText(m_id.c_str(), text.c_str(), 0.0f); return *this; }
+    Widget& SetValue(float value) { if (fly::detail::HaveUI()) fly::detail::Api()->UISetValue(m_id.c_str(), value); return *this; }
+    Widget& SetFont(const std::string& font) { if (fly::detail::HaveUIFont()) fly::detail::Api()->UISetFont(m_id.c_str(), font.c_str()); return *this; }
+    Widget& SetImage(const std::string& file) { if (fly::detail::HaveUI()) fly::detail::Api()->UISetImage(m_id.c_str(), file.c_str()); return *this; }
+    Widget& Show(bool visible = true) { if (fly::detail::HaveUI()) fly::detail::Api()->UISetVisible(m_id.c_str(), visible ? 1 : 0); return *this; }
+    Widget& Hide() { return Show(false); }
+    // The main colour (text, panel, bar fill, image tint); a bar's background stays as it is.
+    Widget& SetColor(ColorRGBA color) { ColorRGBA c, b; if (Colors(c, b)) detail::Color(m_id, color, b); return *this; }
+    Widget& SetBackground(ColorRGBA color) { ColorRGBA c, b; if (Colors(c, b)) detail::Color(m_id, c, color); return *this; }
+    Widget& SetLayout(Layout l) { if (fly::detail::HaveUI()) fly::detail::Api()->UISetLayout(m_id.c_str(), static_cast<int>(l.anchor), l.x, l.y, l.w, l.h); return *this; }
+    Widget& SetAnchor(Anchor a) { Layout l; float v[6]; if (Read(v, l)) { l.anchor = a; SetLayout(l); } return *this; }
+    Widget& SetOffset(float x, float y) { Layout l; float v[6]; if (Read(v, l)) { l.x = x; l.y = y; SetLayout(l); } return *this; }
+    Widget& SetSize(float w, float h) { Layout l; float v[6]; if (Read(v, l)) { l.w = w; l.h = h; SetLayout(l); } return *this; }
+    Widget& SetFontSize(float size) { if (Exists()) fly::detail::Api()->UISetText(m_id.c_str(), Text().c_str(), size); return *this; }
+    void Remove() { if (fly::detail::HaveUI()) fly::detail::Api()->UIRemove(m_id.c_str()); }
+
+private:
+    bool Read(float* v, Layout& l) const {
+        if (!detail::HaveQuery() || !fly::detail::Api()->UIGetLayout(m_id.c_str(), v)) return false;
+        l = { static_cast<Anchor>(static_cast<int>(v[0])), v[1], v[2], v[3], v[4] };
+        return true;
+    }
+    bool Colors(ColorRGBA& c, ColorRGBA& b) const {
+        unsigned char v[8] = {};
+        if (!detail::HaveQuery() || !fly::detail::Api()->UIGetColor(m_id.c_str(), v)) return false;
+        c = { v[0], v[1], v[2], v[3] };
+        b = { v[4], v[5], v[6], v[7] };
+        return true;
+    }
+    std::string m_id;
+};
+
+// The item with this id (check `if (w)` or w.Exists() to know whether it is there).
+inline Widget Find(const std::string& id) { return Widget(id); }
+
+// Make items. Making one again with an id that exists changes its layout and colours. Each returns the widget.
+// A filled rectangle.
+inline Widget Panel(const std::string& id, Layout l, ColorRGBA color = { 0, 0, 0, 140 }) {
+    if (detail::Make(id, 0, l)) detail::Color(id, color, color);
+    return Widget(id);
+}
+// `font`: "" or "Sans" (the default), "Serif", "Mono", "Pixel" (the blocky built-in one), a font file in the project's
+// assets/Fonts folder ("Roboto.ttf"), or a path to one. Put the file in the project so it ships with the game; system
+// fonts differ per machine.
+inline Widget Text(const std::string& id, const std::string& text, Layout l = {}, ColorRGBA color = { 255, 255, 255, 255 }, float fontSize = 24.0f, const std::string& font = "") {
+    if (!detail::Make(id, 1, l)) return Widget(id);
+    detail::Color(id, color, color);
+    fly::detail::Api()->UISetText(id.c_str(), text.c_str(), fontSize);
+    if (!font.empty() && fly::detail::HaveUIFont()) fly::detail::Api()->UISetFont(id.c_str(), font.c_str());
+    return Widget(id);
+}
+// A bar filled to `value` (0..1) in `fill` over `background`.
+inline Widget Bar(const std::string& id, float value, Layout l, ColorRGBA fill = { 80, 200, 90, 255 }, ColorRGBA background = { 0, 0, 0, 160 }) {
+    if (!detail::Make(id, 2, l)) return Widget(id);
+    detail::Color(id, fill, background);
+    fly::detail::Api()->UISetValue(id.c_str(), value);
+    return Widget(id);
+}
+// A picture from the project ("assets/ui/heart.png"), tinted by `tint`.
+inline Widget Image(const std::string& id, const std::string& file, Layout l, ColorRGBA tint = { 255, 255, 255, 255 }) {
+    if (!detail::Make(id, 3, l)) return Widget(id);
+    detail::Color(id, tint, tint);
+    fly::detail::Api()->UISetImage(id.c_str(), file.c_str());
+    return Widget(id);
+}
+
+// Shortcuts by id, the same as Find(id).SetX(...). Unknown ids are ignored.
+inline void SetText(const std::string& id, const std::string& text)  { Widget(id).SetText(text); }
+inline void SetFont(const std::string& id, const std::string& font)  { Widget(id).SetFont(font); }
+inline void SetValue(const std::string& id, float value)             { Widget(id).SetValue(value); }
+inline void SetColor(const std::string& id, ColorRGBA color, ColorRGBA background = { 0, 0, 0, 160 }) { if (fly::detail::HaveUI()) detail::Color(id, color, background); }
+inline void Show(const std::string& id, bool visible = true)        { Widget(id).Show(visible); }
+inline void Hide(const std::string& id)                              { Widget(id).Hide(); }
+inline void Remove(const std::string& id)                            { Widget(id).Remove(); }
+}
+
 // ---- tweens and events (scripts only, no engine support needed) ------------
 
 enum class Ease { Linear, In, Out, InOut, Bounce, Back };

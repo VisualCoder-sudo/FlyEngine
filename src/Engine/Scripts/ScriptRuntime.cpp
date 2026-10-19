@@ -11,7 +11,11 @@
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 
+#include "../../../include/Engine/Backend/ScenePersistence.hpp"
+#include "../../../include/Engine/Vfs.hpp"
+#include "../../../include/Engine/GameUI.hpp"
 #include <algorithm>
+#include <filesystem>
 #include <cstring>
 #include <sstream>
 
@@ -148,8 +152,40 @@ void ScriptRuntime::DestroyObject(ScatteredObject* obj)
     if (fit == objectsPtr->end()) return;   // already gone
     objectsPtr->erase(fit);
     playCreatedObjects.erase(std::remove(playCreatedObjects.begin(), playCreatedObjects.end(), obj), playCreatedObjects.end());
+    if (ModelGroup* g = obj->parentModel) {
+        g->members.erase(std::remove(g->members.begin(), g->members.end(), obj), g->members.end());
+        obj->parentModel = nullptr;
+    }
     if (sim) sim->RemoveObject(obj);
     if (engine) engine->RemoveEntity(obj);
+}
+
+ScatteredObject* ScriptRuntime::SpawnPrefab(const std::string& file, Vector3 at, std::vector<ScatteredObject*>* outObjects)
+{
+    if (!objectsPtr || !modelsPtr || !engine || file.empty()) return nullptr;
+    std::string path = file;
+    if (!std::filesystem::path(path).is_absolute() && !vfs::Handles(path) && !m_projectPath.empty())
+        path = m_projectPath + "/" + path;
+
+    std::vector<ScatteredObject*> made;
+    ModelGroup* root = nullptr;
+    const size_t groupsBefore = modelsPtr->size();
+    if (!SpawnPrefabFromFile(*engine, *objectsPtr, *modelsPtr, path, m_projectPath, at, &made, &root)) return nullptr;
+    if (made.empty()) return nullptr;
+
+    if (isPlaying) {
+        for (size_t i = groupsBefore; i < modelsPtr->size(); ++i) playCreatedGroups.push_back((*modelsPtr)[i].get());
+        for (ScatteredObject* o : made) {
+            playCreatedObjects.push_back(o);
+            if (sim) {
+                sim->SpawnBodyForObject(o);
+                sim->SetBodyVelocity(o, o->GetVelocity());
+            }
+            if (hostPtr && o->runOnPlay && !o->script.empty()) hostPtr->StartObjectScriptOn(o);
+        }
+    }
+    if (outObjects) *outObjects = made;
+    return made.front();
 }
 
 ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source, bool deferSpawn)
@@ -394,6 +430,8 @@ void ScriptRuntime::StopAllScripts()
 
 void ScriptRuntime::OnPlayStarted()
 {
+    gameui::Clear();
+    gameui::SetProjectPath(m_projectPath);
     ClearSnippetValues();
     // Everything that will be put back when play stops is recorded BEFORE any script runs. The visual script's Start
     // chain runs below, and what it changes (or creates) must count as a change, not as how the scene started.
@@ -432,6 +470,15 @@ void ScriptRuntime::RollbackCreatedObjects()
         if (engine) engine->RemoveEntity(obj);
     }
     playCreatedObjects.clear();
+    // The groups prefabs made. Their objects are gone by now; a group left inside another one is cut loose first.
+    for (ModelGroup* g : playCreatedGroups)
+        if (g->parent && std::find(playCreatedGroups.begin(), playCreatedGroups.end(), g->parent) == playCreatedGroups.end())
+            g->parent->RemoveChild(g);
+    if (modelsPtr)
+        modelsPtr->erase(std::remove_if(modelsPtr->begin(), modelsPtr->end(), [&](const std::unique_ptr<ModelGroup>& m) {
+            return std::find(playCreatedGroups.begin(), playCreatedGroups.end(), m.get()) != playCreatedGroups.end();
+        }), modelsPtr->end());
+    playCreatedGroups.clear();
 }
 
 // The scene's Lighting section as it was when play started: a script may change the time, the
@@ -479,6 +526,7 @@ void ScriptRuntime::OnPlayStopped()
     if (hostPtr) hostPtr->ClearAllScripts();
     RollbackCreatedObjects();
     RestoreWorldSettings();
+    gameui::Clear();
     if (g_postPlayHook) g_postPlayHook();   // last: the editor puts the scene back once nothing can change it any more
 }
 

@@ -1,5 +1,6 @@
 #include "../../../include/Engine/Backend/AudioAssets.hpp"
 #include "../../../include/Engine/Backend/VisualScript.hpp"
+#include "../../../include/Engine/GameUI.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "imgui.h"
@@ -44,7 +45,8 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::OnKey: case NodeType::EveryN: case NodeType::OnGamepadButton: return IM_COL32(40, 130, 60, 255);
         case NodeType::AddToVariable: return IM_COL32(40, 130, 140, 255);
         case NodeType::PlaySound: case NodeType::StopSound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
-        case NodeType::ShowText: return IM_COL32(110, 70, 160, 255);
+        case NodeType::ShowText: case NodeType::UIText: case NodeType::UIPanel: case NodeType::UIBar: case NodeType::UIImage:
+        case NodeType::UISet: case NodeType::UIRemove: return IM_COL32(110, 70, 160, 255);
         case NodeType::SetWorld: return IM_COL32(40, 95, 170, 255);
         case NodeType::CodeSnippet: return IM_COL32(60, 60, 70, 255);
         case NodeType::CreateObject: case NodeType::Destroy: case NodeType::Clone: case NodeType::SetVelocity:
@@ -84,7 +86,14 @@ int BodyRows(NodeType t) {
         case NodeType::PlaySound: return 7;   // File, Volume, Object, Range, Loop, Muffle, Echo
         case NodeType::StopSound: return 2;   // File, Object
         case NodeType::ShowText: case NodeType::SetWorld: return 3;
+        case NodeType::UIText: return 7;                           // Id, Text, Anchor, Offset, Font size, Colour, Font
+        case NodeType::UIImage: return 6;                          // Id, File, Anchor, Offset, Size, Tint
+        case NodeType::UIPanel: return 5;                          // Id, Anchor, Offset, Size, Colour
+        case NodeType::UIBar: return 7;                            // Id, Value, Anchor, Offset, Size, Colour, Background
+        case NodeType::UISet: return 3;                            // Id, Property, Value
+        case NodeType::UIRemove: return 1;
         case NodeType::CodeSnippet: return 9;   // Inputs, Outputs, then the code box (7 rows)
+        case NodeType::UIGet: return 2;                            // Id, Property
         case NodeType::KeyDown: case NodeType::Normalize: case NodeType::Time: case NodeType::ObjectExists:
         case NodeType::EveryN: return 1;
         case NodeType::VecPart: case NodeType::Distance: case NodeType::AddToVariable: return 2;
@@ -203,10 +212,78 @@ std::string FormatVec(const float v[3]) {
     return b;
 }
 
+// The colour swatch that opens a full picker (wheel, saturation/value square, hue and alpha bars, RGB / HSV / hex inputs, a
+// row of ready colours). The value is "(r, g, b)" or "(r, g, b, a)", 0..255 (the alpha is left out when it is 255).
+void ColorSwatch(std::string& s, float width) {
+    int r = 255, g = 255, b = 255, a = 255;
+    std::sscanf(s.c_str(), " ( %d , %d , %d , %d", &r, &g, &b, &a);
+    ImVec4 col(std::clamp(r, 0, 255) / 255.0f, std::clamp(g, 0, 255) / 255.0f, std::clamp(b, 0, 255) / 255.0f, std::clamp(a, 0, 255) / 255.0f);
+
+    if (ImGui::ColorButton("##swatch", col, ImGuiColorEditFlags_AlphaPreviewHalf, ImVec2(width, ImGui::GetFrameHeight())))
+        ImGui::OpenPopup("##picker");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("#%02X%02X%02X%02X", int(col.x * 255 + 0.5f), int(col.y * 255 + 0.5f), int(col.z * 255 + 0.5f), int(col.w * 255 + 0.5f));
+    if (ImGui::BeginPopup("##picker")) {
+        float c[4] = { col.x, col.y, col.z, col.w };
+        const ImVec4 before = col;
+        bool changed = ImGui::ColorPicker4("##pk", c,
+            ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_PickerHueWheel |
+            ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_DisplayHSV | ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_InputRGB, &before.x);
+        ImGui::Separator();
+        static const ImU32 kReady[] = { IM_COL32(255,255,255,255), IM_COL32(190,190,190,255), IM_COL32(90,90,90,255), IM_COL32(0,0,0,255),
+                                        IM_COL32(230,60,60,255), IM_COL32(240,150,50,255), IM_COL32(245,220,70,255), IM_COL32(90,200,90,255),
+                                        IM_COL32(60,200,200,255), IM_COL32(70,120,230,255), IM_COL32(150,90,220,255), IM_COL32(240,110,190,255) };
+        for (int i = 0; i < 12; ++i) {
+            ImGui::PushID(i);
+            if (i) ImGui::SameLine(0.0f, 4.0f);
+            const ImVec4 sw = ImGui::ColorConvertU32ToFloat4(kReady[i]);
+            if (ImGui::ColorButton("##ready", sw, ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoTooltip, ImVec2(18.0f, 18.0f))) {
+                c[0] = sw.x; c[1] = sw.y; c[2] = sw.z;   // the alpha stays
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        if (changed) {
+            const int nr = int(c[0] * 255 + 0.5f), ng = int(c[1] * 255 + 0.5f), nb = int(c[2] * 255 + 0.5f), na = int(c[3] * 255 + 0.5f);
+            char out[48];
+            if (na >= 255) std::snprintf(out, sizeof(out), "(%d, %d, %d)", nr, ng, nb);
+            else std::snprintf(out, sizeof(out), "(%d, %d, %d, %d)", nr, ng, nb, na);
+            s = out;
+        }
+        ImGui::EndPopup();
+    }
+}
+
 // The value editor that suits `prop` (colour picker, vector, checkbox, number); edits `value` in place.
-void DrawValueWidgetFor(const std::string& prop, std::string& value) {
+void DrawValueWidgetFor(const std::string& prop, std::string& value, bool uiTarget = false, const std::string& projectDir = "") {
     struct { const std::string& prop; std::string& value; } n{ prop, value };
     ImGui::SetNextItemWidth(170.0f);
+    if (uiTarget) {   // a UI item's properties are not the object's: 2D vectors, an alpha colour, anchors, fonts
+        if (n.prop == "Color" || n.prop == "Background") { ColorSwatch(n.value, 170.0f); return; }
+        if (n.prop == "Visible") { bool b = n.value != "false" && n.value != "0" && !n.value.empty(); if (ImGui::Checkbox("##val", &b)) n.value = b ? "true" : "false"; return; }
+        if (n.prop == "Anchor" || n.prop == "Font") {
+            const std::vector<std::string> items = n.prop == "Anchor" ? UiAnchors() : gameui::ListFonts(projectDir);
+            if (ImGui::BeginCombo("##val", n.value.c_str(), ImGuiComboFlags_HeightLarge)) {
+                for (const auto& it : items) if (ImGui::Selectable(it.c_str(), it == n.value)) n.value = it;
+                ImGui::EndCombo();
+            }
+            return;
+        }
+        if (n.prop == "Offset" || n.prop == "Size") {
+            float v[2] = { 0, 0 };
+            std::sscanf(n.value.c_str(), " ( %f , %f", &v[0], &v[1]);
+            if (ImGui::DragFloat2("##val", v, 0.5f)) { char b[64]; std::snprintf(b, sizeof(b), "(%g, %g)", v[0], v[1]); n.value = b; }
+            return;
+        }
+        if (n.prop == "Text" || n.prop == "Image") {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "%s", n.value.c_str());
+            if (ImGui::InputText("##val", buf, sizeof(buf))) n.value = buf;
+            return;
+        }
+        float f = static_cast<float>(std::atof(n.value.c_str()));   // Value, Font Size
+        if (ImGui::DragFloat("##val", &f, n.prop == "Value" ? 0.01f : 0.5f)) { char b[32]; std::snprintf(b, sizeof(b), "%g", f); n.value = b; }
+        return;
+    }
     if (n.prop == "Color") {
         int r = 255, g = 0, b = 0;
         std::sscanf(n.value.c_str(), " ( %d , %d , %d", &r, &g, &b);
@@ -233,9 +310,23 @@ void DrawValueWidgetFor(const std::string& prop, std::string& value) {
     }
 }
 
-void DrawValueWidget(Node& n) { DrawValueWidgetFor(n.prop, n.value); }
+void DrawValueWidget(Node& n, const std::string& projectDir = "") { DrawValueWidgetFor(n.prop, n.value, IsUiTarget(n.target), projectDir); }
 
-std::string DefaultValue(const std::string& p) {
+// A fresh value for property `p`; `uiTarget`: of a UI item, whose properties mean other things.
+std::string DefaultValue(const std::string& p, bool uiTarget = false) {
+    if (uiTarget) {
+        if (p == "Text") return "Hello";
+        if (p == "Value") return "1";
+        if (p == "Visible") return "true";
+        if (p == "Color") return "(255, 255, 255)";
+        if (p == "Background") return "(0, 0, 0, 160)";
+        if (p == "Font") return "Sans";
+        if (p == "Font Size") return "28";
+        if (p == "Anchor") return "Top Left";
+        if (p == "Offset") return "(20, 20)";
+        if (p == "Size") return "(200, 60)";
+        return "";
+    }
     return IsBoolProp(p) ? "true" : IsVecProp(p) ? "(0, 0, 0)" : p == "Color" ? "(255, 0, 0)" : "0";
 }
 
@@ -267,8 +358,18 @@ void DrawTargetPopup(Node& n, const SceneListing& scene, bool objectsOnly, std::
     auto pick = [&](const std::string& path) { (field ? *field : n.target) = path; ImGui::CloseCurrentPopup(); };
     if (g_browsePath.empty()) {
         if (ImGui::Selectable("[folder] Workspace", false, ImGuiSelectableFlags_DontClosePopups)) g_browsePath = "Workspace";
+        if (!objectsOnly && ImGui::Selectable("[folder] UI", false, ImGuiSelectableFlags_DontClosePopups)) g_browsePath = "UI";
         if (!objectsOnly) for (const auto& g : WorldGroups())
             if (ImGui::Selectable(g.c_str())) { pick(g); n.prop = WorldProperties(g).front(); n.value = IsBoolProp(n.prop) ? "true" : "0"; }
+    } else if (g_browsePath == "UI") {
+        // The items the scripts' UI nodes make (they only exist while playing, so this is read from the nodes).
+        const std::vector<std::string> ids = UiIds();
+        if (ids.empty()) ImGui::TextDisabled("No UI items yet: add a UI Text, Panel, Bar or Image node.");
+        for (size_t i = 0; i < ids.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(ids[i].c_str())) { pick("UI/" + ids[i]); n.prop = UiSetProperties().front(); n.value = DefaultValue(n.prop, true); }
+            ImGui::PopID();
+        }
     } else if (g_browsePath == "Workspace") {
         // Several objects can share a name, so every row gets an ID of its own.
         for (size_t i = 0; i < scene.groups.size(); ++i) {
@@ -310,6 +411,19 @@ void StrRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, const
     if (ImGui::InputText(id, buf, sizeof(buf))) s = buf;
 }
 
+// A colour row of a node: label, then the swatch.
+void ColorRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, bool wired = false) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    if (wired) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); return; }
+    ImGui::PushID(row);
+    ColorSwatch(s, NodeWidth(n) - 80.0f);
+    ImGui::PopID();
+}
+
 void NumRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, bool integer, bool wired = false) {
     const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
@@ -328,17 +442,20 @@ void NumRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, bool 
     }
 }
 
-void ComboRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, const std::vector<std::string>& items) {
+void ComboRow(Node& n, ImVec2 o, int row, const char* label, std::string& s, const std::vector<std::string>& items, bool wired = false) {
     const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    if (wired) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); return; }
     ImGui::SetNextItemWidth(NodeWidth(n) - 80.0f);
-    if (ImGui::BeginCombo("##combo", s.c_str())) {
+    ImGui::PushID(row);   // a node can hold several combos (UI Text: Anchor and Font)
+    if (ImGui::BeginCombo("##combo", s.c_str(), ImGuiComboFlags_HeightLarge)) {
         for (const auto& it : items) if (ImGui::Selectable(it.c_str(), it == s)) s = it;
         ImGui::EndCombo();
     }
+    ImGui::PopID();
 }
 
 bool IsSoundFile(const std::filesystem::path& p) {
@@ -635,6 +752,52 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             ComboRow(n, o, 1, "Position", n.prop, HudPositions());
             StrRow(n, o, 2, "Seconds", n.target, "##secs");
             break;
+        // The UI nodes: every row has a value pin (the row's number is the pin's), so any of them can be wired.
+        case NodeType::UIText:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            StrRow(n, o, 1, "Text", n.value, "##txt", wired(1));
+            ComboRow(n, o, 2, "Anchor", n.prop, UiAnchors(), wired(2));
+            StrRow(n, o, 3, "Offset", SoundOptionRef(n, "offset", "(20, 20)"), "##off", wired(3));
+            StrRow(n, o, 4, "Font size", SoundOptionRef(n, "size", "28"), "##size", wired(4));
+            ColorRow(n, o, 5, "Colour", SoundOptionRef(n, "color", "(255, 255, 255)"), wired(5));
+            ComboRow(n, o, 6, "Font", SoundOptionRef(n, "font", "Sans"), gameui::ListFonts(scene.projectDir), wired(6));
+            break;
+        case NodeType::UIPanel:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            ComboRow(n, o, 1, "Anchor", n.prop, UiAnchors(), wired(1));
+            StrRow(n, o, 2, "Offset", SoundOptionRef(n, "offset", "(20, 20)"), "##off", wired(2));
+            StrRow(n, o, 3, "Size", SoundOptionRef(n, "size", "(200, 60)"), "##size", wired(3));
+            ColorRow(n, o, 4, "Colour", SoundOptionRef(n, "color", "(0, 0, 0, 140)"), wired(4));
+            break;
+        case NodeType::UIBar:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            StrRow(n, o, 1, "Value", n.value, "##val", wired(1));
+            ComboRow(n, o, 2, "Anchor", n.prop, UiAnchors(), wired(2));
+            StrRow(n, o, 3, "Offset", SoundOptionRef(n, "offset", "(20, -20)"), "##off", wired(3));
+            StrRow(n, o, 4, "Size", SoundOptionRef(n, "size", "(240, 22)"), "##size", wired(4));
+            ColorRow(n, o, 5, "Colour", SoundOptionRef(n, "color", "(80, 200, 90)"), wired(5));
+            ColorRow(n, o, 6, "Background", SoundOptionRef(n, "background", "(0, 0, 0, 160)"), wired(6));
+            break;
+        case NodeType::UIImage:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            StrRow(n, o, 1, "File", n.value, "##file", wired(1));
+            ComboRow(n, o, 2, "Anchor", n.prop, UiAnchors(), wired(2));
+            StrRow(n, o, 3, "Offset", SoundOptionRef(n, "offset", "(20, 20)"), "##off", wired(3));
+            StrRow(n, o, 4, "Size", SoundOptionRef(n, "size", "(0, 0)"), "##size", wired(4));
+            ColorRow(n, o, 5, "Tint", SoundOptionRef(n, "color", "(255, 255, 255)"), wired(5));
+            break;
+        case NodeType::UISet:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            ComboRow(n, o, 1, "Property", n.prop, UiSetProperties(), wired(1));
+            if (n.prop == "Color" || n.prop == "Background") ColorRow(n, o, 2, "Value", n.value, wired(2));
+            else if (n.prop == "Anchor") ComboRow(n, o, 2, "Value", n.value, UiAnchors(), wired(2));
+            else StrRow(n, o, 2, "Value", n.value, "##val", wired(2));
+            break;
+        case NodeType::UIRemove: StrRow(n, o, 0, "Id", n.target, "##id", wired(0)); break;
+        case NodeType::UIGet:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            ComboRow(n, o, 1, "Read", n.prop, UiGetProperties(), wired(1));
+            break;
         case NodeType::SetWorld: {
             const std::string before = n.target;
             ComboRow(n, o, 0, "Group", n.target, WorldGroups());
@@ -669,7 +832,7 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             break;
         case NodeType::GetProperty:
             StrRow(n, o, 0, "Object", n.target, "##obj");
-            ComboRow(n, o, 1, "Property", n.prop, ObjectProperties());
+            ComboRow(n, o, 1, "Property", n.prop, IsUiTarget(n.target) ? UiGetProperties() : ObjectProperties());
             break;
         case NodeType::Compare:
             StrRow(n, o, 0, "A", n.target, "##a", wired(0));
@@ -699,6 +862,7 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     const float x = o.x + n.x + 10.0f;
     float y = o.y + n.y + kHeaderH + 6.0f;
     const bool world = std::find(WorldGroups().begin(), WorldGroups().end(), n.target) != WorldGroups().end();
+    const bool uiTarget = IsUiTarget(n.target);
 
     ImGui::PushID(n.id);
     ImGui::SetCursorScreenPos(ImVec2(x, y));
@@ -720,17 +884,17 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     ImGui::TextUnformatted("Property");
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
     ImGui::SetNextItemWidth(TargetButtonW(n));
-    const std::vector<std::string> props = world ? WorldProperties(n.target) : ObjectProperties();
+    const std::vector<std::string> props = uiTarget ? UiSetProperties() : world ? WorldProperties(n.target) : ObjectProperties();
     // Switching between an object and a world group changes which properties exist: keep only the valid ones.
     const auto valid = [&](const std::string& p) { return std::find(props.begin(), props.end(), p) != props.end(); };
-    if (!props.empty() && !valid(n.prop)) { n.prop = props.front(); n.value = DefaultValue(n.prop); }
+    if (!props.empty() && !valid(n.prop)) { n.prop = props.front(); n.value = DefaultValue(n.prop, uiTarget); }
     for (int k = static_cast<int>(n.extra.size()) - 1; k >= 0; --k)
         if (!valid(n.extra[k].first)) RemoveExtraProperty(n.id, k);
     if (ImGui::BeginCombo("##p", n.prop.c_str())) {
         for (const auto& p : props)
             if (ImGui::Selectable(p.c_str(), p == n.prop)) {
                 n.prop = p;
-                n.value = DefaultValue(p);
+                n.value = DefaultValue(p, uiTarget);
             }
         ImGui::EndCombo();
     }
@@ -738,10 +902,10 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
     y += 26.0f;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(n.prop == "Color" ? "Colour" : "Value");
+    ImGui::TextUnformatted(n.prop == "Color" || n.prop == "Background" ? "Colour" : "Value");
     ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
     if (IsWired(g, n.id, 0)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
-    else DrawValueWidget(n);
+    else DrawValueWidget(n, scene.projectDir);
 
     // More properties on the same target, each a Property row and a Value row with its own value pin.
     int removeExtra = -1;
@@ -756,7 +920,7 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         ImGui::SetNextItemWidth(TargetButtonW(n) - 28.0f);
         if (ImGui::BeginCombo("##p", prop.c_str())) {
             for (const auto& p : props)
-                if (ImGui::Selectable(p.c_str(), p == prop)) { prop = p; value = DefaultValue(p); }
+                if (ImGui::Selectable(p.c_str(), p == prop)) { prop = p; value = DefaultValue(p, uiTarget); }
             ImGui::EndCombo();
         }
         ImGui::SameLine(0.0f, 4.0f);
@@ -766,10 +930,10 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         y += 26.0f;
         ImGui::SetCursorScreenPos(ImVec2(x, y));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(prop == "Color" ? "Colour" : "Value");
+        ImGui::TextUnformatted(prop == "Color" || prop == "Background" ? "Colour" : "Value");
         ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
         if (IsWired(g, n.id, k + 1)) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("(wired)"); }
-        else DrawValueWidgetFor(prop, value);
+        else DrawValueWidgetFor(prop, value, uiTarget, scene.projectDir);
         ImGui::PopID();
     }
     if (removeExtra >= 0) RemoveExtraProperty(n.id, removeExtra);
@@ -783,7 +947,7 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             for (const auto& e : n.extra) used = used || e.first == p;
             if (!used) { pick = p; break; }
         }
-        n.extra.emplace_back(pick, DefaultValue(pick));
+        n.extra.emplace_back(pick, DefaultValue(pick, uiTarget));
     }
     ImGui::PopID();
 }
@@ -1082,6 +1246,7 @@ void DrawEditor(const SceneListing& scene) {
             { "Input", { NodeType::KeyDown, NodeType::GamepadButtonDown, NodeType::GamepadAxis } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
             { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText, NodeType::CodeSnippet } },
+            { "UI", { NodeType::UIText, NodeType::UIPanel, NodeType::UIBar, NodeType::UIImage, NodeType::UISet, NodeType::UIGet, NodeType::UIRemove } },
             { "Audio", { NodeType::PlaySound, NodeType::StopSound, NodeType::SetVolume } },
             { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
             { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },

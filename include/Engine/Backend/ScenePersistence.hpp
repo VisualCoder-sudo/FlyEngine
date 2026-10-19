@@ -75,3 +75,13 @@ std::vector<std::pair<std::string, std::string>> SnapshotObjectRecords(const std
                                                                        const std::string& baseDir);
 std::vector<std::string> DiffObjectRecords(const std::vector<std::pair<std::string, std::string>>& before,
                                            const std::vector<std::pair<std::string, std::string>>& after);
+
+// Prefabs: one group (nested groups included) saved as a .flyprefab file and spawned again later.
+// A prefab remembers its pivot, the middle of the group's footprint at its lowest point; spawning puts that pivot at
+// `at`. The spawned objects and groups are added to the scene, `outObjects` gets the objects and `outGroup` the root
+// group. `path` may be inside the exported game's archive; `baseDir` resolves the project-relative mesh/texture paths.
+bool SavePrefabToFile(const ModelGroup& root, const std::string& path, const std::string& baseDir);
+bool SpawnPrefabFromFile(Engine& engine, std::vector<ScatteredObject*>& objects,
+                         std::vector<std::unique_ptr<ModelGroup>>& models,
+                         const std::string& path, const std::string& baseDir, Vector3 at,
+                         std::vector<ScatteredObject*>* outObjects = nullptr, ModelGroup** outGroup = nullptr);

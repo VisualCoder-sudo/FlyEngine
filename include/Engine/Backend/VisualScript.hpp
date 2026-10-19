@@ -69,6 +69,13 @@ enum class NodeType {
     GamepadButtonDown = 53,   // prop = button (see GamepadButtonNames); gamepad 0: true while it is held
     GamepadAxis = 54,         // prop = axis (see GamepadAxisNames); gamepad 0: -1..1, triggers rest at -1
     OnGamepadButton = 55,     // event: prop = button name (see GamepadButtonNames); gamepad 0
+    // In-game UI (see GameUI.hpp). All exec nodes: target = widget id, prop = anchor (see UiAnchors), value / data input 0 =
+    // the text, bar value (0..1) or image file. The rest lives in Node::extra, read with SoundOption: "offset" "(x, y)",
+    // "size" "(w, h)" (text: the font size), "color" "(r, g, b)" or "(r, g, b, a)", bars also "background".
+    UIText = 56, UIPanel = 57, UIBar = 58, UIImage = 59,
+    UISet = 60,         // changes a widget that exists: prop = one of UiSetProperties(), value / data input 0 = the new one
+    UIRemove = 61,      // target = widget id; empty removes every widget
+    UIGet = 62,         // value node: target = widget id, prop = what to read (see UiGetProperties); "" if the widget is not there
     Count_
 };
 
@@ -163,7 +170,14 @@ const std::vector<std::string>& ShapeNames(); // shapes offered by Create Object
 const std::vector<std::string>& MathFuncNames();   // functions offered by the Math Function node (Sin/Cos take degrees)
 const std::vector<std::string>& VecMathOps();
 const std::vector<std::string>& TimeModes();
-const std::vector<std::string>& HudPositions();   // screen spots offered by Show Text
+const std::vector<std::string>& HudPositions();
+const std::vector<std::string>& UiAnchors();      // the anchors of the UI nodes, in gameui::Anchor order
+const std::vector<std::string>& UiSetProperties(); // what a Set UI node changes
+const std::vector<std::string>& UiGetProperties(); // what a Get UI node reads
+// Change and Get Property nodes aim at a UI item with the target "UI/<id>"; the properties are UiSetProperties() / UiGetProperties().
+bool IsUiTarget(const std::string& target);
+std::string UiTargetId(const std::string& target);   // "UI/hp" -> "hp"
+std::vector<std::string> UiIds();                   // the ids the scripts' UI nodes make, sorted: what the target picker offers   // screen spots offered by Show Text
 
 // Code Snippet nodes. Inside the snippet: In(i) / InNum(i) / InBool(i) / InVec3(i) read what was wired into input pin i
 // when the flow reached the node, and Out(i, value) sets output pin i for the nodes wired after it. Their C++ is written to Scripts/.visualscript/snippets.cpp as one hidden fly::Script class per

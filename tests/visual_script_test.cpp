@@ -12,6 +12,7 @@
 #include "Engine/Scripts/ScriptLauncher.hpp"
 #include "Engine/Scripts/ScriptRuntime.hpp"
 #include "Engine/Frontend/ui.hpp"
+#include "Engine/GameUI.hpp"
 
 #include <algorithm>
 #include <cstdarg>
@@ -65,11 +66,13 @@ float g_masterVolume = -1.0f;
 std::vector<std::string> g_played;              // "path|volume" from the sound player hook
 std::vector<vscript::SoundRequest> g_requests;   // the whole request, as the sound player hook got it
 std::vector<std::string> g_stopped;              // "path|object" from the sound stopper hook
+std::map<std::string, gameui::Info> g_uiInfo;   // the widgets Get UI can read (tests seed these)
+std::vector<std::string> g_ui;                  // what the UI nodes asked gameui to do
 std::vector<std::string> g_drawn;               // DrawText strings that are not the shadow pass
 int g_drawTextCalls = 0;
 
 void ResetStubs() {
-    g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear();
+    g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear(); g_ui.clear(); g_uiInfo.clear();
     g_createDeferred.clear(); g_finished.clear(); g_logAtFinish.clear(); g_cloneDeferred = false;
     g_destroyed = g_cloned = g_scriptsStarted = 0;
     g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
@@ -144,6 +147,25 @@ bool ScriptRuntime::StartSnippet(const std::string& cls) {
     return g_snippetsKnown;                          // false = "not compiled yet"
 }
 void ScatteredObject::SetName(const std::string& n) { g_names[this] = n; }
+
+namespace gameui {   // the UI nodes' target, recording what they ask for
+static std::string Num(float f) { return std::to_string(static_cast<int>(f * 100.0f)); }
+static std::string Col(Color c) { return std::to_string(c.r) + "," + std::to_string(c.g) + "," + std::to_string(c.b) + "," + std::to_string(c.a); }
+bool Create(const std::string& id, Kind k) { g_uiInfo[id].kind = k; g_ui.push_back("make:" + id + ":" + std::to_string(static_cast<int>(k))); return true; }
+void SetLayout(const std::string& id, Anchor a, float x, float y, float w, float h) {
+    g_ui.push_back("layout:" + id + ":" + std::to_string(static_cast<int>(a)) + ":" + Num(x) + "," + Num(y) + "," + Num(w) + "," + Num(h));
+}
+void SetColor(const std::string& id, Color c, Color c2) { g_ui.push_back("color:" + id + ":" + Col(c) + "/" + Col(c2)); }
+void SetPrimaryColor(const std::string& id, Color c) { g_ui.push_back("primary:" + id + ":" + Col(c)); }
+bool Get(const std::string& id, Info& out) { const auto it = g_uiInfo.find(id); if (it == g_uiInfo.end()) return false; out = it->second; return true; }
+void SetFont(const std::string& id, const std::string& f) { g_ui.push_back("font:" + id + ":" + f); }
+void SetText(const std::string& id, const std::string& t, float size) { g_ui.push_back("text:" + id + ":" + t + ":" + Num(size)); }
+void SetValue(const std::string& id, float v) { g_ui.push_back("value:" + id + ":" + Num(v)); }
+void SetImage(const std::string& id, const std::string& f) { g_ui.push_back("image:" + id + ":" + f); }
+void SetVisible(const std::string& id, bool v) { g_ui.push_back("show:" + id + ":" + (v ? "1" : "0")); }
+void Remove(const std::string& id) { g_uiInfo.erase(id); g_ui.push_back("remove:" + id); }
+void Clear() { g_uiInfo.clear(); g_ui.push_back("clear"); }
+}
 
 extern "C" {
 bool IsKeyPressed(int key) { return key == g_keyPressed; }
@@ -1703,6 +1725,198 @@ static void TestRemoveNodeDropsWires() {
     CHECK(Active().links.empty());
 }
 
+// ---------------------------------------------------------------- UI nodes
+
+static std::string Joined(const std::vector<std::string>& v) { std::string o; for (const auto& x : v) o += x + ";"; return o; }
+
+static void TestUiNodes() {
+    Fresh();
+    const int s = Add(NodeType::Start), t = Add(NodeType::UIText), b = Add(NodeType::UIBar), im = Add(NodeType::UIImage), pn = Add(NodeType::UIPanel);
+    N(t).target = "score"; N(t).value = "Score 5"; N(t).prop = "Top Right";
+    SoundOptionRef(N(t), "offset") = "(-20, 20)"; SoundOptionRef(N(t), "size") = "30"; SoundOptionRef(N(t), "color") = "(255, 0, 0)"; SoundOptionRef(N(t), "font") = "Serif";
+    N(b).target = "hp"; N(b).value = "0.5";
+    N(im).target = "icon"; N(im).value = "assets/ui/heart.png"; N(im).prop = "Center";
+    N(pn).target = "bg"; N(pn).prop = "Fill"; SoundOptionRef(N(pn), "offset") = "(8, 8)";
+    Link_(s, t); Link_(t, b); Link_(b, im); Link_(im, pn);
+    Run(RT());
+    CHECK_STR(Joined(g_ui),
+        "make:score:1;layout:score:2:-2000,2000,0,0;color:score:255,0,0,255/0,0,0,160;text:score:Score 5:3000;font:score:Serif;"
+        "make:hp:2;layout:hp:6:2000,-2000,24000,2200;color:hp:80,200,90,255/0,0,0,160;value:hp:50;"
+        "make:icon:3;layout:icon:4:2000,2000,0,0;color:icon:255,255,255,255/0,0,0,160;image:icon:assets/ui/heart.png;"
+        "make:bg:0;layout:bg:9:800,800,20000,6000;color:bg:0,0,0,140/0,0,0,160;");
+}
+
+static void TestUiSetAndRemove() {
+    Fresh();
+    g_uiInfo["label"] = gameui::Info(); g_uiInfo["hp"] = gameui::Info();   // items some UI node made earlier
+    const int s = Add(NodeType::Start), v = Add(NodeType::SetVariable), a = Add(NodeType::UISet), b = Add(NodeType::UISet);
+    const int c = Add(NodeType::UISet), d = Add(NodeType::UISet), fnt = Add(NodeType::UISet), rm = Add(NodeType::UIRemove), all = Add(NodeType::UIRemove), get = Add(NodeType::GetVariable);
+    N(v).target = "score"; N(v).value = "7";
+    N(get).target = "score";
+    N(a).target = "label"; N(a).prop = "Text"; N(a).value = "unused";
+    N(b).target = "hp"; N(b).prop = "Value"; N(b).value = "0.25";
+    N(c).target = "hp"; N(c).prop = "Visible"; N(c).value = "false";
+    N(d).target = "label"; N(d).prop = "Color"; N(d).value = "(10, 20, 30)";
+    N(fnt).target = "label"; N(fnt).prop = "Font"; N(fnt).value = "assets/Fonts/Roboto.ttf";
+    N(rm).target = "label"; N(all).target = "";
+    Link_(s, v); Link_(v, a); Link_(a, b); Link_(b, c); Link_(c, d); Link_(d, fnt); Link_(fnt, rm); Link_(rm, all);
+    ConnectData(get, a, 2);                       // a wired value beats the field (pin 2 = Value)
+    Run(RT());
+    CHECK_STR(Joined(g_ui), "text:label:7:0;value:hp:25;show:hp:0;primary:label:10,20,30,255;font:label:assets/Fonts/Roboto.ttf;remove:label;clear;");
+
+    g_ui.clear();
+    Fresh();
+    const int s2 = Add(NodeType::Start), noId = Add(NodeType::UIText);
+    N(noId).target = "";
+    Link_(s2, noId);
+    Run(RT());
+    CHECK(g_ui.empty() && Logged("no id"));
+}
+
+static void TestUiGetAndSetParts() {
+    Fresh();
+    gameui::Info hp;
+    hp.kind = gameui::Kind::Bar; hp.anchor = gameui::Anchor::BottomLeft; hp.x = 20; hp.y = -20; hp.w = 240; hp.h = 22;
+    hp.color = { 80, 200, 90, 255 }; hp.color2 = { 0, 0, 0, 160 }; hp.text = "Hi"; hp.fontSize = 28; hp.value = 0.75f; hp.visible = true;
+    g_uiInfo["hp"] = hp;
+
+    // Get UI reads each part (and "" for a widget that is not there).
+    const char* props[] = { "Exists", "Text", "Value", "Visible", "Color", "Background", "Font Size", "Anchor", "Offset", "Size" };
+    const char* wanted[] = { "true", "Hi", "0.75", "true", "(80, 200, 90)", "(0, 0, 0, 160)", "28", "Bottom Left", "(20, -20)", "(240, 22)" };
+    const int s = Add(NodeType::Start);
+    int prev = s;
+    for (int i = 0; i < 10; ++i) {
+        const int get = Add(NodeType::UIGet), pr = Add(NodeType::Print);
+        N(get).target = "hp"; N(get).prop = props[i];
+        N(pr).value = "unset";
+        ConnectData(get, pr, 0);
+        Link_(prev, pr);
+        prev = pr;
+    }
+    const int missing = Add(NodeType::UIGet), pm = Add(NodeType::Print);
+    N(missing).target = "nope"; N(missing).prop = "Exists"; ConnectData(missing, pm, 0); Link_(prev, pm);
+    Run(RT());
+    for (int i = 0; i < 10; ++i) CHECK(Logged(std::string("] ") + wanted[i]) || Logged(wanted[i]));
+    CHECK(Logged("false"));
+
+    // Set UI changes one part and keeps the rest.
+    Fresh();
+    g_uiInfo["hp"] = hp;
+    const int s2 = Add(NodeType::Start);
+    const char* setProps[] = { "Background", "Font Size", "Anchor", "Offset", "Size", "Image" };
+    const char* setVals[] = { "(1, 2, 3)", "40", "Top Right", "(5, 6)", "(300, 30)", "ui/x.png" };
+    int p2 = s2;
+    for (int i = 0; i < 6; ++i) {
+        const int set = Add(NodeType::UISet);
+        N(set).target = "hp"; N(set).prop = setProps[i]; N(set).value = setVals[i];
+        Link_(p2, set);
+        p2 = set;
+    }
+    Run(RT());
+    CHECK_STR(Joined(g_ui),
+        "color:hp:80,200,90,255/1,2,3,255;text:hp:Hi:4000;layout:hp:2:2000,-2000,24000,2200;layout:hp:6:500,600,24000,2200;"
+        "layout:hp:6:2000,-2000,30000,3000;image:hp:ui/x.png;");
+}
+
+// Every row of a UI node has a value pin: wiring Id, Anchor, Offset and Colour from other nodes drives them.
+static void TestUiNodeWiredFields() {
+    Fresh();
+    const int s = Add(NodeType::Start), t = Add(NodeType::UIText), set = Add(NodeType::UISet), rm = Add(NodeType::UIRemove);
+    const int idv = Add(NodeType::GetVariable), anc = Add(NodeType::GetVariable), off = Add(NodeType::MakeVec3), col = Add(NodeType::GetVariable);
+    const int sid = Add(NodeType::GetVariable), sprop = Add(NodeType::GetVariable);
+    N(idv).target = "wid"; N(anc).target = "wanchor"; N(col).target = "wcolor"; N(sid).target = "wid"; N(sprop).target = "wprop";
+    N(off).target = "7"; N(off).value = "8"; N(off).prop = "0";
+    const int v1 = Add(NodeType::SetVariable), v2 = Add(NodeType::SetVariable), v3 = Add(NodeType::SetVariable), v4 = Add(NodeType::SetVariable);
+    N(v1).target = "wid"; N(v1).value = "dyn";
+    N(v2).target = "wanchor"; N(v2).value = "Bottom Right";
+    N(v3).target = "wcolor"; N(v3).value = "(9, 8, 7)";
+    N(v4).target = "wprop"; N(v4).value = "Text";
+    Link_(s, v1); Link_(v1, v2); Link_(v2, v3); Link_(v3, v4); Link_(v4, t); Link_(t, set); Link_(set, rm);
+    ConnectData(idv, t, 0); ConnectData(anc, t, 2); ConnectData(off, t, 3); ConnectData(col, t, 5);
+    ConnectData(sid, set, 0); ConnectData(sprop, set, 1);
+    N(set).value = "changed";
+    ConnectData(sid, rm, 0);
+    CHECK(DataInputCount(NodeType::UIText) == 7 && DataInputCount(NodeType::UIBar) == 7 && DataInputCount(NodeType::UIPanel) == 5);
+    CHECK(DataInputCount(NodeType::UIImage) == 6 && DataInputCount(NodeType::UISet) == 3 && DataInputCount(NodeType::UIGet) == 2 && DataInputCount(NodeType::UIRemove) == 1);
+    Run(RT());
+    CHECK_STR(Joined(g_ui),
+        "make:dyn:1;layout:dyn:8:700,800,0,0;color:dyn:9,8,7,255/0,0,0,160;text:dyn:Hello:2800;font:dyn:Sans;"
+        "text:dyn:changed:0;remove:dyn;");
+}
+
+// A Change aimed at a UI item overrides what the UI node sets, even when it runs before the node and when the node runs again.
+static void TestUiChangeOverrides() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change), t = Add(NodeType::UIText), t2 = Add(NodeType::UIText), rm = Add(NodeType::UIRemove);
+    N(c).target = "UI/late"; N(c).prop = "Text"; N(c).value = "mine";
+    N(c).extra.emplace_back("Offset", "(5, 6)");
+    N(t).target = "late"; N(t).value = "node text";
+    N(t2).target = "late"; N(t2).value = "node text again";   // the same item made a second time
+    N(rm).target = "late";
+    Link_(s, c); Link_(c, t); Link_(t, t2); Link_(t2, rm);
+    Run(RT());
+    // Change ran first (nothing to change yet, remembered); each node run ends with the override on top.
+    CHECK_STR(Joined(g_ui),
+        "make:late:1;layout:late:0:2000,2000,0,0;color:late:255,255,255,255/0,0,0,160;text:late:node text:2800;font:late:Sans;"
+        "text:late:mine:0;layout:late:0:500,600,0,0;"
+        "make:late:1;layout:late:0:2000,2000,0,0;color:late:255,255,255,255/0,0,0,160;text:late:node text again:2800;font:late:Sans;"
+        "text:late:mine:0;layout:late:0:500,600,0,0;remove:late;");
+    CHECK(!Logged("No UI item"));
+
+    // Remove drops the override: a new item of that id starts fresh.
+    g_ui.clear();
+    const int t3 = Add(NodeType::UIText);
+    N(t3).target = "late"; N(t3).value = "fresh";
+    Link_(rm, t3);
+    Run(RT());   // Run resets everything, so build the same graph state again from scratch
+    CHECK(!g_ui.empty());
+}
+
+// A Change node aimed at "UI/<id>" sets UI properties (main one and extras); Get Property reads them.
+static void TestChangeAndGetPropertyOnUi() {
+    Fresh();
+    gameui::Info hp;
+    hp.kind = gameui::Kind::Bar; hp.anchor = gameui::Anchor::BottomLeft; hp.x = 20; hp.y = -20; hp.w = 240; hp.h = 22;
+    hp.color = { 80, 200, 90, 255 }; hp.color2 = { 0, 0, 0, 160 }; hp.text = "Hi"; hp.value = 0.75f;
+    g_uiInfo["hp"] = hp;
+    CHECK(IsUiTarget("UI/hp") && !IsUiTarget("UI/") && !IsUiTarget("Workspace/UI/hp") && UiTargetId("UI/hp") == "hp");
+
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change), g = Add(NodeType::GetProperty), pr = Add(NodeType::Print);
+    N(c).target = "UI/hp"; N(c).prop = "Value"; N(c).value = "0.5";
+    N(c).extra.emplace_back("Offset", "(5, 6)");
+    N(c).extra.emplace_back("Color", "(1, 2, 3, 4)");
+    N(c).extra.emplace_back("Visible", "false");
+    N(g).target = "UI/hp"; N(g).prop = "Anchor";
+    ConnectData(g, pr, 0);
+    Link_(s, c); Link_(c, pr);
+    Run(RT());
+    CHECK_STR(Joined(g_ui), "value:hp:50;layout:hp:6:500,600,24000,2200;primary:hp:1,2,3,4;show:hp:0;");
+    CHECK(Logged("Bottom Left"));
+    CHECK(g_sets.empty());   // nothing went to an object
+
+    // UiIds lists what the scripts' UI nodes make.
+    const int t = Add(NodeType::UIText), b = Add(NodeType::UIBar), t2 = Add(NodeType::UIText);
+    N(t).target = "score"; N(b).target = "hp"; N(t2).target = "score";
+    const std::vector<std::string> ids = UiIds();
+    CHECK(ids.size() == 2 && ids[0] == "hp" && ids[1] == "score");
+}
+
+static void TestUiNodesSaveLoad() {
+    Fresh();
+    const int t = Add(NodeType::UIBar);
+    N(t).target = "hp"; N(t).prop = "Bottom Right";
+    SoundOptionRef(N(t), "size") = "(300, 30)"; SoundOptionRef(N(t), "background") = "(1, 2, 3, 4)";
+    const std::string saved = SaveAll();
+    Clear();
+    std::istringstream in(saved);
+    Load(in);
+    CHECK(Count() == 1);
+    const Node* n = nullptr;
+    for (const Node& x : Active().nodes) if (x.type == NodeType::UIBar) n = &x;
+    CHECK(n && n->target == "hp" && n->prop == "Bottom Right" && SoundOption(*n, "size") == "(300, 30)" && SoundOption(*n, "background") == "(1, 2, 3, 4)");
+    CHECK(UiAnchors().size() == 10 && UiAnchors()[9] == "Fill" && UiAnchors()[2] == "Top Right");
+}
+
 // ---------------------------------------------------------------- save / load
 
 
@@ -1845,6 +2059,7 @@ int main() {
         { "SnippetGenerator", TestSnippetGenerator }, { "SnippetWriteFile", TestSnippetWriteFile },
         { "SnippetFingerprint", TestSnippetFingerprint }, { "SnippetSaveLoadMultiline", TestSnippetSaveLoadMultiline },
         { "EventFanOut", TestEventFanOut }, { "EndFanIn", TestEndFanIn }, { "RemoveNodeDropsWires", TestRemoveNodeDropsWires },
+        { "UiNodes", TestUiNodes }, { "UiSetAndRemove", TestUiSetAndRemove }, { "UiGetAndSetParts", TestUiGetAndSetParts }, { "UiNodeWiredFields", TestUiNodeWiredFields }, { "ChangeAndGetPropertyOnUi", TestChangeAndGetPropertyOnUi }, { "UiChangeOverrides", TestUiChangeOverrides }, { "UiNodesSaveLoad", TestUiNodesSaveLoad },
         { "SaveLoadRoundTrip", TestSaveLoadRoundTrip }, { "LoadKeepsFollowingData", TestLoadKeepsFollowingData },
         { "LoadOldFormat", TestLoadOldFormat }, { "LoadBadInput", TestLoadBadInput },
     };

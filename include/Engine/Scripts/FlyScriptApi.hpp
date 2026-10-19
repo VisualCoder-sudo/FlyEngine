@@ -135,6 +135,22 @@ FLY_API void  FlyNative_EmitParticles(const char* preset, float x, float y, floa
 FLY_API unsigned FlyNative_StartEmitter(const char* preset, float x, float y, float z, float dx, float dy, float dz, float scale);
 FLY_API void  FlyNative_MoveEmitter(unsigned emitter, float x, float y, float z, float dx, float dy, float dz);
 FLY_API void  FlyNative_StopEmitter(unsigned emitter);
+FLY_API unsigned long long FlyNative_SpawnPrefab(const char* file, float x, float y, float z);
+FLY_API short FlyNative_UICreate(const char* id, int kind);
+FLY_API void  FlyNative_UISetLayout(const char* id, int anchor, float x, float y, float w, float h);
+FLY_API void  FlyNative_UISetColor(const char* id, unsigned char r, unsigned char g, unsigned char b, unsigned char a, unsigned char r2, unsigned char g2, unsigned char b2, unsigned char a2);
+FLY_API void  FlyNative_UISetText(const char* id, const char* text, float fontSize);
+FLY_API void  FlyNative_UISetValue(const char* id, float value);
+FLY_API void  FlyNative_UISetImage(const char* id, const char* file);
+FLY_API void  FlyNative_UISetVisible(const char* id, short visible);
+FLY_API void  FlyNative_UIRemove(const char* id);
+FLY_API void  FlyNative_UISetFont(const char* id, const char* font);
+FLY_API short FlyNative_UIExists(const char* id);
+FLY_API float FlyNative_UIGetValue(const char* id);
+FLY_API int   FlyNative_UIGetText(const char* id, char* out, int capacity);
+FLY_API short FlyNative_UIGetVisible(const char* id);
+FLY_API short FlyNative_UIGetLayout(const char* id, float* out6);
+FLY_API short FlyNative_UIGetColor(const char* id, unsigned char* out8);
 FLY_API void  FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
 
 // Physics (game.Physics.* - routed to the simulation).

@@ -17,12 +17,16 @@
 #include "../../../include/Engine/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
+#include "../../../include/Engine/U8Path.hpp"
+#include "../../../include/Engine/Vfs.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <memory>
+#include <sstream>
 
 namespace {
 
@@ -1040,16 +1044,20 @@ std::vector<std::string> DiffObjectRecords(const std::vector<std::pair<std::stri
     return out;
 }
 
-bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
-                            std::vector<ScatteredObject*>& objects,
-                            std::vector<std::unique_ptr<ModelGroup>>& models,
-                            const std::string& baseDir) {
+namespace {
+// Reads a snapshot (the format SnapshotSceneToMemory writes) and ADDS its objects and groups to the scene; nothing
+// already there is touched. `outObjects` gets the new objects in file order, `outGroups` the new groups (a group's
+// parent is always one of them or null).
+bool AppendSnapshot(std::istream& file, Engine& engine,
+                    std::vector<ScatteredObject*>& objects,
+                    std::vector<std::unique_ptr<ModelGroup>>& models,
+                    const std::string& baseDir,
+                    std::vector<ScatteredObject*>* outObjects,
+                    std::vector<ModelGroup*>* outGroups) {
     std::string signature;
     int version = 0;
     size_t count = 0;
     if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
-
-    models.clear();
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
@@ -1060,10 +1068,11 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
         loaded.push_back(std::move(object));
     }
 
+    std::vector<std::unique_ptr<ModelGroup>> groups;
     if (version >= 7) {
         size_t modelCount = 0;
         if (!(file >> modelCount)) return false;
-        models.reserve(modelCount);
+        groups.reserve(modelCount);
         for (size_t i = 0; i < modelCount; ++i) {
             std::string modelName;
             size_t memberCount = 0;
@@ -1080,15 +1089,113 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
                     model->members.push_back(member);
                 }
             }
-            models.push_back(std::move(model));
+            groups.push_back(std::move(model));
         }
-        if (version >= 26 && !ReadModelTreeExtras(file, version, loaded, models)) return false;
+        if (version >= 26 && !ReadModelTreeExtras(file, version, loaded, groups)) return false;
     }
 
     AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {
         objects.push_back(object.get());
+        if (outObjects) outObjects->push_back(object.get());
         engine.AddEntity(std::move(object));
     }
+    for (auto& group : groups) {
+        if (outGroups) outGroups->push_back(group.get());
+        models.push_back(std::move(group));
+    }
+    return true;
+}
+
+// A prefab file starts with this line (the pivot is the middle of the group's footprint, at its lowest point), then the
+// snapshot.
+constexpr const char* kPrefabMagic = "FLYPREFAB";
+
+bool ReadWholeFile(const std::string& path, std::string& out) {
+    if (vfs::Handles(path)) {
+        std::vector<uint8_t> bytes;
+        if (!vfs::Read(path, bytes)) return false;
+        out.assign(bytes.begin(), bytes.end());
+        return true;
+    }
+    std::ifstream in(U8Path(path), std::ios::binary);
+    if (!in) return false;
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return true;
+}
+} // namespace
+
+bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
+                            std::vector<ScatteredObject*>& objects,
+                            std::vector<std::unique_ptr<ModelGroup>>& models,
+                            const std::string& baseDir) {
+    models.clear();
+    return AppendSnapshot(file, engine, objects, models, baseDir, nullptr, nullptr);
+}
+
+bool SavePrefabToFile(const ModelGroup& root, const std::string& path, const std::string& baseDir) {
+    std::vector<ScatteredObject*> objs;
+    root.CollectObjects(objs);
+    if (objs.empty()) return false;
+
+    // The group tree is saved through the ordinary snapshot writer, which wants an owning list: make throwaway copies
+    // of the groups (the objects themselves are shared) with the root cut loose from whatever it sits in.
+    std::vector<const ModelGroup*> src;
+    for (std::vector<const ModelGroup*> stack{ &root }; !stack.empty();) {
+        const ModelGroup* g = stack.back();
+        stack.pop_back();
+        src.push_back(g);
+        for (auto it = g->children.rbegin(); it != g->children.rend(); ++it) if (*it) stack.push_back(*it);
+    }
+    std::vector<std::unique_ptr<ModelGroup>> copies;
+    for (const ModelGroup* g : src) {
+        auto c = std::make_unique<ModelGroup>();
+        c->name = g->name;
+        c->members = g->members;
+        c->hidden = g->hidden;
+        c->locked = g->locked;
+        c->pluginTag = g->pluginTag;
+        c->pluginData = g->pluginData;
+        copies.push_back(std::move(c));
+    }
+    for (size_t i = 1; i < src.size(); ++i)
+        for (size_t j = 0; j < i; ++j)
+            if (src[j] == src[i]->parent) { copies[j]->AddChild(copies[i].get()); break; }
+
+    std::string snapshot;
+    if (!SnapshotSceneToMemory(objs, copies, baseDir, snapshot)) return false;
+
+    const BoundingBox box = root.GetBounds();
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(U8Path(path)).parent_path(), ec);
+    std::ofstream out(U8Path(path), std::ios::binary);
+    if (!out) return false;
+    out << std::setprecision(9) << kPrefabMagic << " 1 " << (box.min.x + box.max.x) * 0.5f << ' ' << box.min.y << ' '
+        << (box.min.z + box.max.z) * 0.5f << '\n' << snapshot;
+    return out.good();
+}
+
+bool SpawnPrefabFromFile(Engine& engine, std::vector<ScatteredObject*>& objects,
+                         std::vector<std::unique_ptr<ModelGroup>>& models,
+                         const std::string& path, const std::string& baseDir, Vector3 at,
+                         std::vector<ScatteredObject*>* outObjects, ModelGroup** outGroup) {
+    std::string bytes;
+    if (!ReadWholeFile(path, bytes)) return false;
+    std::istringstream in(bytes);
+    std::string magic;
+    int version = 0;
+    Vector3 pivot{};
+    if (!(in >> magic >> version >> pivot.x >> pivot.y >> pivot.z) || magic != kPrefabMagic || version != 1) return false;
+
+    std::vector<ScatteredObject*> made;
+    std::vector<ModelGroup*> madeGroups;
+    if (!AppendSnapshot(in, engine, objects, models, baseDir, &made, &madeGroups)) return false;
+    const Vector3 shift = { at.x - pivot.x, at.y - pivot.y, at.z - pivot.z };
+    for (ScatteredObject* o : made) {
+        Vector3* p = o->GetPosPtr();
+        p->x += shift.x; p->y += shift.y; p->z += shift.z;
+    }
+    if (outObjects) *outObjects = made;
+    if (outGroup) *outGroup = madeGroups.empty() ? nullptr : madeGroups.front();
     return true;
 }

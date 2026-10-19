@@ -245,6 +245,11 @@ add_test(NAME visual_script COMMAND visual_script_test)
 add_executable(play_snapshot_test play_snapshot_test.cpp)
 target_link_libraries(play_snapshot_test PRIVATE FlyEngineCore FlyRL)
 
+# A group saved as a prefab spawns again with its nested groups and flags, pivot at the target. Opens a window, so it is
+# not registered with ctest: build/tests/prefab_test
+add_executable(prefab_test prefab_test.cpp)
+target_link_libraries(prefab_test PRIVATE FlyEngineCore FlyRL)
+
 # Nested explorer groups and hide/lock flags round-trip through the scene file. Opens a window, so it is not
 # registered with ctest: build/tests/explorer_tree_test
 add_executable(explorer_tree_test explorer_tree_test.cpp)
@@ -254,6 +259,11 @@ target_link_libraries(explorer_tree_test PRIVATE FlyEngineCore FlyRL)
 add_executable(fly_actions_test fly_actions_test.cpp)
 target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
 add_test(NAME fly_actions COMMAND fly_actions_test)
+
+# Where in-game UI widgets land on screen (anchors, scaling, margins). No window needed.
+add_executable(game_ui_test game_ui_test.cpp)
+target_link_libraries(game_ui_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME game_ui COMMAND game_ui_test)
 
 # The scripting API (FlyNative_*) against the real engine: create, clone, rename, destroy, forces, raycast, keys, text.
 # Sound rays against the real engine and physics (a wall muffles a fan, destroying it stops it). Opens a window, so it is not

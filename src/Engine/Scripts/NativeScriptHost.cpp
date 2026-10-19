@@ -214,6 +214,22 @@ FlyApi MakeScriptApi() {
     a.MoveEmitter = FlyNative_MoveEmitter;
     a.StopEmitter = FlyNative_StopEmitter;
     a.SpawnDecal = FlyNative_SpawnDecal;
+    a.SpawnPrefab = FlyNative_SpawnPrefab;
+    a.UICreate = FlyNative_UICreate;
+    a.UISetLayout = FlyNative_UISetLayout;
+    a.UISetColor = FlyNative_UISetColor;
+    a.UISetText = FlyNative_UISetText;
+    a.UISetValue = FlyNative_UISetValue;
+    a.UISetImage = FlyNative_UISetImage;
+    a.UISetVisible = FlyNative_UISetVisible;
+    a.UIRemove = FlyNative_UIRemove;
+    a.UISetFont = FlyNative_UISetFont;
+    a.UIExists = FlyNative_UIExists;
+    a.UIGetValue = FlyNative_UIGetValue;
+    a.UIGetText = FlyNative_UIGetText;
+    a.UIGetVisible = FlyNative_UIGetVisible;
+    a.UIGetLayout = FlyNative_UIGetLayout;
+    a.UIGetColor = FlyNative_UIGetColor;
     return a;
 }
 
