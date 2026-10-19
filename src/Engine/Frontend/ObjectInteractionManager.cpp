@@ -565,10 +565,7 @@ void ObjectInteractionManager::RemoveObjectFromScene(ScatteredObject* target) {
     // Remove entity from engine (this frees/deletes memory)
     engine.RemoveEntity(target);
 
-    // Release the texture reference so shared/refcounted files can be cleaned up.
-    if (!texturePath.empty()) {
-        textureManager::UnregisterTexture(texturePath);
-    }
+    // The texture reference is released by ~ScatteredObject; releasing it here as well counted it twice.
 
     // The model folder is not deleted here: undo may bring the object back, and
     // unused imported folders are collected on the next save (CommitAssets).
@@ -622,22 +619,25 @@ void RestoreStandaloneScripts(std::istream& in) {
 
 } // namespace
 
-bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<std::string>& sel) const {
+bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<int>& sel) const {
     const project::Info& current = project::GetCurrentProject();
     if (!SnapshotSceneToMemory(objects, models, current.path, bytes)) return false;
     bytes += SerializeStandaloneScripts();
     bytes += city::SerializeCitiesSnapshot();
 
+    // Selection is stored as positions in the object list: a snapshot restores objects in the same order, and
+    // names can be duplicated.
     sel.clear();
     for (auto* o : ui::GetSelection()) {
-        if (o) sel.push_back(o->GetName());
+        auto it = o ? std::find(objects.begin(), objects.end(), o) : objects.end();
+        if (it != objects.end()) sel.push_back((int)(it - objects.begin()));
     }
     return true;
 }
 
 void ObjectInteractionManager::PushUndoNow() {
     std::string bytes;
-    std::vector<std::string> sel;
+    std::vector<int> sel;
     if (CaptureSnapshot(bytes, sel)) {
         undo.Push(std::move(bytes), std::move(sel));
     }
@@ -655,7 +655,7 @@ void ObjectInteractionManager::EndDragUndoCapture() {
 
     // Only record the step when the drag actually changed the scene.
     std::string bytes;
-    std::vector<std::string> sel;
+    std::vector<int> sel;
     if (CaptureSnapshot(bytes, sel) && bytes != pendingUndoBytes) {
         undo.Push(std::move(pendingUndoBytes), std::move(pendingUndoSel));
     }
@@ -667,7 +667,8 @@ void ObjectInteractionManager::CapturePlaySnapshot() {
     if (!SnapshotSceneToMemory(objects, models, project::GetCurrentProject().path, playSnapshotBytes)) return;
     playSnapshotRecords = SnapshotObjectRecords(objects, project::GetCurrentProject().path);
     for (auto* o : ui::GetSelection()) {
-        if (o) playSnapshotSel.push_back(o->GetName());
+        auto it = o ? std::find(objects.begin(), objects.end(), o) : objects.end();
+        if (it != objects.end()) playSnapshotSel.push_back((int)(it - objects.begin()));
     }
     playSnapshotValid = true;
 }
@@ -707,7 +708,7 @@ void ObjectInteractionManager::RestorePlaySnapshot() {
     playSnapshotRecords.clear();
 }
 
-void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, const std::vector<std::string>& selNames) {
+void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, const std::vector<int>& selIndices) {
     std::istringstream in(bytes);
     const size_t previousObjectCount = objects.size();
 
@@ -748,23 +749,19 @@ void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, con
     }
 
     SyncSelection();
-    SelectObjectsByName(selNames);
+    SelectObjectsByIndex(selIndices);
     pluginhost::Notify(pluginhost::SceneEvent::UndoRedo);
 }
 
-void ObjectInteractionManager::SelectObjectsByName(const std::vector<std::string>& names) {
-    if (names.empty()) return;
+void ObjectInteractionManager::SelectObjectsByIndex(const std::vector<int>& indices) {
+    if (indices.empty()) return;
 
-    // Map the requested names to the freshly restored objects (first match each).
+    // Positions in the restored object list; the first one is the primary selection.
     std::vector<ScatteredObject*> matches;
-    for (const auto& wanted : names) {
-        for (auto* obj : objects) {
-            if (obj && obj->GetName() == wanted &&
-                std::find(matches.begin(), matches.end(), obj) == matches.end()) {
-                matches.push_back(obj);
-                break;
-            }
-        }
+    for (int i : indices) {
+        if (i < 0 || (size_t)i >= objects.size() || !objects[(size_t)i]) continue;
+        if (std::find(matches.begin(), matches.end(), objects[(size_t)i]) == matches.end())
+            matches.push_back(objects[(size_t)i]);
     }
     if (matches.empty()) return;
 
@@ -777,7 +774,7 @@ void ObjectInteractionManager::DoUndo() {
 
     // Save (but discard if unchanged) the current state onto the redo stack.
     std::string curBytes;
-    std::vector<std::string> curSel;
+    std::vector<int> curSel;
     if (CaptureSnapshot(curBytes, curSel)) {
         undo.PushRedo(std::move(curBytes), std::move(curSel));
     }
@@ -792,7 +789,7 @@ void ObjectInteractionManager::DoRedo() {
     // Save the current state onto the undo stack so undo can return here. Must
     // NOT use Push() (which clears the redo stack we're about to read).
     std::string curBytes;
-    std::vector<std::string> curSel;
+    std::vector<int> curSel;
     if (CaptureSnapshot(curBytes, curSel)) {
         undo.PushUndo(std::move(curBytes), std::move(curSel));
     }
@@ -1203,9 +1200,12 @@ void ObjectInteractionManager::Update(float dt) {
 
     // Explorer-initiated deletes (model "Delete" menu) are processed here.
     if (!ui::IsEditingText()) {
-        std::vector<ScatteredObject*> pendingDelete = ui::ConsumePendingDelete();
+        bool undoRecorded = false;
+        std::vector<ScatteredObject*> pendingDelete = ui::ConsumePendingDelete(&undoRecorded);
         if (!pendingDelete.empty()) {
-            PushUndoNow();
+            // A group delete already pushed its step before the groups dissolved; a second one would only
+            // restore the objects without their groups.
+            if (!undoRecorded) PushUndoNow();
             for (auto* target : pendingDelete) {
                 RemoveObjectFromScene(target);
             }

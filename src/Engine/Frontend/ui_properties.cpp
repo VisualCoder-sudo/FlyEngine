@@ -400,9 +400,12 @@ bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* l
 // user edits it, copies the resulting value to every other selected object so
 // multi-select property edits apply to the whole selection.
 template <typename Apply>
-static void DrawMultiNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX, Apply apply) {
+static void DrawMultiNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX, Apply apply,
+                                 float lo = -1.0e6f, float hi = 1.0e6f) {
     float before = value;
     bool changed = DrawNumberInput(rec, fieldId, value, label, labelX);
+    // Typed values stay finite and inside [lo, hi] (sizes pass a small positive lo so an object never gets zero size).
+    if (changed) value = std::clamp(value, lo, hi);
     if (changed && value != before) {
         for (auto* obj : g_selection) {
             if (obj && obj != g_selectedObject) apply(obj, value);
@@ -1471,11 +1474,11 @@ if (g_selection.size() > 1) {
     if (g_sizeOpen) {
         Vector3 sizeBefore = *g_size;
         DrawMultiNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_SIZE_W, g_size->x, "Width:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->x = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->x = v; o->ResetMassAuto(); }, 0.01f);
         DrawMultiNumberInput({ inputX, y + rowHeight, inputWidth, inputHeight }, FIELD_SIZE_H, g_size->y, "Height:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->y = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->y = v; o->ResetMassAuto(); }, 0.01f);
         DrawMultiNumberInput({ inputX, y + rowHeight * 2.0f, inputWidth, inputHeight }, FIELD_SIZE_L, g_size->z, "Length:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->z = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->z = v; o->ResetMassAuto(); }, 0.01f);
         if (g_selectedObject &&
             (g_size->x != sizeBefore.x || g_size->y != sizeBefore.y || g_size->z != sizeBefore.z)) {
             g_selectedObject->ResetMassAuto();

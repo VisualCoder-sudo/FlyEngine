@@ -152,13 +152,13 @@ ModelGroup* FullySelectedGroupOf(ScatteredObject* obj) {
 
 void BeginRename(ModelGroup* g) {
     g_renameModel = g;
-    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g->name.c_str());
+    SetNameBuffer(g->name);
     g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
 }
 
 void BeginRename(ScatteredObject* o) {
     g_renameObject = o;
-    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", o->GetName().c_str());
+    SetNameBuffer(o->GetName());
     g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
 }
 
@@ -192,9 +192,40 @@ void SaveFolds() {
     for (const auto& k : s_closed) out << k << '\n';
 }
 
+// One path segment: the name with '\\', '/', '~', '\n' and '\r' escaped (so the separator and the one-key-per-line
+// file stay unambiguous), plus "~n" for the nth later sibling that has the same name. Names without those
+// characters, and the first of a set of same-named siblings, keep the key older versions saved.
+std::string GroupKeySegment(const ModelGroup* g) {
+    std::string seg;
+    for (char c : g->name) {
+        switch (c) {
+            case '\\': seg += "\\\\"; break;
+            case '/':  seg += "\\/"; break;
+            case '~':  seg += "\\~"; break;
+            case '\n': seg += "\\n"; break;
+            case '\r': seg += "\\r"; break;
+            default:   seg += c;
+        }
+    }
+    int rank = 0;
+    if (g->parent) {
+        for (const ModelGroup* sib : g->parent->children) {
+            if (sib == g) break;
+            if (sib && sib->name == g->name) ++rank;
+        }
+    } else if (g_sceneModels) {
+        for (const auto& m : *g_sceneModels) {
+            if (m.get() == g) break;
+            if (m && !m->parent && m->name == g->name) ++rank;
+        }
+    }
+    if (rank > 0) seg += "~" + std::to_string(rank);
+    return seg;
+}
+
 std::string GroupKey(const ModelGroup* g) {
-    std::string key = g->name;
-    for (const ModelGroup* p = g->parent; p; p = p->parent) key = p->name + "/" + key;
+    std::string key = GroupKeySegment(g);
+    for (const ModelGroup* p = g->parent; p; p = p->parent) key = GroupKeySegment(p) + "/" + key;
     return key;
 }
 
@@ -582,7 +613,7 @@ void BuildModelMenu(ModelGroup* model) {
         AddMenu("Delete", [model] {
             std::vector<ScatteredObject*> targets = DissolveModelTree(model);
             if (s_selGroup == model) s_selGroup = nullptr;
-            RequestDelete(targets);
+            RequestDelete(targets, true);   // the menu's undo step (taken before the groups dissolved) covers it
             SetSelection({}, nullptr);
         });
         return;
@@ -600,7 +631,7 @@ void BuildModelMenu(ModelGroup* model) {
     AddMenu("Delete", [model] {
         std::vector<ScatteredObject*> targets = DissolveModelTree(model);
         if (s_selGroup == model) s_selGroup = nullptr;
-        RequestDelete(targets);
+        RequestDelete(targets, true);   // the menu's undo step (taken before the groups dissolved) covers it
         SetSelection({}, nullptr);
     });
 }
@@ -1067,11 +1098,11 @@ void DrawImGuiExplorer() {
         if (!ExplorerRenameActive() && !ImGui::GetIO().WantTextInput && IsKeyPressed(KEY_F2)) {
             if (g_selectedTerrain) {
                 g_renameTerrain = g_selectedTerrain;
-                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", g_selectedTerrain->GetName().c_str());
+                SetNameBuffer(g_selectedTerrain->GetName());
             } else if (terrain::GetTerrainEditorState().selectedTerrainLegacy) {
                 terrain::Terrain* legacy = terrain::GetTerrainEditorState().selectedTerrainLegacy;
                 g_renameLegacyTerrain = legacy;
-                snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
+                SetNameBuffer(legacy->GetName());
             } else if (s_selGroup && g_selection.empty()) {
                 BeginRename(s_selGroup);
             } else if (g_primarySelection) {
@@ -1164,7 +1195,7 @@ void DrawImGuiExplorer() {
                 }
                 if (r.doubleClicked && !d.renaming) {
                     g_renameTerrain = terr;
-                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", terr->GetName().c_str());
+                    SetNameBuffer(terr->GetName());
                     g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                 }
             }
@@ -1211,7 +1242,7 @@ void DrawImGuiExplorer() {
                 }
                 if (r.doubleClicked && !d.renaming) {
                     g_renameLegacyTerrain = legacy;
-                    snprintf(g_nameBuffer, sizeof(g_nameBuffer), "%s", legacy->GetName().c_str());
+                    SetNameBuffer(legacy->GetName());
                     g_nameBuffer[sizeof(g_nameBuffer) - 1] = '\0';
                 }
             }

@@ -245,15 +245,20 @@ add_test(NAME visual_script COMMAND visual_script_test)
 add_executable(play_snapshot_test play_snapshot_test.cpp)
 target_link_libraries(play_snapshot_test PRIVATE FlyEngineCore FlyRL)
 
-# A group saved as a prefab spawns again with its nested groups and flags, pivot at the target. Opens a window, so it is
-# not registered with ctest: build/tests/prefab_test
+# A group saved as a prefab spawns again with its nested groups and flags, pivot at the target. Opens a window, so
+# ctest needs a display (label needs_display; skip with `ctest -LE needs_display`): build/tests/prefab_test
 add_executable(prefab_test prefab_test.cpp)
 target_link_libraries(prefab_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME prefab COMMAND prefab_test)
+set_tests_properties(prefab PROPERTIES LABELS needs_display)
 
-# Nested explorer groups and hide/lock flags round-trip through the scene file. Opens a window, so it is not
-# registered with ctest: build/tests/explorer_tree_test
+# Nested explorer groups and hide/lock flags round-trip through the scene file; load-time sanity limits, NaN and
+# duplicate group members; undo history cap. Opens a window, so ctest needs a display (label needs_display):
+# build/tests/explorer_tree_test
 add_executable(explorer_tree_test explorer_tree_test.cpp)
 target_link_libraries(explorer_tree_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME explorer_tree COMMAND explorer_tree_test)
+set_tests_properties(explorer_tree PROPERTIES LABELS needs_display)
 
 # The C++ scripting API (fly.hpp) offers what the Visual Script nodes do. Header-only, runs against a fake engine table.
 add_executable(fly_actions_test fly_actions_test.cpp)

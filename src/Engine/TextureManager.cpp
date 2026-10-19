@@ -608,6 +608,10 @@ std::string RegisterTexture(const std::string& sourcePath, const std::string& mo
     }
 }
 
+void AddTextureRef(const std::string& texturePath) {
+    if (!texturePath.empty()) IncrementRef(texturePath);
+}
+
 void UnregisterTexture(const std::string& texturePath) {
     if (texturePath.empty()) return;
     auto it = g_refCount.find(texturePath);

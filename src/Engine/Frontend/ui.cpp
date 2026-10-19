@@ -61,7 +61,7 @@ double g_lastExplorerClickTime = 0.0;
 WaterBody* g_selectedWater = nullptr;
 int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather, 7 Clouds, 8 Picture
 BasicTerrain* g_selectedTerrain = nullptr;
-char g_nameBuffer[64] = "";
+char g_nameBuffer[256] = "";
 float g_colorPickerAnchorY = -1.0f;
 
 
@@ -581,17 +581,22 @@ BasicTerrain* GetSelectedTerrain() { return g_selectedTerrain; }
 
 static std::vector<ScatteredObject*> g_pendingDelete;
 
-void RequestDelete(const std::vector<ScatteredObject*>& targets) {
+static bool g_pendingDeleteRecorded = true;
+
+void RequestDelete(const std::vector<ScatteredObject*>& targets, bool undoRecorded) {
     for (auto* t : targets) {
         if (t && std::find(g_pendingDelete.begin(), g_pendingDelete.end(), t) == g_pendingDelete.end()) {
             g_pendingDelete.push_back(t);
+            if (!undoRecorded) g_pendingDeleteRecorded = false;
         }
     }
 }
 
-std::vector<ScatteredObject*> ConsumePendingDelete() {
+std::vector<ScatteredObject*> ConsumePendingDelete(bool* undoRecorded) {
     std::vector<ScatteredObject*> pending = std::move(g_pendingDelete);
     g_pendingDelete.clear();
+    if (undoRecorded) *undoRecorded = g_pendingDeleteRecorded;
+    g_pendingDeleteRecorded = true;
     return pending;
 }
 

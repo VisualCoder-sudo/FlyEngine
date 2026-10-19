@@ -61,13 +61,20 @@ namespace {
 // One object's record, exactly as the scene file stores it. The undo/play snapshots use it too, so a property
 // added to the scene file is in every snapshot automatically.
 void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::string& baseDir) {
-    const Vector3& pos = *object->GetPosPtr();
-    const Vector3& size = *object->GetSizePtr();
-    const Vector3& rotation = *object->GetRotationPtr();
-    const Vector3& origin = *object->GetOriginPtr();
+    // NaN/inf (e.g. set by a script) would be written as text the loader cannot read back and fail the whole scene.
+    auto fin = [](Vector3 v) {
+        if (!std::isfinite(v.x)) v.x = 0.0f;
+        if (!std::isfinite(v.y)) v.y = 0.0f;
+        if (!std::isfinite(v.z)) v.z = 0.0f;
+        return v;
+    };
+    const Vector3 pos = fin(*object->GetPosPtr());
+    const Vector3 size = fin(*object->GetSizePtr());
+    const Vector3 rotation = fin(*object->GetRotationPtr());
+    const Vector3 origin = fin(*object->GetOriginPtr());
     const Color& color = *object->GetColorPtr();
-    const Vector3& velocity = object->GetVelocity();
-    const Vector3& angularVelocity = object->GetAngularVelocity();
+    const Vector3 velocity = fin(object->GetVelocity());
+    const Vector3 angularVelocity = fin(object->GetAngularVelocity());
     file << static_cast<int>(object->GetShapeType()) << ' ' << std::quoted(object->GetName()) << ' '
          << pos.x << ' ' << pos.y << ' ' << pos.z << ' ' << size.x << ' ' << size.y << ' ' << size.z << ' '
          << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
@@ -190,12 +197,14 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
             file << std::quoted("Model") << " 0\n\n";
             continue;
         }
-        file << std::quoted(model->name) << ' ' << model->members.size() << '\n';
+        // A member that is not in the object list is skipped: writing index 0 would put the first object into this group.
+        std::vector<size_t> indices;
         for (auto* member : model->members) {
             auto it = std::find(objects.begin(), objects.end(), member);
-            size_t index = (it != objects.end()) ? static_cast<size_t>(it - objects.begin()) : 0;
-            file << index << ' ';
+            if (it != objects.end()) indices.push_back(static_cast<size_t>(it - objects.begin()));
         }
+        file << std::quoted(model->name) << ' ' << indices.size() << '\n';
+        for (size_t index : indices) file << index << ' ';
         file << '\n';
     }
     WriteModelTreeExtras(file, objects, models);
@@ -636,7 +645,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             for (size_t m = 0; m < memberCount; ++m) {
                 size_t index = 0;
                 if (!(file >> index)) return false;
-                if (index < loaded.size()) {
+                // Out of range, or already in a group (duplicate index): ignored, an object has one parent.
+                if (index < loaded.size() && !loaded[index]->parentModel) {
                     ScatteredObject* member = loaded[index].get();
                     member->parentModel = model.get();
                     model->members.push_back(member);
@@ -1040,12 +1050,14 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
             file << std::quoted("Model") << " 0\n\n";
             continue;
         }
-        file << std::quoted(model->name) << ' ' << model->members.size() << '\n';
+        // A member that is not in the object list is skipped: writing index 0 would put the first object into this group.
+        std::vector<size_t> indices;
         for (auto* member : model->members) {
             auto it = std::find(objects.begin(), objects.end(), member);
-            size_t index = (it != objects.end()) ? static_cast<size_t>(it - objects.begin()) : 0;
-            file << index << ' ';
+            if (it != objects.end()) indices.push_back(static_cast<size_t>(it - objects.begin()));
         }
+        file << std::quoted(model->name) << ' ' << indices.size() << '\n';
+        for (size_t index : indices) file << index << ' ';
         file << '\n';
     }
     WriteModelTreeExtras(file, objects, models);
@@ -1127,7 +1139,8 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
             for (size_t m = 0; m < memberCount; ++m) {
                 size_t index = 0;
                 if (!(file >> index)) return false;
-                if (index < loaded.size()) {
+                // Out of range, or already in a group (duplicate index): ignored, an object has one parent.
+                if (index < loaded.size() && !loaded[index]->parentModel) {
                     ScatteredObject* member = loaded[index].get();
                     member->parentModel = model.get();
                     model->members.push_back(member);

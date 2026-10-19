@@ -6,6 +6,7 @@
 #include "raylib.h"
 #include "imgui.h"
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <set>
 #include <string>
@@ -286,7 +287,14 @@ extern ScatteredObject* g_lastExplorerClick;
 extern double g_lastExplorerClickTime;
 extern ModelGroup* g_lastExplorerModelClick;
 extern int g_lightingSel;
-extern char g_nameBuffer[64];
+extern char g_nameBuffer[256];
+// Copies `name` into g_nameBuffer; a name that does not fit is cut at a UTF-8 character boundary.
+inline void SetNameBuffer(const std::string& name) {
+    size_t n = name.size() < sizeof(g_nameBuffer) ? name.size() : sizeof(g_nameBuffer) - 1;
+    while (n > 0 && n < name.size() && (static_cast<unsigned char>(name[n]) & 0xC0) == 0x80) --n;
+    memcpy(g_nameBuffer, name.data(), n);
+    g_nameBuffer[n] = '\0';
+}
 extern ScatteredObject* g_primarySelection;
 extern terrain::Terrain* g_renameLegacyTerrain;
 extern ModelGroup* g_renameModel;

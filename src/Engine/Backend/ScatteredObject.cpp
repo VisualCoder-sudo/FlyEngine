@@ -495,16 +495,9 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     copy->texturePath = texturePath;
     if (!texturePath.empty()) copy->textureNeedsBind = true;
     
-    // Re-register texture for the clone (increments refcount)
-    if (!texturePath.empty()) {
-        const auto& project = ::project::GetCurrentProject();
-        if (!project.path.empty()) {
-            textureManager::RegisterTexture(
-                (std::filesystem::path(project.path) / texturePath).generic_string(),
-                ""
-            );
-        }
-    }
+    // The clone's destructor releases one reference, so it must take one. (RegisterTexture with an empty model
+    // path returns early without counting, which left the destructor's release unmatched.)
+    if (!texturePath.empty()) textureManager::AddTextureRef(texturePath);
     
     // The clone shares the source's mesh data (one copy in memory and on the
     // GPU); only its materials are private.
