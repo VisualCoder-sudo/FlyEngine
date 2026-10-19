@@ -31,6 +31,7 @@ std::vector<Widget> g_widgets;                 // creation order is draw order
 std::map<std::string, Texture2D> g_textures;   // loaded when first drawn
 std::map<std::string, Font> g_fonts;           // by file path; id 0 = could not be loaded
 std::string g_projectPath;
+std::map<std::string, std::string> g_fontPaths;   // font name -> resolved file (also misses); cleared when the project path changes
 
 Widget* Find(const std::string& id) {
     for (Widget& w : g_widgets) if (w.id == id) return &w;
@@ -54,7 +55,7 @@ std::string FirstExisting(std::initializer_list<const char*> files) {
 }
 
 // The file a font name stands for ("" = the blocky built-in font).
-std::string FontPathFor(const std::string& name) {
+std::string ResolveFontPathFor(const std::string& name) {
     if (name == "Pixel") return {};
     if (name.empty() || name == "Sans") return platform::ResolveFontPath();
     std::string generic;
@@ -84,6 +85,13 @@ std::string FontPathFor(const std::string& name) {
         return g_projectPath + "/" + name;
     }
     return name;
+}
+
+// Cached: resolving stats the disk, and this runs for every text widget every frame.
+std::string FontPathFor(const std::string& name) {
+    const auto it = g_fontPaths.find(name);
+    if (it != g_fontPaths.end()) return it->second;
+    return g_fontPaths.emplace(name, ResolveFontPathFor(name)).first->second;
 }
 
 // The loaded font for a name, or null for the built-in blocky one. Letters, digits and Latin-1 (accents) are built in.
@@ -185,7 +193,7 @@ bool Get(const std::string& id, Info& out) {
     return true;
 }
 
-void SetProjectPath(const std::string& path) { g_projectPath = path; }
+void SetProjectPath(const std::string& path) { g_projectPath = path; g_fontPaths.clear(); }
 
 std::vector<std::string> ListFonts(const std::string& projectPath) {
     static std::string cachedFor;

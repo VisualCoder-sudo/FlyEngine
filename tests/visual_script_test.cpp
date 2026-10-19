@@ -1829,6 +1829,44 @@ static void TestUiSetAndRemove() {
     CHECK(g_ui.empty() && Logged("no id"));
 }
 
+static void TestSequenceShrinkDropsExecWires() {
+    Fresh();
+    const int s = Add(NodeType::Start), q = Add(NodeType::Sequence);
+    N(q).value = "4";
+    Link_(s, q);
+    int p[4];
+    for (int i = 0; i < 4; ++i) { p[i] = Add(NodeType::Print); Link_(q, p[i], i); }
+    CHECK(Active().links.size() == 5);
+    N(q).value = "2";   // what the Outputs field does, then the editor sanitizes
+    SanitizeDataLinks();
+    CHECK(Active().links.size() == 3);
+    for (const Link& l : Active().links) CHECK(l.from != q || l.fromPin < 2);
+}
+
+static void TestNodePositionRoundTrip() {
+    Fresh();
+    const int a = Add(NodeType::Start);
+    N(a).x = 12345.678f; N(a).y = -0.123457f;
+    const std::string saved = SaveAll() + "AFTER 5\n";
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    const Node* n = Find(a);
+    CHECK(n && n->x == 12345.678f && n->y == -0.123457f);
+}
+
+static void TestUiColorRejectsNonFinite() {
+    Fresh();
+    g_uiInfo["label"] = gameui::Info();
+    const int s = Add(NodeType::Start), a = Add(NodeType::UISet), b = Add(NodeType::UISet), c = Add(NodeType::UISet);
+    N(a).target = "label"; N(a).prop = "Color"; N(a).value = "(nan, 10, 20)";
+    N(b).target = "label"; N(b).prop = "Color"; N(b).value = "(inf, -inf, 20, 5)";
+    N(c).target = "label"; N(c).prop = "Color"; N(c).value = "(300, -5, 10)";
+    Link_(s, a); Link_(a, b); Link_(b, c);
+    Run(RT());
+    CHECK_STR(Joined(g_ui), "primary:label:255,255,255,255;primary:label:255,255,255,255;primary:label:255,0,10,255;");
+}
+
 static void TestUiGetAndSetParts() {
     Fresh();
     gameui::Info hp;
@@ -2084,7 +2122,8 @@ static void TestLoadBadInput() {
 int main() {
     struct T { const char* name; void (*fn)(); };
     const T tests[] = {
-        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder },
+        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder }, { "SequenceShrinkDropsExecWires", TestSequenceShrinkDropsExecWires },
+        { "NodePositionRoundTrip", TestNodePositionRoundTrip }, { "UiColorRejectsNonFinite", TestUiColorRejectsNonFinite },
         { "BranchOnVariable", TestBranchOnVariable }, { "RepeatAndDone", TestRepeatAndDone },
         { "DoOnce", TestDoOnce }, { "DelayWaitsForTicks", TestDelayWaitsForTicks },
         { "StopCancelsDelayAndFiresOnStop", TestStopCancelsDelayAndFiresOnStop },

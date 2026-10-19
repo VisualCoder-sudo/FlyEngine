@@ -117,8 +117,16 @@ const char* ModelAnimator::ClipName(int index) const {
 
 int ModelAnimator::FindClip(const char* name) const {
     if (!name) return -1;
+    const size_t want = std::strlen(name);
     for (int i = 0; i < clipCount_; ++i) {
-        if (std::strncmp(clips_[i].name, name, sizeof(clips_[i].name)) == 0) return i;
+        const char* have = clips_[i].name;
+        const size_t cap = sizeof(clips_[i].name);
+        size_t n = 0;
+        while (n < cap && have[n]) ++n;
+        // The loader's name buffer cuts long names (to cap-1 chars plus the NUL, or cap chars without one), so a stored
+        // name that fills it matches any request that starts with it; a shorter one must match exactly.
+        const bool maybeCut = n >= cap - 1;
+        if (std::memcmp(have, name, n) == 0 && (maybeCut ? want >= n : want == n)) return i;
     }
     return -1;
 }

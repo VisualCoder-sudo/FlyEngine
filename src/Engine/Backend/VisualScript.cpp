@@ -418,6 +418,10 @@ void SanitizeDataLinks() {
         if (l.toPin >= DataInputCount(*b)) return true;
         return l.fromPin >= DataOutputCount(*a) || !SoundWireAllowed(*a, *b);
     }), g.dataLinks.end());
+    g.links.erase(std::remove_if(g.links.begin(), g.links.end(), [&](const Link& l) {   // exec wires from pins a Sequence no longer has
+        const Node* a = FindIn(g, l.from);
+        return a && l.fromPin >= OutputCount(a->type, a);
+    }), g.links.end());
 }
 
 const std::vector<std::string>& KeyNames() {
@@ -646,9 +650,11 @@ std::vector<std::string> WorldProperties(const std::string& group) {
 namespace {
 void SaveGraph(std::ostream& out, const Graph& g) {
     out << "VSCRIPT " << g.nextId << ' ' << g.nodes.size() << ' ' << g.links.size() << "\n";
+    const std::streamsize oldPrec = out.precision(9);   // 9 digits round-trip a float; the default 6 drifts canvas positions
     for (const Node& n : g.nodes)
         out << "VNODE " << n.id << ' ' << static_cast<int>(n.type) << ' ' << n.x << ' ' << n.y << ' '
             << std::quoted(n.target) << ' ' << std::quoted(n.prop) << ' ' << std::quoted(n.value) << "\n";
+    out.precision(oldPrec);
     size_t extras = 0;
     for (const Node& n : g.nodes) extras += n.extra.size();
     if (extras) {   // optional block: extra Change properties
@@ -813,6 +819,7 @@ std::vector<float> Numbers(const std::string& s) {
 Color ParseUiColor(const std::string& s, Color fallback) {
     const std::vector<float> v = Numbers(s);
     if (v.size() < 3) return fallback;
+    for (float f : v) if (!std::isfinite(f)) return fallback;   // NaN/inf must not reach the unsigned char cast
     auto byte = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 255.0f)); };
     return { byte(v[0]), byte(v[1]), byte(v[2]), v.size() > 3 ? byte(v[3]) : static_cast<unsigned char>(255) };
 }

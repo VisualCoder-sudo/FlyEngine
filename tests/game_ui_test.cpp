@@ -34,6 +34,20 @@ int main() {
     CHECK(gameui::Create("a", gameui::Kind::Bar) && gameui::Count() == 1);
     CHECK(gameui::Create("b", gameui::Kind::Panel) && gameui::Count() == 2);
     CHECK(!gameui::Create("", gameui::Kind::Panel));
+    // Colours: SetColor sets both, SetPrimaryColor leaves the background; a kind change resets the widget.
+    gameui::Info info;
+    CHECK(!gameui::Get("nope", info));
+    CHECK(gameui::Create("c", gameui::Kind::Bar));
+    gameui::SetColor("c", { 1, 2, 3, 4 }, { 5, 6, 7, 8 });
+    CHECK(gameui::Get("c", info) && info.kind == gameui::Kind::Bar);
+    CHECK(info.color.r == 1 && info.color.a == 4 && info.color2.r == 5 && info.color2.a == 8);
+    gameui::SetPrimaryColor("c", { 9, 9, 9, 9 });
+    CHECK(gameui::Get("c", info) && info.color.r == 9 && info.color2.r == 5 && info.color2.a == 8);
+    gameui::SetColor("missing", { 1, 1, 1, 1 }, { 1, 1, 1, 1 });   // ignored
+    CHECK(gameui::Create("c", gameui::Kind::Text) && gameui::Get("c", info));
+    CHECK(info.kind == gameui::Kind::Text && info.color.r == 255 && info.color2.a == 160);   // back to the defaults
+    gameui::Remove("c");
+
     gameui::Remove("a");
     CHECK(gameui::Count() == 1);
     gameui::SetText("missing", "x", 10);   // unknown ids are ignored

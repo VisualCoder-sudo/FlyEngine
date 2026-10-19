@@ -198,7 +198,9 @@ ScatteredObject::~ScatteredObject() {
 }
 
 void ScatteredObject::Update(float dt) {
-    // Custom update logic per object can go here
+    // The animation clock runs on the engine's (time-scaled) step: it keeps time while culled and stops while the
+    // simulation is paused. Skinning stays in Draw().
+    if (animator) animator->Advance(std::min(dt, 0.1f));
 }
 
 void ScatteredObject::SetTexture(const std::string& path) {
@@ -605,14 +607,10 @@ void ScatteredObject::Draw() {
     if (hasOwnModel) {
         if (animator) {
             // Once per rendered frame, however many passes draw the object (a
-            // vertex buffer takes one update per frame).
+            // vertex buffer takes one update per frame). The clock itself advances in Update().
             const unsigned long long frame = GetRenderFrameIndex();
             if (frame != animFrame) {
-                const double now = GetTime();
-                const float dt = animFrame == ~0ull ? 0.0f : (float)std::min(now - animTime, 0.1);
                 animFrame = frame;
-                animTime = now;
-                animator->Advance(dt);
                 animator->Skin();
             }
         }

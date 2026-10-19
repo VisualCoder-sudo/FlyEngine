@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 static int g_failures = 0;
 
@@ -64,6 +65,21 @@ int main() {
     ModelAnimator anim;
     if (!anim.Init(model, &clip, 1, norm)) { std::printf("FAIL Init\n"); return 1; }
     if (anim.FindClip("slide") != 0 || anim.FindClip("nope") != -1) { ++g_failures; std::printf("FAIL FindClip\n"); }
+
+    {   // names cut by the 32-byte buffer: a longer request still finds them; a shorter or different one does not
+        ModelAnimation clips[3] = {};
+        std::memset(clips[0].name, 'a', 31);   // 31 chars + NUL
+        std::memset(clips[1].name, 'b', 32);   // 32 chars, no NUL
+        std::strcpy(clips[2].name, "abc");
+        for (auto& c : clips) { c.boneCount = 2; c.keyframeCount = 2; c.keyframePoses = frames; }
+        ModelAnimator names;
+        if (!names.Init(model, clips, 3, norm)) { std::printf("FAIL Init names\n"); return 1; }
+        const std::string a40(40, 'a'), a31(31, 'a'), a30(30, 'a'), b40(40, 'b'), b32(32, 'b'), b31(31, 'b');
+        if (names.FindClip(a40.c_str()) != 0 || names.FindClip(a31.c_str()) != 0 || names.FindClip(a30.c_str()) != -1 ||
+            names.FindClip(b40.c_str()) != 1 || names.FindClip(b32.c_str()) != 1 || names.FindClip(b31.c_str()) != -1 ||
+            names.FindClip("abc") != 2 || names.FindClip("ab") != -1 || names.FindClip("abcd") != -1)
+        { ++g_failures; std::printf("FAIL FindClip long names\n"); }
+    }
 
     // Half a keyframe (1/120 s) in: the tip is 1 unit along x in file space.
     anim.Play(0, true);
