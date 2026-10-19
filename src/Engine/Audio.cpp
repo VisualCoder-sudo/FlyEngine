@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -23,12 +24,15 @@ namespace {
 
 constexpr size_t kMaxVoices = 64;
 constexpr uint64_t kMaxClipSamples = 128ull * 1024 * 1024;   // 512 MB of float PCM, per clip
+constexpr size_t kMaxCacheBytes = 768ull * 1024 * 1024;       // decoded clips kept for reuse; unused ones are evicted past this
+constexpr int kInitRetrySeconds = 5;                          // after a failed device open, Init tries again no sooner than this
 
 struct Clip {
     std::vector<float> pcm;      // interleaved
     uint32_t channels = 0;
     uint32_t sampleRate = 0;
     uint64_t frames = 0;
+    uint64_t lastUse = 0;        // cache tick, for evicting the least recently used
 };
 
 constexpr int kMaxEchoVoices = 16;
@@ -72,7 +76,10 @@ struct State {
     std::mutex mutex;
     ma_engine engine{};
     bool open = false;
-    bool failed = false;         // the device couldn't be opened; don't retry every Play
+    bool failed = false;         // the device couldn't be opened; don't retry every Play (see kInitRetrySeconds)
+    bool failLogged = false;
+    std::chrono::steady_clock::time_point failedAt{};
+    uint64_t useTick = 0;
     bool noDevice = false;
     float master = 1.0f;
     float listener[3] = { 0, 0, 0 };
@@ -102,7 +109,8 @@ bool ReadFile(const std::string& path, std::vector<uint8_t>& out) {
     return vfs::Active() && vfs::Read(path, out);   // an exported game names its files relative to the archive
 }
 
-std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes) {
+std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes, bool& tooLarge) {
+    tooLarge = false;
     auto clip = std::make_shared<Clip>();
     if (bytes.size() >= 4 && std::memcmp(bytes.data(), "OggS", 4) == 0) {
         int channels = 0, rate = 0;
@@ -110,7 +118,7 @@ std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes) {
         const int frames = stb_vorbis_decode_memory(bytes.data(), static_cast<int>(bytes.size()), &channels, &rate, &samples);
         if (frames <= 0 || !samples || channels <= 0) { std::free(samples); return nullptr; }
         const uint64_t total = static_cast<uint64_t>(frames) * static_cast<uint64_t>(channels);
-        if (total > kMaxClipSamples) { std::free(samples); return nullptr; }
+        if (total > kMaxClipSamples) { std::free(samples); tooLarge = true; return nullptr; }
         clip->pcm.resize(static_cast<size_t>(total));
         for (uint64_t i = 0; i < total; ++i) clip->pcm[static_cast<size_t>(i)] = static_cast<float>(samples[i]) / 32768.0f;
         std::free(samples);
@@ -134,7 +142,7 @@ std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes) {
         ma_uint64 got = 0;
         const ma_result r = ma_decoder_read_pcm_frames(&dec, chunk.data(), kChunk, &got);
         if (got > 0) {
-            if ((clip->pcm.size() + got * clip->channels) > kMaxClipSamples) { clip.reset(); break; }
+            if ((clip->pcm.size() + got * clip->channels) > kMaxClipSamples) { clip.reset(); tooLarge = true; break; }
             clip->pcm.insert(clip->pcm.end(), chunk.begin(), chunk.begin() + static_cast<ptrdiff_t>(got * clip->channels));
         }
         if (r != MA_SUCCESS || got < kChunk) break;
@@ -145,17 +153,50 @@ std::shared_ptr<Clip> Decode(const std::vector<uint8_t>& bytes) {
     return clip;
 }
 
-std::shared_ptr<Clip> LoadClipLocked(State& s, const std::string& path) {
-    if (auto it = s.clips.find(path); it != s.clips.end()) return it->second;
+// Drops the least recently used clips nothing is playing (only the cache holds them) until the cache fits its budget.
+void EvictLocked(State& s, const Clip* keep) {
+    size_t total = 0;
+    for (const auto& [path, c] : s.clips) total += c->pcm.size() * sizeof(float);
+    while (total > kMaxCacheBytes) {
+        auto victim = s.clips.end();
+        for (auto it = s.clips.begin(); it != s.clips.end(); ++it) {
+            if (it->second.use_count() != 1 || it->second.get() == keep) continue;
+            if (victim == s.clips.end() || it->second->lastUse < victim->second->lastUse) victim = it;
+        }
+        if (victim == s.clips.end()) return;   // everything left is playing
+        total -= victim->second->pcm.size() * sizeof(float);
+        s.clips.erase(victim);
+    }
+}
+
+// Reads and decodes outside the lock (a long clip would otherwise stall every other audio call), then inserts under it.
+// Call without holding s.mutex.
+std::shared_ptr<Clip> LoadClip(State& s, const std::string& path) {
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (auto it = s.clips.find(path); it != s.clips.end()) { it->second->lastUse = ++s.useTick; return it->second; }
+    }
     std::vector<uint8_t> bytes;
     if (!ReadFile(path, bytes)) {
+        std::lock_guard<std::mutex> lock(s.mutex);
         if (g_warned.insert(path).second) Log("[audio] can't find sound file: " + path);
         return nullptr;
     }
-    auto clip = Decode(bytes);
-    if (clip) s.clips[path] = clip;
-    else if (g_warned.insert(path).second) Log("[audio] can't decode " + path + " (not a valid WAV, MP3, FLAC or OGG file?)");
-    return clip;
+    bool tooLarge = false;
+    auto clip = Decode(bytes, tooLarge);
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!clip) {
+        if (g_warned.insert(path).second) {
+            if (tooLarge) Log("[audio] can't load " + path + " (too large: over " + std::to_string(kMaxClipSamples / (1024 * 1024)) + "M samples)");
+            else Log("[audio] can't decode " + path + " (not a valid WAV, MP3, FLAC or OGG file?)");
+        }
+        return nullptr;
+    }
+    auto [it, inserted] = s.clips.emplace(path, clip);   // another thread may have decoded the same file meanwhile
+    it->second->lastUse = ++s.useTick;
+    std::shared_ptr<Clip> result = it->second;
+    if (inserted) EvictLocked(s, result.get());
+    return result;
 }
 
 void ReapLocked(State& s) {
@@ -199,10 +240,8 @@ Voice* FindLocked(State& s, Handle h) {
     return nullptr;
 }
 
-Handle StartLocked(State& s, const std::string& path, const PlayParams& p, bool spatial, float x, float y, float z) {
-    if (!s.open) return 0;
-    auto clip = LoadClipLocked(s, path);
-    if (!clip) return 0;
+Handle StartLocked(State& s, const std::shared_ptr<Clip>& clip, const std::string& path, const PlayParams& p, bool spatial, float x, float y, float z) {
+    if (!s.open || !clip) return 0;
     ReapLocked(s);
     if (s.voices.size() >= kMaxVoices) s.voices.erase(s.voices.begin());   // the oldest gives way
 
@@ -287,16 +326,22 @@ bool Init(bool noDevice) {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
     if (s.open) return true;
-    if (s.failed) return false;
+    if (s.failed) {
+        if (std::chrono::steady_clock::now() - s.failedAt < std::chrono::seconds(kInitRetrySeconds)) return false;
+        s.failed = false;   // try again: the device may be back
+    }
     ma_engine_config cfg = ma_engine_config_init();
     if (noDevice) { cfg.noDevice = MA_TRUE; cfg.channels = 2; cfg.sampleRate = 48000; }
     const ma_result initResult = ma_engine_init(&cfg, &s.engine);
     if (initResult != MA_SUCCESS) {
         s.failed = true;
-        Log(std::string("[audio] no sound device, sounds will not play (") + ma_result_description(initResult) + ")");
+        s.failedAt = std::chrono::steady_clock::now();
+        if (!s.failLogged) Log(std::string("[audio] no sound device, sounds will not play (") + ma_result_description(initResult) + ")");
+        s.failLogged = true;
         return false;
     }
     s.open = true;
+    s.failLogged = false;
     if (!noDevice) {
         Log("[audio] sound device ready: " + std::to_string(ma_engine_get_sample_rate(&s.engine)) + " Hz, " +
             std::to_string(ma_engine_get_channels(&s.engine)) + " channels");
@@ -315,6 +360,7 @@ void Shutdown() {
     if (s.open) ma_engine_uninit(&s.engine);
     s.open = false;
     s.failed = false;
+    s.failLogged = false;
 }
 
 bool Available() { State& s = S(); std::lock_guard<std::mutex> lock(s.mutex); return s.open; }
@@ -322,15 +368,17 @@ bool Available() { State& s = S(); std::lock_guard<std::mutex> lock(s.mutex); re
 Handle Play(const std::string& path, const PlayParams& params) {
     if (!Init()) return 0;
     State& s = S();
+    auto clip = LoadClip(s, path);
     std::lock_guard<std::mutex> lock(s.mutex);
-    return StartLocked(s, path, params, false, 0, 0, 0);
+    return StartLocked(s, clip, path, params, false, 0, 0, 0);
 }
 
 Handle PlayAt(const std::string& path, float x, float y, float z, const PlayParams& params) {
     if (!Init()) return 0;
     State& s = S();
+    auto clip = LoadClip(s, path);
     std::lock_guard<std::mutex> lock(s.mutex);
-    return StartLocked(s, path, params, true, x, y, z);
+    return StartLocked(s, clip, path, params, true, x, y, z);
 }
 
 void Stop(Handle h) {
@@ -444,15 +492,11 @@ void Update() {
 }
 
 bool Preload(const std::string& path) {
-    State& s = S();
-    std::lock_guard<std::mutex> lock(s.mutex);
-    return LoadClipLocked(s, path) != nullptr;
+    return LoadClip(S(), path) != nullptr;
 }
 
 bool GetClipInfo(const std::string& path, ClipInfo& out) {
-    State& s = S();
-    std::lock_guard<std::mutex> lock(s.mutex);
-    auto clip = LoadClipLocked(s, path);
+    auto clip = LoadClip(S(), path);
     if (!clip) return false;
     out = { clip->frames, clip->channels, clip->sampleRate };
     return true;

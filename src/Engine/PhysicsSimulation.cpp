@@ -356,6 +356,7 @@ void Simulation::StartPlay() {
     contactHitEvents.clear();
     frameBeginEvents.clear();
     frameHitEvents.clear();
+    accumulator = 0.0f;   // no leftover time from a previous session
     ui::ClearLog();
     playStartTime = GetTime();
 
@@ -589,6 +590,11 @@ void Simulation::RemoveObject(ScatteredObject* obj) {
         std::remove_if(bodyToObject.begin(), bodyToObject.end(),
                        [obj](const std::pair<b3BodyId, ScatteredObject*>& p) { return p.second == obj; }),
         bodyToObject.end());
+
+    // Pending events must not point at an object that is about to be freed.
+    auto refers = [obj](const ContactEvent& e) { return e.objectA == obj || e.objectB == obj; };
+    for (auto* list : { &contactBeginEvents, &frameBeginEvents, &frameHitEvents, &contactHitEvents })
+        list->erase(std::remove_if(list->begin(), list->end(), refers), list->end());
 }
 
 void Simulation::StopPlay() {
@@ -612,8 +618,12 @@ void Simulation::StopPlay() {
     meshes.clear();
     contactBeginEvents.clear();
     contactHitEvents.clear();
+    frameBeginEvents.clear();
+    frameHitEvents.clear();
+    accumulator = 0.0f;
     city::DetachPhysicsWorld();
     world.reset();
+    ClearGeometryCache();   // keys hold a raw meshes pointer that a reloaded model can reuse; the shapes are gone with the world
     // The height fields are referenced by their shapes, so they go after the world.
     for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);
     terrainColliders.clear();

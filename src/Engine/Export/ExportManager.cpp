@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <random>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -589,6 +590,19 @@ std::string FindPlayerExecutable() {
     return std::string();
 }
 
+// A fresh, empty temp directory only this export owns (create_directory fails on an existing one, so nothing foreign is adopted).
+static std::string MakeWorkDir() {
+    std::error_code ec;
+    std::random_device rd;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        char suffix[32];
+        std::snprintf(suffix, sizeof suffix, "%08x%08x", (unsigned)rd(), (unsigned)rd());
+        const fs::path dir = fs::temp_directory_path(ec) / (std::string("fly_export_") + suffix);
+        if (fs::create_directory(dir, ec)) return dir.string();
+    }
+    return std::string();
+}
+
 Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, const ProgressFn& progress) {
     Result res;
     auto say = [&](const std::string& s) { if (log) log(s); };
@@ -653,7 +667,8 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
     if (userCode.Any()) {
         say("C++ code to build in: " + std::to_string(userCode.scripts.size()) + " script file(s), " +
             std::to_string(userCode.plugins.size()) + " plugin(s)");
-        workDir = (fs::temp_directory_path() / ("fly_export_" + std::to_string((unsigned long long)std::time(nullptr)))).string();
+        workDir = MakeWorkDir();
+        if (workDir.empty()) return fail("Could not create a temporary build folder.");
         cleanup.dir = workDir;
         std::string buildError;
         basePlayer = BuildPlayerWithUserCode(project, userCode, workDir, log, [&]() { return !report(lastReported); }, buildError);
@@ -667,7 +682,8 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         if (img.data == nullptr) return fail("Could not decode the icon PNG.");
         ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         if (cleanup.dir.empty()) {
-            cleanup.dir = (fs::temp_directory_path() / ("fly_export_" + std::to_string((unsigned long long)std::time(nullptr)))).string();
+            cleanup.dir = MakeWorkDir();
+            if (cleanup.dir.empty()) { UnloadImage(img); return fail("Could not create a temporary folder."); }
         }
         fs::create_directories(U8Path(cleanup.dir), ec);
         const fs::path iconPlayer = U8Path(cleanup.dir) / "player_icon.exe";
@@ -813,6 +829,12 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         return report(0.05f + (packEnd - 0.05f) * (total ? (float)done / (float)total : 1.0f));
     });
     if (!ok) return fail(error);
+    // From here the player exists in the output; a later failure must not leave a runnable game missing its assets.
+    struct ExeGuard {
+        fs::path path;
+        bool keep = false;
+        ~ExeGuard() { if (!keep) { std::error_code e; fs::remove(path, e); } }
+    } exeGuard{ out };
 
     if (!externals.empty()) {
         const fs::path assetsRoot = U8Path(cfg.outputDir) / kAssetsFolder;
@@ -823,6 +845,33 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
             fs::copy_file(U8Path(x.disk), dst, fs::copy_options::overwrite_existing, ec);
             if (ec) return fail("Could not write " + dst.string() + ": " + ec.message());
             if (!report(0.9f + 0.1f * (float)(++copied) / (float)externals.size())) return fail("Cancelled");
+        }
+        // Drop files a previous export of this project wrote that the project no longer has. Only manifest-listed
+        // files are ever deleted, so anything the user put there is safe.
+        const fs::path manifest = assetsRoot / ".fly_export_manifest";
+        std::set<std::string> current;
+        for (const ExternalCopy& x : externals) current.insert(x.rel.substr(7));
+        {
+            std::ifstream in(manifest);
+            std::string rel;
+            while (std::getline(in, rel)) {
+                if (!rel.empty() && rel.back() == '\r') rel.pop_back();
+                if (rel.empty() || current.count(rel)) continue;
+                const fs::path rp = U8Path(rel);
+                if (rp.is_absolute() || rp.has_root_name() || rel.find("..") != std::string::npos) continue;
+                std::error_code e3;
+                const fs::path victim = assetsRoot / rp;
+                if (fs::is_regular_file(victim, e3)) {
+                    fs::remove(victim, e3);
+                    for (fs::path d = victim.parent_path(); d != assetsRoot && d.has_parent_path(); d = d.parent_path()) {
+                        if (!fs::remove(d, e3)) break;   // stops at the first non-empty folder
+                    }
+                }
+            }
+        }
+        {
+            std::ofstream mf(manifest, std::ios::trunc);
+            for (const std::string& r : current) mf << r << "\n";
         }
         say("Wrote " + std::to_string(externals.size()) + " file(s) to " + assetsRoot.string() +
             ". Ship this folder next to the game.");
@@ -839,6 +888,7 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         say("Wrote " + base + ".png and " + base + ".desktop (launcher entry; edit Exec/Icon to absolute paths when installing).");
     }
 
+    exeGuard.keep = true;
     res.ok = true;
     res.outputPath = out.string();
     res.bytes = fs::file_size(out, ec);
