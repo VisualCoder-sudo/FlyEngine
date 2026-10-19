@@ -584,7 +584,7 @@ void BuildModelMenu(ModelGroup* model) {
             if (s_selGroup == model) s_selGroup = nullptr;
             RequestDelete(targets);
             SetSelection({}, nullptr);
-        });
+        }, false);   // RequestDelete records the undo step itself
         return;
     }
     AddMenu("New Group Inside", [model] {
@@ -602,7 +602,7 @@ void BuildModelMenu(ModelGroup* model) {
         if (s_selGroup == model) s_selGroup = nullptr;
         RequestDelete(targets);
         SetSelection({}, nullptr);
-    });
+    }, false);   // RequestDelete records the undo step itself
 }
 
 void InsertScript() {
@@ -1034,6 +1034,7 @@ void DrawImGuiExplorer() {
     s_ctx.mouse = { mouseImgui.x, mouseImgui.y };
     if (!ExplorerRenameActive()) s_lastRenameId = nullptr;
     if (s_selGroup && !GroupExists(s_selGroup)) s_selGroup = nullptr;
+    if (g_renameModel && !GroupExists(g_renameModel)) g_renameModel = nullptr;
 
     // The selection changed (a click in the 3D view, Ctrl+A, undo...): show it here.
     {

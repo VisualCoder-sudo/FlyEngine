@@ -21,6 +21,8 @@
 #include "../../../include/Engine/Vfs.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -535,6 +537,10 @@ struct ModelsRollback {
 };
 } // namespace
 
+// Sanity caps on counts/lengths read from a scene file: a corrupt value must fail the load, not throw from reserve/resize.
+constexpr size_t kMaxSceneCount = 10000000;
+constexpr size_t kMaxSceneString = 1u << 24;
+
 bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<ScatteredObject*>& objects,
                          std::vector<std::unique_ptr<ModelGroup>>& models,
                          const std::string& baseDir,
@@ -543,7 +549,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     // Loading a scene rebuilds model containers from scratch. The old ones are only set aside: until this load
@@ -581,6 +587,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         const bool keepScripts = runtime && runtime->IsValid();
         size_t scriptCount = 0;
         if (file >> scriptCount) {
+            if (scriptCount > kMaxSceneCount) return false;
             std::vector<ScriptRuntime::StandaloneScript> discarded;
             auto& scripts = keepScripts ? runtime->StandaloneScripts() : discarded;
             scripts.clear();
@@ -588,7 +595,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             for (size_t i = 0; i < scriptCount; ++i) {
                 int runOnPlay = 1;
                 size_t nameLen = 0, typeLen = 0;
-                if (!(file >> runOnPlay >> nameLen)) return false;
+                if (!(file >> runOnPlay >> nameLen) || nameLen > kMaxSceneString) return false;
                 file.ignore(); // newline after the length
                 std::string name;
                 if (nameLen > 0) {
@@ -596,7 +603,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                     file.read(&name[0], (std::streamsize)nameLen);
                     if (!file) return false;
                 }
-                if (!(file >> typeLen)) return false;
+                if (!(file >> typeLen) || typeLen > kMaxSceneString) return false;
                 file.ignore(); // newline after the length
                 std::string typeName;
                 if (typeLen > 0) {
@@ -617,12 +624,12 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     // loaded (0..count-1); older files simply have no models section.
     if (version >= 7) {
         size_t modelCount = 0;
-        if (!(file >> modelCount)) return false;
+        if (!(file >> modelCount) || modelCount > kMaxSceneCount) return false;
         models.reserve(modelCount);
         for (size_t i = 0; i < modelCount; ++i) {
             std::string modelName;
             size_t memberCount = 0;
-            if (!(file >> std::quoted(modelName) >> memberCount)) return false;
+            if (!(file >> std::quoted(modelName) >> memberCount) || memberCount > kMaxSceneCount) return false;
             auto model = std::make_unique<ModelGroup>();
             model->name = modelName;
             model->members.reserve(memberCount);
@@ -767,6 +774,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             } else {
                 ui::LogAlways("[city] loaded %d city(ies) from %s", loaded, cityFile.c_str());
             }
+        } else if (cityCount > 0) {
+            ui::LogAlways("Scene lists %d city(ies) but has no folder to load city.city from; they were not loaded", cityCount);
         }
     }
 
@@ -870,7 +879,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (loaded > 0) {
                 const int planted = foliage::LoadFile(baseDir + "/foliage.cfg", baseDir);
                 if (planted > 0) ui::LogAlways("[terrain] foliage rules restored for %d terrain(s)", planted);
+                else ui::LogAlways("[terrain] no foliage rules restored (foliage.cfg missing or unreadable in %s)", baseDir.c_str());
             }
+        } else if (basicTerrainCount > 0) {
+            ui::LogAlways("Scene lists %d BasicTerrain(s) but has no folder to load basicterrain.bt from; they were not loaded", basicTerrainCount);
         }
     }
 
@@ -888,6 +900,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (file >> tag2 && tag2 == "LIGHTING2" &&
                 file >> hs >> ha >> hk >> hf >> L2.sunAzimuth >> L2.sunElevation >> L2.sunIntensity >> L2.sunColor[0] >> L2.sunColor[1] >> L2.sunColor[2] >>
                        L2.ambient >> L2.skyColor[0] >> L2.skyColor[1] >> L2.skyColor[2] >> L2.fogDensity) {
+                for (float* c : { &L2.sunColor[0], &L2.sunColor[1], &L2.sunColor[2], &L2.skyColor[0], &L2.skyColor[1], &L2.skyColor[2] })
+                    *c = std::isfinite(*c) ? std::clamp(*c, 0.0f, 1.0f) : 1.0f;
                 L2.hasSun = hs != 0; L2.hasAmbient = ha != 0; L2.hasSky = hk != 0; L2.hasFog = hf != 0;
                 L2.sunIntensity = std::clamp(L2.sunIntensity, 0.0f, 3.0f);
                 L2.ambient = std::clamp(L2.ambient, 0.0f, 2.0f);
@@ -1000,7 +1014,12 @@ bool LoadSceneFromFile(Engine& engine, std::vector<ScatteredObject*>& objects,
     std::error_code ec;
     std::string baseDir = std::filesystem::path(path).parent_path().string();
     if (ec || baseDir.empty()) baseDir.clear();
-    return LoadSceneFromStream(file, engine, objects, models, baseDir, physicsSim, outTerrain);
+    try {
+        return LoadSceneFromStream(file, engine, objects, models, baseDir, physicsSim, outTerrain);
+    } catch (const std::exception& e) {
+        ui::LogAlways("Failed to load scene '%s': %s", path.c_str(), e.what());
+        return false;
+    }
 }
 
 bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
@@ -1082,7 +1101,7 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) return false;
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
@@ -1096,12 +1115,12 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::vector<std::unique_ptr<ModelGroup>> groups;
     if (version >= 7) {
         size_t modelCount = 0;
-        if (!(file >> modelCount)) return false;
+        if (!(file >> modelCount) || modelCount > kMaxSceneCount) return false;
         groups.reserve(modelCount);
         for (size_t i = 0; i < modelCount; ++i) {
             std::string modelName;
             size_t memberCount = 0;
-            if (!(file >> std::quoted(modelName) >> memberCount)) return false;
+            if (!(file >> std::quoted(modelName) >> memberCount) || memberCount > kMaxSceneCount) return false;
             auto model = std::make_unique<ModelGroup>();
             model->name = modelName;
             model->members.reserve(memberCount);

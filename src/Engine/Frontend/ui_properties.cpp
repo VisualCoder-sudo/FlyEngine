@@ -299,6 +299,9 @@ static float ParseFiniteFloat(const char* text) {
 }
 
 bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX) {
+    // One undo step per edited field: the first change after the field was clicked snapshots the scene as it was.
+    static FieldID s_undoneField = FIELD_NONE;
+    static float s_origValue = 0.0f;
     DrawTextArial(label, labelX, rec.y + 3.0f, 13.0f, theme::TEXT_MUTED);
 
     bool isActive = (g_activeField == fieldId);
@@ -323,20 +326,34 @@ bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* l
             snprintf(g_textBuffer, sizeof(g_textBuffer), "%.2f", value);
             g_cursorPos = static_cast<int>(strlen(g_textBuffer));
             g_selStart = -1;
+            s_undoneField = FIELD_NONE;
+            s_origValue = value;
         }
     }
+
+    // `value` is the live scene field, so put the original back for the snapshot, then restore the new value.
+    auto pushUndoOnce = [&]() {
+        if (s_undoneField == fieldId || value == s_origValue) return;
+        const float edited = value;
+        value = s_origValue;
+        ui::PushUndo();
+        value = edited;
+        s_undoneField = fieldId;
+    };
 
     if (isActive) {
         bool commit = false;
         if (TextEditKeys(g_textBuffer, static_cast<int>(sizeof(g_textBuffer)), g_cursorPos, g_selStart, commit)) {
             if (g_textBuffer[0] != '\0') {
                 value = ParseFiniteFloat(g_textBuffer);
+                pushUndoOnce();
                 changed = true;
             }
         }
         TextEditMouse(g_textBuffer, g_cursorPos, g_selStart, rec, textStartX, 13.0f, true);
         if (commit) {
             value = (g_textBuffer[0] == '\0') ? 0.0f : ParseFiniteFloat(g_textBuffer);
+            pushUndoOnce();
             changed = true;
             g_activeField = FIELD_NONE;
             g_selStart = -1;

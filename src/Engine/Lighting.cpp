@@ -160,9 +160,9 @@ Color CurrentSky() {
         const Vector3 c = LinearToSrgb(TonemapApply(std::clamp(lightingSettings.toneCurve, 0, 3), AtmosphereLight().horizon));
         return Color{ (unsigned char)lroundf(c.x * 255.0f), (unsigned char)lroundf(c.y * 255.0f), (unsigned char)lroundf(c.z * 255.0f), 255 };
     }
+    auto byte01 = [](float v) { return (unsigned char)lroundf((std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.0f) * 255.0f); };
     const Color day = lightingSettings.hasSky
-        ? Color{ (unsigned char)lroundf(lightingSettings.skyColor[0] * 255.0f), (unsigned char)lroundf(lightingSettings.skyColor[1] * 255.0f),
-                 (unsigned char)lroundf(lightingSettings.skyColor[2] * 255.0f), 255 }
+        ? Color{ byte01(lightingSettings.skyColor[0]), byte01(lightingSettings.skyColor[1]), byte01(lightingSettings.skyColor[2]), 255 }
         : engineClear;
     return SkyColor(day);
 }
