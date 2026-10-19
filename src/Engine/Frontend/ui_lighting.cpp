@@ -1,5 +1,5 @@
 #include "ui_internal.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 
 namespace ui {
 
@@ -7,6 +7,7 @@ namespace ui {
 void DrawImGuiLightingPanel() {
     if (g_lightingSel == 0) return;
     Rectangle rec = GetPropertiesPanelBounds();
+    if (rec.width <= 0.0f) return;
     ImGui::SetNextWindowPos(ImVec2(rec.x, rec.y));
     ImGui::SetNextWindowSize(ImVec2(rec.width, rec.height));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |

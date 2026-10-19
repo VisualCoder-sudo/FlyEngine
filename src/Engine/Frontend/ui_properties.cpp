@@ -10,8 +10,8 @@
 #include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
-#include "../../../include/Engine/Graphics.hpp"
-#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
+#include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
@@ -710,6 +710,7 @@ static float PropertiesContentHeight() {
 
 void DrawPropertiesPanel() {
     Rectangle panelRec = GetPropertiesPanelBounds();
+    if (panelRec.width <= 0.0f) return;
 
     DrawRectangleRec(panelRec, theme::BG_PANEL);
     DrawRectangleLinesEx(panelRec, 2.0f, theme::BORDER);

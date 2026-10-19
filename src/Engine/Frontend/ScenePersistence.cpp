@@ -14,11 +14,11 @@
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/CityGen/City.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/U8Path.hpp"
-#include "../../../include/Engine/Vfs.hpp"
+#include "../../../include/Graphics/Vfs.hpp"
 
 #include <algorithm>
 #include <cmath>

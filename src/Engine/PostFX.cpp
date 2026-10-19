@@ -1,7 +1,7 @@
-#include "../../include/Engine/PostFX.hpp"
-#include "../../include/Engine/Atmosphere.hpp"
-#include "../../include/Engine/Clouds.hpp"
-#include "../../include/Engine/Graphics.hpp"
+#include "../../include/Graphics/PostFX.hpp"
+#include "../../include/Graphics/Atmosphere.hpp"
+#include "../../include/Graphics/Clouds.hpp"
+#include "../../include/Graphics/Graphics.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 #include "raymath.h"
 

@@ -2,7 +2,7 @@
  * ManifestParser.c - cJSON-based parser for plugin manifests
  */
 
-#include "PluginManifest.h"
+#include "../../include/Engine/Plugin/PluginManifest.h"
 #include "../../extern/cjson/cJSON.h"
 #include <stdlib.h>
 #include <string.h>

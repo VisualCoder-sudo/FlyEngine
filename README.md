@@ -297,7 +297,7 @@ plugins. On Linux that needs `ENABLE_EXPORTS ON`; CI checks the export count.
 
 ### Native plugins
 
-Plugins are plain C or C++ shared libraries built against `include/CPluginAPI.h`
+Plugins are plain C or C++ shared libraries built against `include/Engine/Plugin/CPluginAPI.h`
 (API 1.1). Put the library in `<project>/plugins/nat/<name>/build/`; the editor
 loads it at startup and reloads it when the file changes. A plugin exports
 `CP_GetPluginEntry` (use `CP_REGISTER_PLUGIN`) and gets `on_load`, `on_update`
@@ -333,7 +333,7 @@ How it works:
 
 - The data is an archive appended to a copy of the player (`include/Engine/PackArchive.hpp` describes the format).
   At startup the player finds it at the end of its own file and serves every project/engine file from it through a
-  virtual file system (`include/Engine/Vfs.hpp`, hooked into raylib's file functions in `rl_core.cpp`); the files sit under the
+  virtual file system (`include/Graphics/Vfs.hpp`, hooked into raylib's file functions in `rl_core.cpp`); the files sit under the
   synthetic root `/__embedded__`. An exported game ignores this machine's `graphics.cfg`/`loading.cfg` and writes nothing next
   to itself. For testing, `FLY_EXIT_AFTER_FRAMES=<n>` makes any player quit after n frames (`FLY_SCREENSHOT=<file>` saves the last one).
 - A project **without** C++ code only needs the `FlyPlayer` next to the editor. A project **with** scripts or plugins is

@@ -5,8 +5,8 @@
  * It connects to the IPC socket, loads the plugin .so, and forwards calls.
  */
 
-#include "PluginIPC.h"
-#include "CPluginAPI.h"
+#include "../../include/Engine/Plugin/PluginIPC.h"
+#include "../../include/Engine/Plugin/CPluginAPI.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>

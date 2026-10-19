@@ -5,7 +5,7 @@
 #include "../../include/CityGen/CityPhysics.hpp"
 #include "../../include/Engine/Backend/Box3DWrapper.hpp"
 #include "../../include/Engine.hpp"
-#include "../../include/Engine/Graphics.hpp"
+#include "../../include/Graphics/Graphics.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 
 #include "rlgl.h"

@@ -110,6 +110,35 @@ std::string ScriptKey(const ScriptRuntime::StandaloneScript& s);
 void DeleteScriptEverywhere(const std::string& key, int index = -1);
 Rectangle GetAssetBrowserPanelBounds();
 
+// ui_layout.cpp: where the panels sit (docking side, size, visibility), editable by dragging or in Preferences > Layout.
+enum class PanelId : int { Explorer = 0, Properties, Terrain, Bottom };
+constexpr int kPanelCount = 4;
+enum class DockSide : int { Left = 0, Right = 1 };
+struct PanelState {
+    bool visible = true;
+    DockSide side = DockSide::Left;   // Explorer / Properties / Terrain; the bottom panel always spans the middle
+    int order = 0;                    // position in its column, top to bottom
+    float weight = 1.0f;              // share of the column's height
+};
+struct LayoutState {
+    PanelState panel[kPanelCount];
+    float leftW = 220.0f, rightW = 240.0f, bottomH = 230.0f;
+    bool locked = false;              // no dragging or resizing
+};
+LayoutState& Layout();
+const char* PanelName(PanelId id);
+Rectangle GetPanelBounds(PanelId id);   // zero-size while the panel is hidden
+bool IsPanelVisible(PanelId id);
+void SetPanelVisible(PanelId id, bool visible);
+DockSide GetPanelSide(PanelId id);
+void SetPanelSide(PanelId id, DockSide side);
+void GetColumnWidths(float& left, float& right);   // 0 for a side with no visible panel
+void ResetLayout();
+void SaveLayout();
+bool IsLayoutInteracting();
+void UpdatePanelLayout();         // once per frame before the panels draw: edge resizing and title dragging
+void DrawPanelLayoutOverlay();    // once per frame inside the ImGui pass: drop preview and the title context menu
+
 // ui_assets.cpp: the bottom dock (Assets, Output and Script tabs).
 extern int g_bottomTabActive;   // the tab showing: 0 Assets, 1 Output, 2 Script
 extern int g_bottomTabRequest;  // tab to switch to next frame, or -1
@@ -144,6 +173,7 @@ void ApplyAccentToImGuiStyle();
 float HoverProgress(uint64_t key, bool hovered);
 Color Mix(Color from, Color to, float t);
 void MarkHand();
+void MarkResize(bool vertical);   // resize cursor for this frame: up-down when `vertical`, else left-right
 void DrawTextArial(const char* text, float posX, float posY, float fontSize, Color color);
 float MeasureTextArial(const char* text, float fontSize);
 void DrawDropdownBox(const Rectangle& r, bool active, float alpha = 1.0f);

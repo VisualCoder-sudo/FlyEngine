@@ -6,7 +6,7 @@
  * Requires: Linux kernel 4.15+ (for seccomp), cgroups v2 mounted
  */
 
-#include "PluginSandbox.h"
+#include "../../include/Engine/Plugin/PluginSandbox.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

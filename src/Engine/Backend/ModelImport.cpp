@@ -1,4 +1,4 @@
-#include "Engine/Vfs.hpp"
+#include "../../../include/Graphics/Vfs.hpp"
 #include <unordered_set>
 #include "../../../include/Engine/Backend/ModelImport.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"

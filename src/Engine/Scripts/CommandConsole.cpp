@@ -1,5 +1,5 @@
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Scripts/FlyScriptApi.hpp"

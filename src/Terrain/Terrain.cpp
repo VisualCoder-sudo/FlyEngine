@@ -6,7 +6,7 @@
 #include "../include/Terrain/TerrainEditor.hpp"
 #include "../include/Terrain/TerrainRegistry.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
-#include "../../include/Engine/Graphics.hpp"
+#include "../../include/Graphics/Graphics.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <algorithm>

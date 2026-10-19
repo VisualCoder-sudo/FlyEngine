@@ -1,5 +1,5 @@
 #include "../../include/Engine/Audio.hpp"
-#include "../../include/Engine/Vfs.hpp"
+#include "../../include/Graphics/Vfs.hpp"
 #include "../../include/Engine/Backend/audio.h"   // miniaudio; the implementation is in Backend/miniaudio_impl.c
 
 #include <algorithm>

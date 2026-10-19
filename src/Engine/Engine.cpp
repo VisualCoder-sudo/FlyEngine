@@ -1,13 +1,13 @@
 #include "../../include/Engine.hpp"
-#include "../../include/Engine/Graphics.hpp"
-#include "../../include/Engine/PostFX.hpp"
-#include "../../include/Engine/Occlusion.hpp"
+#include "../../include/Graphics/Graphics.hpp"
+#include "../../include/Graphics/PostFX.hpp"
+#include "../../include/Graphics/Occlusion.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
 #include "../../include/Engine/GameUI.hpp"
 #include "../../include/Engine/Audio.hpp"
-#include "../../include/Engine/Particles.hpp"
+#include "../../include/Graphics/Particles.hpp"
 #include "../../include/Terrain/Foliage.hpp"
 #include "../../include/Engine/Backend/SoundRays.hpp"
 #include "../../include/Engine/Backend/ScatteredObject.hpp"
@@ -180,6 +180,7 @@ void Engine::Draw() {
             terrain::Terrain::SetDrawCamera(&reflCam);
             BasicTerrain::SetActiveCamera(&reflCam);
             BeginMode3D(reflCam);
+                gfx::ClipReflectionPassToWater();
                 // Draw opaque entities first (they write depth). Anything fully
                 // underwater has no reflection (the mirrored camera would wrongly
                 // lift it above the surface), so skip it.

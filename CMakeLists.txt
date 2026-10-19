@@ -255,6 +255,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ui.cpp
         src/Engine/Frontend/ui_assets.cpp
         src/Engine/Frontend/ui_preferences.cpp
+        src/Engine/Frontend/ui_layout.cpp
         src/Engine/Frontend/ui_terrain_panel.cpp
         src/Engine/Frontend/ui_properties.cpp
         src/Engine/Frontend/ui_explorer.cpp

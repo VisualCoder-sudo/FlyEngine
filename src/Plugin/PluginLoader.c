@@ -2,10 +2,10 @@
  * PluginLoader.c - Plugin discovery, validation, and loading
  */
 
-#include "PluginLoader.h"
-#include "PluginManifest.h"
+#include "../../include/Engine/Plugin/PluginLoader.h"
+#include "../../include/Engine/Plugin/PluginManifest.h"
 #include "VersionCompat.h"
-#include "../../include/CPluginAPI.h"
+#include "../../include/Engine/Plugin/CPluginAPI.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

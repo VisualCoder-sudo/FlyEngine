@@ -1,4 +1,4 @@
-#include "../../include/Engine/Graphics.hpp"
+#include "../../include/Graphics/Graphics.hpp"
 
 // Per-frame render statistics. Reset once per frame by ResetFrameStats() and
 // read by the player debug overlay.

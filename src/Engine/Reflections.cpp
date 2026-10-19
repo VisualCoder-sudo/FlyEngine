@@ -1,5 +1,6 @@
-#include "../../include/Engine/Graphics.hpp"
-#include "../../include/Engine/Atmosphere.hpp"
+#include <cstring>
+#include "../../include/Graphics/Graphics.hpp"
+#include "../../include/Graphics/Atmosphere.hpp"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -12,6 +13,7 @@ int reflectionQuality = 50;
 constexpr int REFLECTION_TEXTURE_SLOT = 11;
 bool reflectionEnabled = true;
 bool inReflectionPass = false;
+float reflPlaneY = 0.0f;
 RenderTexture2D reflectionTarget{};
 Matrix reflView = MatrixIdentity();
 Matrix reflProj = MatrixIdentity();
@@ -89,6 +91,7 @@ Camera3D BeginReflectionPass(float planeHeight, const Camera3D& worldCamera, Col
     }
 
     inReflectionPass = true;
+    reflPlaneY = planeHeight;
 
     // Mirror the camera about the horizontal plane y = planeHeight. Objects above
     // the water appear below the mirrored camera, producing a true planar mirror.
@@ -113,11 +116,43 @@ Camera3D BeginReflectionPass(float planeHeight, const Camera3D& worldCamera, Col
     return mirrored;
 }
 
+void ClipReflectionPassToWater() {
+    if (!inReflectionPass || reflectionTarget.id == 0) return;
+
+    Matrix view = rlGetMatrixModelview();
+    Matrix proj = rlGetMatrixProjection();
+    reflProj = proj;    // unclipped; the water shader samples with this one
+
+    // Oblique near-plane clip (Lengyel): geometry below the water surface must not
+    // be mirrored up, or submerged parts of objects show as ghosts in the reflection.
+    // World plane y = planeY - bias, kept side is y above it.
+    const float bias = 0.05f;
+    const float pl[4] = { 0.0f, 1.0f, 0.0f, -(reflPlaneY - bias) };
+    const Matrix invView = MatrixInvert(view);
+    const float* v = MatrixToFloatV(invView).v;   // v[n] == mN (column-major)
+    float c[4];
+    for (int i = 0; i < 4; i++)
+        c[i] = v[i*4+0]*pl[0] + v[i*4+1]*pl[1] + v[i*4+2]*pl[2] + v[i*4+3]*pl[3];
+
+    // Camera sits at the view-space origin; it must be on the clipped side.
+    if (c[3] >= 0.0f) return;
+
+    float m[16];
+    memcpy(m, MatrixToFloatV(proj).v, sizeof(m));
+    auto sgn = [](float x) { return x > 0.0f ? 1.0f : (x < 0.0f ? -1.0f : 0.0f); };
+    float q[4] = { (sgn(c[0]) + m[8]) / m[0], (sgn(c[1]) + m[9]) / m[5], -1.0f, (1.0f + m[10]) / m[14] };
+    float k = 2.0f / (c[0]*q[0] + c[1]*q[1] + c[2]*q[2] + c[3]*q[3]);
+    m[2] = c[0]*k; m[6] = c[1]*k; m[10] = c[2]*k + 1.0f; m[14] = c[3]*k;
+    rlSetMatrixProjection({ m[0], m[4], m[8],  m[12],
+                            m[1], m[5], m[9],  m[13],
+                            m[2], m[6], m[10], m[14],
+                            m[3], m[7], m[11], m[15] });
+}
+
 void EndReflectionPass() {
     if (!inReflectionPass || reflectionTarget.id == 0) return;
 
     reflView = rlGetMatrixModelview();
-    reflProj = rlGetMatrixProjection();
 
     rlDrawRenderBatchActive();
     EndMode3D();

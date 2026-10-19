@@ -7,7 +7,7 @@
 
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Scripts/StaticModules.hpp"
-#include "../../../include/CPluginAPI.h"
+#include "../../../include/Engine/Plugin/CPluginAPI.h"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Frontend/PluginHost.hpp"

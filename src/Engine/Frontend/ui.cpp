@@ -3,7 +3,7 @@
 #include "../../../include/Engine/Backend/VisualScript.hpp"
 #include "../../../include/Terrain/Water/WaterBody.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
@@ -131,17 +131,20 @@ float MenuAnim(double openTime) {
 
 bool g_cursorHand = false;
 bool g_cursorIbeam = false;
+int g_cursorResize = 0;   // 0 none, 1 left-right, 2 up-down
 
-void BeginCursorPass() { g_cursorHand = false; g_cursorIbeam = false; }
+void BeginCursorPass() { g_cursorHand = false; g_cursorIbeam = false; g_cursorResize = 0; }
 } // namespace
 void MarkHand() { g_cursorHand = true; }
 namespace {
 } // namespace
 void MarkIbeam() { g_cursorIbeam = true; }
+void MarkResize(bool vertical) { g_cursorResize = vertical ? 2 : 1; }
 namespace {
 
 void EndCursorPass() {
-    SetMouseCursor(g_cursorIbeam ? MOUSE_CURSOR_IBEAM
+    SetMouseCursor(g_cursorResize == 1 ? MOUSE_CURSOR_RESIZE_EW : g_cursorResize == 2 ? MOUSE_CURSOR_RESIZE_NS
+        : g_cursorIbeam ? MOUSE_CURSOR_IBEAM
         : g_cursorHand ? MOUSE_CURSOR_POINTING_HAND : MOUSE_CURSOR_DEFAULT);
 }
 
@@ -755,40 +758,28 @@ Rectangle GetTopBarBounds() {
     return Rectangle{ 0.0f, 0.0f, static_cast<float>(GetScreenWidth()), 120.0f };
 }
 
-Rectangle GetExplorerPanelBounds() {
-    constexpr float topBarHeight = 120.0f;
-    return Rectangle{ 0.0f, topBarHeight, 220.0f, static_cast<float>(GetScreenHeight()) - topBarHeight };
-}
+Rectangle GetExplorerPanelBounds() { return GetPanelBounds(PanelId::Explorer); }
 
-Rectangle GetPropertiesPanelBounds() {
-    // Top half of the right-hand column; GetTerrainPanelBounds() takes the
-    // bottom half at the same width, docked bottom-right.
-    constexpr float topBarHeight = 120.0f;
-    constexpr float panelWidth = 240.0f;
-    float totalH = static_cast<float>(GetScreenHeight()) - topBarHeight;
-    return Rectangle{ static_cast<float>(GetScreenWidth()) - panelWidth, topBarHeight, panelWidth, totalH * 0.5f };
-}
+Rectangle GetPropertiesPanelBounds() { return GetPanelBounds(PanelId::Properties); }
 
+// The strip between the left and right columns: where the command console, the bottom panel and the viewport
+// overlays live.
 Rectangle GetConsoleBarArea() {
-    Rectangle explorer = GetExplorerPanelBounds();
-    Rectangle props = GetPropertiesPanelBounds();
-    return Rectangle{ explorer.x + explorer.width, 0.0f, props.x - (explorer.x + explorer.width), static_cast<float>(GetScreenHeight()) };
+    float left = 0.0f, right = 0.0f;
+    GetColumnWidths(left, right);
+    return Rectangle{ left, 0.0f, static_cast<float>(GetScreenWidth()) - left - right, static_cast<float>(GetScreenHeight()) };
 }
 
-// The bottom panel (Assets and Output tabs): docked directly on the command console bar, flush with it, spanning
-// the same middle strip (between Explorer and Properties) as the console itself.
-Rectangle GetAssetBrowserPanelBounds() {
-    constexpr float h = 230.0f;
-    Rectangle area = GetConsoleBarArea();
-    Rectangle bar = console::GetBounds();
-    return Rectangle{ area.x, bar.y - h, area.width, h };
-}
+// The bottom panel (Assets, Output and Script tabs): docked directly on the command console bar, flush with it, spanning
+// the same middle strip as the console itself.
+Rectangle GetAssetBrowserPanelBounds() { return GetPanelBounds(PanelId::Bottom); }
 
 void GetColorPickerWindowBounds(Rectangle& popupRec) {
     Rectangle propRec = GetPropertiesPanelBounds();
     constexpr float popupW = 280.0f;
     constexpr float popupH = 210.0f;
-    float popupX = propRec.x - popupW - 10.0f;
+    float popupX = GetPanelSide(PanelId::Properties) == DockSide::Right ? propRec.x - popupW - 10.0f
+                                                                        : propRec.x + propRec.width + 10.0f;
     float popupY = (g_colorPickerAnchorY >= 0.0f) ? g_colorPickerAnchorY : propRec.y + 120.0f;
 
     popupRec.x = popupX;
@@ -1269,6 +1260,7 @@ ImTextureID RowTex(RowIconType i) {
 void Draw() {
     g_clickConsumedThisFrame = false;
     BeginCursorPass();
+    UpdatePanelLayout();
 
     if (g_playActive) {
         const char* msg = "PLAYING";
@@ -1478,7 +1470,7 @@ void RequestHeightmapImport() {
 
 
 void SelectLightingItem(int id) { g_lightingSel = id; }
-void SelectBottomTab(int tab) { g_bottomTabRequest = tab; }
+void SelectBottomTab(int tab) { g_bottomTabRequest = tab; SetPanelVisible(PanelId::Bottom, true); }
 int BottomTabShown() { return g_bottomTabActive; }
 bool OutputHasUnread() { return g_logTotal != g_logSeenTotal; }
 
@@ -1499,6 +1491,7 @@ void DrawImGuiFrame(const Camera3D& camera) {
     PumpAssetBrowserDialogs();
     DrawPathPromptModal();
     DrawTutorial();
+    DrawPanelLayoutOverlay();
 
     // Debug stats window (Frustum culling, draw calls, etc.)
     if (g_showDebugStats) {

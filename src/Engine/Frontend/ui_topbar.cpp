@@ -209,6 +209,15 @@ void DrawImGuiTopBar() {
         ImGui::Separator();
         if (ImGui::MenuItem("Export...")) { OpenExportDialog(); ImGui::CloseCurrentPopup(); }
         ImGui::Separator();
+        if (ImGui::BeginMenu("Panels")) {
+            for (int i = 0; i < kPanelCount; ++i) {
+                bool shown = IsPanelVisible(static_cast<PanelId>(i));
+                if (ImGui::MenuItem(PanelName(static_cast<PanelId>(i)), nullptr, &shown)) SetPanelVisible(static_cast<PanelId>(i), shown);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset layout")) ResetLayout();
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Tutorial")) { OpenTutorial(); ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Preferences")) { g_showPreferences = true; ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();

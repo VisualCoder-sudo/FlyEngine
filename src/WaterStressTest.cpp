@@ -1,7 +1,7 @@
 #include "../include/Terrain/Water/WaterStressTest.hpp"
 
 #include "../include/Engine.hpp"
-#include "../include/Engine/Graphics.hpp"
+#include "../include/Graphics/Graphics.hpp"
 #include "../include/Engine/Frontend/ui.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../include/Engine/Backend/ScatteredObject.hpp"

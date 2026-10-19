@@ -1,7 +1,7 @@
 #include "../../../include/Engine/Backend/FbxModel.hpp"
 
 #include "ufbx.h"
-#include "../../../include/Engine/Vfs.hpp"
+#include "../../../include/Graphics/Vfs.hpp"
 
 #include <cstdint>
 #include <cstdlib>

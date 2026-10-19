@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <future>
 
-#include "../../CPluginAPI.h"
+#include "../Plugin/CPluginAPI.h"
 #include "FlyScriptABI.h"
 #include "ScriptCompiler.hpp"
 

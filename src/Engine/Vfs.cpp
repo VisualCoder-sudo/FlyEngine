@@ -1,4 +1,4 @@
-#include "../../include/Engine/Vfs.hpp"
+#include "../../include/Graphics/Vfs.hpp"
 #include "../../include/Engine/PackArchive.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 #include "flyvfs.h"

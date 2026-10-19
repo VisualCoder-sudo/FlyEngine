@@ -4,10 +4,10 @@
 #include <unordered_map>
 #include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
-#include "../../../include/Engine/Graphics.hpp"
-#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
+#include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
-#include "../../../include/Engine/Occlusion.hpp"
+#include "../../../include/Graphics/Occlusion.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include "../../../include/Engine/Backend/FbxModel.hpp"

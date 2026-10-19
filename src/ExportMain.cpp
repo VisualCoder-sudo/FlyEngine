@@ -2,7 +2,7 @@
 //   flyexport <projectDir> --out <dir> [--name <exe>] [--title <text>] [--icon <png>] [--launcher] [--fps <n>] [--size WxH] [--fullscreen] [--embed-assets|--assets-folder]
 //             [--player <FlyPlayer>] [--target <id>]
 #include "Engine/ExportManager.hpp"
-#include "Engine/PostFX.hpp"
+#include "../include/Graphics/PostFX.hpp"
 
 #include <cstdio>
 #include <cstdlib>

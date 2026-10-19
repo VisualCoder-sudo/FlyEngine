@@ -2,7 +2,7 @@
 #include "../include/Terrain/Water/WaterNoise.hpp"
 #include "../../../include/Engine/Backend/ShaderCache.hpp"
 #include "../../../include/Engine.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "raylib.h"

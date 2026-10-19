@@ -6,7 +6,7 @@
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
 #include "../include/Engine/Frontend/ui.hpp"
-#include "../include/Engine/PostFX.hpp"
+#include "../include/Graphics/PostFX.hpp"
 #include "../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Backend/CrashReporter.hpp"
 #include "../include/Engine/Backend/TextureManager.hpp"

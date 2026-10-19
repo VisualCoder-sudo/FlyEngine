@@ -11,8 +11,8 @@
 #include "../../../include/Terrain/Foliage.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
-#include "../../../include/Engine/Graphics.hpp"
-#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
+#include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
@@ -58,18 +58,7 @@ static float g_terrainPanelContentHeight = 0.0f; // measured at the end of the p
 bool g_terrainToolDropdownOpen = false;
 static Rectangle g_terrainToolDropdownAnchor = { 0 };
 
-Rectangle GetTerrainPanelBounds() {
-    // Bottom-right dock, sharing the right-hand column with the Properties
-    // panel: Properties takes the top half, Terrain tools take the bottom
-    // half, both at the same width.
-    constexpr float topBarHeight = 120.0f;
-    constexpr float panelWidth = 240.0f;
-    float totalH = static_cast<float>(GetScreenHeight()) - topBarHeight;
-    float halfH = totalH * 0.5f;
-    float x = static_cast<float>(GetScreenWidth()) - panelWidth;
-    float y = topBarHeight + halfH;
-    return Rectangle{ x, y, panelWidth, totalH - halfH };
-}
+Rectangle GetTerrainPanelBounds() { return GetPanelBounds(PanelId::Terrain); }
 
 static void TerrainSlider(const char* label, float x, float y, float w,
                           float& value, float mn, float mx, const char* fmt, uint64_t key) {

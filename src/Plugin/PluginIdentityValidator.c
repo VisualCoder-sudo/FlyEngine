@@ -2,8 +2,8 @@
  * PluginIdentityValidator.c - Hard-fail validation for plugin identity
  */
 
-#include "PluginIdentityValidator.h"
-#include "PluginManifest.h"
+#include "../../include/Engine/Plugin/PluginIdentityValidator.h"
+#include "../../include/Engine/Plugin/PluginManifest.h"
 #include "VersionCompat.h"
 #include <stdlib.h>
 #include <string.h>

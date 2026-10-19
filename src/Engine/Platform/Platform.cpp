@@ -4,7 +4,7 @@
 
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Platform/PlatformInternal.hpp"
-#include "Engine/Vfs.hpp"
+#include "../../../include/Graphics/Vfs.hpp"
 #include <algorithm>
 
 #include <cstdio>

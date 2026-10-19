@@ -12,9 +12,9 @@
 #include "Engine/Backend/CameraController.hpp"
 #include "Engine/Backend/CharacterController.hpp"
 #include "Engine/Platform/Platform.hpp"
-#include "Engine/Graphics.hpp"
+#include "../include/Graphics/Graphics.hpp"
 #include "Engine/Frontend/ui.hpp"
-#include "Engine/PostFX.hpp"
+#include "../include/Graphics/PostFX.hpp"
 #include "Engine/LoadingScreen.hpp"
 #include "Terrain/Terrain.hpp"
 #include "Terrain/Water/WaterBody.hpp"
@@ -33,7 +33,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
-#include "Engine/Vfs.hpp"
+#include "Graphics/Vfs.hpp"
 #include "Engine/ExportManager.hpp"
 #include "Engine/Scripts/StaticModules.hpp"
 #include <filesystem>

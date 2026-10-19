@@ -1,6 +1,6 @@
 #pragma once
 #include "raylib.h"
-#include "Backend/ScatteredObject.hpp"
+#include "../Engine/Backend/ScatteredObject.hpp"
 #include "Lighting.hpp"
 
 #include <string>
@@ -129,6 +129,8 @@ std::string LoadingStatusText(int index);
 void SetReflectionsEnabled(bool enabled);
 bool IsReflectionsEnabled();
 Camera3D BeginReflectionPass(float planeHeight, const Camera3D& worldCamera, Color clearColor);
+// Call right after BeginMode3D(mirrored): clips geometry below the water plane.
+void ClipReflectionPassToWater();
 void EndReflectionPass();
 bool IsInReflectionPass();
 Matrix GetReflectionViewProj();        // view-projection of the mirrored camera

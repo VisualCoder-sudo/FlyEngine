@@ -1,10 +1,10 @@
-﻿#include "Engine/Vfs.hpp"
+﻿#include "../../include/Graphics/Vfs.hpp"
 #include "../../include/Terrain/BasicTerrain.hpp"
 #include "../../include/Terrain/Foliage.hpp"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
-#include "../../include/Engine/Graphics.hpp"
-#include "../../include/Engine/Clouds.hpp"
+#include "../../include/Graphics/Graphics.hpp"
+#include "../../include/Graphics/Clouds.hpp"
 #include "raylib.h"
 #include "raymath.h"
 // Bind splatmap + albedo textures to explicit GL texture slots in Draw() using

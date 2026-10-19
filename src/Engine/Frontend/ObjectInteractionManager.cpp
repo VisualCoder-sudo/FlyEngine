@@ -3,7 +3,7 @@
 #include <unordered_set>
 #include "../../../include/Engine/Frontend/ObjectInteractionManager.hpp"
 #include "../../../include/Engine.hpp"
-#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/Backend/CameraController.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"

@@ -1,7 +1,7 @@
 #pragma once
 // Export: packs a project into a single executable (the player with the project's data appended, see
 // PackArchive.hpp). Used by the editor's Export dialog and by the headless `flyexport` tool.
-#include "Vfs.hpp"
+#include "../Graphics/Vfs.hpp"
 #include <functional>
 #include <string>
 #include <vector>

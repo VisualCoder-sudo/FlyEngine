@@ -5,7 +5,7 @@
  * The engine initializes this by calling CP_Internal_SetEngine() and CP_Internal_SetScriptRuntime().
  */
 
-#include "../../../include/CPluginAPI.h"
+#include "../../../include/Engine/Plugin/CPluginAPI.h"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Backend/Entity.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"

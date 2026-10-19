@@ -1,5 +1,5 @@
 #include "../../include/Engine/GameUI.hpp"
-#include "../../include/Engine/Vfs.hpp"
+#include "../../include/Graphics/Vfs.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
 
 #include <algorithm>

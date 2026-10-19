@@ -5,14 +5,14 @@
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine.hpp"
-#include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/PhysicsCollision.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
-#include "../../../include/Engine/Vfs.hpp"
+#include "../../../include/Graphics/Vfs.hpp"
 #include "../../../include/Engine/GameUI.hpp"
 #include <algorithm>
 #include <filesystem>

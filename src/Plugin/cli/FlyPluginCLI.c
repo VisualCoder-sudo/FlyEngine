@@ -5,7 +5,7 @@
  */
 
 #include "PluginLoader.h"
-#include "PluginManifest.h"
+#include "../../../include/Engine/Plugin/PluginManifest.h"
 #include "VersionCompat.h"
 #include <stdio.h>
 #include <stdlib.h>

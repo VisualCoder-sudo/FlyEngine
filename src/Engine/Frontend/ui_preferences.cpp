@@ -10,8 +10,8 @@
 #include "../../../include/Terrain/BasicTerrain.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
-#include "../../../include/Engine/Graphics.hpp"
-#include "../../../include/Engine/PostFX.hpp"
+#include "../../../include/Graphics/Graphics.hpp"
+#include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/LoadingScreen.hpp"
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
@@ -37,7 +37,7 @@
 namespace ui {
 
 bool g_showPreferences = false;
-int  g_prefsCategory = 0; // 0=General 1=API Keys 2=Scripting 3=Plugins 4=Rendering 5=Appearance 6=Loading
+int  g_prefsCategory = 0; // 0=General 1=API Keys 2=Scripting 3=Plugins 4=Rendering 5=Appearance 6=Loading 7=Layout
 
 // ---- Preferences panel ----
 // Editor/workflow settings only (font, autosave cadence, external tools,
@@ -95,6 +95,52 @@ static void DrawPreferencesGeneralTab() {
         g_showPreferences = false;
         OpenTutorial();
     }
+}
+
+// Where the editor's panels sit: shown or closed, docked left or right, how wide. Dragging a panel's title or
+// edge in the editor changes the same settings. Saved per machine (<config dir>/layout.cfg).
+static void DrawPreferencesLayoutTab() {
+    g_prefsFirstRow = true;
+    LayoutState& l = Layout();
+    bool changed = false;
+    for (int i = 0; i < kPanelCount; ++i) {
+        const PanelId id = static_cast<PanelId>(i);
+        PanelState& p = l.panel[i];
+        ImGui::PushID(i);
+        DrawPrefsSettingRowBegin(PanelName(id));
+        if (ImGui::Checkbox("##shown", &p.visible)) changed = true;
+        if (id != PanelId::Bottom) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            int side = static_cast<int>(p.side);
+            const char* sides[] = { "Left", "Right" };
+            ImGui::BeginDisabled(!p.visible);
+            if (ImGui::Combo("##side", &side, sides, 2) && side != static_cast<int>(p.side)) {
+                SetPanelSide(id, static_cast<DockSide>(side));
+                changed = true;
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::PopID();
+    }
+    DrawPrefsSettingRowBegin("Left column width");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("##leftw", &l.leftW, 160.0f, 600.0f, "%.0f px")) changed = true;
+    DrawPrefsSettingRowBegin("Right column width");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("##rightw", &l.rightW, 160.0f, 600.0f, "%.0f px")) changed = true;
+    DrawPrefsSettingRowBegin("Bottom panel height");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("##bottomh", &l.bottomH, 90.0f, 600.0f, "%.0f px")) changed = true;
+    DrawPrefsSettingRowBegin("Lock layout (no dragging)");
+    if (ImGui::Checkbox("##locked", &l.locked)) changed = true;
+    DrawPrefsSettingRowBegin("Reset to default");
+    if (ImGui::Button("Reset layout", ImVec2(140.0f, 24.0f))) ResetLayout();
+    ImGui::Spacing();
+    ImGui::Indent(8.0f);
+    ImGui::TextDisabled("Drag a panel's title to move it, drag its edges to resize, right-click the title to close it.");
+    ImGui::Unindent(8.0f);
+    if (changed) SaveLayout();
 }
 
 // How much of the machine the picture may use (gfx::RenderQuality). Kept per machine, not per scene.
@@ -355,6 +401,7 @@ void DrawImGuiPreferencesWindow() {
     DrawPrefsSidebarButton("Plugins", 3);
     DrawPrefsSidebarButton("Rendering", 4);
     DrawPrefsSidebarButton("Loading", 6);
+    DrawPrefsSidebarButton("Layout", 7);
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
     DrawPrefsSidebarButton("Appearance", 5);
 
@@ -380,6 +427,7 @@ void DrawImGuiPreferencesWindow() {
         case 0: DrawPreferencesGeneralTab(); break;
         case 4: DrawPreferencesRenderingTab(); break;
         case 6: DrawPreferencesLoadingTab(); break;
+        case 7: DrawPreferencesLayoutTab(); break;
         default: ImGui::TextDisabled("Nothing to configure here yet."); break;
     }
     ImGui::EndChild();

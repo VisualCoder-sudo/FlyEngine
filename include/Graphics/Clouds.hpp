@@ -1,6 +1,6 @@
 #pragma once
 #include "raylib.h"
-#include "Atmosphere.hpp"
+#include "../Graphics/Atmosphere.hpp"
 
 // Volumetric clouds (shaders/clouds.glsl): a layer of cloud between two heights
 // in the atmosphere sky, lit by the sun and the sky, casting its shadow on the

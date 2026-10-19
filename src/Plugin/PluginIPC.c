@@ -4,7 +4,7 @@
  * Uses Unix domain sockets for message passing between engine host and plugin processes.
  */
 
-#include "PluginIPC.h"
+#include "../../include/Engine/Plugin/PluginIPC.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
