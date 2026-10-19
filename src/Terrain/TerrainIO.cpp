@@ -33,25 +33,28 @@ static Image LoadHeightmapImage(const std::string& path, HeightmapFormat& outFor
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file) return img;
         
-        size_t fileSize = file.tellg();
+        const std::streamoff fileSize = file.tellg();
         file.seekg(0);
         
-        int pixelCount = fileSize / 2;
-        int dim = (int)std::sqrt(pixelCount);
-        if (dim * dim != pixelCount) {
-            // Not square, assume width from filename or use 1024
-            dim = 1024;
-        }
+        // Header-less, so the size is the only hint: it must be a square of
+        // 16-bit samples. Anything else used to be treated as 1024x1024, which
+        // read past the end of a smaller buffer.
+        if (fileSize < 2 || fileSize > (std::streamoff)512 * 1024 * 1024) return img;
+        const size_t pixelCount = (size_t)fileSize / 2;
+        size_t dim = (size_t)std::sqrt((double)pixelCount);
+        while (dim * dim < pixelCount) dim++;
+        while (dim * dim > pixelCount) dim--;
+        if (dim * dim != pixelCount) return img;
         
         std::vector<uint16_t> data(pixelCount);
-        file.read(reinterpret_cast<char*>(data.data()), fileSize);
+        if (!file.read(reinterpret_cast<char*>(data.data()), (std::streamsize)(pixelCount * 2))) return img;
         
-        img.data = MemAlloc(pixelCount * 2);
-        img.width = dim;
-        img.height = dim;
+        img.data = MemAlloc((unsigned int)(pixelCount * 2));
+        img.width = (int)dim;
+        img.height = (int)dim;
         img.format = PIXELFORMAT_UNCOMPRESSED_R16;
         img.mipmaps = 1;
-        std::memcpy(img.data, data.data(), fileSize);
+        std::memcpy(img.data, data.data(), pixelCount * 2);
     } else {
         // Use raylib for PNG, EXR, TIFF
         img = LoadImage(path.c_str());
@@ -109,10 +112,11 @@ static std::vector<float> ImageToHeightmap(const Image& img, bool flipY) {
 // ============================================================================
 
 static std::vector<float> ResampleHeightmap(const std::vector<float>& src, int srcW, int srcH, int dstW, int dstH) {
-    std::vector<float> dst(dstW * dstH);
+    std::vector<float> dst((size_t)dstW * dstH);
     
-    float scaleX = (float)(srcW - 1) / (dstW - 1);
-    float scaleY = (float)(srcH - 1) / (dstH - 1);
+    // dstW/dstH of 1 would divide by zero; callers validate, this keeps it safe.
+    float scaleX = dstW > 1 ? (float)(srcW - 1) / (dstW - 1) : 0.0f;
+    float scaleY = dstH > 1 ? (float)(srcH - 1) / (dstH - 1) : 0.0f;
     
     for (int z = 0; z < dstH; z++) {
         for (int x = 0; x < dstW; x++) {
@@ -145,16 +149,32 @@ static std::vector<float> ResampleHeightmap(const std::vector<float>& src, int s
 // Heightmap Import
 // ============================================================================
 
+// Rejects import settings that would divide by zero, overflow the target grid
+// size, or ask for an absurd allocation (NaN/zero chunk size, resolution < 2...).
+static bool ValidImportSettings(const HeightmapImportSettings& s) {
+    if (!std::isfinite((float)s.worldWidth) || !std::isfinite((float)s.worldDepth) ||
+        !std::isfinite((float)s.targetChunkSize) || !std::isfinite((float)s.minHeight) ||
+        !std::isfinite((float)s.maxHeight)) return false;
+    if (!((float)s.worldWidth > 0.0f) || !((float)s.worldDepth > 0.0f) || !((float)s.targetChunkSize > 0.0f)) return false;
+    if (s.targetResolution < 2 || s.targetResolution > 1025) return false;
+    const double gw = std::max(1.0, std::ceil((double)s.worldWidth / s.targetChunkSize));
+    const double gd = std::max(1.0, std::ceil((double)s.worldDepth / s.targetChunkSize));
+    if (gw > 1024.0 || gd > 1024.0) return false;
+    const double tw = gw * (s.targetResolution - 1) + 1, th = gd * (s.targetResolution - 1) + 1;
+    return tw * th <= 64.0 * 1024.0 * 1024.0;
+}
+
 bool LoadHeightmap(Terrain& terrain, const std::string& path, const HeightmapImportSettings& settings) {
+    if (!ValidImportSettings(settings)) return false;
     HeightmapFormat format;
     Image img = LoadHeightmapImage(path, format);
     if (img.data == nullptr) return false;
     
+    const int srcW = img.width;
+    const int srcH = img.height;
+    if (srcW < 1 || srcH < 1) { UnloadImage(img); return false; }
     std::vector<float> fullHeightmap = ImageToHeightmap(img, settings.flipY);
     UnloadImage(img);
-    
-    int srcW = img.width;
-    int srcH = img.height;
     
     // Calculate target dimensions
     int gridW = std::max(1, (int)std::ceil(settings.worldWidth / settings.targetChunkSize));
@@ -291,7 +311,7 @@ static float FractalNoise(float x, float z, const NoiseParams& params) {
         frequency *= params.lacunarity;
     }
     
-    return value / maxAmplitude;
+    return maxAmplitude > 0.0f ? value / maxAmplitude : 0.0f;
 }
 
 void GenerateFromNoise(Terrain& terrain, const NoiseParams& params) {
@@ -370,22 +390,26 @@ bool ExportRaw16(const Terrain& terrain, const std::string& path) {
     std::ofstream file(path, std::ios::binary);
     if (!file) return false;
     file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(uint16_t));
-    return true;
+    return file.good();
 }
 
 bool ImportRaw16(Terrain& terrain, const std::string& path, const HeightmapImportSettings& settings) {
+    if (!ValidImportSettings(settings)) return false;
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) return false;
     
-    size_t fileSize = file.tellg();
+    const std::streamoff fileSize = file.tellg();
     file.seekg(0);
     
-    int pixelCount = fileSize / 2;
-    int dim = (int)std::sqrt(pixelCount);
-    if (dim * dim != pixelCount) return false;
+    if (fileSize < 2 || fileSize > (std::streamoff)512 * 1024 * 1024) return false;
+    const int pixelCount = (int)(fileSize / 2);
+    int dim = (int)std::sqrt((double)pixelCount);
+    while ((int64_t)dim * dim < pixelCount) dim++;
+    while ((int64_t)dim * dim > pixelCount) dim--;
+    if ((int64_t)dim * dim != pixelCount) return false;
     
     std::vector<uint16_t> data(pixelCount);
-    file.read(reinterpret_cast<char*>(data.data()), fileSize);
+    if (!file.read(reinterpret_cast<char*>(data.data()), (std::streamsize)pixelCount * 2)) return false;
     
     std::vector<float> heightmap(pixelCount);
     for (int i = 0; i < pixelCount; i++) {

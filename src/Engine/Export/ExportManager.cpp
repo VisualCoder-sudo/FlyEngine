@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -76,6 +77,13 @@ fs::path FindChildCI(const fs::path& dir, const std::string& name) {
 std::string SanitizeName(const std::string& name) {
     std::string out;
     for (unsigned char c : name) out += (std::isalnum(c) || c == '-' || c == '_' || c == '.') ? (char)c : '_';
+    // "." and ".." name directories, not files. The result is also the .exe name of a Windows game, and Windows
+    // reserved device names (CON, NUL, COM1 ...) cannot be created as files, with or without an extension.
+    std::string stem = out.substr(0, out.find('.'));
+    for (char& c : stem) c = (char)std::toupper((unsigned char)c);
+    const bool device = stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+                        (stem.size() == 4 && (stem.compare(0, 3, "COM") == 0 || stem.compare(0, 3, "LPT") == 0) && stem[3] >= '1' && stem[3] <= '9');
+    if (device || out == "." || out == "..") out.insert(out.begin(), '_');
     return out.empty() ? std::string("Game") : out;
 }
 

@@ -143,8 +143,16 @@ BasicTerrain::~BasicTerrain() {
     foliage::Forget(this);
     s_instances.erase(std::remove(s_instances.begin(), s_instances.end(), this), s_instances.end());
     if (mesh.vertices) UnloadMesh(mesh);
+    // The model only aliases `mesh`; free just its arrays (see the NOTE where it is built).
+    if (model.meshes != NULL) { RL_FREE(model.meshes); model.meshes = NULL; }
+    if (model.materials != NULL) {
+        if (model.materials[0].maps != NULL) { RL_FREE(model.materials[0].maps); model.materials[0].maps = NULL; }
+        RL_FREE(model.materials); model.materials = NULL;
+    }
+    if (model.meshMaterial != NULL) { RL_FREE(model.meshMaterial); model.meshMaterial = NULL; }
     if (terrainTexture.id > 0) UnloadTexture(terrainTexture);
     if (splatmapTexture.id > 0) UnloadTexture(splatmapTexture);
+    if (paintColorTexture.id > 0) UnloadTexture(paintColorTexture);
     // The paint shader and layer textures are shared across all instances;
     // only free them when the last instance is destroyed.
     if (s_instances.empty()) {
@@ -250,7 +258,7 @@ float BasicTerrain::HeightLocal(float lx, float lz) const {
 float BasicTerrain::GetHeightAt(float x, float z) const {
     float lx = (x - position.x) / scale + width * 0.5f;
     float lz = (z - position.z) / scale + depth * 0.5f;
-    if (lx < -1 || lz < -1 || lx > width || lz > depth) return minHeight;
+    if (!(lx >= -1 && lz >= -1 && lx <= width && lz <= depth)) return minHeight;   // also catches NaN
     return HeightLocal(lx, lz);
 }
 

@@ -83,7 +83,11 @@ void DispatchCommand(const std::string& full_command) {
 
     // The key is a secret: never echo it into the log.
     std::string shown = full_command;
-    if (const size_t k = shown.find("--apikey"); k != std::string::npos && shown.find_first_not_of(" \t", k + 8) != std::string::npos)
+    // Only the flag itself: "--apikey_limits" must not be taken for it.
+    size_t k = shown.find("--apikey");
+    while (k != std::string::npos && k + 8 < shown.size() && shown[k + 8] != ' ' && shown[k + 8] != '\t')
+        k = shown.find("--apikey", k + 8);
+    if (k != std::string::npos && shown.find_first_not_of(" \t", k + 8) != std::string::npos)
         shown = shown.substr(0, k + 8) + " ***";
     QueueLog("[fcloud] > " + shown, ui::LogSeverity::Neutral);
 

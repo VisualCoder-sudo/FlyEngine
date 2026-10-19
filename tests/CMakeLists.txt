@@ -316,3 +316,25 @@ add_executable(numpad_enter_test numpad_enter_test.cpp)
 target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
 target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
 add_test(NAME numpad_enter COMMAND numpad_enter_test)
+
+# City load hardening: corrupt counts / edge indices / sidecar sizes are rejected; destroyed cities leave the registry. No window.
+add_executable(city_corrupt_load_test city_corrupt_load_test.cpp)
+target_link_libraries(city_corrupt_load_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME city_corrupt_load COMMAND city_corrupt_load_test)
+
+# Water: FBM with no octaves, setter clamping, and every water field round-trips through the scene file. Opens a
+# window (WaterBody loads its shader), so ctest needs a display (label needs_display): build/tests/water_test
+add_executable(water_test water_test.cpp)
+target_link_libraries(water_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME water COMMAND water_test)
+set_tests_properties(water PROPERTIES LABELS needs_display)
+
+# Terrain readers/importers reject corrupt input (bad headers, sizes, non-square RAW16, NaN). Opens a window, so it
+# is not registered with ctest: build/tests/terrain_io_fuzz_test
+add_executable(terrain_io_fuzz_test terrain_io_fuzz_test.cpp)
+target_link_libraries(terrain_io_fuzz_test PRIVATE FlyEngineCore FlyRL)
+
+# Windows/FlyCloud review pass: Windows command-line quoting, reserved exe names, FlyCloud helpers (offline). No window.
+add_executable(windows_cloud_test windows_cloud_test.cpp)
+target_link_libraries(windows_cloud_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME windows_cloud COMMAND windows_cloud_test)

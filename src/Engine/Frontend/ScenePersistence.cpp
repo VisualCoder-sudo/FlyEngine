@@ -841,6 +841,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                 if (!(file >> uwp.range >> uwp.murk >> uwp.darken)) return false;
             }
 
+            // Same floor as the Inspector: a zero size would divide by zero in the chunk UVs.
+            wsize.x = fmaxf(1.0f, wsize.x); wsize.z = fmaxf(1.0f, wsize.z);
             auto water = std::make_unique<WaterBody>(pos, wsize, height,
                 Color{ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
             water->SetName(wname);

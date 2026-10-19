@@ -79,9 +79,15 @@ PathPrompt& GetPathPrompt() {
 
 std::string ExecutablePath() {
 #if defined(_WIN32)
-    char buf[MAX_PATH] = {0};
-    const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    return n ? std::string(buf, n) : std::string();
+    // GetModuleFileName truncates silently when the buffer is too small (paths over MAX_PATH), so grow it.
+    std::string buf(MAX_PATH, '\0');
+    for (;;) {
+        const DWORD n = GetModuleFileNameA(nullptr, &buf[0], static_cast<DWORD>(buf.size()));
+        if (n == 0) return std::string();
+        if (n < buf.size()) { buf.resize(n); return buf; }
+        if (buf.size() >= 32768) return std::string();
+        buf.resize(buf.size() * 2);
+    }
 #else
     std::error_code ec;
     const fs::path p = fs::read_symlink("/proc/self/exe", ec);
@@ -95,7 +101,8 @@ std::string FindOnPath(const std::vector<std::string>& names) {
     if (envPath.empty()) return {};
 #if defined(_WIN32)
     const char sep = ';';
-    const std::vector<std::string> suffixes = {"", ".cmd", ".exe", ".bat"};
+    // The bare name goes last: the extension-less "code" next to "code.cmd" is a shell script Windows cannot run.
+    const std::vector<std::string> suffixes = {".cmd", ".exe", ".bat", ""};
 #else
     const char sep = ':';
     const std::vector<std::string> suffixes = {""};
@@ -327,7 +334,7 @@ void InputStream::open(const std::string& path) {
         mem_.str(std::string(bytes.begin(), bytes.end()));
         rdbuf(&mem_);
         opened_ = true;
-    } else if (file_.open(path, std::ios::in | std::ios::binary)) {
+    } else if (file_.open(U8Path(path), std::ios::in | std::ios::binary)) {   // UTF-8 path, as ReadAll does
         rdbuf(&file_);
         opened_ = true;
     } else {

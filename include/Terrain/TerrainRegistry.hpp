@@ -142,6 +142,14 @@ public:
             in.read(reinterpret_cast<char*>(&bh), sizeof(bh));
             if (!in) return loaded;
 
+            // Sizes are file-controlled: refuse any that exceed what is left in
+            // the stream rather than allocating gigabytes for a corrupt block.
+            const std::streampos here = in.tellg();
+            in.seekg(0, std::ios::end);
+            const std::streamoff left = (std::streamoff)(in.tellg() - here);
+            in.seekg(here);
+            if (!in || (std::streamoff)bh.nameLen + (std::streamoff)bh.dataSize > left) return loaded;
+
             std::string name(bh.nameLen, '\0');
             if (bh.nameLen) in.read(&name[0], (std::streamsize)bh.nameLen);
 

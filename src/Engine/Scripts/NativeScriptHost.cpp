@@ -63,7 +63,12 @@ bool HasStaticModules() { return g_staticScriptEntry != nullptr || g_staticPlugi
     // namespace NativeScript).
 
     void* NativeScriptHost::LoadLibrary(const std::string& path) {
-        return ::LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        void* handle = ::LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!handle) {
+            // 126 = the library or one of its dependent DLLs was not found, 193 = wrong architecture.
+            ui::LogAlways("[NativeScriptHost] LoadLibrary failed (error %lu)", static_cast<unsigned long>(GetLastError()));
+        }
+        return handle;
     }
 
     void NativeScriptHost::UnloadLibrary(void* handle) {

@@ -82,7 +82,13 @@ std::string SanitizeStem(const std::string& name) {
         }
     }
     while (!stem.empty() && (stem.back() == ' ' || stem.back() == '.')) stem.pop_back();
-    if (stem.empty() || stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") {
+    // Reserved device names, in any case (the class name "con" gives con.cpp): CON PRN AUX NUL COM1-9 LPT1-9.
+    std::string upper = stem;
+    for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    const bool device = upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" ||
+                        (upper.size() == 4 && (upper.compare(0, 3, "COM") == 0 || upper.compare(0, 3, "LPT") == 0) &&
+                         upper[3] >= '1' && upper[3] <= '9');
+    if (stem.empty() || device) {
         stem = "Script";
     }
     return stem;

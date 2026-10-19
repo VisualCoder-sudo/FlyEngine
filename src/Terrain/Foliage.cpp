@@ -1143,6 +1143,7 @@ int Read(std::istream& in, const std::string& baseDir) {
             if (!(in >> std::quoted(ty.name) >> ty.height >> shadow >> wind >> twoSided >> ty.sink >> count)) break;
             ty.castsShadow = shadow != 0; ty.wind = wind != 0; ty.twoSided = twoSided != 0;
             ty.height = std::clamp(ty.height, 0.05f, 200.0f);
+            if (!std::isfinite(ty.sink)) ty.sink = 0.0f;
             bool good = true;
             for (size_t i = 0; i < count && good; i++) {
                 Variant v;
@@ -1196,6 +1197,9 @@ int Read(std::istream& in, const std::string& baseDir) {
             r.tintA = { (unsigned char)Clamp((float)ar, 0, 255), (unsigned char)Clamp((float)ag, 0, 255), (unsigned char)Clamp((float)ab, 0, 255), 255 };
             r.tintB = { (unsigned char)Clamp((float)br, 0, 255), (unsigned char)Clamp((float)bg, 0, 255), (unsigned char)Clamp((float)bb, 0, 255), 255 };
             r.layer = std::clamp(r.layer, -1, 3);
+            // Unchecked floats from the file: NaN or non-positive scales would poison every plant matrix.
+            r.minScale = std::isfinite(r.minScale) ? std::clamp(r.minScale, 0.01f, 100.0f) : 1.0f;
+            r.maxScale = std::isfinite(r.maxScale) ? std::clamp(r.maxScale, 0.01f, 100.0f) : 1.0f;
             r.density = std::clamp(r.density, 0.0f, 2000.0f);
             r.viewDistance = std::clamp(r.viewDistance, 5.0f, 3000.0f);
             For(current).rules.push_back(r);

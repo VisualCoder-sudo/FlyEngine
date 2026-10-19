@@ -116,20 +116,47 @@ struct RunResult {
 RunResult RunCapture(const std::string& cmd) {
     RunResult r;
 #if defined(_WIN32)
-    FILE* pipe = _popen((cmd + " 2>&1").c_str(), "r");
+    // _popen does not work from a GUI-subsystem program (the editor has no console, so it hangs or fails), and
+    // cmd /c mangles a command line that starts with a quote unless the whole thing is wrapped in another pair.
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE readEnd = nullptr, writeEnd = nullptr;
+    if (!CreatePipe(&readEnd, &writeEnd, &sa, 0)) return r;
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writeEnd;
+    si.hStdError = writeEnd;
+    PROCESS_INFORMATION pi{};
+    const std::string line = "cmd.exe /d /c \"" + cmd + "\"";
+    std::vector<char> mutableLine(line.begin(), line.end());
+    mutableLine.push_back('\0');
+    const BOOL started = CreateProcessA(nullptr, mutableLine.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                                        nullptr, nullptr, &si, &pi);
+    CloseHandle(writeEnd);
+    if (!started) { CloseHandle(readEnd); return r; }
+    char buf[512];
+    DWORD got = 0;
+    while (ReadFile(readEnd, buf, sizeof(buf), &got, nullptr) && got > 0) r.output.append(buf, got);
+    CloseHandle(readEnd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    r.ok = code == 0;
+    return r;
 #else
     FILE* pipe = popen((cmd + " 2>&1").c_str(), "r");
-#endif
     if (!pipe) return r;
     char buf[512];
     while (fgets(buf, sizeof(buf), pipe)) r.output += buf;
-#if defined(_WIN32)
-    int rc = _pclose(pipe);
-#else
     int rc = pclose(pipe);
-#endif
     r.ok = rc == 0;
     return r;
+#endif
 }
 
 std::string SlangForCurrentBackend() {
@@ -241,6 +268,8 @@ void ReloadModule(const std::string& module) {
     {
         std::ofstream w(wrapperCpp);
         w << "#include \"sokol_gfx.h\"\n";
+        // A Windows DLL exports nothing unless told to; GetProcAddress would not find the wrappers.
+        w << "#if defined(_WIN32)\n#define FLY_HR_EXPORT __declspec(dllexport)\n#else\n#define FLY_HR_EXPORT\n#endif\n";
         std::string headerInclude = outHeader.string();
 #if defined(_WIN32)
         for (char& c : headerInclude) if (c == '\\') c = '/';
@@ -248,19 +277,19 @@ void ReloadModule(const std::string& module) {
         w << "#include \"" << headerInclude << "\"\n";
         w << "extern \"C\" {\n";
         for (const Entry& e : entries) {
-            w << "const sg_shader_desc* FlyHotReload_" << e.program << "_desc(sg_backend b) { return "
+            w << "FLY_HR_EXPORT const sg_shader_desc* FlyHotReload_" << e.program << "_desc(sg_backend b) { return "
               << e.prefix << "_shader_desc(b); }\n";
-            w << "int FlyHotReload_" << e.program << "_uniformblock_slot(const char* n) { return "
+            w << "FLY_HR_EXPORT int FlyHotReload_" << e.program << "_uniformblock_slot(const char* n) { return "
               << e.prefix << "_uniformblock_slot(n); }\n";
-            w << "size_t FlyHotReload_" << e.program << "_uniformblock_size(const char* n) { return "
+            w << "FLY_HR_EXPORT size_t FlyHotReload_" << e.program << "_uniformblock_size(const char* n) { return "
               << e.prefix << "_uniformblock_size(n); }\n";
-            w << "int FlyHotReload_" << e.program << "_uniform_offset(const char* ub, const char* u) { return "
+            w << "FLY_HR_EXPORT int FlyHotReload_" << e.program << "_uniform_offset(const char* ub, const char* u) { return "
               << e.prefix << "_uniform_offset(ub, u); }\n";
-            w << "sg_glsl_shader_uniform FlyHotReload_" << e.program << "_uniform_desc(const char* ub, const char* u) { return "
+            w << "FLY_HR_EXPORT sg_glsl_shader_uniform FlyHotReload_" << e.program << "_uniform_desc(const char* ub, const char* u) { return "
               << e.prefix << "_uniform_desc(ub, u); }\n";
-            w << "int FlyHotReload_" << e.program << "_texture_slot(const char* n) { return "
+            w << "FLY_HR_EXPORT int FlyHotReload_" << e.program << "_texture_slot(const char* n) { return "
               << e.prefix << "_texture_slot(n); }\n";
-            w << "int FlyHotReload_" << e.program << "_attr_slot(const char* n) { return "
+            w << "FLY_HR_EXPORT int FlyHotReload_" << e.program << "_attr_slot(const char* n) { return "
               << e.prefix << "_attr_slot(n); }\n";
         }
         w << "}\n";
