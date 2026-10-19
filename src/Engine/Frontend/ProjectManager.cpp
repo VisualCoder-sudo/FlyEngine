@@ -290,10 +290,24 @@ namespace detail {
     // SHFileOperationA on Windows, but remove_all is portable and reports
     // failure through its return value, so the delete is a hard delete on
     // every platform (which is what the confirm dialog promises).
+    //
+    // Refuses anything that isn't plainly a project folder: the recent list can hold any folder the user opened,
+    // and a name like ".." or a parent folder that merely contains one .flyproj must never take the surrounding
+    // directory with it.
     bool DeleteFolderRecursive(const std::string& path) {
         if (path.empty()) return false;
         std::error_code ec;
-        const std::uintmax_t removed = fs::remove_all(path, ec);
+        const fs::path folder = fs::weakly_canonical(U8Path(path), ec);
+        if (ec || !folder.has_filename() || !folder.has_parent_path()) return false;
+        const fs::path name = folder.filename();
+        if (name == "." || name == "..") return false;
+        // Never the home folder, the projects directory, or a filesystem root.
+        const fs::path home = fs::weakly_canonical(U8Path(HomeDirectory()), ec);
+        const fs::path projects = fs::weakly_canonical(U8Path(GetProjectsDirectory()), ec);
+        if (folder == home || folder == projects || folder == folder.root_path()) return false;
+        // Only a folder that holds its own canonical <name>/<name>.flyproj counts as a project folder.
+        if (!fs::is_regular_file(folder / (name.string() + ".flyproj"), ec)) return false;
+        const std::uintmax_t removed = fs::remove_all(folder, ec);
         return removed != static_cast<std::uintmax_t>(-1) && !ec;
     }
 
@@ -756,7 +770,11 @@ std::string GetAssetsFolder(const std::string& name) {
 }
 
 bool IsValidProjectName(const std::string& name) {
-    if (name.empty()) return false;
+    if (name.empty() || name.size() > 100) return false;
+    // "." and ".." would resolve the project folder to the projects directory or its parent (the home folder),
+    // and a leading dot hides the folder. Windows silently drops a trailing dot or space, so the folder would
+    // no longer match the name.
+    if (name[0] == '.' || name.back() == '.' || name.back() == ' ') return false;
     for (char c : name) {
         if (strchr("<>:\"/\\|?*", c)) return false;
         if ((unsigned char)c < 32) return false;
@@ -962,11 +980,20 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     }
     fields.modified = detail::TimeNow();
 
-    std::ofstream out(projectFile, std::ios::trunc);
+    // Write next to the project file and rename over it, so a failed or interrupted save leaves the old file intact.
+    const std::string writeFile = projectFile + ".tmp";
+    std::ofstream out(writeFile, std::ios::trunc);
     if (!out.is_open()) return false;
     WriteProjectHeader(out, fields);
-    const bool saved = SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
+    bool saved = SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
     out.close();
+    saved = saved && !out.fail();
+    std::error_code renameEc;
+    if (saved) fs::rename(U8Path(writeFile), U8Path(projectFile), renameEc);
+    if (!saved || renameEc) {
+        fs::remove(U8Path(writeFile), renameEc);
+        return false;
+    }
     if (saved) {
         // The scene is on disk, so what it refers to is settled: imported sounds are permanent now, and the ones
         // nothing mentions any more go.
@@ -1300,6 +1327,8 @@ Info ShowProjectManager() {
                     fail("Enter a project name first");
                 } else if (!IsValidProjectName(name)) {
                     fail("Project name contains invalid characters");
+                } else if (std::error_code existsEc; fs::exists(U8Path(GetProjectFilePath(name)), existsEc)) {
+                    fail("A project with that name already exists");
                 } else {
                     if (CreateProjectFileInternal(name, chosenTemplate)) {
                         const std::string projectFolder = GetProjectFolder(name);
@@ -1430,7 +1459,8 @@ static bool CopyTemplateDeps(const std::string& templateProjectFile, const std::
         if (ec) return false;
         if (it->is_directory(ec)) { fs::create_directories(to / rel, ec); continue; }
         fs::create_directories((to / rel).parent_path(), ec);
-        fs::copy_file(it->path(), to / rel, fs::copy_options::overwrite_existing, ec);
+        // A file already in the folder is the user's; the template never replaces it.
+        fs::copy_file(it->path(), to / rel, fs::copy_options::skip_existing, ec);
         if (ec) return false;
     }
     return !ec;
@@ -1468,6 +1498,12 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
     const std::string projectFolder = GetProjectFolder(name);
     const std::string projectFile = GetProjectFilePath(name);
     const std::string assetsFolder = GetAssetsFolder(name);
+
+    // Never replace a project that is already there: the create flow checks first, this keeps other callers safe.
+    {
+        std::error_code ec;
+        if (fs::exists(U8Path(projectFile), ec) || !detail::FindProjectFile(projectFolder).empty()) return false;
+    }
 
     // Create directories (project root, assets, assets/3D)
     detail::EnsureDirectory(projectFolder);

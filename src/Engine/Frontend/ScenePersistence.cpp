@@ -339,12 +339,22 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
     }
     textureManager::CommitAssets(objects);   // see SaveProjectFile
     scriptLauncher::CommitPendingScripts();
-    std::ofstream file(path, std::ios::trunc);
+    // Write to a sibling file and rename over the target, so a failed or interrupted save keeps the old scene.
+    const std::string tmpPath = path + ".tmp";
+    std::ofstream file(tmpPath, std::ios::trunc);
     if (!file) return false;
     std::error_code ec;
     std::string baseDir = std::filesystem::path(path).parent_path().string();
     if (ec || baseDir.empty()) baseDir.clear();
-    return SaveSceneToStream(file, objects, models, baseDir, terrain);
+    bool ok = SaveSceneToStream(file, objects, models, baseDir, terrain);
+    file.close();   // flushes: a late write error (disk full) only shows up here
+    ok = ok && !file.fail();
+    if (ok) std::filesystem::rename(U8Path(tmpPath), U8Path(path), ec);
+    if (!ok || ec) {
+        std::filesystem::remove(U8Path(tmpPath), ec);
+        return false;
+    }
+    return true;
 }
 
 namespace {
@@ -513,6 +523,18 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
 
 } // namespace
 
+namespace {
+// Moves the scene's model groups aside for the duration of a load and puts them back if the load fails.
+// Declare it before the load's local object list: that list is destroyed first, then the half-built groups.
+struct ModelsRollback {
+    std::vector<std::unique_ptr<ModelGroup>>& models;
+    std::vector<std::unique_ptr<ModelGroup>> old;
+    bool committed = false;
+    explicit ModelsRollback(std::vector<std::unique_ptr<ModelGroup>>& m) : models(m), old(std::move(m)) { models.clear(); }
+    ~ModelsRollback() { if (!committed) models = std::move(old); }
+};
+} // namespace
+
 bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<ScatteredObject*>& objects,
                          std::vector<std::unique_ptr<ModelGroup>>& models,
                          const std::string& baseDir,
@@ -524,7 +546,9 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
-    models.clear(); // loading a scene rebuilds model containers from scratch
+    // Loading a scene rebuilds model containers from scratch. The old ones are only set aside: until this load
+    // succeeds the current objects stay in the scene and still point at them (a failed open must not free them).
+    ModelsRollback rollback(models);
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
@@ -962,6 +986,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         objects.push_back(object.get());
         engine.AddEntity(std::move(object));
     }
+    rollback.committed = true;   // the old groups are freed now; the caller removes the old objects next
     return true;
 }
 
@@ -1129,8 +1154,11 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
                             std::vector<ScatteredObject*>& objects,
                             std::vector<std::unique_ptr<ModelGroup>>& models,
                             const std::string& baseDir) {
-    models.clear();
-    return AppendSnapshot(file, engine, objects, models, baseDir, nullptr, nullptr);
+    // A failed restore keeps the current groups: the current objects stay in the scene and still point at them.
+    ModelsRollback rollback(models);
+    if (!AppendSnapshot(file, engine, objects, models, baseDir, nullptr, nullptr)) return false;
+    rollback.committed = true;
+    return true;
 }
 
 bool SavePrefabToFile(const ModelGroup& root, const std::string& path, const std::string& baseDir) {

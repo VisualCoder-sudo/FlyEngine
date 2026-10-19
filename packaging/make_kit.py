@@ -58,6 +58,13 @@ def main():
         sys.exit("could not find the link command of " + a.target)
     compiler = link[0]
 
+    # Only wipe a directory that is empty or was made by this script (it holds kit.txt). A mistyped <kit_dir>
+    # must never delete someone's folder, or the build tree the kit is made from.
+    real_kit, real_build = os.path.realpath(kit), os.path.realpath(a.build_dir)
+    if real_kit == real_build or real_build.startswith(real_kit + os.sep):
+        sys.exit("kit dir must not be the build dir or one of its parents: " + kit)
+    if os.path.isdir(kit) and os.listdir(kit) and not os.path.isfile(os.path.join(kit, "kit.txt")):
+        sys.exit("refusing to replace " + kit + ": not empty and not a kit (no kit.txt)")
     shutil.rmtree(kit, ignore_errors=True)
     os.makedirs(os.path.join(kit, "lib"))
     used = {}

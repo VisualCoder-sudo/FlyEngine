@@ -6,6 +6,17 @@ Confidence: **confirmed** = reproduced or read directly, **likely** = strong cod
 Findings come from Haiku agents and were not re-verified by the manager. Check each before fixing.
 Tags: [ED] editor, [SC] scripting, [DI] distribution, [PM] project manager, [RR] rendering/runtime.
 
+## Fix status
+
+Fixed (compile-checked only; not run, no tests added): 1, 2, 3, 4, 5, 6, 7, 8, 9.
+- 1: `IsValidProjectName` rejects `.`/`..`/leading dot/trailing dot or space/over 100 chars. 3: `DeleteFolderRecursive` refuses home, the projects dir, roots, and any folder without its own `<name>/<name>.flyproj`.
+- 2: create refuses an existing project; template deps use `skip_existing`.
+- 4: `make_kit.py` only wipes an empty dir or one containing `kit.txt`, and never the build dir or its parents.
+- 5: `ModelsRollback` in `ScenePersistence.cpp` keeps the old groups until a load or restore succeeds.
+- 6: typed non-finite numbers become 0. 7: dropped duplicates become `name (1).ext`. 8: rename rejects separators/`..` and existing targets.
+- 9: project and scene saves write `<file>.tmp` then rename, and check the flush.
+Everything else below is still open.
+
 ## Critical / data loss
 
 1. **[PM] Project name `..` or `.` deletes `$HOME` contents.** `ProjectManager.cpp:758-764` (`IsValidProjectName` allows them), `:746-750`, `:293-299`, `:1275-1281`, `:1369`. Folder resolves to `~/FlyengineProjects/..`; "Delete project from disk" runs `fs::remove_all` on it. The `remove_all` step was reproduced on a fake home (`precious.txt` deleted). Full UI flow not run. Fix: reject `.`/`..`/leading-dot names; verify the folder is a direct child of the projects dir before any `remove_all`.

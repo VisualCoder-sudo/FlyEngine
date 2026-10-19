@@ -26,6 +26,7 @@
 #include "raymath.h"
 #include "imgui.h"
 #include "rlimgui.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
@@ -290,6 +291,13 @@ void DrawTextSel(const char* buf, int cursor, int sel, float textStartX,
     DrawRectangleRec({ x0, y, x1 - x0, height }, color);
 }
 
+// strtof accepts "nan", "inf" and out-of-range numbers ("1e39" is inf). A non-finite value written into a scene
+// can't be read back (the loader's >> fails on "nan"), so typed text that isn't a finite number counts as 0.
+static float ParseFiniteFloat(const char* text) {
+    const float v = std::strtof(text, nullptr);
+    return std::isfinite(v) ? v : 0.0f;
+}
+
 bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX) {
     DrawTextArial(label, labelX, rec.y + 3.0f, 13.0f, theme::TEXT_MUTED);
 
@@ -322,13 +330,13 @@ bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* l
         bool commit = false;
         if (TextEditKeys(g_textBuffer, static_cast<int>(sizeof(g_textBuffer)), g_cursorPos, g_selStart, commit)) {
             if (g_textBuffer[0] != '\0') {
-                value = std::strtof(g_textBuffer, nullptr);
+                value = ParseFiniteFloat(g_textBuffer);
                 changed = true;
             }
         }
         TextEditMouse(g_textBuffer, g_cursorPos, g_selStart, rec, textStartX, 13.0f, true);
         if (commit) {
-            value = (g_textBuffer[0] == '\0') ? 0.0f : std::strtof(g_textBuffer, nullptr);
+            value = (g_textBuffer[0] == '\0') ? 0.0f : ParseFiniteFloat(g_textBuffer);
             changed = true;
             g_activeField = FIELD_NONE;
             g_selStart = -1;
