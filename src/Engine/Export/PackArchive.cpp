@@ -150,8 +150,7 @@ bool BuildExecutable(const std::string& srcExe, const std::string& dstExe, const
 
     fs::permissions(tmp, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
                          fs::perms::others_read | fs::perms::others_exec, fs::perm_options::replace, ec);
-    fs::remove(dst, ec);
-    fs::rename(tmp, dst, ec);
+    fs::rename(tmp, dst, ec);   // replaces dst atomically; a failure keeps the old file
     if (ec) { fs::remove(tmp, ec); error = "Could not move the result into place: " + ec.message(); return false; }
     if (progress) progress(entries.size(), entries.size());
     return true;

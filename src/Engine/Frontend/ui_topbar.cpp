@@ -209,6 +209,7 @@ void DrawImGuiTopBar() {
         ImGui::Separator();
         if (ImGui::MenuItem("Export...")) { OpenExportDialog(); ImGui::CloseCurrentPopup(); }
         ImGui::Separator();
+        if (ImGui::MenuItem("Tutorial")) { OpenTutorial(); ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Preferences")) { g_showPreferences = true; ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();
     }

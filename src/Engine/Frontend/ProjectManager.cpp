@@ -50,6 +50,7 @@ namespace detail {
 
     const char* kSignature = "FLYENGINE_PROJECT";
     constexpr int kVersion = 1;
+    constexpr int kMaxSceneVersion = 30;   // keep in step with ScenePersistence.cpp
 
     namespace theme {
         constexpr Color BG         = Color{ 24, 26, 32, 255 };
@@ -82,11 +83,31 @@ namespace detail {
         return MeasureTextEx(g_font, text, size, 1.0f).x;
     }
 
+    // Shortens `text` to fit `maxW` with a trailing "...", cutting only at UTF-8 code point boundaries.
+    // Binary search over the cut point: O(log n) measurements instead of one per removed character.
+    std::string EllipsizeU(const std::string& text, float size, float maxW) {
+        if (MeasureTextU(text.c_str(), size) <= maxW) return text;
+        std::vector<size_t> cuts;   // byte offsets where a code point starts
+        for (size_t i = 0; i < text.size(); ++i) if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) cuts.push_back(i);
+        size_t lo = 0, hi = cuts.size();   // largest k in [0, hi) such that the first k code points + "..." fit
+        while (lo + 1 < hi) {
+            const size_t mid = (lo + hi) / 2;
+            if (MeasureTextU((text.substr(0, cuts[mid]) + "...").c_str(), size) <= maxW) lo = mid; else hi = mid;
+        }
+        return text.substr(0, cuts.empty() ? 0 : cuts[lo]) + "...";
+    }
+
     std::string TrimCopy(std::string s) {
         size_t b = s.find_first_not_of(" \t\r\n");
         if (b == std::string::npos) return "";
         size_t e = s.find_last_not_of(" \t\r\n");
         return s.substr(b, e - b + 1);
+    }
+
+    // Last path component, ignoring trailing separators ("/a/b/" -> "b").
+    std::string LastComponent(std::string path) {
+        while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) path.pop_back();
+        return path.substr(path.find_last_of("\\/") + 1);
     }
 
     std::string BaseDirOf(const std::string& path) {
@@ -182,7 +203,13 @@ namespace detail {
         std::istringstream head(line);
         std::string sig;
         int ver = 0;
-        if (!(head >> sig >> ver) || sig != kSignature || ver != kVersion) return false;
+        if (!(head >> sig >> ver) || sig != kSignature) return false;
+        if (ver > kVersion) {
+            ui::LogAlways("[project] %s was made with a newer Flyengine (project format %d, this build reads %d).",
+                          projectFile.c_str(), ver, kVersion);
+            return false;
+        }
+        if (ver != kVersion) return false;
         // Header fields are dispatched by key rather than by line position, so a
         // file with a reordered or hand-added field still loads.
         bool inScene = false;
@@ -195,7 +222,24 @@ namespace detail {
             else if (key == "Created") out.created = atoll(value.c_str());
             else if (key == "Modified") out.modified = atoll(value.c_str());
         }
-        return inScene;
+        if (!inScene) return false;
+        // Cheap sanity check of the scene signature line, so a truncated or foreign file is not listed as healthy.
+        // The stream is put back where it was; if it cannot seek, the check is skipped.
+        const std::istream::pos_type scenePos = scene.tellg();
+        if (scenePos != std::istream::pos_type(-1)) {
+            std::string sceneSig;
+            int sceneVer = 0;
+            const bool ok = static_cast<bool>(scene >> sceneSig >> sceneVer);
+            scene.clear();
+            scene.seekg(scenePos);
+            if (!ok || sceneSig != "SIMPLE_ENGINE_BUILD" || sceneVer < 1) return false;
+            if (sceneVer > kMaxSceneVersion) {
+                ui::LogAlways("[project] %s was made with a newer Flyengine (scene format %d, this build reads %d).",
+                              projectFile.c_str(), sceneVer, kMaxSceneVersion);
+                return false;
+            }
+        }
+        return true;
     }
 
     // Locates the .flyproj that makes `folder` a project. The canonical name is
@@ -205,7 +249,7 @@ namespace detail {
     // Returns an empty string when there is none, or more than one to choose from.
     std::string FindProjectFile(const std::string& folder) {
         if (folder.empty()) return std::string();
-        const std::string name = folder.substr(folder.find_last_of("\\/") + 1);
+        const std::string name = LastComponent(folder);
         const std::string preferred = JoinPath(folder, name + ".flyproj");
         if (FileExists(preferred.c_str())) return preferred;
 
@@ -290,10 +334,26 @@ namespace detail {
     // SHFileOperationA on Windows, but remove_all is portable and reports
     // failure through its return value, so the delete is a hard delete on
     // every platform (which is what the confirm dialog promises).
-    bool DeleteFolderRecursive(const std::string& path) {
+    //
+    // Refuses anything that isn't plainly a project folder: the recent list can hold any folder the user opened,
+    // and a name like ".." or a parent folder that merely contains one .flyproj must never take the surrounding
+    // directory with it.
+    bool DeleteFolderRecursive(const std::string& rawPath) {
+        std::string path = rawPath;
+        while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) path.pop_back();
         if (path.empty()) return false;
         std::error_code ec;
-        const std::uintmax_t removed = fs::remove_all(path, ec);
+        const fs::path folder = fs::weakly_canonical(U8Path(path), ec);
+        if (ec || !folder.has_filename() || !folder.has_parent_path()) return false;
+        const fs::path name = folder.filename();
+        if (name == "." || name == "..") return false;
+        // Never the home folder, the projects directory, or a filesystem root.
+        const fs::path home = fs::weakly_canonical(U8Path(HomeDirectory()), ec);
+        const fs::path projects = fs::weakly_canonical(U8Path(GetProjectsDirectory()), ec);
+        if (folder == home || folder == projects || folder == folder.root_path()) return false;
+        // Only a folder that holds its own canonical <name>/<name>.flyproj counts as a project folder.
+        if (!fs::is_regular_file(folder / (name.string() + ".flyproj"), ec)) return false;
+        const std::uintmax_t removed = fs::remove_all(folder, ec);
         return removed != static_cast<std::uintmax_t>(-1) && !ec;
     }
 
@@ -461,6 +521,7 @@ namespace detail {
         std::string desc;
         std::string author;
         Texture2D thumb = { 0 };
+        std::string thumbFile;   // baked lazily, the first time the picker opens
     };
 
     std::string TemplatesRoot() { return platform::ResolveAsset("assets/templates"); }
@@ -571,11 +632,19 @@ namespace detail {
             if (!fs::exists(dir / (t.id + ".flyproj"), ec)) continue;
             t.name = t.id;
             ReadTemplateData((dir / "data.json").string(), t);
-            t.thumb = BakeThumbnail((dir / "thumbnail.png").string(), t.name, t.desc);
+            t.thumbFile = (dir / "thumbnail.png").string();
             list.push_back(std::move(t));
         }
         std::sort(list.begin(), list.end(), [](const TemplateInfo& a, const TemplateInfo& b) { return a.name < b.name; });
         return list;
+    }
+
+    // Decoding and blurring the thumbnails is the slow part of LoadTemplates, so it waits until they are shown.
+    void BakeTemplateThumbnails(std::vector<TemplateInfo>& list) {
+        for (TemplateInfo& t : list) {
+            if (t.thumb.id == 0 && !t.thumbFile.empty()) t.thumb = BakeThumbnail(t.thumbFile, t.name, t.desc);
+            t.thumbFile.clear();
+        }
     }
 
     void UnloadTemplates(std::vector<TemplateInfo>& list) {
@@ -756,11 +825,21 @@ std::string GetAssetsFolder(const std::string& name) {
 }
 
 bool IsValidProjectName(const std::string& name) {
-    if (name.empty()) return false;
+    if (name.empty() || name.size() > 100) return false;
+    // "." and ".." would resolve the project folder to the projects directory or its parent (the home folder),
+    // and a leading dot hides the folder. Windows silently drops a trailing dot or space, so the folder would
+    // no longer match the name.
+    if (name[0] == '.' || name.back() == '.' || name.back() == ' ') return false;
     for (char c : name) {
         if (strchr("<>:\"/\\|?*", c)) return false;
         if ((unsigned char)c < 32) return false;
     }
+    // Windows reserved device names, with or without an extension ("con", "NUL.txt", "com1").
+    std::string stem = name.substr(0, name.find('.'));
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    for (char& c : stem) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") return false;
+    if (stem.size() == 4 && (stem.compare(0, 3, "COM") == 0 || stem.compare(0, 3, "LPT") == 0) && stem[3] >= '1' && stem[3] <= '9') return false;
     return true;
 }
 
@@ -773,6 +852,25 @@ std::vector<std::string> LoadRecentPaths() {
         if (!p.empty()) out.push_back(p);
     }
     return out;
+}
+
+static std::string TutorialMarkerPath() {
+    return detail::JoinPath(GetAppDataDirectory(), "tutorial_done");
+}
+
+bool TutorialDone() {
+    std::error_code ec;
+    return fs::exists(U8Path(TutorialMarkerPath()), ec);
+}
+
+void SetTutorialDone(bool done) {
+    if (done) {
+        detail::EnsureDirectory(GetAppDataDirectory());
+        std::ofstream(TutorialMarkerPath(), std::ios::trunc) << "1\n";
+    } else {
+        std::error_code ec;
+        fs::remove(U8Path(TutorialMarkerPath()), ec);
+    }
 }
 
 void SaveRecentPaths(const std::vector<std::string>& paths) {
@@ -929,7 +1027,7 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     const std::string existing = detail::FindProjectFile(projectFolder);
     const std::string projectFile = existing.empty()
         ? detail::JoinPath(projectFolder,
-              projectFolder.substr(projectFolder.find_last_of("\\/") + 1) + ".flyproj")
+              detail::LastComponent(projectFolder) + ".flyproj")
         : existing;
     {
         detail::SceneSource scene;
@@ -943,11 +1041,20 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
     }
     fields.modified = detail::TimeNow();
 
-    std::ofstream out(projectFile, std::ios::trunc);
+    // Write next to the project file and rename over it, so a failed or interrupted save leaves the old file intact.
+    const std::string writeFile = projectFile + ".tmp";
+    std::ofstream out(writeFile, std::ios::trunc);
     if (!out.is_open()) return false;
     WriteProjectHeader(out, fields);
-    const bool saved = SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
+    bool saved = SaveSceneToStream(out, objects, models, detail::BaseDirOf(projectFile), terrain);
     out.close();
+    saved = saved && !out.fail();
+    std::error_code renameEc;
+    if (saved) fs::rename(U8Path(writeFile), U8Path(projectFile), renameEc);
+    if (!saved || renameEc) {
+        fs::remove(U8Path(writeFile), renameEc);
+        return false;
+    }
     if (saved) {
         // The scene is on disk, so what it refers to is settled: imported sounds are permanent now, and the ones
         // nothing mentions any more go.
@@ -960,7 +1067,7 @@ std::string SaveProjectFileTemp(const std::string& projectFolder, const std::vec
                                 const std::vector<std::unique_ptr<ModelGroup>>& models,
                                 terrain::Terrain* terrain) {
     HeaderFields fields;
-    const std::string name = projectFolder.substr(projectFolder.find_last_of("\\/") + 1);
+    const std::string name = detail::LastComponent(projectFolder);
     const std::string tempFile = detail::JoinPath(projectFolder, name + "_temp.flyproj");
     {
         detail::SceneSource scene;
@@ -989,6 +1096,8 @@ namespace {
 
 void SetCurrentProject(const Info& info) { g_currentProject = info; }
 const Info& GetCurrentProject() { return g_currentProject; }
+
+static void InstallTutorialPlugin(const std::string& projectFolder);
 
 Info ShowProjectManager() {
     InitWindow(kW, kH, "Flyengine - Project Manager");
@@ -1041,7 +1150,7 @@ Info ShowProjectManager() {
     // recentPaths is the on-disk truth; `recent` is the same list decorated with the
     // header info needed for rendering (display name + whether the folder still exists).
     std::vector<std::string> recentPaths = LoadRecentPaths();
-    struct Entry { std::string path; std::string name; bool missing; };
+    struct Entry { std::string path; std::string name; bool missing; std::string shownName, shownPath; float shownW = -1.0f; };
     auto refreshRecent = [&]() {
         std::vector<Entry> entries;
         entries.reserve(recentPaths.size());
@@ -1197,16 +1306,17 @@ Info ShowProjectManager() {
                     DrawRectangleRec(row, ROWHoverColor());
                 }
 
-                const Entry& e = recent[idx];
-                DrawTextU(e.name.c_str(), row.x + 8, row.y + 4, 15,
-                    e.missing ? theme::DANGER : theme::TEXT);
-
-                // Truncate the long path from the right so the tail stays readable.
-                std::string p = e.path;
+                Entry& e = recent[idx];
+                // Truncated text is cached per row and only recomputed when the panel width changes.
                 const float maxW = lw - 48.0f;
-                while (!p.empty() && MeasureTextU(p.c_str(), 11) > maxW) p.pop_back();
-                if (p != e.path) p += "...";
-                DrawTextU(p.c_str(), row.x + 8, row.y + 22, 11,
+                if (e.shownW != maxW) {
+                    e.shownName = EllipsizeU(e.name, 15, maxW);
+                    e.shownPath = EllipsizeU(e.path, 11, maxW);
+                    e.shownW = maxW;
+                }
+                DrawTextU(e.shownName.c_str(), row.x + 8, row.y + 4, 15,
+                    e.missing ? theme::DANGER : theme::TEXT);
+                DrawTextU(e.shownPath.c_str(), row.x + 8, row.y + 22, 11,
                     e.missing ? theme::DANGER : theme::TEXT_MUTED);
 
                 if (hovered) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
@@ -1253,7 +1363,14 @@ Info ShowProjectManager() {
         }
         if (deleteClicked && selected >= 0 && selected < static_cast<int>(recent.size())
             && !recent[selected].missing) {
-            if (recent[selected].path == GetCurrentProject().path) {
+            // Compare canonical paths (trailing separators stripped) so a trailing slash cannot sneak past the check.
+            const auto canon = [](std::string q) {
+                while (q.size() > 1 && (q.back() == '\\' || q.back() == '/')) q.pop_back();
+                std::error_code cec;
+                return fs::weakly_canonical(U8Path(q), cec);
+            };
+            const std::string& curPath = GetCurrentProject().path;
+            if (recent[selected].path == curPath || (!curPath.empty() && canon(recent[selected].path) == canon(curPath))) {
                 fail("This project is currently open, Close it first");
             } else {
                 deletePath = recent[selected].path;
@@ -1279,6 +1396,8 @@ Info ShowProjectManager() {
                     fail("Enter a project name first");
                 } else if (!IsValidProjectName(name)) {
                     fail("Project name contains invalid characters");
+                } else if (std::error_code existsEc; fs::exists(U8Path(GetProjectFilePath(name)), existsEc)) {
+                    fail("A project with that name already exists");
                 } else {
                     if (CreateProjectFileInternal(name, chosenTemplate)) {
                         const std::string projectFolder = GetProjectFolder(name);
@@ -1296,6 +1415,50 @@ Info ShowProjectManager() {
 
         if (!errorMsg.empty()) {
             DrawTextU(errorMsg.c_str(), ix, 336, 12, theme::DANGER);
+        }
+
+        // "Get started" card in the space under the New Project panel; pulses until the tutorial is finished.
+        {
+            const float cy = 354.0f + 16.0f;
+            const Rectangle card = { rx, cy, rw, bottom - cy };
+            if (card.height >= 110.0f) {
+                const bool fresh = !TutorialDone();
+                const float pulse = fresh ? 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 3.0f) : 0.0f;
+                DrawRectangleRec(card, theme::PANEL);
+                Color border = fresh ? theme::ACCENT : theme::BORDER;
+                border.a = static_cast<unsigned char>(fresh ? 120 + 135 * pulse : 255);
+                DrawRectangleLinesEx(card, fresh ? 2.0f : 1.0f, border);
+                DrawTextU("GET STARTED", ix, card.y + 12, 13, theme::ACCENT);
+                if (fresh) {
+                    const float bw = static_cast<float>(MeasureTextU("NEW", 11)) + 12.0f;
+                    DrawRectangleRounded({ ix + iw - bw, card.y + 10, bw, 18 }, 0.3f, 4, theme::ACCENT);
+                    DrawTextU("NEW", ix + iw - bw + 6, card.y + 14, 11, theme::BG);
+                }
+                DrawTextU("Get started with Flyengine!", ix, card.y + 36, 15, theme::TEXT);
+                DrawTextU("A guided demo: meshes, properties,", ix, card.y + 60, 12, theme::TEXT_MUTED);
+                DrawTextU("worldbuilding, plugins, C++ and visual", ix, card.y + 76, 12, theme::TEXT_MUTED);
+                DrawTextU("scripts, and exporting your game.", ix, card.y + 92, 12, theme::TEXT_MUTED);
+                const float by = card.y + card.height - 46.0f;
+                const bool startClicked = !modal && PrimaryButton({ ix, by, iw, 30 }, "Start Tutorial");
+                if (startClicked) {
+                    // Reuse an earlier tutorial project, otherwise make one from a template that has a scene and scripts.
+                    const std::string name = "Tutorial";
+                    const std::string folder = GetProjectFolder(name);
+                    std::error_code ec;
+                    const bool exists = fs::exists(U8Path(GetProjectFilePath(name)), ec);
+                    if (exists || CreateProjectFileInternal(name, "CoinDash")) {
+                        InstallTutorialPlugin(folder);
+                        result.name = name;
+                        result.path = folder;
+                        result.templateName = "CoinDash";
+                        result.startTutorial = true;
+                        PushRecent(folder, recentPaths);
+                        done = true;
+                    } else {
+                        fail("Failed to create the tutorial project");
+                    }
+                }
+            }
         }
 
         if (confirmDelete) {
@@ -1323,6 +1486,7 @@ Info ShowProjectManager() {
         if (!modal) DrawFolderPromptFallback(promptField);
 
         if (pickerOpen) {
+            BakeTemplateThumbnails(templates);
             const int action = DrawTemplatePicker(templates, chosenTemplate, pickerScroll, !pickerJustOpened);
             if (action != 0) pickerOpen = false;
         }
@@ -1365,10 +1529,42 @@ static bool CopyTemplateDeps(const std::string& templateProjectFile, const std::
         if (ec) return false;
         if (it->is_directory(ec)) { fs::create_directories(to / rel, ec); continue; }
         fs::create_directories((to / rel).parent_path(), ec);
-        fs::copy_file(it->path(), to / rel, fs::copy_options::overwrite_existing, ec);
+        // A file already in the folder is the user's; the template never replaces it.
+        fs::copy_file(it->path(), to / rel, fs::copy_options::skip_existing, ec);
         if (ec) return false;
     }
     return !ec;
+}
+
+// The tutorial's sample plugin: its source, the API header and a README go into <project>/plugins/nat/HelloPlugin/,
+// and it is built so the editor loads it on startup. A missing compiler is not an error: the tour says how to build it.
+static void InstallTutorialPlugin(const std::string& projectFolder) {
+    const fs::path dir = fs::path(U8Path(projectFolder)) / "plugins" / "nat" / "HelloPlugin";
+    std::error_code ec;
+    if (fs::exists(dir / "src" / "hello_plugin.c", ec)) return;
+    const std::string src = platform::ResolveAsset("assets/tutorial/HelloPlugin/hello_plugin.c");
+    const std::string hdr = platform::ResolveAsset("assets/tutorial/HelloPlugin/include/CPluginAPI.h");
+    const std::string readme = platform::ResolveAsset("assets/tutorial/HelloPlugin/README.md");
+    if (src.empty() || hdr.empty()) return;
+    fs::create_directories(dir / "src", ec);
+    fs::create_directories(dir / "include", ec);
+    fs::create_directories(dir / "build", ec);
+    fs::copy_file(U8Path(src), dir / "src" / "hello_plugin.c", fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(U8Path(hdr), dir / "include" / "CPluginAPI.h", fs::copy_options::overwrite_existing, ec);
+    if (!readme.empty()) fs::copy_file(U8Path(readme), dir / "README.md", fs::copy_options::overwrite_existing, ec);
+    // id.json, plugin.json and icon.png make it a valid plugin for `flyplugin validate`.
+    for (const char* meta : { "id.json", "plugin.json", "icon.png" }) {
+        const std::string from = platform::ResolveAsset(std::string("assets/tutorial/HelloPlugin/") + meta);
+        if (!from.empty()) fs::copy_file(U8Path(from), dir / meta, fs::copy_options::overwrite_existing, ec);
+    }
+#ifdef _WIN32
+    const std::string cc = "gcc", lib = "hello_plugin.dll";
+    const std::vector<std::string> args = { "-shared", "-I", (dir / "include").string(), "-o", (dir / "build" / lib).string(), (dir / "src" / "hello_plugin.c").string() };
+#else
+    const std::string cc = "cc", lib = "hello_plugin.so";
+    const std::vector<std::string> args = { "-shared", "-fPIC", "-I", (dir / "include").string(), "-o", (dir / "build" / lib).string(), (dir / "src" / "hello_plugin.c").string() };
+#endif
+    platform::RunProcessCapture(cc, args, 20000);
 }
 
 bool CreateProjectFileInternal(const std::string& name, const std::string& templateName) {
@@ -1377,6 +1573,20 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
     const std::string projectFolder = GetProjectFolder(name);
     const std::string projectFile = GetProjectFilePath(name);
     const std::string assetsFolder = GetAssetsFolder(name);
+
+    // Never replace a project that is already there: the create flow checks first, this keeps other callers safe.
+    {
+        std::error_code ec;
+        if (fs::exists(U8Path(projectFile), ec) || !detail::FindProjectFile(projectFolder).empty()) return false;
+    }
+
+    // A named template must exist; check before anything is written.
+    const std::string templateId = templateName.empty() ? "Blank" : templateName;
+    const std::string templateFile = TemplateProjectFile(templateId);
+    if (templateFile.empty() && templateId != "Blank") {
+        TraceLog(LOG_WARNING, "PROJECT: unknown template '%s'", templateId.c_str());
+        return false;
+    }
 
     // Create directories (project root, assets, assets/3D)
     detail::EnsureDirectory(projectFolder);
@@ -1389,13 +1599,13 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
 
     HeaderFields fields;
     fields.name = name;
-    fields.templateName = templateName.empty() ? "Blank" : templateName;
+    fields.templateName = templateId;
     fields.created = detail::TimeNow();
     fields.modified = fields.created;
 
     WriteProjectHeader(out, fields);
     // A template starts from its scene and deps/.
-    if (const std::string sample = TemplateProjectFile(fields.templateName); !sample.empty()) {
+    if (const std::string& sample = templateFile; !sample.empty()) {
         HeaderFields sampleFields;
         SceneSource scene;
         if (!ReadProjectFileAt(sample, sampleFields, scene)) return false;

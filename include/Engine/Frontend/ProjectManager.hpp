@@ -18,7 +18,12 @@ struct Info {
     std::string name;
     std::string path;        // full path to the project folder
     std::string templateName; // "Blank" or "Sample"
+    bool startTutorial = false; // opened from the launcher's "Get started" card: the editor starts the guided tour
 };
+
+// The launcher's "Get started with Flyengine!" tutorial: a marker file in the app-data folder records that it was finished.
+bool TutorialDone();
+void SetTutorialDone(bool done);
 
 // Applies the Flyengine logo as the active window's icon/taskbar icon.
 // Safe to call from the splash, project manager, or editor window.

@@ -1,9 +1,12 @@
 // Nested explorer groups and the hide/lock flags must survive a scene save/load, and the tree helpers must keep
-// parent/children links consistent. Opens a window (it needs an Engine), so it is not registered with ctest:
+// parent/children links consistent. Opens a window (it needs an Engine), so it needs a display when run:
 // build/tests/explorer_tree_test
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Engine/Backend/ScenePersistence.hpp"
+#include "Engine/Backend/UndoSystem.hpp"
+
+#include <cmath>
 
 #include <cstdio>
 #include <memory>
@@ -99,6 +102,78 @@ int main() {
         std::istringstream in3("SIMPLE_ENGINE_BUILD 27\n0\n1\n\"G\" 0\n\n-1 1 0\n");
         CHECK(RestoreSceneFromMemory(in3, engine, o3, m3, base));
         CHECK(m3.size() == 1 && m3[0]->name == "G" && m3[0]->hidden && m3[0]->pluginTag.empty());
+    }
+
+    // An absurd object count fails the load cleanly (no huge allocation, nothing added to the scene).
+    {
+        std::vector<ScatteredObject*> o4;
+        std::vector<std::unique_ptr<ModelGroup>> m4;
+        std::istringstream in4("SIMPLE_ENGINE_BUILD 30\n99999999999\n");
+        CHECK(!RestoreSceneFromMemory(in4, engine, o4, m4, base));
+        CHECK(o4.empty() && m4.empty());
+        std::istringstream in5("SIMPLE_ENGINE_BUILD 30\n4000000000\n");
+        CHECK(!RestoreSceneFromMemory(in5, engine, o4, m4, base));
+        std::istringstream in6("SIMPLE_ENGINE_BUILD 30\n1\n1 \"X\" 0 0 0 1 1 1");   // truncated record
+        CHECK(!RestoreSceneFromMemory(in6, engine, o4, m4, base));
+        CHECK(o4.empty() && m4.empty());
+    }
+
+    // NaN/inf are never written, so the scene reads back.
+    {
+        const float nan = std::nanf("");
+        ScatteredObject* bad = Make(engine, objs, "Bad");
+        *bad->GetPosPtr() = Vector3{ nan, INFINITY, 2.0f };
+        *bad->GetSizePtr() = Vector3{ nan, 1.0f, 1.0f };
+        std::vector<ScatteredObject*> one{ bad };
+        std::vector<std::unique_ptr<ModelGroup>> none;
+        std::string nb;
+        CHECK(SnapshotSceneToMemory(one, none, base, nb));
+        CHECK(nb.find("nan") == std::string::npos && nb.find("inf") == std::string::npos);
+        std::vector<ScatteredObject*> o5;
+        std::vector<std::unique_ptr<ModelGroup>> m5;
+        std::istringstream in7(nb);
+        CHECK(RestoreSceneFromMemory(in7, engine, o5, m5, base));
+        CHECK(o5.size() == 1);
+        if (o5.size() == 1) {
+            const Vector3 p = *o5[0]->GetPosPtr();
+            CHECK(std::isfinite(p.x) && std::isfinite(p.y) && p.z == 2.0f);
+        }
+        objs.pop_back();
+    }
+
+    // Duplicate member indices: an object belongs to one group (the first that lists it), and a member that is not
+    // in the object list is skipped rather than written as index 0.
+    {
+        std::vector<ScatteredObject*> o6{ a, b };
+        std::vector<std::unique_ptr<ModelGroup>> g6;
+        g6.push_back(std::make_unique<ModelGroup>());
+        g6.push_back(std::make_unique<ModelGroup>());
+        ScatteredObject stranger(Vector3{0, 0, 0}, Vector3{1, 1, 1}, Color{1, 2, 3, 255}, ShapeType::Cube);
+        g6[0]->members = { a, a, &stranger, b };
+        g6[1]->members = { a };
+        std::string db;
+        CHECK(SnapshotSceneToMemory(o6, g6, base, db));
+        std::vector<ScatteredObject*> o7;
+        std::vector<std::unique_ptr<ModelGroup>> m7;
+        std::istringstream in8(db);
+        CHECK(RestoreSceneFromMemory(in8, engine, o7, m7, base));
+        CHECK(o7.size() == 2 && m7.size() == 2);
+        if (o7.size() == 2 && m7.size() == 2) {
+            CHECK(m7[0]->members.size() == 2 && m7[0]->members[0] == o7[0] && m7[0]->members[1] == o7[1]);
+            CHECK(m7[1]->members.empty());
+            CHECK(o7[0]->parentModel == m7[0].get() && o7[1]->parentModel == m7[0].get());
+        }
+        for (auto* o : o6) o->parentModel = nullptr;
+    }
+
+    // Undo history is capped; the newest steps stay.
+    {
+        UndoSystem u;
+        for (int i = 0; i < 250; ++i) u.Push(std::to_string(i), { i });
+        int steps = 0;
+        CHECK(u.PeekUndo() == "249" && u.UndoSel()[0] == 249);
+        while (u.CanUndo()) { u.PopUndo(); ++steps; }
+        CHECK(steps == 100);
     }
 
     a->RemoveScript("A");

@@ -81,7 +81,11 @@ void DispatchCommand(const std::string& full_command) {
         return;
     }
 
-    QueueLog("[fcloud] > " + full_command, ui::LogSeverity::Neutral);
+    // The key is a secret: never echo it into the log.
+    std::string shown = full_command;
+    if (const size_t k = shown.find("--apikey"); k != std::string::npos && shown.find_first_not_of(" \t", k + 8) != std::string::npos)
+        shown = shown.substr(0, k + 8) + " ***";
+    QueueLog("[fcloud] > " + shown, ui::LogSeverity::Neutral);
 
     EnsureCurlInitialized();
 

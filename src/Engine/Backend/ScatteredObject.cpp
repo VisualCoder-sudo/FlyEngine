@@ -198,7 +198,9 @@ ScatteredObject::~ScatteredObject() {
 }
 
 void ScatteredObject::Update(float dt) {
-    // Custom update logic per object can go here
+    // The animation clock runs on the engine's (time-scaled) step: it keeps time while culled and stops while the
+    // simulation is paused. Skinning stays in Draw().
+    if (animator) animator->Advance(std::min(dt, 0.1f));
 }
 
 void ScatteredObject::SetTexture(const std::string& path) {
@@ -495,16 +497,9 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     copy->texturePath = texturePath;
     if (!texturePath.empty()) copy->textureNeedsBind = true;
     
-    // Re-register texture for the clone (increments refcount)
-    if (!texturePath.empty()) {
-        const auto& project = ::project::GetCurrentProject();
-        if (!project.path.empty()) {
-            textureManager::RegisterTexture(
-                (std::filesystem::path(project.path) / texturePath).generic_string(),
-                ""
-            );
-        }
-    }
+    // The clone's destructor releases one reference, so it must take one. (RegisterTexture with an empty model
+    // path returns early without counting, which left the destructor's release unmatched.)
+    if (!texturePath.empty()) textureManager::AddTextureRef(texturePath);
     
     // The clone shares the source's mesh data (one copy in memory and on the
     // GPU); only its materials are private.
@@ -612,14 +607,10 @@ void ScatteredObject::Draw() {
     if (hasOwnModel) {
         if (animator) {
             // Once per rendered frame, however many passes draw the object (a
-            // vertex buffer takes one update per frame).
+            // vertex buffer takes one update per frame). The clock itself advances in Update().
             const unsigned long long frame = GetRenderFrameIndex();
             if (frame != animFrame) {
-                const double now = GetTime();
-                const float dt = animFrame == ~0ull ? 0.0f : (float)std::min(now - animTime, 0.1);
                 animFrame = frame;
-                animTime = now;
-                animator->Advance(dt);
                 animator->Skin();
             }
         }

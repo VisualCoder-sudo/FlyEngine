@@ -40,6 +40,7 @@ Ray GetScreenToWorldRay(Vector2 position, Camera camera) {
 
 Ray GetScreenToWorldRayEx(Vector2 position, Camera camera, int width, int height) {
     Ray ray{};
+    if (width <= 0 || height <= 0) return ray; // zero-size window: avoid dividing by zero
     const float x = (2.0f * position.x) / (float)width - 1.0f;
     const float y = 1.0f - (2.0f * position.y) / (float)height;
     const Matrix matView = MatrixLookAt(camera.position, camera.target, camera.up);
@@ -92,7 +93,11 @@ bool CaptureMainTarget(const char* fileName) {
     img.mipmaps = 1;
     img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
     img.data = RL_MALLOC((size_t)img.width * (size_t)img.height * 4);
-    bool ok = flyapp_read_image_rgba8(tex->image.id, img.width, img.height, img.data);
+    if (!img.data) {
+        TraceLog(LOG_WARNING, "SYSTEM: [%s] Screenshot failed (out of memory)", fileName);
+        return false;
+    }
+    bool ok =flyapp_read_image_rgba8(tex->image.id, img.width, img.height, img.data);
     if (ok) {
         // Alpha in the main target is not meaningful; save it opaque.
         unsigned char* px = (unsigned char*)img.data;
@@ -121,6 +126,11 @@ void TakeScreenshot(const char* fileName) {
     GfxState& g = Gfx();
     if (g.initialized && !g.frameActive && std::this_thread::get_id() == g.mainThread) {
         CaptureMainTarget(fileName);
+        return;
+    }
+    // Before init nothing would ever serve the queue, so the request would sit there silently: refuse it.
+    if (!g.initialized) {
+        TraceLog(LOG_WARNING, "SYSTEM: [%s] Screenshot ignored (window not initialised)", fileName);
         return;
     }
     std::lock_guard<std::mutex> lock(g_shotMutex);

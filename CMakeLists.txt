@@ -263,6 +263,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ui_theme.cpp
         src/Engine/Frontend/ui_lighting.cpp
         src/Engine/Frontend/ui_topbar.cpp
+        src/Engine/Frontend/ui_tutorial.cpp
         src/Engine/Frontend/ExportDialog.cpp
         src/Engine/Platform/Platform.cpp
         src/Engine/Platform/FileDialog.cpp

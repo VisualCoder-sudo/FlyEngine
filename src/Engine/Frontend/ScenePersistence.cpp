@@ -21,6 +21,8 @@
 #include "../../../include/Engine/Vfs.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -59,13 +61,20 @@ namespace {
 // One object's record, exactly as the scene file stores it. The undo/play snapshots use it too, so a property
 // added to the scene file is in every snapshot automatically.
 void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::string& baseDir) {
-    const Vector3& pos = *object->GetPosPtr();
-    const Vector3& size = *object->GetSizePtr();
-    const Vector3& rotation = *object->GetRotationPtr();
-    const Vector3& origin = *object->GetOriginPtr();
+    // NaN/inf (e.g. set by a script) would be written as text the loader cannot read back and fail the whole scene.
+    auto fin = [](Vector3 v) {
+        if (!std::isfinite(v.x)) v.x = 0.0f;
+        if (!std::isfinite(v.y)) v.y = 0.0f;
+        if (!std::isfinite(v.z)) v.z = 0.0f;
+        return v;
+    };
+    const Vector3 pos = fin(*object->GetPosPtr());
+    const Vector3 size = fin(*object->GetSizePtr());
+    const Vector3 rotation = fin(*object->GetRotationPtr());
+    const Vector3 origin = fin(*object->GetOriginPtr());
     const Color& color = *object->GetColorPtr();
-    const Vector3& velocity = object->GetVelocity();
-    const Vector3& angularVelocity = object->GetAngularVelocity();
+    const Vector3 velocity = fin(object->GetVelocity());
+    const Vector3 angularVelocity = fin(object->GetAngularVelocity());
     file << static_cast<int>(object->GetShapeType()) << ' ' << std::quoted(object->GetName()) << ' '
          << pos.x << ' ' << pos.y << ' ' << pos.z << ' ' << size.x << ' ' << size.y << ' ' << size.z << ' '
          << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
@@ -188,12 +197,14 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
             file << std::quoted("Model") << " 0\n\n";
             continue;
         }
-        file << std::quoted(model->name) << ' ' << model->members.size() << '\n';
+        // A member that is not in the object list is skipped: writing index 0 would put the first object into this group.
+        std::vector<size_t> indices;
         for (auto* member : model->members) {
             auto it = std::find(objects.begin(), objects.end(), member);
-            size_t index = (it != objects.end()) ? static_cast<size_t>(it - objects.begin()) : 0;
-            file << index << ' ';
+            if (it != objects.end()) indices.push_back(static_cast<size_t>(it - objects.begin()));
         }
+        file << std::quoted(model->name) << ' ' << indices.size() << '\n';
+        for (size_t index : indices) file << index << ' ';
         file << '\n';
     }
     WriteModelTreeExtras(file, objects, models);
@@ -339,12 +350,22 @@ bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
     }
     textureManager::CommitAssets(objects);   // see SaveProjectFile
     scriptLauncher::CommitPendingScripts();
-    std::ofstream file(path, std::ios::trunc);
+    // Write to a sibling file and rename over the target, so a failed or interrupted save keeps the old scene.
+    const std::string tmpPath = path + ".tmp";
+    std::ofstream file(tmpPath, std::ios::trunc);
     if (!file) return false;
     std::error_code ec;
     std::string baseDir = std::filesystem::path(path).parent_path().string();
     if (ec || baseDir.empty()) baseDir.clear();
-    return SaveSceneToStream(file, objects, models, baseDir, terrain);
+    bool ok = SaveSceneToStream(file, objects, models, baseDir, terrain);
+    file.close();   // flushes: a late write error (disk full) only shows up here
+    ok = ok && !file.fail();
+    if (ok) std::filesystem::rename(U8Path(tmpPath), U8Path(path), ec);
+    if (!ok || ec) {
+        std::filesystem::remove(U8Path(tmpPath), ec);
+        return false;
+    }
+    return true;
 }
 
 namespace {
@@ -513,6 +534,22 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
 
 } // namespace
 
+namespace {
+// Moves the scene's model groups aside for the duration of a load and puts them back if the load fails.
+// Declare it before the load's local object list: that list is destroyed first, then the half-built groups.
+struct ModelsRollback {
+    std::vector<std::unique_ptr<ModelGroup>>& models;
+    std::vector<std::unique_ptr<ModelGroup>> old;
+    bool committed = false;
+    explicit ModelsRollback(std::vector<std::unique_ptr<ModelGroup>>& m) : models(m), old(std::move(m)) { models.clear(); }
+    ~ModelsRollback() { if (!committed) models = std::move(old); }
+};
+} // namespace
+
+// Sanity caps on counts/lengths read from a scene file: a corrupt value must fail the load, not throw from reserve/resize.
+constexpr size_t kMaxSceneCount = 10000000;
+constexpr size_t kMaxSceneString = 1u << 24;
+
 bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<ScatteredObject*>& objects,
                          std::vector<std::unique_ptr<ModelGroup>>& models,
                          const std::string& baseDir,
@@ -521,10 +558,15 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+        return false;
+    }
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
-    models.clear(); // loading a scene rebuilds model containers from scratch
+    // Loading a scene rebuilds model containers from scratch. The old ones are only set aside: until this load
+    // succeeds the current objects stay in the scene and still point at them (a failed open must not free them).
+    ModelsRollback rollback(models);
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
@@ -557,6 +599,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         const bool keepScripts = runtime && runtime->IsValid();
         size_t scriptCount = 0;
         if (file >> scriptCount) {
+            if (scriptCount > kMaxSceneCount) return false;
             std::vector<ScriptRuntime::StandaloneScript> discarded;
             auto& scripts = keepScripts ? runtime->StandaloneScripts() : discarded;
             scripts.clear();
@@ -564,7 +607,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             for (size_t i = 0; i < scriptCount; ++i) {
                 int runOnPlay = 1;
                 size_t nameLen = 0, typeLen = 0;
-                if (!(file >> runOnPlay >> nameLen)) return false;
+                if (!(file >> runOnPlay >> nameLen) || nameLen > kMaxSceneString) return false;
                 file.ignore(); // newline after the length
                 std::string name;
                 if (nameLen > 0) {
@@ -572,7 +615,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                     file.read(&name[0], (std::streamsize)nameLen);
                     if (!file) return false;
                 }
-                if (!(file >> typeLen)) return false;
+                if (!(file >> typeLen) || typeLen > kMaxSceneString) return false;
                 file.ignore(); // newline after the length
                 std::string typeName;
                 if (typeLen > 0) {
@@ -593,19 +636,20 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     // loaded (0..count-1); older files simply have no models section.
     if (version >= 7) {
         size_t modelCount = 0;
-        if (!(file >> modelCount)) return false;
+        if (!(file >> modelCount) || modelCount > kMaxSceneCount) return false;
         models.reserve(modelCount);
         for (size_t i = 0; i < modelCount; ++i) {
             std::string modelName;
             size_t memberCount = 0;
-            if (!(file >> std::quoted(modelName) >> memberCount)) return false;
+            if (!(file >> std::quoted(modelName) >> memberCount) || memberCount > kMaxSceneCount) return false;
             auto model = std::make_unique<ModelGroup>();
             model->name = modelName;
             model->members.reserve(memberCount);
             for (size_t m = 0; m < memberCount; ++m) {
                 size_t index = 0;
                 if (!(file >> index)) return false;
-                if (index < loaded.size()) {
+                // Out of range, or already in a group (duplicate index): ignored, an object has one parent.
+                if (index < loaded.size() && !loaded[index]->parentModel) {
                     ScatteredObject* member = loaded[index].get();
                     member->parentModel = model.get();
                     model->members.push_back(member);
@@ -743,6 +787,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             } else {
                 ui::LogAlways("[city] loaded %d city(ies) from %s", loaded, cityFile.c_str());
             }
+        } else if (cityCount > 0) {
+            ui::LogAlways("Scene lists %d city(ies) but has no folder to load city.city from; they were not loaded", cityCount);
         }
     }
 
@@ -846,7 +892,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (loaded > 0) {
                 const int planted = foliage::LoadFile(baseDir + "/foliage.cfg", baseDir);
                 if (planted > 0) ui::LogAlways("[terrain] foliage rules restored for %d terrain(s)", planted);
+                else ui::LogAlways("[terrain] no foliage rules restored (foliage.cfg missing or unreadable in %s)", baseDir.c_str());
             }
+        } else if (basicTerrainCount > 0) {
+            ui::LogAlways("Scene lists %d BasicTerrain(s) but has no folder to load basicterrain.bt from; they were not loaded", basicTerrainCount);
         }
     }
 
@@ -864,6 +913,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
             if (file >> tag2 && tag2 == "LIGHTING2" &&
                 file >> hs >> ha >> hk >> hf >> L2.sunAzimuth >> L2.sunElevation >> L2.sunIntensity >> L2.sunColor[0] >> L2.sunColor[1] >> L2.sunColor[2] >>
                        L2.ambient >> L2.skyColor[0] >> L2.skyColor[1] >> L2.skyColor[2] >> L2.fogDensity) {
+                for (float* c : { &L2.sunColor[0], &L2.sunColor[1], &L2.sunColor[2], &L2.skyColor[0], &L2.skyColor[1], &L2.skyColor[2] })
+                    *c = std::isfinite(*c) ? std::clamp(*c, 0.0f, 1.0f) : 1.0f;
                 L2.hasSun = hs != 0; L2.hasAmbient = ha != 0; L2.hasSky = hk != 0; L2.hasFog = hf != 0;
                 L2.sunIntensity = std::clamp(L2.sunIntensity, 0.0f, 3.0f);
                 L2.ambient = std::clamp(L2.ambient, 0.0f, 2.0f);
@@ -962,6 +1013,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         objects.push_back(object.get());
         engine.AddEntity(std::move(object));
     }
+    rollback.committed = true;   // the old groups are freed now; the caller removes the old objects next
     return true;
 }
 
@@ -975,7 +1027,12 @@ bool LoadSceneFromFile(Engine& engine, std::vector<ScatteredObject*>& objects,
     std::error_code ec;
     std::string baseDir = std::filesystem::path(path).parent_path().string();
     if (ec || baseDir.empty()) baseDir.clear();
-    return LoadSceneFromStream(file, engine, objects, models, baseDir, physicsSim, outTerrain);
+    try {
+        return LoadSceneFromStream(file, engine, objects, models, baseDir, physicsSim, outTerrain);
+    } catch (const std::exception& e) {
+        ui::LogAlways("Failed to load scene '%s': %s", path.c_str(), e.what());
+        return false;
+    }
 }
 
 bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
@@ -996,12 +1053,14 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
             file << std::quoted("Model") << " 0\n\n";
             continue;
         }
-        file << std::quoted(model->name) << ' ' << model->members.size() << '\n';
+        // A member that is not in the object list is skipped: writing index 0 would put the first object into this group.
+        std::vector<size_t> indices;
         for (auto* member : model->members) {
             auto it = std::find(objects.begin(), objects.end(), member);
-            size_t index = (it != objects.end()) ? static_cast<size_t>(it - objects.begin()) : 0;
-            file << index << ' ';
+            if (it != objects.end()) indices.push_back(static_cast<size_t>(it - objects.begin()));
         }
+        file << std::quoted(model->name) << ' ' << indices.size() << '\n';
+        for (size_t index : indices) file << index << ' ';
         file << '\n';
     }
     WriteModelTreeExtras(file, objects, models);
@@ -1057,7 +1116,10 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+        return false;
+    }
 
     std::vector<std::unique_ptr<ScatteredObject>> loaded;
     loaded.reserve(count);
@@ -1071,19 +1133,20 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::vector<std::unique_ptr<ModelGroup>> groups;
     if (version >= 7) {
         size_t modelCount = 0;
-        if (!(file >> modelCount)) return false;
+        if (!(file >> modelCount) || modelCount > kMaxSceneCount) return false;
         groups.reserve(modelCount);
         for (size_t i = 0; i < modelCount; ++i) {
             std::string modelName;
             size_t memberCount = 0;
-            if (!(file >> std::quoted(modelName) >> memberCount)) return false;
+            if (!(file >> std::quoted(modelName) >> memberCount) || memberCount > kMaxSceneCount) return false;
             auto model = std::make_unique<ModelGroup>();
             model->name = modelName;
             model->members.reserve(memberCount);
             for (size_t m = 0; m < memberCount; ++m) {
                 size_t index = 0;
                 if (!(file >> index)) return false;
-                if (index < loaded.size()) {
+                // Out of range, or already in a group (duplicate index): ignored, an object has one parent.
+                if (index < loaded.size() && !loaded[index]->parentModel) {
                     ScatteredObject* member = loaded[index].get();
                     member->parentModel = model.get();
                     model->members.push_back(member);
@@ -1129,8 +1192,11 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
                             std::vector<ScatteredObject*>& objects,
                             std::vector<std::unique_ptr<ModelGroup>>& models,
                             const std::string& baseDir) {
-    models.clear();
-    return AppendSnapshot(file, engine, objects, models, baseDir, nullptr, nullptr);
+    // A failed restore keeps the current groups: the current objects stay in the scene and still point at them.
+    ModelsRollback rollback(models);
+    if (!AppendSnapshot(file, engine, objects, models, baseDir, nullptr, nullptr)) return false;
+    rollback.committed = true;
+    return true;
 }
 
 bool SavePrefabToFile(const ModelGroup& root, const std::string& path, const std::string& baseDir) {

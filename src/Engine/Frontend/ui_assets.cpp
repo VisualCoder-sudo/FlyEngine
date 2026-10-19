@@ -276,9 +276,19 @@ static void PerformAssetRename(int idx) {
     std::string newName = g_assetRenameBuf;
     if (newName.empty()) return;
 
+    // A name, not a path: a separator or ".." would move the asset out of its folder (an absolute path replaces
+    // the folder outright).
+    if (newName == "." || newName == ".." || newName.find_first_of("/\\") != std::string::npos) {
+        LogAlways("[assets] rename failed: \"%s\" is not a valid file name", newName.c_str());
+        return;
+    }
     std::filesystem::path oldPath(e.fsPath);
     std::filesystem::path newPath = oldPath.parent_path() / newName;
     std::error_code ec;
+    if (std::filesystem::exists(newPath, ec)) {
+        LogAlways("[assets] rename failed: \"%s\" already exists", newName.c_str());
+        return;
+    }
     std::filesystem::rename(oldPath, newPath, ec);
     if (ec) LogAlways("[assets] rename failed: %s", ec.message().c_str());
     else LogAlways("[assets] renamed \"%s\" to \"%s\" (note: this does not update any scene references)",
@@ -381,7 +391,12 @@ static void CopyFileIntoCurrentFolder(const std::string& sourcePath) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     std::filesystem::path dst = std::filesystem::path(dir) / std::filesystem::path(sourcePath).filename();
-    std::filesystem::copy_file(sourcePath, dst, std::filesystem::copy_options::overwrite_existing, ec);
+    // Never replace an asset that is already there (scenes may point at it): add a numbered copy instead.
+    for (int n = 1; std::filesystem::exists(dst, ec) && n < 1000; ++n) {
+        const std::filesystem::path src = std::filesystem::path(sourcePath).filename();
+        dst = std::filesystem::path(dir) / (src.stem().string() + " (" + std::to_string(n) + ")" + src.extension().string());
+    }
+    std::filesystem::copy_file(sourcePath, dst, std::filesystem::copy_options::none, ec);
     if (ec) LogAlways("[assets] copy failed: %s", ec.message().c_str());
     else LogAlways("[assets] added \"%s\"", dst.filename().string().c_str());
     g_assetEntriesDirty = true;
@@ -518,7 +533,7 @@ void DrawPathPromptModal() {
         if (cancel) p.cancel = true;
 
         // Enter submits, Escape dismisses.
-        if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+        if (ImGui::IsItemHovered() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
             if (p.buffer[0] != '\0' && FileExists(p.buffer)) p.accept = true;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) p.cancel = true;
@@ -861,6 +876,11 @@ static void DrawVisualScriptTab() {
     vscript::SceneListing scene;
     scene.projectDir = ::project::GetCurrentProject().path;
     scene.deleteScript = [](const std::string& key) { DeleteScriptEverywhere(key); };
+    scene.renameScript = [](const std::string& from, const std::string& to) {
+        if (ScriptRuntime* rt = GetActiveRuntime())
+            for (auto& s : rt->StandaloneScripts())
+                if (ScriptKey(s) == from) { s.name = to; s.typeName = to; break; }
+    };
     // Objects can share a name, so a repeat gets "#2", "#3"... in scene order. The script runner counts the same way.
     std::map<const ScatteredObject*, std::string> labels;
     if (g_sceneObjects) {

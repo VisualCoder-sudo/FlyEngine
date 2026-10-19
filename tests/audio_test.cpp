@@ -237,8 +237,28 @@ int main(int argc, char** argv) {
     }
 
     // More sounds than voices: the oldest give way, the count stays capped.
-    for (int i = 0; i < 100; ++i) audio::Play(wav);
-    CHECK(audio::ActiveVoices() <= 64);
+    audio::StopAll();
+    audio::PlayParams longLoop; longLoop.loop = true;   // loops never end, so only the cap can remove them
+    const audio::Handle first = audio::Play(wav, longLoop);
+    for (int i = 0; i < 99; ++i) audio::Play(wav, longLoop);
+    CHECK(audio::ActiveVoices() == 64);
+    CHECK(!audio::IsPlaying(first));                    // the oldest gave way
+    audio::StopAll();
+
+    // ClearCache stops everything and forgets decoded clips; a clip still loads again afterwards.
+    audio::Play(wav, longLoop);
+    audio::ClearCache();
+    CHECK(audio::ActiveVoices() == 0);
+    CHECK(audio::GetClipInfo(wav, info) && info.frames == 4000);
+
+    // A file that is not audio fails to decode, and does not break later loads.
+    {
+        const fs::path junk = dir / "junk.wav";
+        std::ofstream(junk, std::ios::binary) << "this is not audio";
+        CHECK(!audio::Preload(junk.string()));
+        CHECK(audio::Play(junk.string()) == 0);
+        CHECK(audio::Preload(wav));
+    }
 
     // An exported game: the sound is inside the archive appended to the executable, named relative to it or
     // under the virtual root, and plays from there.

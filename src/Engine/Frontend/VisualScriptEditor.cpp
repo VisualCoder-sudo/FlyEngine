@@ -619,7 +619,12 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
         case NodeType::Print: StrRow(n, o, 0, "Text", n.value, "##txt", wired(0)); break;
         case NodeType::Delay: NumRow(n, o, 0, "Seconds", n.value, false, wired(0)); break;
         case NodeType::Repeat: NumRow(n, o, 0, "Times", n.value, true); break;
-        case NodeType::Sequence: NumRow(n, o, 0, "Outputs", n.value, true); break;
+        case NodeType::Sequence: {
+            const std::string before = n.value;
+            NumRow(n, o, 0, "Outputs", n.value, true);
+            if (n.value != before) SanitizeDataLinks();   // wires on removed output pins go
+            break;
+        }
         case NodeType::Branch: StrRow(n, o, 0, wired(0) ? "Condition" : "Variable", n.target, "##var", wired(0)); break;
         case NodeType::SetVariable:
             StrRow(n, o, 0, "Name", n.target, "##var");
@@ -1011,7 +1016,10 @@ void DrawScriptManager(const SceneListing& scene) {
             if (ImGui::BeginMenu("Rename current")) {
                 if (ImGui::IsWindowAppearing()) std::snprintf(g_nameBuf, sizeof(g_nameBuf), "%s", NameAt(CurrentIndex()).c_str());
                 if (ImGui::InputText("##rn", g_nameBuf, sizeof(g_nameBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    const std::string oldKey = NameAt(CurrentIndex());
                     RenameCurrent(g_nameBuf);
+                    const std::string newKey = NameAt(CurrentIndex());
+                    if (newKey != oldKey && scene.renameScript) scene.renameScript(oldKey, newKey);   // the graph is already renamed, so RenameKey can't do it
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::EndMenu();

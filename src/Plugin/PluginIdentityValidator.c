@@ -110,7 +110,7 @@ ValidatorError PluginIdentityValidator_Validate(
     snprintf(icon_path, sizeof(icon_path), "%s/icon.png", plugin_root);
     if (!PluginIcon_Validate(icon_path, error_out)) {
         ValidatorError icon_err = VALIDATOR_ERR_NO_ICON;
-        const char* msg = *error_out;
+        const char* msg = error_out ? *error_out : NULL;
         if (msg) {
             if (strstr(msg, "not a valid PNG")) icon_err = VALIDATOR_ERR_ICON_NOT_PNG;
             else if (strstr(msg, "square")) icon_err = VALIDATOR_ERR_ICON_NOT_SQUARE;
@@ -134,6 +134,14 @@ ValidatorError PluginIdentityValidator_Validate(
         return VALIDATOR_ERR_MANIFEST_PARSE;
     }
     
+    // id.json Version vs the manifest's own version (when it declares one)
+    if (manifest->version && strcmp(manifest->version, id->version) != 0) {
+        set_error(error_out, "Version mismatch: id.json Version='%s' but manifest version='%s'", id->version, manifest->version);
+        PluginIdentity_Free(id);
+        PluginManifest_Free(manifest);
+        return VALIDATOR_ERR_VERSION_MISMATCH;
+    }
+
     // Validate identity vs manifest
     if (!PluginIdentity_Validate(id, manifest, error_out)) {
         PluginIdentity_Free(id);

@@ -27,7 +27,7 @@ typedef struct {
     PluginState state;
     void* handle;              // dlopen handle for nat/lib
     void* plugin_api;          // Plugin's CP_PluginEntry*
-    int process_id;            // For sandboxed nat plugins
+    int process_id;            // For isolated nat plugins (unused today: the editor loads them in-process)
     char* error_message;
 } LoadedPlugin;
 
@@ -82,7 +82,8 @@ void PluginLoader_SetEngineAPI(PluginLoader* loader, void* engine_api);
 // PLUGIN PROCESS MANAGEMENT (for nat plugins)
 // ============================================================================
 
-// Spawn plugin in isolated process (Linux: fork+exec, Windows: CreateProcess)
+// Spawn plugin in isolated process (Linux: fork+exec, Windows: CreateProcess).
+// Not used by the editor, which dlopen()s plugins in-process.
 // Returns process ID or -1 on failure
 int PluginLoader_SpawnPluginProcess(PluginLoader* loader, const char* plugin_name);
 

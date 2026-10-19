@@ -258,8 +258,7 @@ private:
     bool hasOwnModel = false;
     std::string sharedModelKey;     // key into the shared mesh cache
     std::unique_ptr<ModelAnimator> animator;   // private skinned meshes; null for static models
-    unsigned long long animFrame = ~0ull;      // render frame the pose was last advanced on
-    double animTime = 0.0;
+    unsigned long long animFrame = ~0ull;      // render frame the pose was last skinned on
     Vector3 modelExtent{ 1.0f, 1.0f, 1.0f };
     std::string modelDiffuseFile;   // base-colour texture shipped with the model (abs path)
     void ReleaseModel();

@@ -114,6 +114,7 @@ void RemoveByName(const std::string& name) {
     for (int i = 0; i < Count(); ++i)
         if (g_scripts[i].name == name) {
             g_scripts.erase(g_scripts.begin() + i);
+            if (g_current > i) --g_current;
             if (g_current >= Count()) g_current = Count() - 1;
             return;
         }
@@ -394,6 +395,17 @@ void ConnectData(int from, int to, int toPin, int fromPin) {
     if (fromPin < 0 || fromPin >= DataOutputCount(*a)) return;
     if (!SoundWireAllowed(*a, *b)) return;
     auto& L = Active().dataLinks;
+    {   // refuse a wire that would close a value loop: `to` must not already feed `from`
+        std::vector<int> todo{ from }; std::set<int> seen{ from };
+        while (!todo.empty()) {
+            const int id = todo.back(); todo.pop_back();
+            for (const DataLink& l : L)
+                if (l.to == id && seen.insert(l.from).second) {
+                    if (l.from == to) return;
+                    todo.push_back(l.from);
+                }
+        }
+    }
     L.erase(std::remove_if(L.begin(), L.end(), [&](const DataLink& l) { return l.to == to && l.toPin == toPin; }), L.end());
     L.push_back({ from, to, toPin, fromPin });
 }
@@ -406,6 +418,10 @@ void SanitizeDataLinks() {
         if (l.toPin >= DataInputCount(*b)) return true;
         return l.fromPin >= DataOutputCount(*a) || !SoundWireAllowed(*a, *b);
     }), g.dataLinks.end());
+    g.links.erase(std::remove_if(g.links.begin(), g.links.end(), [&](const Link& l) {   // exec wires from pins a Sequence no longer has
+        const Node* a = FindIn(g, l.from);
+        return a && l.fromPin >= OutputCount(a->type, a);
+    }), g.links.end());
 }
 
 const std::vector<std::string>& KeyNames() {
@@ -634,9 +650,11 @@ std::vector<std::string> WorldProperties(const std::string& group) {
 namespace {
 void SaveGraph(std::ostream& out, const Graph& g) {
     out << "VSCRIPT " << g.nextId << ' ' << g.nodes.size() << ' ' << g.links.size() << "\n";
+    const std::streamsize oldPrec = out.precision(9);   // 9 digits round-trip a float; the default 6 drifts canvas positions
     for (const Node& n : g.nodes)
         out << "VNODE " << n.id << ' ' << static_cast<int>(n.type) << ' ' << n.x << ' ' << n.y << ' '
             << std::quoted(n.target) << ' ' << std::quoted(n.prop) << ' ' << std::quoted(n.value) << "\n";
+    out.precision(oldPrec);
     size_t extras = 0;
     for (const Node& n : g.nodes) extras += n.extra.size();
     if (extras) {   // optional block: extra Change properties
@@ -713,7 +731,7 @@ void Load(std::istream& in) {
     if (tag == "VSCRIPT") {          // scenes saved with the single-graph format
         in.clear(); in.seekg(mark);
         Graph g;
-        if (LoadGraph(in, g)) { g.name = scriptLauncher::MakeClassName(g.name); g_scripts.push_back(std::move(g)); g_current = 0; }
+        if (LoadGraph(in, g)) { g.name = UniqueName(g.name); g_scripts.push_back(std::move(g)); g_current = 0; }
         else { in.clear(); in.seekg(mark); }
         return;
     }
@@ -724,6 +742,10 @@ void Load(std::istream& in) {
         Graph g;
         if (!(in >> tag >> std::quoted(g.name)) || tag != "VGRAPH" || !LoadGraph(in, g)) return;
         g.name = scriptLauncher::MakeClassName(g.name);
+        // MakeClassName can fold two saved names into one (a-b, a_b): keep each graph's class name distinct
+        const std::string base = g.name;
+        for (int n = 2; std::any_of(loaded.begin(), loaded.end(), [&](const Graph& o) { return o.name == g.name; }); ++n)
+            g.name = base + std::to_string(n);
         loaded.push_back(std::move(g));
     }
     g_scripts = std::move(loaded);
@@ -738,6 +760,8 @@ std::map<std::string, std::string> g_vars;       // Set Variable / Branch
 std::set<std::pair<int, int>> g_once;            // (graph, node) Do Once nodes already passed
 std::map<std::pair<int, int>, float> g_every;    // (graph, node) Every N Seconds: time since it last fired
 float g_dt = 0.0f, g_time = 0.0f;                // the last frame's length, and seconds since Play began
+std::vector<ScatteredObject*> g_setupObjects;     // every object whose Setup chain is running (nested Create/Clone), outermost first
+std::vector<ScatteredObject*> g_deferredDestroy;  // Destroy nodes that hit one of them, carried out when its chain ends
 ScatteredObject* g_newObject = nullptr;          // the object a Create Object / Clone is setting up while its Setup chain runs
 
 // How an error names a target.
@@ -795,6 +819,7 @@ std::vector<float> Numbers(const std::string& s) {
 Color ParseUiColor(const std::string& s, Color fallback) {
     const std::vector<float> v = Numbers(s);
     if (v.size() < 3) return fallback;
+    for (float f : v) if (!std::isfinite(f)) return fallback;   // NaN/inf must not reach the unsigned char cast
     auto byte = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 255.0f)); };
     return { byte(v[0]), byte(v[1]), byte(v[2]), v.size() > 3 ? byte(v[3]) : static_cast<unsigned char>(255) };
 }
@@ -991,16 +1016,35 @@ std::string NumStr(double v) {
 
 std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth);
 
+// Value nodes reached by the current top-level Input call: each is evaluated once (shared inputs would otherwise be
+// re-evaluated per path, exponential in diamonds), and one still being evaluated means the wires loop.
+struct EvalMemo {
+    std::map<std::pair<int, int>, std::string> done;
+    std::set<std::pair<int, int>> active;
+};
+EvalMemo g_evalMemo;
+
 // Value on input pin `pin` of `n`: the wired value node's result, else the pin's literal. A wire that yields nothing
 // (e.g. a Get Variable that was never set) also falls back to the literal, so the field acts as a default.
 std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) {
     const Graph& g = g_scripts[gi];
+    if (depth == 0) { g_evalMemo.done.clear(); g_evalMemo.active.clear(); }   // a new read: variables may have changed since
     for (const DataLink& d : g.dataLinks)
         if (d.to == n.id && d.toPin == pin) {
             const Node* src = FindIn(g, d.from);
             std::string v;
             if (src && src->type == NodeType::CodeSnippet) v = rt.SnippetOutput(SnippetClassName(g.name, src->id), d.fromPin);
-            else if (src) v = Eval(rt, gi, *src, depth + 1);
+            else if (src) {
+                const std::pair<int, int> key{ gi, src->id };
+                const auto hit = g_evalMemo.done.find(key);
+                if (hit != g_evalMemo.done.end()) v = hit->second;
+                else if (!g_evalMemo.active.insert(key).second) ui::Log("[script] Value wires loop back on themselves");
+                else {
+                    v = Eval(rt, gi, *src, depth + 1);
+                    g_evalMemo.active.erase(key);
+                    g_evalMemo.done[key] = v;
+                }
+            }
             if (!v.empty()) return v;
             break;
         }
@@ -1151,21 +1195,33 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin);
 void RunSetup(ScriptRuntime& rt, int gi, int nodeId, ScatteredObject* obj) {
     ScatteredObject* outer = g_newObject;
     g_newObject = obj;
+    g_setupObjects.push_back(obj);
     Emit(rt, gi, nodeId, 1);
+    g_setupObjects.pop_back();
     g_newObject = outer;
+    // A Destroy aimed at an object still being set up waits until its chain has finished, so nothing uses it freed.
+    const auto doomed = std::find(g_deferredDestroy.begin(), g_deferredDestroy.end(), obj);
+    if (doomed != g_deferredDestroy.end()) { g_deferredDestroy.erase(doomed); rt.DestroyObject(obj); return; }
     rt.FinishCreate(obj);
 }
 
 // Follows the wire leaving (`fromId`, `pin`) and everything after it. Branching nodes push several continuations;
 // the step cap stops cyclic graphs.
+int g_emitDepth = 0;   // Emit calls nested through Create Object / Clone Setup chains
+int g_emitSteps = 0;   // steps taken since the outermost Emit began: the cap holds across nested chains
+
 void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
-    constexpr int kMaxSteps = 100000;
+    constexpr int kMaxSteps = 100000, kMaxDepth = 32;
+    if (g_emitDepth >= kMaxDepth) { ui::Log("[script] Stopped: Setup chains nest over %d deep (loop?)", kMaxDepth); return; }
+    struct DepthGuard {
+        DepthGuard() { if (g_emitDepth++ == 0) g_emitSteps = 0; }
+        ~DepthGuard() { --g_emitDepth; }
+    } depthGuard;
     // Entries are "continue from (node, output pin)". A negative id means "run node -id now": that is how an output
     // pin with several wires hands each target its turn.
     std::vector<std::pair<int, int>> stack{ { fromId, pin } };
-    int steps = 0;
     while (!stack.empty()) {
-        if (++steps > kMaxSteps) { ui::Log("[script] Stopped: graph ran over %d steps (loop?)", kMaxSteps); return; }
+        if (++g_emitSteps > kMaxSteps) { ui::Log("[script] Stopped: graph ran over %d steps (loop?)", kMaxSteps); return; }
         if (gi < 0 || gi >= static_cast<int>(g_scripts.size())) return;
         const Graph& g = g_scripts[gi];
         const auto [id, p] = stack.back();
@@ -1272,7 +1328,10 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 ScatteredObject* obj = FindTarget(rt, n->target);
                 std::string error;
                 if (!obj) { ui::Log("[script] No object '%s'", TargetName(n->target).c_str()); stack.push_back({ n->id, 0 }); break; }
-                if (n->type == NodeType::Destroy) rt.DestroyObject(obj);
+                if (n->type == NodeType::Destroy) {
+                    if (std::find(g_setupObjects.begin(), g_setupObjects.end(), obj) != g_setupObjects.end()) g_deferredDestroy.push_back(obj);
+                    else rt.DestroyObject(obj);
+                }
                 else if (n->type == NodeType::RunScript) rt.StartObjectScript(obj);
                 else if (n->type == NodeType::Clone) {
                     ScatteredObject* copy = rt.CloneObject(obj, true);

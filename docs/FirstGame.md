@@ -18,7 +18,7 @@ Scripts are C++ coroutines. Create `Scripts/Hello.cpp` in the project folder:
 
 struct Hello : fly::Script {
     fly::Task Run() override {
-        fly::Object crate = fly::Object::Create("Box");
+        fly::Object crate = fly::Object::Create("Cube");
         crate.SetPosition({0, 5, 0});
         for (;;) {
             co_await fly::Wait(1.0f);

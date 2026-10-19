@@ -26,6 +26,7 @@
 #include "raymath.h"
 #include "imgui.h"
 #include "rlimgui.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
@@ -290,7 +291,17 @@ void DrawTextSel(const char* buf, int cursor, int sel, float textStartX,
     DrawRectangleRec({ x0, y, x1 - x0, height }, color);
 }
 
+// strtof accepts "nan", "inf" and out-of-range numbers ("1e39" is inf). A non-finite value written into a scene
+// can't be read back (the loader's >> fails on "nan"), so typed text that isn't a finite number counts as 0.
+static float ParseFiniteFloat(const char* text) {
+    const float v = std::strtof(text, nullptr);
+    return std::isfinite(v) ? v : 0.0f;
+}
+
 bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX) {
+    // One undo step per edited field: the first change after the field was clicked snapshots the scene as it was.
+    static FieldID s_undoneField = FIELD_NONE;
+    static float s_origValue = 0.0f;
     DrawTextArial(label, labelX, rec.y + 3.0f, 13.0f, theme::TEXT_MUTED);
 
     bool isActive = (g_activeField == fieldId);
@@ -315,20 +326,34 @@ bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* l
             snprintf(g_textBuffer, sizeof(g_textBuffer), "%.2f", value);
             g_cursorPos = static_cast<int>(strlen(g_textBuffer));
             g_selStart = -1;
+            s_undoneField = FIELD_NONE;
+            s_origValue = value;
         }
     }
+
+    // `value` is the live scene field, so put the original back for the snapshot, then restore the new value.
+    auto pushUndoOnce = [&]() {
+        if (s_undoneField == fieldId || value == s_origValue) return;
+        const float edited = value;
+        value = s_origValue;
+        ui::PushUndo();
+        value = edited;
+        s_undoneField = fieldId;
+    };
 
     if (isActive) {
         bool commit = false;
         if (TextEditKeys(g_textBuffer, static_cast<int>(sizeof(g_textBuffer)), g_cursorPos, g_selStart, commit)) {
             if (g_textBuffer[0] != '\0') {
-                value = std::strtof(g_textBuffer, nullptr);
+                value = ParseFiniteFloat(g_textBuffer);
+                pushUndoOnce();
                 changed = true;
             }
         }
         TextEditMouse(g_textBuffer, g_cursorPos, g_selStart, rec, textStartX, 13.0f, true);
         if (commit) {
-            value = (g_textBuffer[0] == '\0') ? 0.0f : std::strtof(g_textBuffer, nullptr);
+            value = (g_textBuffer[0] == '\0') ? 0.0f : ParseFiniteFloat(g_textBuffer);
+            pushUndoOnce();
             changed = true;
             g_activeField = FIELD_NONE;
             g_selStart = -1;
@@ -375,9 +400,12 @@ bool DrawNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* l
 // user edits it, copies the resulting value to every other selected object so
 // multi-select property edits apply to the whole selection.
 template <typename Apply>
-static void DrawMultiNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX, Apply apply) {
+static void DrawMultiNumberInput(Rectangle rec, FieldID fieldId, float& value, const char* label, float labelX, Apply apply,
+                                 float lo = -1.0e6f, float hi = 1.0e6f) {
     float before = value;
     bool changed = DrawNumberInput(rec, fieldId, value, label, labelX);
+    // Typed values stay finite and inside [lo, hi] (sizes pass a small positive lo so an object never gets zero size).
+    if (changed) value = std::clamp(value, lo, hi);
     if (changed && value != before) {
         for (auto* obj : g_selection) {
             if (obj && obj != g_selectedObject) apply(obj, value);
@@ -1446,11 +1474,11 @@ if (g_selection.size() > 1) {
     if (g_sizeOpen) {
         Vector3 sizeBefore = *g_size;
         DrawMultiNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_SIZE_W, g_size->x, "Width:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->x = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->x = v; o->ResetMassAuto(); }, 0.01f);
         DrawMultiNumberInput({ inputX, y + rowHeight, inputWidth, inputHeight }, FIELD_SIZE_H, g_size->y, "Height:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->y = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->y = v; o->ResetMassAuto(); }, 0.01f);
         DrawMultiNumberInput({ inputX, y + rowHeight * 2.0f, inputWidth, inputHeight }, FIELD_SIZE_L, g_size->z, "Length:", labelX,
-            [](ScatteredObject* o, float v) { o->GetSizePtr()->z = v; o->ResetMassAuto(); });
+            [](ScatteredObject* o, float v) { o->GetSizePtr()->z = v; o->ResetMassAuto(); }, 0.01f);
         if (g_selectedObject &&
             (g_size->x != sizeBefore.x || g_size->y != sizeBefore.y || g_size->z != sizeBefore.z)) {
             g_selectedObject->ResetMassAuto();

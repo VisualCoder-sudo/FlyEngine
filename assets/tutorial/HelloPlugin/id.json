@@ -1,0 +1,10 @@
+{
+  "Name": "HelloPlugin",
+  "DateCreated": "2026-10-19",
+  "Publisher": "Flyengine",
+  "Version": "1.0.0",
+  "Type": "nat",
+  "CPluginAPIVersion": "1.2.0",
+  "SupportedEngineVersions": [">=0.0.0"],
+  "Description": "The Flyengine tutorial's sample plugin."
+}

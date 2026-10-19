@@ -16,6 +16,10 @@ void Shutdown();
 // by content hash (SHA256).
 std::string RegisterTexture(const std::string& sourcePath, const std::string& modelPath);
 
+// Adds one reference to an already-known project-relative texture path (an object that copies another's texture).
+// Pairs with UnregisterTexture; RegisterTexture cannot do this for objects without an imported model.
+void AddTextureRef(const std::string& texturePath);
+
 // Unregister a texture (object no longer uses it). Decrements refcount,
 // deletes file if count reaches 0, handles shared->model migration.
 void UnregisterTexture(const std::string& texturePath);

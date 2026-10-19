@@ -521,10 +521,66 @@ static void TestVariablesResetOnRun() {
 static void TestValueWireLoopStops() {
     Fresh();
     const int a = Add(NodeType::Add), b = Add(NodeType::Add);
-    ConnectData(a, b, 0); ConnectData(b, a, 0);
+    ConnectData(a, b, 0);
+    ConnectData(b, a, 0);                       // the editor refuses the wire that would close the loop
+    CHECK(Active().dataLinks.size() == 1);
+    Active().dataLinks.push_back({ b, a, 0, 0 });   // a hand-edited scene can still hold one
     PrintWithWire(a);
     Run(RT());                                  // must come back
     CHECK(Logged("loop back"));
+}
+
+// Every node feeds both inputs of the next: 2^40 paths without memoisation.
+static void TestSharedInputsAreEvaluatedOnce() {
+    Fresh();
+    int prev = Add(NodeType::Add);
+    N(prev).target = "1"; N(prev).value = "1";
+    for (int i = 0; i < 40; ++i) {
+        const int next = Add(NodeType::Add);
+        ConnectData(prev, next, 0); ConnectData(prev, next, 1);
+        prev = next;
+    }
+    PrintWithWire(prev);
+    Run(RT());
+    CHECK(Logged("[script] "));
+    CHECK(!Logged("loop back"));
+}
+
+// A Setup chain that leads back into its own Create Object: bounded, no stack overflow.
+static void TestSetupCycleStops() {
+    Fresh();
+    const int s = Add(NodeType::Start), a = Add(NodeType::CreateObject), b = Add(NodeType::CreateObject);
+    Link_(s, a); Link_(a, b, 1);
+    Active().links.push_back({ b, a, 1 });     // two Create Objects feed each other's Setup
+    Run(RT());
+    CHECK(Logged("Stopped"));
+}
+
+// Destroy aimed at the object being set up waits for the chain to finish, and then nothing spawns it.
+static void TestDestroyInSetupIsDeferred() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::CreateObject), d = Add(NodeType::Destroy), p = Add(NodeType::Print);
+    N(p).value = "after";
+    Link_(s, c); Link_(c, d, 1); Link_(d, p);
+    Run(RT());
+    CHECK(Logged("after"));                     // the chain kept running
+    CHECK(g_destroyed == 1);
+    CHECK(g_finished.empty());
+}
+
+// MakeClassName can fold two saved names into one: the loaded graphs must stay distinct.
+static void TestLoadDeduplicatesGraphNames() {
+    Fresh();
+    NewScript("b");
+    std::string text = SaveAll();
+    const size_t at = text.find("VGRAPH \"b\"");
+    CHECK(at != std::string::npos);
+    if (at != std::string::npos) text.replace(at, 10, "VGRAPH \"T\"");
+    Clear();
+    std::istringstream in(text);
+    Load(in);
+    CHECK(Count() == 2);
+    if (Count() == 2) CHECK(NameAt(0) != NameAt(1));
 }
 
 // ---------------------------------------------------------------- objects, world, hud, audio
@@ -1773,6 +1829,44 @@ static void TestUiSetAndRemove() {
     CHECK(g_ui.empty() && Logged("no id"));
 }
 
+static void TestSequenceShrinkDropsExecWires() {
+    Fresh();
+    const int s = Add(NodeType::Start), q = Add(NodeType::Sequence);
+    N(q).value = "4";
+    Link_(s, q);
+    int p[4];
+    for (int i = 0; i < 4; ++i) { p[i] = Add(NodeType::Print); Link_(q, p[i], i); }
+    CHECK(Active().links.size() == 5);
+    N(q).value = "2";   // what the Outputs field does, then the editor sanitizes
+    SanitizeDataLinks();
+    CHECK(Active().links.size() == 3);
+    for (const Link& l : Active().links) CHECK(l.from != q || l.fromPin < 2);
+}
+
+static void TestNodePositionRoundTrip() {
+    Fresh();
+    const int a = Add(NodeType::Start);
+    N(a).x = 12345.678f; N(a).y = -0.123457f;
+    const std::string saved = SaveAll() + "AFTER 5\n";
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    const Node* n = Find(a);
+    CHECK(n && n->x == 12345.678f && n->y == -0.123457f);
+}
+
+static void TestUiColorRejectsNonFinite() {
+    Fresh();
+    g_uiInfo["label"] = gameui::Info();
+    const int s = Add(NodeType::Start), a = Add(NodeType::UISet), b = Add(NodeType::UISet), c = Add(NodeType::UISet);
+    N(a).target = "label"; N(a).prop = "Color"; N(a).value = "(nan, 10, 20)";
+    N(b).target = "label"; N(b).prop = "Color"; N(b).value = "(inf, -inf, 20, 5)";
+    N(c).target = "label"; N(c).prop = "Color"; N(c).value = "(300, -5, 10)";
+    Link_(s, a); Link_(a, b); Link_(b, c);
+    Run(RT());
+    CHECK_STR(Joined(g_ui), "primary:label:255,255,255,255;primary:label:255,255,255,255;primary:label:255,0,10,255;");
+}
+
 static void TestUiGetAndSetParts() {
     Fresh();
     gameui::Info hp;
@@ -2028,7 +2122,8 @@ static void TestLoadBadInput() {
 int main() {
     struct T { const char* name; void (*fn)(); };
     const T tests[] = {
-        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder },
+        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder }, { "SequenceShrinkDropsExecWires", TestSequenceShrinkDropsExecWires },
+        { "NodePositionRoundTrip", TestNodePositionRoundTrip }, { "UiColorRejectsNonFinite", TestUiColorRejectsNonFinite },
         { "BranchOnVariable", TestBranchOnVariable }, { "RepeatAndDone", TestRepeatAndDone },
         { "DoOnce", TestDoOnce }, { "DelayWaitsForTicks", TestDelayWaitsForTicks },
         { "StopCancelsDelayAndFiresOnStop", TestStopCancelsDelayAndFiresOnStop },
@@ -2038,7 +2133,8 @@ int main() {
         { "LerpAndRandom", TestLerpAndRandom }, { "CompareAndLogic", TestCompareAndLogic },
         { "BranchWiredToCompare", TestBranchWiredToCompare }, { "GetVariableSeesLaterSets", TestGetVariableSeesLaterSets },
         { "SetVariableFromWireAndDefault", TestSetVariableFromWireAndDefault },
-        { "VariablesResetOnRun", TestVariablesResetOnRun }, { "ValueWireLoopStops", TestValueWireLoopStops },
+        { "VariablesResetOnRun", TestVariablesResetOnRun }, { "ValueWireLoopStops", TestValueWireLoopStops }, { "SharedInputsAreEvaluatedOnce", TestSharedInputsAreEvaluatedOnce },
+        { "SetupCycleStops", TestSetupCycleStops }, { "DestroyInSetupIsDeferred", TestDestroyInSetupIsDeferred }, { "LoadDeduplicatesGraphNames", TestLoadDeduplicatesGraphNames },
         { "ChangeObjectAndWorld", TestChangeObjectAndWorld }, { "ChangeManyProperties", TestChangeManyProperties }, { "ChangeExtraWires", TestChangeExtraWires },
         { "RemoveExtraProperty", TestRemoveExtraProperty }, { "ChangePropertiesSaveLoad", TestChangePropertiesSaveLoad },
         { "ChangeExtrasInSetup", TestChangeExtrasInSetup }, { "ChangeValueFromWire", TestChangeValueFromWire },

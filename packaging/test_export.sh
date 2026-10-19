@@ -10,7 +10,14 @@ set -euo pipefail
 
 PROJECT="${1:?usage: test_export.sh <project dir> [kit dir] [build dir]}"
 KIT="${2:-}"
-BUILD="${3:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-vk}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD="${3:-}"
+if [[ -z "${BUILD}" ]]; then   # default: the first build dir that has flyexport
+    for d in build/release build build-vk; do
+        if [[ -x "${ROOT}/${d}/flyexport" ]]; then BUILD="${ROOT}/${d}"; break; fi
+    done
+fi
+if [[ ! -x "${BUILD}/flyexport" ]]; then echo "flyexport not found (looked in build/release, build, build-vk); pass the build dir as 3rd argument"; exit 1; fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT

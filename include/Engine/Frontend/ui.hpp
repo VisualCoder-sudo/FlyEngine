@@ -93,8 +93,10 @@ void UngroupModelContaining(ScatteredObject* member);
 void PlaceDuplicates(const std::vector<ScatteredObject*>& sources, const std::vector<ScatteredObject*>& copies);
 // Explorer actions that need to remove entities defer the actual deletion to
 // the interaction manager (which owns the engine + object vector).
-void RequestDelete(const std::vector<ScatteredObject*>& targets);
-std::vector<ScatteredObject*> ConsumePendingDelete();
+// `undoRecorded`: the caller's own undo step (taken before it changed the scene) already covers the delete.
+void RequestDelete(const std::vector<ScatteredObject*>& targets, bool undoRecorded = false);
+// `undoRecorded` (optional) is true when every pending request had its undo step recorded already.
+std::vector<ScatteredObject*> ConsumePendingDelete(bool* undoRecorded = nullptr);
 // Explorer "Duplicate": same as Ctrl+D on the current selection, run by the interaction manager.
 void RequestDuplicate();
 // The next selection change will not unfold the explorer to its row (duplicates stay as folded as the source).
@@ -138,6 +140,11 @@ void ShowPreferences(bool show, int category);
 // The top-bar Import button requests a mesh import; the interaction manager
 // consumes the request once per frame it was set (never while play is active).
 bool ConsumeImportRequest();
+
+// "Get started with Flyengine!" guided tour (ui_tutorial.cpp); DrawTutorial once per frame, last, from DrawImGuiFrame.
+void OpenTutorial();
+bool IsTutorialActive();
+void DrawTutorial();
 
 // Export (File > Export...), see ExportDialog.cpp.
 void OpenExportDialog();

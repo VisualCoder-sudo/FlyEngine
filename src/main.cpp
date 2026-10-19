@@ -138,6 +138,7 @@ void RunEditor(const project::Info& info) {
     auto sim = std::make_unique<phys::Simulation>(rawObjectPtrs);
     phys::Simulation& simRef = *sim;
     ui::SetSimulation(&simRef);
+    if (info.startTutorial) ui::OpenTutorial();
     engine.AddEntity(std::move(sim));
 
     auto interactionMgr = std::make_unique<ObjectInteractionManager>(engine, engine.GetCamera(), cameraControllerPtr, rawObjectPtrs, sceneModels, &simRef);

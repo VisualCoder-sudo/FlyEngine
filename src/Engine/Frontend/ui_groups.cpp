@@ -19,9 +19,29 @@ static void UnlinkObjectFromModel(ScatteredObject* obj) {
     obj->parentModel = nullptr;
 }
 
+// Removes the groups in `touched` (and their ancestors) that a move left with no members and no sub-groups.
+// Only groups the move itself emptied are candidates, so a group someone just created and has yet to fill stays;
+// plugin-tagged groups stay too (the plugin rebuilds them). Each group is erased only after it is detached from
+// its parent, and nothing is dereferenced once erased.
+static void PruneEmptied(const std::vector<ModelGroup*>& touched) {
+    if (!g_sceneModels) return;
+    std::unordered_set<ModelGroup*> removed;
+    for (ModelGroup* g : touched) {
+        while (g && !removed.count(g) && g->members.empty() && g->children.empty() && g->pluginTag.empty()) {
+            ModelGroup* up = g->parent;
+            if (up) up->RemoveChild(g);
+            removed.insert(g);
+            g_sceneModels->erase(std::remove_if(g_sceneModels->begin(), g_sceneModels->end(),
+                [&](const std::unique_ptr<ModelGroup>& m) { return m.get() == g; }), g_sceneModels->end());
+            g = up;
+        }
+    }
+}
+
 // Places `g` under `newParent` (nullptr = root) right before/after `ref` (a sibling under that same parent).
 // Root order is the order of g_sceneModels, nested order is ModelGroup::children.
 static void PlaceGroup(ModelGroup* g, ModelGroup* newParent, ModelGroup* ref, bool after) {
+    if (ref == g) return;   // dropped beside itself: nothing moves
     if (g->parent) g->parent->RemoveChild(g);
     g->parent = newParent;
     if (newParent) {
@@ -69,14 +89,17 @@ void GroupSelectedObjects() {
     ModelGroup* model = CreateEmptyGroup(common);
     if (!model) return;
     model->name = "Model";
+    std::vector<ModelGroup*> touched;
     for (auto* obj : g_selection) {
         if (!obj) continue;
         // A selected object already inside a model: pull it out first so
         // members never end up owned by two containers.
+        if (obj->parentModel) touched.push_back(obj->parentModel);
         UnlinkObjectFromModel(obj);
         model->members.push_back(obj);
         obj->parentModel = model;
     }
+    PruneEmptied(touched);
 }
 
 // Dissolves `model`: its objects and sub-groups move up to its parent (or the root).
@@ -210,8 +233,14 @@ std::vector<ScatteredObject*> DissolveModelTree(ModelGroup* model) {
 // one of target's members.
 void MoveObjectsToGroup(const std::vector<ScatteredObject*>& dragged, ModelGroup* target,
                         ScatteredObject* ref, bool after) {
-    for (auto* obj : dragged) UnlinkObjectFromModel(obj);
-    if (!target) return;
+    // Dropped beside one of the dragged objects themselves: nothing moves.
+    if (ref && std::find(dragged.begin(), dragged.end(), ref) != dragged.end()) return;
+    std::vector<ModelGroup*> touched;
+    for (auto* obj : dragged) {
+        if (obj && obj->parentModel) touched.push_back(obj->parentModel);
+        UnlinkObjectFromModel(obj);
+    }
+    if (!target) { PruneEmptied(touched); return; }
     auto& members = target->members;
     auto it = ref ? std::find(members.begin(), members.end(), ref) : members.end();
     if (it != members.end() && after) ++it;
@@ -221,13 +250,16 @@ void MoveObjectsToGroup(const std::vector<ScatteredObject*>& dragged, ModelGroup
         ++it;
         obj->parentModel = target;
     }
+    PruneEmptied(touched);
 }
 
 // Re-parents a group (and everything inside it). Returns false for a drop that would put a group inside itself.
 bool MoveGroupTo(ModelGroup* g, ModelGroup* newParent, ModelGroup* ref, bool after) {
     if (!g) return false;
     if (newParent == g || (newParent && newParent->IsDescendantOf(g))) return false;
+    ModelGroup* oldParent = g->parent;
     PlaceGroup(g, newParent, ref, after);
+    if (oldParent && oldParent != newParent) PruneEmptied({ oldParent });
     return true;
 }
 

@@ -632,7 +632,8 @@ inline Widget Image(const std::string& id, const std::string& file, Layout l, Co
 inline void SetText(const std::string& id, const std::string& text)  { Widget(id).SetText(text); }
 inline void SetFont(const std::string& id, const std::string& font)  { Widget(id).SetFont(font); }
 inline void SetValue(const std::string& id, float value)             { Widget(id).SetValue(value); }
-inline void SetColor(const std::string& id, ColorRGBA color, ColorRGBA background = { 0, 0, 0, 160 }) { if (fly::detail::HaveUI()) detail::Color(id, color, background); }
+inline void SetColor(const std::string& id, ColorRGBA color)         { Widget(id).SetColor(color); }   // keeps a bar's background
+inline void SetColor(const std::string& id, ColorRGBA color, ColorRGBA background) { if (fly::detail::HaveUI()) detail::Color(id, color, background); }
 inline void Show(const std::string& id, bool visible = true)        { Widget(id).Show(visible); }
 inline void Hide(const std::string& id)                              { Widget(id).Hide(); }
 inline void Remove(const std::string& id)                            { Widget(id).Remove(); }

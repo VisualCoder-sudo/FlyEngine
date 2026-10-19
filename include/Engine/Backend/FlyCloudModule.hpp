@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <string>
 #include <thread>
 #include <functional>
@@ -45,6 +46,9 @@ public:
                     return;
                 }
                 std::string api_key = ConfigGetString(cfg, "api_key", "");
+                if (!api_key.empty() && !IsSecureOrLocalUrl(server_url)) {
+                    on_log("! server_url is not https: the API key and your project are sent unencrypted. Use https:// unless the server is on this machine.", true);
+                }
                 // A project name chosen with 'fcloud change --project --name' is
                 // stored in the config and wins over the local folder name, so
                 // pushes/deletes keep targeting the renamed cloud project.
@@ -510,6 +514,20 @@ private:
         return true;
     }
 
+    // https, or plain http to this machine (where nothing crosses a network).
+    static bool IsSecureOrLocalUrl(const std::string& url) {
+        std::string u = url;
+        std::transform(u.begin(), u.end(), u.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (u.rfind("https://", 0) == 0) return true;
+        if (u.rfind("http://", 0) != 0) return false;
+        const std::string host = u.substr(7);
+        for (const char* local : { "localhost", "127.0.0.1", "[::1]" }) {
+            const std::string l = local;
+            if (host.compare(0, l.size(), l) == 0 && (host.size() == l.size() || host[l.size()] == ':' || host[l.size()] == '/')) return true;
+        }
+        return false;
+    }
+
     static void ExecutePush(
         const std::string& project_root,
         const std::string& server_url,
@@ -525,18 +543,38 @@ private:
             return;
         }
         std::string temp_zip = project_root + "/.temp_export.zip";
+        // Removes the temp zip on every exit path, exceptions included.
+        struct TempZipGuard {
+            std::string path;
+            ~TempZipGuard() { std::error_code ec; std::filesystem::remove(path, ec); }
+        } zip_guard{temp_zip};
 
         mz_zip_archive zip{};
-        mz_zip_writer_init_file(&zip, temp_zip.c_str(), 0);
+        if (!mz_zip_writer_init_file(&zip, temp_zip.c_str(), 0)) {
+            on_log("✕ Could not create " + temp_zip + " (disk full or folder not writable). Nothing was uploaded.", true);
+            return;
+        }
+        bool zip_ok = true;
+        std::string zip_failed;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(project_root)) {
             if (!entry.is_regular_file()) continue;
             std::string path = entry.path().generic_string();
             std::string rel = std::filesystem::relative(entry.path(), project_root).generic_string();
             if (rel.rfind(".", 0) == 0 || rel.find(".import") != std::string::npos) continue;
-            mz_zip_writer_add_file(&zip, rel.c_str(), path.c_str(), NULL, 0, MZ_BEST_COMPRESSION);
+            if (rel == "fcloud_config.json") continue;   // holds the plaintext API key: never upload it
+            if (!mz_zip_writer_add_file(&zip, rel.c_str(), path.c_str(), NULL, 0, MZ_BEST_COMPRESSION)) {
+                zip_ok = false;
+                zip_failed = rel;
+                break;
+            }
         }
-        mz_zip_writer_finalize_archive(&zip);
+        if (zip_ok) zip_ok = mz_zip_writer_finalize_archive(&zip) != 0;
         mz_zip_writer_end(&zip);
+        if (!zip_ok) {
+            on_log(zip_failed.empty() ? "✕ Could not finish the archive. Nothing was uploaded."
+                                      : "✕ Could not add '" + zip_failed + "' to the archive. Nothing was uploaded.", true);
+            return;
+        }
 
         CURL* curl = curl_easy_init();
         long http_code = 0;
@@ -575,7 +613,6 @@ private:
             curl_easy_cleanup(curl);
         }
 
-        std::filesystem::remove(temp_zip);
         if (http_code == 200) {
             on_log("✨ SUCCESS: Build v" + version + " published to FlyCloud!", false);
         } else if (http_code == 308) {
@@ -622,8 +659,12 @@ private:
             return;
         }
 
-        // fcloud delete --previous --all [-y]
+        // fcloud delete --previous --all -y
         if (HasArg(args, "--all")) {
+            if (!HasArg(args, "-y")) {
+                on_log("✕ Deleting ALL versions is permanent. Add '-y' to confirm: fcloud delete --previous --all -y", true);
+                return;
+            }
             DeleteFromServer(server_url, api_key, project_name, "all", 1, "", on_log);
             return;
         }

@@ -53,7 +53,15 @@ foreach(header ${HEADERS})
         endif()
     endforeach()
 
+    # A sokol-shdc output change would otherwise yield empty tables silently.
+    if(NOT programs)
+        message(FATAL_ERROR "GenShaderRegistry: no shader programs found in ${header}; sokol-shdc output format changed?")
+    endif()
+
     foreach(sym IN LISTS programs)
+        if("${u_${sym}}${t_${sym}}${a_${sym}}" STREQUAL "")
+            message(FATAL_ERROR "GenShaderRegistry: no uniforms, textures or attributes scraped for ${sym} in ${header}; sokol-shdc output format changed?")
+        endif()
         string(LENGTH "${module}_" prefixLen)
         string(SUBSTRING "${sym}" ${prefixLen} -1 program)
         string(APPEND tables

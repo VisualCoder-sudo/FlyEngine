@@ -55,6 +55,8 @@ Categories=Development;IDE;Graphics;
 D
 cp $SRC/assets/icons/hicolor/256x256/apps/flyengine.png $A/flyengine.png
 
+# NOTE: "continuous" is a moving download with no published checksum, so it is not verified here. To pin it, download a
+# specific appimagetool release, check its sha256 yourself, and put that URL and hash here (sha256sum -c).
 wget -q -O /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
 chmod +x /tmp/appimagetool
 ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run --no-appstream $A $OUT/Flyengine-x86_64.AppImage

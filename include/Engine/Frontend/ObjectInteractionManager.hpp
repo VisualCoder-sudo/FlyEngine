@@ -85,14 +85,14 @@ private:
     void RemoveEmptyModels();
 
     // Undo/redo support.
-    bool CaptureSnapshot(std::string& bytes, std::vector<std::string>& sel) const;
+    bool CaptureSnapshot(std::string& bytes, std::vector<int>& sel) const;
     void PushUndoNow();               // snapshot current scene and push as undo step
     void BeginDragUndoCapture();      // remember pre-drag scene to commit later
     void EndDragUndoCapture();        // push the pre-drag snapshot only if the scene changed
     void DoUndo();
     void DoRedo();
-    void RestoreFromSnapshot(const std::string& bytes, const std::vector<std::string>& selNames);
-    void SelectObjectsByName(const std::vector<std::string>& names);
+    void RestoreFromSnapshot(const std::string& bytes, const std::vector<int>& selIndices);
+    void SelectObjectsByIndex(const std::vector<int>& indices);
 
     // Playtest isolation: whatever scripts, the console or physics do during
     // Play is temporary. The objects are snapshotted when Play starts and, if
@@ -103,13 +103,13 @@ private:
     void RestorePlaySnapshot();
     std::string playSnapshotBytes;
     std::vector<std::pair<std::string, std::string>> playSnapshotRecords;   // per object, to report and verify the restore
-    std::vector<std::string> playSnapshotSel;
+    std::vector<int> playSnapshotSel;
     bool playSnapshotValid = false;
     bool wasPlaying = false;
 
     UndoSystem undo;
     std::string pendingUndoBytes;
-    std::vector<std::string> pendingUndoSel;
+    std::vector<int> pendingUndoSel;
     bool hasPendingUndo = false;
 
     // Top-bar Import button: file dialog -> copy into project -> spawn + select.
