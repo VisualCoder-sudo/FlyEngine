@@ -113,7 +113,7 @@ struct ShooterRange : Script {
                     const Hit h = Cast(v.position, Normalize(v.target - v.position), 120.0f);
                     if (h) {
                         Emit("Sparks", h.point, h.normal, 6, 0.5f);
-                        Decal(h.point, h.normal, 0.25f, { 15, 15, 15, 220 }, 25.0f);
+                        Decal(h.point, h.normal, 0.25f, { 15, 15, 15, 220 }, 8.0f);
                         for (Target& t : targets) {
                             if (!t.up || !(t.obj == h.object)) continue;
                             t.up = false;
