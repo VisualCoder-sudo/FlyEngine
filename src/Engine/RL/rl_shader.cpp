@@ -128,13 +128,19 @@ void InvalidateProgramShader(const char* name) {
     auto it = g_programShaders.find(name);
     if (it == g_programShaders.end()) return;
     BatchFlush(); // queued draws still reference the old shader
-    DropPipelinesForShader(it->second.id);
-    sg_destroy_shader(it->second);
-    g_programShaders.erase(it);
-    // Re-resolve every live Shader built from this program so none keeps the dead handle.
     const ProgramInfo* prog = FindProgramLive(name);
     if (!prog) return;
+    const sg_shader old = it->second;
+    g_programShaders.erase(it);
     const sg_shader fresh = ProgramShader(prog);
+    if (fresh.id == SG_INVALID_ID) {
+        // The edited shader does not compile: keep drawing with the previous one rather than nothing.
+        g_programShaders[name] = old;
+        return;
+    }
+    DropPipelinesForShader(old.id);
+    sg_destroy_shader(old);
+    // Re-resolve every live Shader built from this program so none keeps the dead handle.
     for (ShaderRec& sh : Shaders()) {
         if (sh.alive && sh.program && std::strcmp(sh.program->name, name) == 0) {
             sh.program = prog;

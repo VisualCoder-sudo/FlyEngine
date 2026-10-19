@@ -584,7 +584,7 @@ void BuildModelMenu(ModelGroup* model) {
             if (s_selGroup == model) s_selGroup = nullptr;
             RequestDelete(targets);
             SetSelection({}, nullptr);
-        }, false);   // RequestDelete records the undo step itself
+        });
         return;
     }
     AddMenu("New Group Inside", [model] {
@@ -602,7 +602,7 @@ void BuildModelMenu(ModelGroup* model) {
         if (s_selGroup == model) s_selGroup = nullptr;
         RequestDelete(targets);
         SetSelection({}, nullptr);
-    }, false);   // RequestDelete records the undo step itself
+    });
 }
 
 void InsertScript() {

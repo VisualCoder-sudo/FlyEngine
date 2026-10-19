@@ -15,6 +15,12 @@ Fixed (compile-checked only; not run, no tests added): 1, 2, 3, 4, 5, 6, 7, 8, 9
 - 5: `ModelsRollback` in `ScenePersistence.cpp` keeps the old groups until a load or restore succeeds.
 - 6: typed non-finite numbers become 0. 7: dropped duplicates become `name (1).ext`. 8: rename rejects separators/`..` and existing targets.
 - 9: project and scene saves write `<file>.tmp` then rename, and check the flush.
+
+Second pass (4 Sonnet fixers, reviewed and merged; compile-checked, `tests/visual_script_test.cpp` passes 534 checks per the scripting fixer, nothing else run):
+- Fixed: 10, 11 (comments only, sandbox NOT wired in), 12, 13 (files with `\` in the name are skipped on export), 14 (warns on non-https instead of refusing), 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35 (manifests never run through `flyplugin validate`), 36, 37 (logs only, no dialog), 38.
+- Also fixed minors: CLI validation in `flyexport`, `test_export.sh` default build dir, failed shader compile no longer cached, zero-size picking ray, `RemoveByName` selection.
+- Not fixed: stale assets on re-export, `appimagetool` pinning (comment only), `FindClip` prefix, pre-init screenshots, explorer rename UTF-8 truncation, group-delete double undo (a fixer's change was reverted: it would have lost the group-restoring undo step), tutorial `cc` build still blocks the UI thread.
+- Behaviour changes to know about: a VisualScript value node wired into two inputs now evaluates once (one Random value for both); exports exclude `*.pem`/`*.key`; `fcloud delete --previous --all` needs `-y`; an edited shader that fails to compile keeps the previous one.
 Everything else below is still open.
 
 ## Critical / data loss
