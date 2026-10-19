@@ -199,6 +199,7 @@ private:
                                std::vector<float>& verts, std::vector<float>& normals,
                                std::vector<float>& uvs, std::vector<unsigned short>& indices) const;
     Vector3 ComputeGridNormal(int x, int z) const;
+    mutable std::vector<int> adaptiveGrid;   // heightmap sample -> adaptive vertex index (-1 = not emitted yet)
     void UpdateSplatmapTexture();
     void UpdatePaintColorTexture();
     float HeightLocal(float lx, float lz) const;

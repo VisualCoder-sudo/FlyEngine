@@ -261,8 +261,10 @@ See [docs/ScriptAPI.md](docs/ScriptAPI.md), and [docs/FirstGame.md](docs/FirstGa
 
 ### Sample projects
 
-`ScriptingSDK/samples/projects/` holds Coin Dash, Physics Playground and Campfire Valley. Each is offered as a template
-in the New Project dialog, which copies it (scene, scripts and terrain). `make_sample_projects` regenerates them.
+`assets/templates/` holds Coin Dash, Physics Playground and Campfire Valley. Each folder has a `<Name>.flyproj`, a
+`data.json` (name, description, author), a `thumbnail.png` and a `deps/` folder whose contents are copied into the new
+project (scripts, terrain). Every folder there is offered under **Choose from template** in the New Project panel.
+`make_sample_projects` regenerates the `.flyproj` and terrain files.
 
 ### Particles
 

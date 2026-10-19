@@ -96,6 +96,14 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
 }
 } // namespace
 
+std::unique_ptr<ScatteredObject> MakeBaseplate() {
+    auto plate = std::make_unique<ScatteredObject>(Vector3{ 0.0f, -0.5f, 0.0f }, Vector3{ 200.0f, 1.0f, 200.0f },
+                                                   Color{ 58, 62, 72, 255 }, ShapeType::Cube);
+    plate->SetName("Baseplate");
+    plate->locked = true;   // the explorer's lock: not pickable in the viewport until unlocked
+    return plate;
+}
+
 namespace {
 // v26: nested groups + hide/lock flags. One line per model: parent index (-1 = root),
 // hidden, locked; then one line per object: hidden, locked.
@@ -144,7 +152,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 28\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 29\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -498,7 +506,7 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 28) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 29) return false;
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
 
     models.clear(); // loading a scene rebuilds model containers from scratch
@@ -925,6 +933,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
         vscript::WriteSnippetSources(::project::GetCurrentProject().path, false);   // keeps Code Snippet classes in step with the scene
     }
 
+    // v29: the floor is an ordinary object. Older scenes were drawn over an engine-owned floor, so they get a
+    // Baseplate here (appended, so the object indices stored above stay valid).
+    if (version < 29) loaded.push_back(MakeBaseplate());
+
     AttachDeferredModels(deferredModels);
     for (auto& object : loaded) {
         objects.push_back(object.get());
@@ -951,7 +963,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 28\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 29\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -1019,7 +1031,7 @@ bool RestoreSceneFromMemory(std::istringstream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 28) return false;
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 29) return false;
 
     models.clear();
 

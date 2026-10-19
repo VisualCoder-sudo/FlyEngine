@@ -20,8 +20,10 @@
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine.hpp"
 #include "raylib.h"
+#include "cJSON.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -43,6 +45,8 @@ namespace detail {
 
     constexpr int kW = 900;
     constexpr int kH = 560;
+    constexpr int kMinW = 700;    // below this the two panels no longer fit side by side
+    constexpr int kMinH = 460;
 
     const char* kSignature = "FLYENGINE_PROJECT";
     constexpr int kVersion = 1;
@@ -377,10 +381,11 @@ namespace detail {
         bool focused = false;
     };
 
-    void DrawTextField(Rectangle rec, NameField& field) {
+    void DrawTextField(Rectangle rec, NameField& field, bool enabled = true) {
         Vector2 mouse = GetMousePosition();
-        const bool hovered = CheckCollisionPointRec(mouse, rec);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        const bool hovered = enabled && CheckCollisionPointRec(mouse, rec);
+        if (!enabled) field.focused = false;
+        if (enabled && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             field.focused = CheckCollisionPointRec(mouse, rec);
             if (field.focused) field.cursor = static_cast<int>(field.text.size());
         }
@@ -440,24 +445,215 @@ namespace detail {
 
     Color ROWHoverColor() { return theme::ROW_HOVER; }
 
-    bool TemplateCard(Rectangle rec, const char* title, const char* desc, bool selected) {
-        const bool hovered = Hovered(rec);
-        Color bg = selected ? theme::ACCENT_SOFT : (hovered ? ROWHoverColor() : theme::WIDGET);
-        DrawRectangleRounded(rec, 0.14f, 4, bg);
-        DrawRectangleLinesEx(rec, selected ? 2.0f : 1.0f,
+    // ---- New Project templates ---------------------------------------------------
+    // Every folder in assets/templates/ with a <Name>/<Name>.flyproj is a template: data.json gives its name,
+    // description and author, thumbnail.png its card image, and deps/ is copied into the new project.
+
+    constexpr float kCardW = 288.0f;
+    constexpr float kCardH = 110.0f;
+    constexpr float kCardRound = 0.16f;          // DrawRectangleRounded roundness of a card
+    constexpr float kThumbBlurMax = 10.0f;       // blur radius (px) right under the text
+    constexpr float kThumbBlurReach = 34.0f;     // distance (px) from the text over which the blur fades to 0
+
+    struct TemplateInfo {
+        std::string id;     // folder name
+        std::string name;
+        std::string desc;
+        std::string author;
+        Texture2D thumb = { 0 };
+    };
+
+    std::string TemplatesRoot() { return platform::ResolveAsset("assets/templates"); }
+
+    // Where DrawTemplateCard puts its two text lines, relative to the card.
+    Rectangle TitleRect(const std::string& name) { return { 14.0f, 10.0f, MeasureTextU(name.c_str(), 20.0f), 22.0f }; }
+    Rectangle DescRect(const std::string& desc) { return { 14.0f, kCardH - 26.0f, MeasureTextU(desc.c_str(), 13.0f), 16.0f }; }
+
+    // Bakes thumbnail.png into a card-sized texture: cover-cropped, blurred by a radius that is largest behind the
+    // title and description and fades to 0 with distance from them, with rounded corners cut out of the alpha.
+    Texture2D BakeThumbnail(const std::string& file, const std::string& name, const std::string& desc) {
+        Texture2D tex = { 0 };
+        Image img = LoadImage(file.c_str());
+        if (img.data == nullptr) return tex;
+        const int w = static_cast<int>(kCardW), h = static_cast<int>(kCardH);
+        ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        const float want = kCardW / kCardH;
+        const float have = static_cast<float>(img.width) / static_cast<float>(img.height);
+        Rectangle crop = { 0.0f, 0.0f, static_cast<float>(img.width), static_cast<float>(img.height) };
+        // Whole numbers only: ImageCrop sizes its buffer from (int)(width*height) but copies (int)width-wide rows.
+        if (have > want) { crop.width = std::floor(crop.height * want); crop.x = std::floor((img.width - crop.width) * 0.5f); }
+        else { crop.height = std::floor(crop.width / want); crop.y = std::floor((img.height - crop.height) * 0.5f); }
+        ImageCrop(&img, crop);
+        ImageResize(&img, w, h);
+
+        Color* px = static_cast<Color*>(img.data);
+        const Rectangle texts[2] = { TitleRect(name), DescRect(desc) };
+        std::vector<int> radius(static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float d = 1e9f;
+                for (const Rectangle& r : texts) {
+                    const float dx = std::max(std::max(r.x - x, 0.0f), x - (r.x + r.width));
+                    const float dy = std::max(std::max(r.y - y, 0.0f), y - (r.y + r.height));
+                    d = std::min(d, std::hypot(dx, dy));
+                }
+                const float t = std::min(1.0f, d / kThumbBlurReach);
+                radius[static_cast<size_t>(y) * w + x] = static_cast<int>(std::lround(kThumbBlurMax * (1.0f - t * t * (3.0f - 2.0f * t))));
+            }
+        }
+        const auto radiusAt = [&](int x, int y) { return radius[static_cast<size_t>(y) * w + x]; };
+        std::vector<Color> tmp(px, px + static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const int r = radiusAt(x, y), x0 = std::max(0, x - r), x1 = std::min(w - 1, x + r);
+                int sum[3] = { 0, 0, 0 };
+                for (int i = x0; i <= x1; i++) { const Color& c = px[y * w + i]; sum[0] += c.r; sum[1] += c.g; sum[2] += c.b; }
+                const int n = x1 - x0 + 1;
+                tmp[y * w + x] = { static_cast<unsigned char>(sum[0] / n), static_cast<unsigned char>(sum[1] / n), static_cast<unsigned char>(sum[2] / n), 255 };
+            }
+        }
+        for (int x = 0; x < w; x++) {
+            for (int y = 0; y < h; y++) {
+                const int r = radiusAt(x, y);
+                const int y0 = std::max(0, y - r), y1 = std::min(h - 1, y + r);
+                int sum[3] = { 0, 0, 0 };
+                for (int i = y0; i <= y1; i++) { const Color& c = tmp[i * w + x]; sum[0] += c.r; sum[1] += c.g; sum[2] += c.b; }
+                const int n = y1 - y0 + 1;
+                px[y * w + x] = { static_cast<unsigned char>(sum[0] / n), static_cast<unsigned char>(sum[1] / n), static_cast<unsigned char>(sum[2] / n), 255 };
+            }
+        }
+
+        // Rounded corners: antialiased coverage against a circle in each corner.
+        const float cr = kCardRound * std::min(kCardW, kCardH) * 0.5f;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const float cx = std::min(std::max(x + 0.5f, cr), kCardW - cr);
+                const float cy = std::min(std::max(y + 0.5f, cr), kCardH - cr);
+                const float d = std::hypot(x + 0.5f - cx, y + 0.5f - cy);
+                const float cover = std::min(1.0f, std::max(0.0f, cr - d + 0.5f));
+                px[y * w + x].a = static_cast<unsigned char>(cover * 255.0f);
+            }
+        }
+        tex = LoadTextureFromImage(img);
+        UnloadImage(img);
+        return tex;
+    }
+
+    // Reads data.json's string fields (name, description, author); missing ones stay as they were.
+    void ReadTemplateData(const std::string& file, TemplateInfo& t) {
+        std::ifstream in(file, std::ios::binary);
+        if (!in.is_open()) return;
+        std::stringstream buf;
+        buf << in.rdbuf();
+        const std::string text = buf.str();
+        cJSON* root = cJSON_Parse(text.c_str());
+        if (root == nullptr) return;
+        const auto str = [&](const char* key, std::string& out) {
+            const cJSON* item = cJSON_GetObjectItemCaseSensitive(root, key);
+            if (cJSON_IsString(item) && item->valuestring) out = item->valuestring;
+        };
+        str("name", t.name);
+        str("description", t.desc);
+        str("author", t.author);
+        cJSON_Delete(root);
+    }
+
+    std::vector<TemplateInfo> LoadTemplates() {
+        std::vector<TemplateInfo> list;
+        const std::string root = TemplatesRoot();
+        if (root.empty()) return list;
+        std::error_code ec;
+        for (fs::directory_iterator it(U8Path(root), ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_directory(ec)) continue;
+            TemplateInfo t;
+            t.id = it->path().filename().string();
+            const fs::path dir = it->path();
+            if (!fs::exists(dir / (t.id + ".flyproj"), ec)) continue;
+            t.name = t.id;
+            ReadTemplateData((dir / "data.json").string(), t);
+            t.thumb = BakeThumbnail((dir / "thumbnail.png").string(), t.name, t.desc);
+            list.push_back(std::move(t));
+        }
+        std::sort(list.begin(), list.end(), [](const TemplateInfo& a, const TemplateInfo& b) { return a.name < b.name; });
+        return list;
+    }
+
+    void UnloadTemplates(std::vector<TemplateInfo>& list) {
+        for (TemplateInfo& t : list) if (t.thumb.id > 0) UnloadTexture(t.thumb);
+        list.clear();
+    }
+
+    void DrawShadowedText(const char* text, float x, float y, float size, Color color) {
+        DrawTextU(text, x + 1.0f, y + 1.0f, size, Color{ 0, 0, 0, 200 });
+        DrawTextU(text, x, y, size, color);
+    }
+
+    // One thumbnail card. True when clicked.
+    bool TemplateCard(Rectangle rec, const TemplateInfo& t, bool selected, bool clickable) {
+        const bool hovered = clickable && Hovered(rec);
+        if (t.thumb.id > 0) DrawTexture(t.thumb, static_cast<int>(rec.x), static_cast<int>(rec.y), WHITE);
+        else DrawRectangleRounded(rec, kCardRound, 6, hovered ? ROWHoverColor() : theme::WIDGET);
+        DrawRectangleRoundedLinesEx(rec, kCardRound, 6, selected ? 2.0f : 1.0f,
             selected ? theme::ACCENT : (hovered ? theme::BORDER_STRONG : theme::BORDER));
-        DrawTextU(title, rec.x + 10.0f, rec.y + 7.0f, 15.0f, selected ? theme::TEXT : theme::TEXT_MUTED);
-        DrawTextU(desc, rec.x + 10.0f, rec.y + 27.0f, 11.0f, theme::TEXT_DIM);
+        DrawShadowedText(t.name.c_str(), rec.x + 14.0f, rec.y + 10.0f, 20.0f, theme::TEXT);
+        DrawShadowedText(t.desc.c_str(), rec.x + 14.0f, rec.y + rec.height - 26.0f, 13.0f, theme::TEXT);
         if (hovered) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         return hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    }
+
+    // Modal grid of template cards. Returns 1 when `chosen` changed (clicking the chosen card clears it), 2 when closed
+    // without a pick (Esc, the Close button or a click outside), 0 while it stays open.
+    int DrawTemplatePicker(const std::vector<TemplateInfo>& list, std::string& chosen, int& scroll, bool interactive) {
+        const float sw = static_cast<float>(GetScreenWidth()), sh = static_cast<float>(GetScreenHeight());
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{ 0, 0, 0, 160 });
+        constexpr float gap = 14.0f;
+        // As many columns as fit (1 to 3), and a panel just tall enough for the cards, capped to the window.
+        const int cols = std::max(1, std::min(3, static_cast<int>((sw - 40.0f - 32.0f + gap) / (kCardW + gap))));
+        const int rows = std::max(1, (static_cast<int>(list.size()) + cols - 1) / cols);
+        const float contentH = rows * kCardH + (rows - 1) * gap;
+        const float panelW = 32.0f + cols * kCardW + (cols - 1) * gap;
+        const float panelH = std::min(sh - 40.0f, std::max(150.0f, 64.0f + contentH));
+        const Rectangle panel = { std::floor((sw - panelW) * 0.5f), std::floor((sh - panelH) * 0.5f), panelW, panelH };
+        DrawRectangleRounded(panel, 0.04f, 6, theme::PANEL);
+        DrawRectangleRoundedLinesEx(panel, 0.04f, 6, 1.0f, theme::BORDER_STRONG);
+        DrawTextU("CHOOSE A TEMPLATE", panel.x + 16, panel.y + 14, 13, theme::ACCENT);
+        DrawLine(static_cast<int>(panel.x) + 16, static_cast<int>(panel.y) + 38,
+            static_cast<int>(panel.x + panel.width) - 16, static_cast<int>(panel.y) + 38, theme::DIVIDER);
+
+        const bool close = Button({ panel.x + panel.width - 88, panel.y + 10, 72, 22 }, "Close") && interactive;
+        const Rectangle area = { panel.x + 16, panel.y + 48, panel.width - 32, panel.height - 64 };
+        const float maxScroll = std::max(0.0f, contentH - area.height);
+        float off = static_cast<float>(scroll);
+        if (CheckCollisionPointRec(GetMousePosition(), area)) off -= GetMouseWheelMove() * 36.0f;
+        off = std::min(std::max(off, 0.0f), maxScroll);
+        scroll = static_cast<int>(off);
+
+        int result = 0;
+        BeginScissorMode(static_cast<int>(area.x), static_cast<int>(area.y), static_cast<int>(area.width), static_cast<int>(area.height));
+        if (list.empty()) DrawTextU("No templates found in assets/templates", area.x, area.y + 8, 13, theme::TEXT_DIM);
+        for (size_t i = 0; i < list.size(); i++) {
+            const Rectangle rec = { area.x + (i % cols) * (kCardW + gap), area.y + (i / cols) * (kCardH + gap) - off, kCardW, kCardH };
+            const bool visible = rec.y + rec.height > area.y && rec.y < area.y + area.height;
+            if (!visible) continue;
+            const bool selected = list[i].id == chosen;
+            if (TemplateCard(rec, list[i], selected, interactive && CheckCollisionPointRec(GetMousePosition(), area))) {
+                chosen = selected ? std::string() : list[i].id;
+                result = 1;
+            }
+        }
+        EndScissorMode();
+
+        if (result == 0 && interactive && (close || IsKeyPressed(KEY_ESCAPE)
+            || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !CheckCollisionPointRec(GetMousePosition(), panel)))) result = 2;
+        return result;
     }
 
     // Modal confirmation shown before a project is deleted from disk.
     // Returns 1 if the user confirmed deletion, 2 if they cancelled, 0 otherwise.
     int DrawDeleteConfirmDialog(const std::string& name, const std::string& path) {
-        DrawRectangle(0, 0, kW, kH, Color{ 0, 0, 0, 140 });
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{ 0, 0, 0, 140 });
 
-        Rectangle panel = { kW * 0.5f - 200.0f, kH * 0.5f - 85.0f, 400.0f, 170.0f };
+        Rectangle panel = { GetScreenWidth() * 0.5f - 200.0f, GetScreenHeight() * 0.5f - 85.0f, 400.0f, 170.0f };
         DrawRectangleRounded(panel, 0.12f, 4, theme::PANEL);
         DrawRectangleLinesEx(panel, 1.0f, theme::BORDER_STRONG);
 
@@ -488,9 +684,9 @@ namespace detail {
         platform::PathPrompt& p = platform::GetPathPrompt();
         if (!p.active) return;
 
-        DrawRectangle(0, 0, kW, kH, Color{ 0, 0, 0, 140 });
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{ 0, 0, 0, 140 });
 
-        Rectangle panel = { kW * 0.5f - 240.0f, kH * 0.5f - 80.0f, 480.0f, 160.0f };
+        Rectangle panel = { GetScreenWidth() * 0.5f - 240.0f, GetScreenHeight() * 0.5f - 80.0f, 480.0f, 160.0f };
         DrawRectangleRounded(panel, 0.12f, 4, theme::PANEL);
         DrawRectangleLinesEx(panel, 1.0f, theme::BORDER_STRONG);
 
@@ -796,6 +992,7 @@ const Info& GetCurrentProject() { return g_currentProject; }
 
 Info ShowProjectManager() {
     InitWindow(kW, kH, "Flyengine - Project Manager");
+    SetWindowMinSize(kMinW, kMinH);
     SetTargetFPS(60);
     ApplyWindowIcon();
 
@@ -867,7 +1064,11 @@ Info ShowProjectManager() {
 
     NameField nameField;
     NameField promptField;
-    std::string chosenTemplate = "Blank";
+    std::string chosenTemplate;   // empty: no template, the project starts with an empty scene
+    std::vector<TemplateInfo> templates = LoadTemplates();
+    bool pickerOpen = false;
+    int pickerScroll = 0;
+    bool pickerJustOpened = false;   // the click that opened the picker must not also pick a card under it
     EnsureDirectory(GetProjectsDirectory());
     std::string errorMsg;
     double errorUntil = 0.0;
@@ -898,18 +1099,31 @@ Info ShowProjectManager() {
 
     while (!done && !WindowShouldClose()) {
         if (GetTime() > errorUntil) errorMsg.clear();
+        SetExitKey(pickerOpen ? KEY_NULL : KEY_ESCAPE);   // Esc closes the template picker instead of the window
+        const bool modal = confirmDelete || pickerOpen;
+        pickerJustOpened = false;
 
         Vector2 mouse = GetMousePosition();
         SetMouseCursor(MOUSE_CURSOR_DEFAULT);
 
+        // The layout follows the window: the Recent panel takes what the fixed-ish New Project panel leaves.
+        const float W = static_cast<float>(GetScreenWidth()), H = static_cast<float>(GetScreenHeight());
+        const float rw = std::min(420.0f, std::max(320.0f, W * 0.32f));            // New Project panel width
+        const float rx = W - 20.0f - rw;                                            // its left edge
+        const float lw = rx - 20.0f - 20.0f;                                        // Recent panel width
+        const float bottom = H - 20.0f;                                             // both panels end here
+        const float btnW = (lw - 32.0f - 16.0f) * 0.5f;
+        const float btnY2 = bottom - 44.0f, btnY1 = bottom - 82.0f;                 // two rows of buttons under the list
+        const float ix = rx + 16.0f, iw = rw - 32.0f;                               // New Project panel contents
+
         constexpr float rowH = 40.0f;
-        constexpr int visible = 6;
+        const int visible = std::max(1, static_cast<int>((btnY1 - 12.0f - 132.0f) / rowH));
         const int maxScroll = std::max(0, static_cast<int>(recent.size()) - visible);
         if (scroll > maxScroll) scroll = maxScroll;
 
         // The folder picker is asynchronous (native dialog on another thread, or the
         // editor's text prompt), so its result only shows up here on a later frame.
-        if (!confirmDelete) {
+        if (!modal) {
             std::string chosenFolder, chosenError;
             if (PollChosenProjectFolder(chosenFolder, chosenError)) {
                 if (!chosenFolder.empty()) openProject(chosenFolder);
@@ -918,8 +1132,8 @@ Info ShowProjectManager() {
         }
 
         // ---- recent list interaction ----
-        if (!confirmDelete) {
-            const Rectangle listRec = { 36.0f, 132.0f, 484.0f, static_cast<float>(visible) * rowH };
+        if (!modal) {
+            const Rectangle listRec = { 36.0f, 132.0f, lw - 32.0f, static_cast<float>(visible) * rowH };
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mouse, listRec)) {
                 const int row = static_cast<int>((mouse.y - listRec.y) / rowH) + scroll;
                 if (row >= 0 && row < static_cast<int>(recent.size())) {
@@ -947,8 +1161,8 @@ Info ShowProjectManager() {
         ClearBackground(theme::BG);
 
         // Header bar
-        DrawRectangleRec({ 0, 0, static_cast<float>(kW), 64 }, theme::TITLE);
-        DrawLine(0, 64, kW, 64, theme::ACCENT);
+        DrawRectangleRec({ 0, 0, W, 64 }, theme::TITLE);
+        DrawLine(0, 64, static_cast<int>(W), 64, theme::ACCENT);
 
         // =========================================================================
         // 2. DRAW TEXTURE IN THE FRAME LOOP
@@ -961,10 +1175,10 @@ Info ShowProjectManager() {
         DrawTextU("Project Manager", 80, 40, 14, theme::TEXT_MUTED);
 
         // Left panel
-        DrawRectangleRec({ 20, 84, 520, 456 }, theme::PANEL);
-        DrawRectangleLinesEx({ 20, 84, 520, 456 }, 1.0f, theme::BORDER);
+        DrawRectangleRec({ 20, 84, lw, bottom - 84.0f }, theme::PANEL);
+        DrawRectangleLinesEx({ 20, 84, lw, bottom - 84.0f }, 1.0f, theme::BORDER);
         DrawTextU("Recent", 36, 96, 13, theme::ACCENT);
-        DrawLine(36, 120, 524, 120, theme::DIVIDER);
+        DrawLine(36, 120, static_cast<int>(20.0f + lw - 16.0f), 120, theme::DIVIDER);
 
         if (recent.empty()) {
             DrawTextU("No recent projects yet.", 36, 150, 14, theme::TEXT_DIM);
@@ -974,7 +1188,7 @@ Info ShowProjectManager() {
             for (int i = 0; i < visible; ++i) {
                 const int idx = i + scroll;
                 if (idx >= static_cast<int>(recent.size())) break;
-                const Rectangle row = { 36, 132 + static_cast<float>(i) * rowH, 484, rowH - 4 };
+                const Rectangle row = { 36, 132 + static_cast<float>(i) * rowH, lw - 32.0f, rowH - 4 };
                 const bool hovered = CheckCollisionPointRec(mouse, row);
                 if (idx == selected) {
                     DrawRectangleRec(row, theme::ACCENT_SOFT);
@@ -989,7 +1203,7 @@ Info ShowProjectManager() {
 
                 // Truncate the long path from the right so the tail stays readable.
                 std::string p = e.path;
-                const float maxW = 468.0f;
+                const float maxW = lw - 48.0f;
                 while (!p.empty() && MeasureTextU(p.c_str(), 11) > maxW) p.pop_back();
                 if (p != e.path) p += "...";
                 DrawTextU(p.c_str(), row.x + 8, row.y + 22, 11,
@@ -1000,29 +1214,29 @@ Info ShowProjectManager() {
         }
 
         // Right panel
-        DrawRectangleRec({ 560, 84, 320, 456 }, theme::PANEL);
-        DrawRectangleLinesEx({ 560, 84, 320, 456 }, 1.0f, theme::BORDER);
-        DrawTextU("NEW PROJECT", 576, 96, 13, theme::ACCENT);
-        DrawLine(576, 120, 864, 120, theme::DIVIDER);
+        DrawRectangleRec({ rx, 84, rw, 270 }, theme::PANEL);
+        DrawRectangleLinesEx({ rx, 84, rw, 270 }, 1.0f, theme::BORDER);
+        DrawTextU("NEW PROJECT", ix, 96, 13, theme::ACCENT);
+        DrawLine(static_cast<int>(ix), 120, static_cast<int>(ix + iw), 120, theme::DIVIDER);
 
-        DrawTextU("Project name", 576, 128, 12, theme::TEXT_MUTED);
-        DrawTextU("Template", 576, 192, 12, theme::TEXT_MUTED);
+        DrawTextU("Project name", ix, 128, 12, theme::TEXT_MUTED);
+        DrawTextU("Template", ix, 192, 12, theme::TEXT_MUTED);
         const std::string baseDir = GetProjectsDirectory();
         std::string shownDir = baseDir;
-        const float dirMaxW = 276.0f;
+        const float dirMaxW = iw - 12.0f;
         while (!shownDir.empty() && MeasureTextU(shownDir.c_str(), 12) > dirMaxW) {
             shownDir = shownDir.substr(1);
         }
         if (shownDir != baseDir) shownDir = "..." + shownDir;
-        DrawRectangleRounded({ 576, 384, 288, 26 }, 0.15f, 4, theme::INPUT);
-        DrawRectangleLinesEx({ 576, 384, 288, 26 }, 1.0f, theme::BORDER);
-        DrawTextU(shownDir.c_str(), 582, 389, 12, theme::TEXT_MUTED);
+        DrawRectangleRounded({ ix, 256, iw, 26 }, 0.15f, 4, theme::INPUT);
+        DrawRectangleLinesEx({ ix, 256, iw, 26 }, 1.0f, theme::BORDER);
+        DrawTextU(shownDir.c_str(), ix + 6, 261, 12, theme::TEXT_MUTED);
 
         // ---- widgets ----
-        const bool openClicked = !confirmDelete && Button({ 36, 458, 234, 28 }, "Open");
-        const bool browseClicked = !confirmDelete && Button({ 286, 458, 234, 28 }, "Open Project folder");
-        const bool removeClicked = !confirmDelete && Button({ 36, 496, 234, 28 }, "Remove from list");
-        const bool deleteClicked = !confirmDelete && DangerButton({ 286, 496, 234, 28 }, "Delete project from disk");
+        const bool openClicked = !modal && Button({ 36, btnY1, btnW, 28 }, "Open");
+        const bool browseClicked = !modal && Button({ 36 + btnW + 16, btnY1, btnW, 28 }, "Open Project folder");
+        const bool removeClicked = !modal && Button({ 36, btnY2, btnW, 28 }, "Remove from list");
+        const bool deleteClicked = !modal && DangerButton({ 36 + btnW + 16, btnY2, btnW, 28 }, "Delete project from disk");
 
         if (openClicked && selected >= 0 && selected < static_cast<int>(recent.size())) {
             if (recent[selected].missing) fail("Cannot find project on Disk");
@@ -1049,26 +1263,15 @@ Info ShowProjectManager() {
         }
 
         if (!confirmDelete) {
-            DrawTextField({ 576, 148, 288, 26 }, nameField);
+            DrawTextField({ ix, 148, iw, 26 }, nameField, !pickerOpen);
 
-            if (TemplateCard({ 576, 212, 139, 50 }, "Blank", "Empty scene", chosenTemplate == "Blank")) {
-                chosenTemplate = "Blank";
-            }
-            if (TemplateCard({ 725, 212, 139, 50 }, "Sample Scene", "Basic Template", chosenTemplate == "Sample")) {
-                chosenTemplate = "Sample";
-            }
-            if (TemplateCard({ 576, 268, 139, 50 }, "Coin Dash", "Platformer course", chosenTemplate == "Coin Dash")) {
-                chosenTemplate = "Coin Dash";
-            }
-            if (TemplateCard({ 725, 268, 139, 50 }, "Physics Playground", "Joints and impacts", chosenTemplate == "Physics Playground")) {
-                chosenTemplate = "Physics Playground";
-            }
-            if (TemplateCard({ 576, 324, 139, 50 }, "Campfire Valley", "Foliage and fire", chosenTemplate == "Campfire Valley")) {
-                chosenTemplate = "Campfire Valley";
-            }
+            std::string templateLabel = "Choose from template";
+            for (const TemplateInfo& t : templates) if (t.id == chosenTemplate) templateLabel = "Template: " + t.name;
+            if (!modal && Button({ ix, 212, iw, 30 }, templateLabel.c_str())) { pickerOpen = true; pickerJustOpened = true; }
+            else if (modal) Button({ ix, 212, iw, 30 }, templateLabel.c_str());
 
-            const bool createClicked = PrimaryButton({ 576, 424, 288, 30 }, "Create Project");
-            const bool enterPressed = nameField.focused && IsKeyPressed(KEY_ENTER);
+            const bool createClicked = !pickerOpen && PrimaryButton({ ix, 298, iw, 30 }, "Create Project");
+            const bool enterPressed = !pickerOpen && nameField.focused && IsKeyPressed(KEY_ENTER);
 
             if (createClicked || enterPressed) {
                 const std::string name = TrimCopy(nameField.text);
@@ -1081,7 +1284,7 @@ Info ShowProjectManager() {
                         const std::string projectFolder = GetProjectFolder(name);
                         result.name = name;
                         result.path = projectFolder;
-                        result.templateName = chosenTemplate;
+                        result.templateName = chosenTemplate.empty() ? "Blank" : chosenTemplate;
                         PushRecent(projectFolder, recentPaths);
                         done = true;
                     } else {
@@ -1092,7 +1295,7 @@ Info ShowProjectManager() {
         }
 
         if (!errorMsg.empty()) {
-            DrawTextU(errorMsg.c_str(), 576, 462, 12, theme::DANGER);
+            DrawTextU(errorMsg.c_str(), ix, 336, 12, theme::DANGER);
         }
 
         if (confirmDelete) {
@@ -1117,7 +1320,12 @@ Info ShowProjectManager() {
 
         // No native picker on this host: collect the path by hand. Drawn last so
         // it sits on top of everything else.
-        if (!confirmDelete) DrawFolderPromptFallback(promptField);
+        if (!modal) DrawFolderPromptFallback(promptField);
+
+        if (pickerOpen) {
+            const int action = DrawTemplatePicker(templates, chosenTemplate, pickerScroll, !pickerJustOpened);
+            if (action != 0) pickerOpen = false;
+        }
 
         EndDrawing();
     }
@@ -1126,6 +1334,7 @@ Info ShowProjectManager() {
     // 3. UNLOAD GPU TEXTURE ON WINDOW CLOSE
     // =========================================================================
     if (folderTex.id > 0) UnloadTexture(folderTex);
+    UnloadTemplates(templates);
 
     if (g_font.texture.id != GetFontDefault().texture.id) UnloadFont(g_font);
     g_font = { 0 };
@@ -1138,25 +1347,23 @@ Info ShowProjectManager() {
 // CreateProjectFileInternal implementation
 // =========================================================================
 
-// The sample projects shipped with the SDK (ScriptingSDK/samples/projects/<Name>/<Name>.flyproj) double as New Project
-// templates: the template "Coin Dash" is the folder "CoinDash". Empty when the template is not one of them.
-static std::string SampleProjectFile(const std::string& templateName) {
-    std::string folder;
-    for (char c : templateName) if (c != ' ') folder.push_back(c);
-    if (folder.empty() || folder.find_first_of("/\\.") != std::string::npos) return std::string();
-    return platform::ResolveAsset("ScriptingSDK/samples/projects/" + folder + "/" + folder + ".flyproj");
+// A template is the folder assets/templates/<Id>/ holding <Id>.flyproj, data.json, thumbnail.png and deps/.
+// Empty when `templateName` is not one of them (Blank, or an unknown name).
+static std::string TemplateProjectFile(const std::string& templateName) {
+    if (templateName.empty() || templateName.find_first_of("/\\.") != std::string::npos) return std::string();
+    return platform::ResolveAsset("assets/templates/" + templateName + "/" + templateName + ".flyproj");
 }
 
-// Copies a sample's files (scripts, terrain, foliage; not its .flyproj) into a new project folder.
-static bool CopySampleFiles(const std::string& sampleProjectFile, const std::string& projectFolder) {
+// Copies a template's deps/ (scripts, terrain, foliage) into the root of a new project folder.
+static bool CopyTemplateDeps(const std::string& templateProjectFile, const std::string& projectFolder) {
     std::error_code ec;
-    const fs::path from = fs::path(U8Path(sampleProjectFile)).parent_path();
+    const fs::path from = fs::path(U8Path(templateProjectFile)).parent_path() / "deps";
     const fs::path to = U8Path(projectFolder);
+    if (!fs::exists(from, ec)) return true;
     for (fs::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
         const fs::path rel = fs::relative(it->path(), from, ec);
         if (ec) return false;
         if (it->is_directory(ec)) { fs::create_directories(to / rel, ec); continue; }
-        if (it->path().extension() == ".flyproj") continue;
         fs::create_directories((to / rel).parent_path(), ec);
         fs::copy_file(it->path(), to / rel, fs::copy_options::overwrite_existing, ec);
         if (ec) return false;
@@ -1187,21 +1394,22 @@ bool CreateProjectFileInternal(const std::string& name, const std::string& templ
     fields.modified = fields.created;
 
     WriteProjectHeader(out, fields);
-    // A sample template starts from the sample's scene and files.
-    if (const std::string sample = SampleProjectFile(fields.templateName); !sample.empty()) {
+    // A template starts from its scene and deps/.
+    if (const std::string sample = TemplateProjectFile(fields.templateName); !sample.empty()) {
         HeaderFields sampleFields;
         SceneSource scene;
         if (!ReadProjectFileAt(sample, sampleFields, scene)) return false;
         out << scene.rdbuf();
         out.close();
-        if (!CopySampleFiles(sample, projectFolder)) return false;
+        if (!CopyTemplateDeps(sample, projectFolder)) return false;
         std::vector<std::string> recent = LoadRecentPaths();
         PushRecent(projectFolder, recent);
         return true;
     }
     // A new project starts with an empty (but valid) scene, so opening it right
     // away goes through the same path as any other project.
-    const std::vector<ScatteredObject*> empty;
+    const std::unique_ptr<ScatteredObject> baseplate = MakeBaseplate();
+    const std::vector<ScatteredObject*> empty{ baseplate.get() };
     const std::vector<std::unique_ptr<ModelGroup>> models;
     // (The scene is written with the new-project lighting; the lighting of whatever is open now is kept.)
     const gfx::LightingSettings openLighting = gfx::Lighting();

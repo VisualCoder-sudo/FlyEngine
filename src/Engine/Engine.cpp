@@ -179,7 +179,6 @@ void Engine::Draw() {
             terrain::Terrain::SetDrawCamera(&reflCam);
             BasicTerrain::SetActiveCamera(&reflCam);
             BeginMode3D(reflCam);
-                gfx::DrawGround();
                 // Draw opaque entities first (they write depth). Anything fully
                 // underwater has no reflection (the mirrored camera would wrongly
                 // lift it above the surface), so skip it.
@@ -220,10 +219,6 @@ void Engine::Draw() {
     double pSky = GetTime();
     double pOpaque = pSky;
     BeginMode3D(camera);
-        gfx::DrawGround();
-        gfx::IncrementDrawCallCount(1); // ground plane
-        gfx::AddMeshCount(1);
-        gfx::AddTriangleCount(2); // ground plane is 2 triangles
         // Big opaque boxes hide what is behind them: rasterize them once so the objects drawn below can be
         // skipped when they are completely covered.
         if (gfx::GetFrustumCullingEnabled()) {

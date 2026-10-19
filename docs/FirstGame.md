@@ -5,8 +5,8 @@ A walk through making a small game in Flyengine with a C++ script. Takes about 1
 ## 1. Make the project
 
 1. Start Flyengine. In the Project Manager, type a name under **NEW PROJECT**.
-2. Pick a template. **Blank** is empty. **Coin Dash**, **Physics Playground** and **Campfire Valley** are finished
-   samples (sources in `ScriptingSDK/samples/projects/`). Open one and read its script first.
+2. Optionally press **Choose from template**. Without one the project is empty. **Coin Dash**, **Physics Playground**
+   and **Campfire Valley** are finished samples (sources in `assets/templates/`). Open one and read its script first.
 3. Press **Create Project**.
 
 ## 2. Add a script

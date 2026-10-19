@@ -90,7 +90,7 @@ static void LaunchPlayer() {
     
     // Use temp file if created, otherwise use main project
     std::string launchPath = tempProjectFile.empty() ? proj.path : tempProjectFile;
-    std::vector<std::string> args = {"-play", launchPath, "--noscripts"};
+    std::vector<std::string> args = {"-play", launchPath};
     platform::LaunchDetached(playerPath.string(), args);
 }
 

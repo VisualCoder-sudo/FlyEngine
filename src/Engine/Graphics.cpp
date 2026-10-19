@@ -47,8 +47,6 @@ Model cubeModel{};
 Model sphereModel{};
 Model cylinderModel{};
 Model wedgeModel{};
-Model groundModel{};
-Texture2D groundTexture{};
 // Uniforms the three lit programs share (shaders/lit.glsl); -1 where a program has no such uniform.
 struct LitLocs {
     int sunDir = -1, sunColor = -1, ambientSky = -1, ambientGround = -1, skyColor = -1;
@@ -101,26 +99,6 @@ bool initialized = false;
 
 // The lit, road and instanced shaders live in shaders/lit.glsl and are compiled
 // into the binary by sokol-shdc (programs "lit", "lit_road", "lit_instanced").
-
-Texture2D GenerateGridTexture() {
-    const int texSize = 400;
-    const int lineSpacing = 10;
-
-    Image img = GenImageColor(texSize, texSize, Color{ 32, 34, 40, 255 });
-    const Color lineColor = { 56, 60, 70, 255 };
-    for (int i = 0; i <= texSize; i += lineSpacing) {
-        ImageDrawLine(&img, i, 0, i, texSize - 1, lineColor);
-        ImageDrawLine(&img, 0, i, texSize - 1, i, lineColor);
-    }
-
-    Texture2D texture = LoadTextureFromImage(img);
-    UnloadImage(img);
-
-    GenTextureMipmaps(&texture);
-    SetTextureFilter(texture, TEXTURE_FILTER_TRILINEAR);
-
-    return texture;
-}
 
 }
 
@@ -186,11 +164,6 @@ void Init() {
         model->materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = defaultTexture;
     }
 
-    groundModel = LoadModelFromMesh(GenMeshPlane(40.0f, 40.0f, 1, 1));
-    groundTexture = GenerateGridTexture();
-    groundModel.materials[0].shader = litShader;
-    groundModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = groundTexture;
-
     shadow::Init();
 
 
@@ -210,9 +183,7 @@ void Shutdown() {
     UnloadModel(cylinderModel);
     UnloadModel(wedgeModel);
     ShutdownCityMeshes();
-    UnloadModel(groundModel);
     UnloadTexture(defaultTexture);
-    UnloadTexture(groundTexture);
     shadow::Shutdown();
     ShutdownReflections();
     if (cityInstancedShader.id != 0) UnloadShader(cityInstancedShader);
@@ -426,12 +397,6 @@ void SetUnderwaterParams(float waterY, Vector3, float, Vector3) {
 }
 
 namespace {
-std::unordered_map<const void*, float> groundLimits;
-}
-void SetGroundLimit(const void* owner, float lowestY) { groundLimits[owner] = lowestY; }
-void ClearGroundLimit(const void* owner) { groundLimits.erase(owner); }
-
-namespace {
 struct LoadingStatus { std::string text; float fraction = 0.0f; };
 std::map<const void*, LoadingStatus> loadingStatuses;
 }
@@ -479,14 +444,6 @@ void DrawLoadingStatus(Rectangle area) {
         DrawRectangle((int)bx, (int)by, (int)(full * Clamp(kv.second.fraction, 0.0f, 1.0f)), barH, Color{ 0, 190, 200, 255 });
         y += bh + 8.0f;
     }
-}
-
-void DrawGround() {
-    if (!gridVisible) return;
-    float y = 0.0f;
-    for (const auto& kv : groundLimits) y = fminf(y, kv.second);
-    groundModel.transform = MatrixTranslate(0.0f, y, 0.0f);
-    DrawModel(groundModel, Vector3Zero(), 1.0f, WHITE);
 }
 
 } // namespace

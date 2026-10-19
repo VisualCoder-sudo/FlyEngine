@@ -266,11 +266,11 @@ target_link_libraries(sound_rays_engine_test PRIVATE FlyEngineCore FlyRL)
 add_executable(foliage_test foliage_test.cpp)
 target_link_libraries(foliage_test PRIVATE FlyEngineCore FlyRL)
 
-# Writes the sample projects (ScriptingSDK/samples/projects) and loads them back. Run by hand after changing one. Opens a
+# Writes the sample projects (assets/templates) and loads them back. Run by hand after changing one. Opens a
 # window, so it is not registered with ctest: build/tests/make_sample_projects
 add_executable(make_sample_projects make_sample_projects.cpp)
 target_link_libraries(make_sample_projects PRIVATE FlyEngineCore FlyRL)
-target_compile_definitions(make_sample_projects PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/ScriptingSDK/samples/projects")
+target_compile_definitions(make_sample_projects PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/assets/templates")
 
 # Opens a window, so it is not registered with ctest: build/tests/script_actions_engine_test
 add_executable(script_actions_engine_test script_actions_engine_test.cpp)
@@ -280,3 +280,8 @@ target_link_libraries(script_actions_engine_test PRIVATE FlyEngineCore FlyRL)
 # build/tests/terrain_tabs_test
 add_executable(terrain_tabs_test terrain_tabs_test.cpp)
 target_link_libraries(terrain_tabs_test PRIVATE FlyEngineCore FlyRL)
+
+# Adaptive BasicTerrain mesh is watertight (no cracks between merged blocks). Opens a window:
+# build/tests/terrain_crack_test [terrain.bt]
+add_executable(terrain_crack_test terrain_crack_test.cpp)
+target_link_libraries(terrain_crack_test PRIVATE FlyEngineCore FlyRL)

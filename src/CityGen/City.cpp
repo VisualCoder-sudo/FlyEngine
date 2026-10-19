@@ -365,7 +365,7 @@ struct City::RebuildJob {
 };
 
 City::City() = default;
-City::~City() { gfx::ClearGroundLimit(this); gfx::ClearLoadingStatus(this); ClearGeometry(); }
+City::~City() { gfx::ClearLoadingStatus(this); ClearGeometry(); }
 
 namespace { bool g_simActive = false; }   // Play mode (editor Play or the standalone player): traffic runs
 
@@ -4378,13 +4378,6 @@ void City::RebuildAfterNodeMove(int ni) {
 void City::Draw() {
     if (!hasGeometry || tiles.empty()) return;
 
-    // The engine's ground plane (y = 0) must not cover pads and roads that dip below it on hills: it moves down
-    // to under the lowest road node (pads sink a little under their node, so keep a few metres of margin).
-    {
-        float lowest = 1e9f;
-        for (const RoadNode& n : nodes) lowest = std::min(lowest, n.h);
-        gfx::SetGroundLimit(this, lowest < 1e8f ? lowest - 3.0f : 0.0f);
-    }
     const bool shadowPass = gfx::IsInShadowPass();
     // The shadow map is being kept (nothing changed): skip submitting the casters.
     if (shadowPass && gfx::IsShadowPassReused()) return;

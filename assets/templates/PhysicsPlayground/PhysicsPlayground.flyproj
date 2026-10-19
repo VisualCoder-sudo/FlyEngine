@@ -1,33 +1,28 @@
 FLYENGINE_PROJECT 1
-Name = "Coin Dash"
-Template = "Coin Dash"
+Name = "Physics Playground"
+Template = "Physics Playground"
 Created = 0
 Modified = 0
 ---SCENE---
-SIMPLE_ENGINE_BUILD 28
-2
-0 "Ground" 0 -0.5 0 90 1 90 0 0 0 0 0 0 96 160 90 255 1 0 0 0 0 0 0 0 1 0
-
-""
-1 0 0 "" 1 1 1 0
-0 "Start Pad" 0 0.100000001 0 6 0.200000003 6 0 0 0 0 0 0 235 235 240 255 1 0 0 0 0 0 0 0 1 0
+SIMPLE_ENGINE_BUILD 29
+1
+0 "Floor" 0 -0.5 8 90 1 70 0 0 0 0 0 0 150 150 155 255 1 0 0 0 0 0 0 0 1 0
 
 ""
 1 0 0 "" 1 1 1 0
 1
-1 9
-Coin Dash
-8
-CoinDash
+1 18
+Physics Playground
+17
+PhysicsPlayground
 0
 0 0
-0 0
 0
 0
 0
 0
 0
-LIGHTING 11 0
+LIGHTING 14 0
 LIGHTING2 0 0 1 0 53.1300011 63.4300003 1 1 1 1 1 0.140000001 0.150000006 0.170000002 0
 LIGHTING3 1 1 0 0 0
 LIGHTING4 1 0.174999997 0.409999996 1 1 2 1 1 1 1 0.400000006 0.419999987 0.349999994 1 1 0.5 1 1 0

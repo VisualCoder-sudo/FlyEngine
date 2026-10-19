@@ -109,12 +109,6 @@ bool IsGridVisible();
 void SetWireframe(bool enabled);
 bool IsWireframe();
 
-void DrawGround(); // shadow-receiving ground plane (replaces DrawGrid)
-// Things that can reach below the ground plane (a city on hills dips under y = 0) report their lowest point so the
-// plane moves down out of their way instead of covering them. Each owner reports every frame it draws.
-void SetGroundLimit(const void* owner, float lowestY);
-void ClearGroundLimit(const void* owner);
-
 // A progress message shown on screen while something slow loads in the background (a big city building), e.g.
 // "City attempting to load [14%]" with a thin progress bar. Each owner sets its message every frame it is loading and
 // clears it when done. Engine::Draw draws them in the 2D pass, centred in `area` (the whole window in the player).

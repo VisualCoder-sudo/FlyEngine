@@ -1015,15 +1015,16 @@ void BasicTerrain::BuildDenseMesh() {
 // see IsBlockFlat) is sub-visible.
 static constexpr float kAdaptiveFlatEpsilon = 0.12f;
 
-// Safety cap on the adaptive mesh's vertex count. Each merged block emits its
-// own 4 corner vertices (not shared with neighbors), so a terrain that is
-// rough at every scale and never collapses could in the worst case approach
-// ~4x the dense mesh's vertex count. raylib's index buffer here is 16-bit, so
-// bail out to the always-safe BuildDenseMesh() rather than risk overflowing
-// it. In practice this only triggers on maximally noisy heightmaps (e.g. a
-// raw imported noise texture) - any terrain with meaningful flat/planar
-// regions stays well under this.
-static constexpr size_t kAdaptiveMaxVertices = 60000;
+// Safety cap on the adaptive mesh's vertex count: raylib's index buffer here
+// is 16-bit. Perimeter vertices are shared between blocks, so the count is the
+// dense grid's at worst plus one centre vertex per merged block; bail out to
+// the always-safe BuildDenseMesh() rather than risk overflowing the indices.
+static constexpr size_t kAdaptiveMaxVertices = 65535;
+
+// Largest block (in cells per side) allowed to collapse into one flat patch.
+// A patch keeps a vertex for every heightmap sample along its perimeter (see
+// CollectAdaptiveBlock), so capping its size bounds the perimeter cost.
+static constexpr int kAdaptiveMaxBlockCells = 32;
 
 bool BasicTerrain::IsBlockFlat(int x0, int z0, int x1, int z1) const {
     float h00 = heightmap[(size_t)z0 * width + x0];
@@ -1069,7 +1070,9 @@ void BasicTerrain::CollectAdaptiveBlock(int x0, int z0, int x1, int z1,
     // A single cell has no interior samples to deviate, so it's always
     // trivially "flat" here - it's already the smallest unit, identical to
     // what the dense grid would produce for that cell.
-    bool flat = (cellsX <= 1 && cellsZ <= 1) || IsBlockFlat(x0, z0, x1, z1);
+    bool flat = (cellsX <= 1 && cellsZ <= 1) ||
+                (cellsX <= kAdaptiveMaxBlockCells && cellsZ <= kAdaptiveMaxBlockCells &&
+                 IsBlockFlat(x0, z0, x1, z1));
 
     if (!flat) {
         if (cellsX >= cellsZ) {
@@ -1084,32 +1087,84 @@ void BasicTerrain::CollectAdaptiveBlock(int x0, int z0, int x1, int z1,
         return;
     }
 
-    // Emit a single quad (2 triangles) for this block, using the *real*
-    // heightmap values at its 4 corners (not the interpolated plane), so a
-    // merged quad's corners always land exactly on true terrain samples.
+    // Emit the block as a polygon whose perimeter carries a vertex for every
+    // heightmap sample along its edges (not just the 4 corners), fanned from
+    // the TL corner. A neighbouring block that is subdivided further has real
+    // sample heights on the shared edge; a corners-only quad would span that
+    // edge with a straight line instead, leaving a T-junction crack (up to
+    // kAdaptiveFlatEpsilon tall) that shows the sky through the terrain.
+    // Keeping the same samples on both sides makes shared edges identical.
     float halfW = width * scale * 0.5f;
     float halfD = depth * scale * 0.5f;
 
-    unsigned short base = (unsigned short)(verts.size() / 3);
-    const int cx[4] = { x0, x1, x0, x1 };
-    const int cz[4] = { z0, z0, z1, z1 };
-    for (int i = 0; i < 4; i++) {
-        int x = cx[i], z = cz[i];
-        float h = heightmap[(size_t)z * width + x];
-        verts.push_back(x * scale - halfW);
-        verts.push_back(h);
-        verts.push_back(z * scale - halfD);
+    // Perimeter in TL -> BL -> BR -> TR order, matching the dense grid's
+    // (a,c,b)/(b,c,d) winding.
+    std::vector<std::pair<int, int>> ring;
+    ring.reserve((size_t)(cellsX + cellsZ) * 2);
+    for (int z = z0; z < z1; z++) ring.push_back({ x0, z });
+    for (int x = x0; x < x1; x++) ring.push_back({ x, z1 });
+    for (int z = z1; z > z0; z--) ring.push_back({ x1, z });
+    for (int x = x1; x > x0; x--) ring.push_back({ x, z0 });
 
-        Vector3 n = ComputeGridNormal(x, z);
-        normals.push_back(n.x); normals.push_back(n.y); normals.push_back(n.z);
+    // Perimeter vertices are shared with the neighbouring blocks (one vertex
+    // per heightmap sample), so the surface is welded, not just coincident,
+    // and the vertex count never exceeds the dense grid's.
+    std::vector<unsigned short> rv(ring.size());
+    for (size_t i = 0; i < ring.size(); i++) {
+        int x = ring[i].first, z = ring[i].second;
+        int& slot = adaptiveGrid[(size_t)z * width + x];
+        if (slot < 0) {
+            slot = (int)(verts.size() / 3);
+            verts.push_back(x * scale - halfW);
+            verts.push_back(heightmap[(size_t)z * width + x]);
+            verts.push_back(z * scale - halfD);
 
-        uvs.push_back(((float)x / (width - 1)) * textureTiling);
-        uvs.push_back(((float)z / (depth - 1)) * textureTiling);
+            Vector3 n = ComputeGridNormal(x, z);
+            normals.push_back(n.x); normals.push_back(n.y); normals.push_back(n.z);
+
+            uvs.push_back(((float)x / (width - 1)) * textureTiling);
+            uvs.push_back(((float)z / (depth - 1)) * textureTiling);
+        }
+        rv[i] = (unsigned short)slot;
     }
-    // Corner order: 0=TL(x0,z0) 1=TR(x1,z0) 2=BL(x0,z1) 3=BR(x1,z1); same
-    // winding as the dense grid's (a,c,b)/(b,c,d) triangles.
-    indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 1);
-    indices.push_back(base + 1); indices.push_back(base + 2); indices.push_back(base + 3);
+
+    // A single cell is just the dense grid's two triangles.
+    if (cellsX == 1 && cellsZ == 1) {
+        // ring = TL, BL, BR, TR
+        indices.push_back(rv[0]); indices.push_back(rv[1]); indices.push_back(rv[3]);
+        indices.push_back(rv[3]); indices.push_back(rv[1]); indices.push_back(rv[2]);
+        return;
+    }
+
+    // Fan from a centre vertex on the block's plane. (A fan from a corner would
+    // collapse every triangle along the two edges running out of that corner to
+    // zero area in XZ, dropping those edges from the surface and re-opening the
+    // crack.)
+    unsigned short centre = (unsigned short)(verts.size() / 3);
+    float cxPos = (float)(x0 + x1) * 0.5f;
+    float czPos = (float)(z0 + z1) * 0.5f;
+    float hc = 0.0f, nx = 0.0f, ny = 0.0f, nz = 0.0f;
+    const int cornerX[4] = { x0, x1, x0, x1 };
+    const int cornerZ[4] = { z0, z0, z1, z1 };
+    for (int i = 0; i < 4; i++) {
+        hc += heightmap[(size_t)cornerZ[i] * width + cornerX[i]] * 0.25f;
+        Vector3 n = ComputeGridNormal(cornerX[i], cornerZ[i]);
+        nx += n.x; ny += n.y; nz += n.z;
+    }
+    Vector3 nc = Vector3Normalize({ nx, ny, nz });
+    verts.push_back(cxPos * scale - halfW);
+    verts.push_back(hc);
+    verts.push_back(czPos * scale - halfD);
+    normals.push_back(nc.x); normals.push_back(nc.y); normals.push_back(nc.z);
+    uvs.push_back((cxPos / (width - 1)) * textureTiling);
+    uvs.push_back((czPos / (depth - 1)) * textureTiling);
+
+    for (size_t i = 0; i < ring.size(); i++) {
+        size_t next = (i + 1) % ring.size();
+        indices.push_back(centre);
+        indices.push_back(rv[i]);
+        indices.push_back(rv[next]);
+    }
 }
 
 // Adaptive mesh builder: quadtree-collapses locally-flat regions into single
@@ -1120,7 +1175,9 @@ bool BasicTerrain::BuildAdaptiveMesh() {
     std::vector<unsigned short> indices;
     verts.reserve(1024); normals.reserve(1024); uvs.reserve(512); indices.reserve(1024);
 
+    adaptiveGrid.assign((size_t)width * depth, -1);
     CollectAdaptiveBlock(0, 0, width - 1, depth - 1, verts, normals, uvs, indices);
+    adaptiveGrid = {};
 
     size_t vertCount = verts.size() / 3;
     if (vertCount == 0 || vertCount > kAdaptiveMaxVertices) return false;

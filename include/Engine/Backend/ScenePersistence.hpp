@@ -12,6 +12,10 @@ class Engine;
 namespace terrain { class Terrain; }
 namespace phys { class Simulation; }
 
+// The floor every new project starts with: a 200 x 1 x 200 locked cube named "Baseplate" whose top is at y = 0.
+// Just an object, so it can be moved, rotated, restyled or deleted.
+std::unique_ptr<ScatteredObject> MakeBaseplate();
+
 bool SaveSceneToFile(const std::vector<ScatteredObject*>& objects,
                      const std::vector<std::unique_ptr<ModelGroup>>& models,
                      const std::string& path,

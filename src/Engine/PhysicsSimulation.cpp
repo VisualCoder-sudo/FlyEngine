@@ -380,21 +380,13 @@ void Simulation::StartPlay() {
     // the heightmap as it stands now.
     for (auto& c : terrainColliders) terrain::ReleaseTerrainCollider(c);   // left over from an earlier session
     terrainColliders.clear();
-    float floorTop = 0.0f;
     for (BasicTerrain* t : BasicTerrain::GetInstances()) {
         if (!t) continue;
         terrain::TerrainCollider collider;
         if (!terrain::CreateTerrainCollider(world->GetId(), *t, friction, restitutionBase, collider)) continue;
-        floorTop = std::min(floorTop, t->position.y + collider.heightField->minHeight);
         terrainColliders.push_back(collider);
     }
 
-    // The big slab at y = 0 stays as a safety floor so nothing falls into the
-    // void (off the edge of a terrain, or in a scene without one). Terrain
-    // that dips below y = 0 would otherwise be blocked by an invisible wall at
-    // the slab's top, so the slab sits at or below the lowest terrain point.
-    b3BodyId groundBody = b3wrap::CreateBody(world->GetId(), Vector3{ 0.0f, floorTop - 1.0f, 0.0f }, QuaternionIdentity(), b3_staticBody);
-    b3wrap::AddBoxShape(groundBody, Vector3{ 1000.0f, 1.0f, 1000.0f }, 0.0f, friction, restitutionBase);
     city::AttachPhysicsWorld(world->GetId(), friction, restitutionBase);
 
     for (ScatteredObject* obj : objects) {
