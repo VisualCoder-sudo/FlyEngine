@@ -316,3 +316,8 @@ add_executable(numpad_enter_test numpad_enter_test.cpp)
 target_link_libraries(numpad_enter_test PRIVATE FlyEngineCore FlyRL)
 target_include_directories(numpad_enter_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Engine/RL ${CMAKE_SOURCE_DIR}/sokol)
 add_test(NAME numpad_enter COMMAND numpad_enter_test)
+
+# City load hardening: corrupt counts / edge indices / sidecar sizes are rejected; destroyed cities leave the registry. No window.
+add_executable(city_corrupt_load_test city_corrupt_load_test.cpp)
+target_link_libraries(city_corrupt_load_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME city_corrupt_load COMMAND city_corrupt_load_test)

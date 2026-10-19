@@ -365,7 +365,12 @@ struct City::RebuildJob {
 };
 
 City::City() = default;
-City::~City() { gfx::ClearLoadingStatus(this); ClearGeometry(); }
+City::~City() {
+    // Entities can be removed from the engine by paths that never touch the registry (scene delete, failed loads);
+    // never leave a dangling pointer behind.
+    GetCityRegistry().Unregister(this);
+    gfx::ClearLoadingStatus(this); ClearGeometry();
+}
 
 namespace { bool g_simActive = false; }   // Play mode (editor Play or the standalone player): traffic runs
 
@@ -6125,8 +6130,23 @@ bool City::WriteToStream(std::ostream& out) const {
 }
 
 bool City::ReadFromStream(std::istream& in) {
+    // Every counted record takes at least two bytes of text, so a count larger than what is left in the stream is
+    // corrupt; checking before resize/assign keeps a damaged file from asking for gigabytes (or throwing length_error).
+    size_t maxCount = 8u << 20;
+    {
+        const std::streampos here = in.tellg();
+        if (here != std::streampos(-1)) {
+            in.seekg(0, std::ios::end);
+            const std::streampos end = in.tellg();
+            in.clear();
+            in.seekg(here);
+            if (end != std::streampos(-1) && end >= here) maxCount = std::min(maxCount, (size_t)(end - here));
+        }
+        if (!in) return false;
+    }
+    const auto countOk = [&](size_t n) { return n <= maxCount; };
     size_t nameLen = 0;
-    if (!(in >> nameLen)) return false;
+    if (!(in >> nameLen) || !countOk(nameLen)) return false;
     in.ignore();
     if (nameLen > 0) {
         name.resize(nameLen);
@@ -6161,6 +6181,10 @@ bool City::ReadFromStream(std::istream& in) {
         if (!(in >> tok)) return false;
     }
     try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
+    if (!countOk(edgeCount)) return false;
+    // Sanitise what the rebuild divides by or indexes with (GenerateGrid clamps the same ranges on regeneration).
+    p.lanes = Clamp(p.lanes, 1, 8);
+    if (!(p.buildingSize + p.buildingGap > 0.1f)) { p.buildingSize = std::max(p.buildingSize, 0.5f); p.buildingGap = std::max(p.buildingGap, 0.0f); }
     params = p;
 
     edges.resize(edgeCount);
@@ -6170,7 +6194,9 @@ bool City::ReadFromStream(std::istream& in) {
     }
 
     size_t nodeCount = 0;
-    if (!(in >> nodeCount)) return false;
+    if (!(in >> nodeCount) || !countOk(nodeCount)) return false;
+    for (const RoadEdge& e : edges)    // BuildAdjacency indexes nodes by these
+        if (e.a < 0 || e.b < 0 || (size_t)e.a >= nodeCount || (size_t)e.b >= nodeCount) return false;
     nodes.resize(nodeCount);
     for (size_t i = 0; i < nodeCount; i++) {
         int boundary = 0;
@@ -6193,13 +6219,15 @@ bool City::ReadFromStream(std::istream& in) {
     std::string tag;
     if (in >> tag && tag == "BLOCKS") {
         size_t blockCount = 0;
-        if (!(in >> blockCount >> nextBlockId)) return false;
+        if (!(in >> blockCount >> nextBlockId) || !countOk(blockCount)) return false;
         blocks.resize(blockCount);
         for (size_t i = 0; i < blockCount; i++) {
             size_t nc = 0;
-            if (!(in >> blocks[i].id >> nc)) return false;
+            if (!(in >> blocks[i].id >> nc) || !countOk(nc)) return false;
             blocks[i].nodes.resize(nc);
             for (size_t k = 0; k < nc; k++) if (!(in >> blocks[i].nodes[k])) return false;
+            auto& bn = blocks[i].nodes;   // drop indices that name no node
+            bn.erase(std::remove_if(bn.begin(), bn.end(), [&](int v) { return v < 0 || (size_t)v >= nodeCount; }), bn.end());
         }
         if (!(in >> tag) || tag != "OVERRIDES") return false;
         size_t ovCount = 0;
@@ -6243,7 +6271,7 @@ bool City::ReadFromStream(std::istream& in) {
                 collisionEnabled = (c != 0);
             } else if (tag == "PLACED") {
                 size_t pc = 0;
-                if (!(in >> pc)) return false;
+                if (!(in >> pc) || !countOk(pc)) return false;
                 placed.resize(pc);
                 for (size_t i = 0; i < pc; i++) {
                     PlacedBuilding& pb = placed[i];
@@ -6255,7 +6283,7 @@ bool City::ReadFromStream(std::istream& in) {
                 if (!(in >> sc)) return false;
                 for (size_t i = 0; i < sc; i++) {
                     size_t idx = 0, pc = 0; float ye = 1.5f, ar = 1.0f, of = 0.0f;
-                    if (!(in >> idx >> ye >> ar >> of >> pc)) return false;
+                    if (!(in >> idx >> ye >> ar >> of >> pc) || !countOk(pc)) return false;
                     std::vector<SignalPhase> phs;
                     for (size_t k = 0; k < pc; k++) {
                         SignalPhase ph; int mk = 0;
@@ -6313,7 +6341,7 @@ bool City::ReadFromStream(std::istream& in) {
                 }
             } else if (tag == "TRANSIT") {
                 size_t ns = 0, nl = 0;
-                if (!(in >> ns >> nl)) return false;
+                if (!(in >> ns >> nl) || !countOk(ns) || !countOk(nl)) return false;
                 busStops.assign(ns, BusStop{});
                 for (BusStop& bs : busStops) {
                     std::string nm;
@@ -6331,6 +6359,7 @@ bool City::ReadFromStream(std::istream& in) {
                     l.name = nm;
                     l.color = Color{ (unsigned char)std::clamp(r, 0, 255), (unsigned char)std::clamp(g, 0, 255), (unsigned char)std::clamp(b, 0, 255), 255 };
                     l.buses = std::clamp(buses, 0, 20);
+                    if (!countOk(k)) return false;
                     l.stops.resize(k);
                     for (size_t i = 0; i < k; i++) {
                         if (!(in >> l.stops[i])) return false;
@@ -6347,7 +6376,7 @@ bool City::ReadFromStream(std::istream& in) {
                 if (!(in >> tod >> len)) return false;
             } else if (tag == "DISTRICTS") {
                 size_t dc = 0;
-                if (!(in >> dc)) return false;
+                if (!(in >> dc) || !countOk(dc)) return false;
                 districts.assign(dc, District{});
                 for (District& d : districts) {
                     std::string nm;
@@ -6497,17 +6526,25 @@ int CityRegistry::ReadFile(const std::string& path, const std::function<City*()>
         in.read(reinterpret_cast<char*>(&bh), sizeof(bh));
         if (!in) return loaded;
 
-        std::string name(bh.nameLen, '\0');
-        if (bh.nameLen) in.read(&name[0], (std::streamsize)bh.nameLen);
-        std::string data(bh.dataSize, '\0');
-        if (bh.dataSize) in.read(&data[0], (std::streamsize)bh.dataSize);
+        // Grow in chunks: a corrupt header must hit end-of-file, not allocate its claimed size up front.
+        const auto readBytes = [&](std::string& dst, size_t n) {
+            dst.clear();
+            while (dst.size() < n && in) {
+                const size_t at = dst.size(), step = std::min<size_t>(n - at, 1u << 20);
+                dst.resize(at + step);
+                in.read(&dst[at], (std::streamsize)step);
+            }
+        };
+        std::string name, data;
+        readBytes(name, bh.nameLen);
+        if (in) readBytes(data, bh.dataSize);
         if (!in) return loaded;
 
         City* c = create();
         if (!c) return loaded;
         c->SetName(name);
         std::istringstream payload(data, std::ios::binary);
-        if (!c->ReadFromStream(payload)) break;
+        if (!c->ReadFromStream(payload)) { c->alive = false; break; }   // engine sweeps the half-built entity
         Register(c);
         loaded++;
     }
