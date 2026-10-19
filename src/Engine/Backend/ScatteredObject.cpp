@@ -5,6 +5,7 @@
 #include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/Graphics.hpp"
+#include "../../../include/Engine/PostFX.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include "../../../include/Engine/Occlusion.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
@@ -652,6 +653,8 @@ BoundingBox ModelGroup::GetBounds() const {
     auto merge = [&](const BoundingBox& m) {
         if (!first) {
             box = m;
+        } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
+            gfx::DrawModelOutline(model, model.transform);
             first = true;
             return;
         }
@@ -670,6 +673,8 @@ BoundingBox ModelGroup::GetBounds() const {
         if (c.min.x == c.max.x && c.min.y == c.max.y && c.min.z == c.max.z &&
             child->members.empty() && child->children.empty()) continue;
         merge(c);
+    } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
+        gfx::DrawModelOutline(gfx::GetShapeModel(shape), gfx::ComposeTRS(size, rotMat, pos));
     }
     if (!first) {
         box.min = { 0.0f, 0.0f, 0.0f };

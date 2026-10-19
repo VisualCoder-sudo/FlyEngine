@@ -109,6 +109,10 @@ bool IsGridVisible();
 void SetWireframe(bool enabled);
 bool IsWireframe();
 
+// Hover outline (shaders/outline.glsl): draws the model again as a flat-colour rim `thickness` pixels wide around
+// its silhouette. `transform` replaces model.transform. Uses the colour and thickness from Quality().
+void DrawModelOutline(const Model& model, const Matrix& transform);
+
 // A progress message shown on screen while something slow loads in the background (a big city building), e.g.
 // "City attempting to load [14%]" with a thin progress bar. Each owner sets its message every frame it is loading and
 // clears it when done. Engine::Draw draws them in the 2D pass, centred in `area` (the whole window in the player).

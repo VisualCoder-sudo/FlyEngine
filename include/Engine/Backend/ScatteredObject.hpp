@@ -168,6 +168,7 @@ public:
     // `script` is the first script; `extraScripts` are the others (an object can carry several).
     std::string script;
     std::vector<std::string> extraScripts;
+    bool isHovered = false;   // editor only: the cursor is over it, drawn with the hover outline
     bool runOnPlay = true;
 
     // Every attached script class, primary first.

@@ -232,6 +232,31 @@ void SetWireframe(bool enabled) {
 
 bool IsWireframe() { return wireframe; }
 
+void DrawModelOutline(const Model& model, const Matrix& transform) {
+    static Shader outlineShader = {};
+    static Material outlineMaterial = {};
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        outlineShader = LoadShaderProgram("outline");
+        outlineMaterial = LoadMaterialDefault();
+        outlineMaterial.shader = outlineShader;
+    }
+    if (outlineShader.id == 0 || model.meshCount <= 0) return;
+
+    const RenderQuality& q = Quality();
+    const float invViewport[2] = { 2.0f / (float)GetScreenWidth(), 2.0f / (float)GetScreenHeight() };
+    SetShaderValue(outlineShader, GetShaderLocation(outlineShader, "invViewport"), invViewport, SHADER_UNIFORM_VEC2);
+    SetShaderValue(outlineShader, GetShaderLocation(outlineShader, "thickness"), &q.outlineThickness, SHADER_UNIFORM_FLOAT);
+    outlineMaterial.maps[MATERIAL_MAP_DIFFUSE].color = {
+        (unsigned char)(q.outlineColor[0] * 255.0f + 0.5f), (unsigned char)(q.outlineColor[1] * 255.0f + 0.5f),
+        (unsigned char)(q.outlineColor[2] * 255.0f + 0.5f), 255 };
+
+    rlEnableFrontCull();
+    for (int i = 0; i < model.meshCount; ++i) DrawMesh(model.meshes[i], outlineMaterial, transform);
+    rlDisableFrontCull();
+}
+
 
 
 namespace {

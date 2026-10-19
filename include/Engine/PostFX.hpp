@@ -34,6 +34,9 @@ struct RenderQuality {
     int clouds = 2;               // 0 = flat layer, 1 = volumetric (fewer steps), 2 = volumetric, 3 = volumetric (more steps)
     int volumetrics = 2;          // 0 = plain distance fog, 1 = light shafts (fewer steps), 2 = light shafts
     int shadowCascades = 3;       // 1..4
+    bool hoverOutline = true;     // editor: outline the object under the cursor
+    float outlineThickness = 2.0f; // in pixels
+    float outlineColor[3] = { 1.0f, 0.62f, 0.1f };
     int fpsCap = 180;             // editor frame-rate limit; 0 = unlimited. (The player has its own, see PlayerMain.)
 };
 RenderQuality& Quality();

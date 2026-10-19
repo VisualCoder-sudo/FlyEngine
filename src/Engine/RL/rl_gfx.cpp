@@ -511,7 +511,7 @@ sg_pipeline GetPipeline(const PipelineKey& key, const sg_pipeline_desc& tmpl) {
     sg_pipeline_desc d = tmpl;
     d.primitive_type = (sg_primitive_type)key.primitive;
     d.index_type = (sg_index_type)key.indexType;
-    d.cull_mode = key.cull ? SG_CULLMODE_BACK : SG_CULLMODE_NONE;
+    d.cull_mode = key.cull == 2 ? SG_CULLMODE_FRONT : (key.cull ? SG_CULLMODE_BACK : SG_CULLMODE_NONE);
     d.face_winding = SG_FACEWINDING_CCW;
     d.color_count = key.format.colorCount;
     d.depth.pixel_format = key.format.depth;
@@ -956,6 +956,8 @@ void rlDisableDepthMask(void) { BatchFlush(); Gfx().state.depthWrite = false; }
 void rlEnableWireMode(void) { BatchFlush(); Gfx().state.wireframe = true; }
 void rlDisableWireMode(void) { BatchFlush(); Gfx().state.wireframe = false; }
 bool rlIsWireMode(void) { return Gfx().state.wireframe; }
+void rlEnableFrontCull(void) { BatchFlush(); Gfx().state.cullFront = true; }
+void rlDisableFrontCull(void) { BatchFlush(); Gfx().state.cullFront = false; }
 void rlSetBlendMode(int mode) { BatchFlush(); Gfx().state.blendMode = mode; }
 
 void rlEnableScissorTest(void) {

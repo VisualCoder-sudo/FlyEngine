@@ -1621,6 +1621,15 @@ void ObjectInteractionManager::Update(float dt) {
         }
     }
 
+    // Hover outline: only the object under the cursor, and not while dragging, orbiting or over the UI.
+    for (ScatteredObject* o : objects) o->isHovered = false;
+    if (gfx::Quality().hoverOutline && !ui::IsMouseOverUI() && !ui::IsPlayActive() && activeHandle < 0 && !freeDrag &&
+        !ui::IsContextMenuOpen() && !ui::IsEditingText() && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) &&
+        !IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) &&
+        PickHandle(GetMousePosition()) < 0) {
+        if (ScatteredObject* hover = PickObject(GetMouseRay(GetMousePosition(), camera))) hover->isHovered = true;
+    }
+
     // 4. Block 3D Scene Interactions when hovering UI
     bool overUI = ui::IsMouseOverUI();
     if (overUI) {

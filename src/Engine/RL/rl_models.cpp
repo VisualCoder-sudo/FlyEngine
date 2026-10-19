@@ -343,7 +343,7 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
     key.blend = (uint8_t)(g.state.blendMode + 1);
     key.depthTest = g.state.depthTest;
     key.depthWrite = g.state.depthWrite;
-    key.cull = useLines ? 0 : 1;
+    key.cull = useLines ? 0 : (g.state.cullFront ? 2 : 1);
     key.instanced = instanced;
     key.format = g.passFormat;
     sg_pipeline pip = FindPipeline(key);

@@ -96,6 +96,8 @@ RLAPI void rlDisableDepthMask(void);
 RLAPI void rlEnableWireMode(void);
 RLAPI void rlDisableWireMode(void);
 RLAPI bool rlIsWireMode(void);
+RLAPI void rlEnableFrontCull(void);   // cull front faces (outline hulls); undo with rlDisableFrontCull
+RLAPI void rlDisableFrontCull(void);
 RLAPI void rlEnableScissorTest(void);
 RLAPI void rlDisableScissorTest(void);
 RLAPI void rlScissor(int x, int y, int width, int height);   // origin: bottom-left, like glScissor

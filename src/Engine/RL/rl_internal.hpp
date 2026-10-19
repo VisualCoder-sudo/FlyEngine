@@ -185,6 +185,7 @@ struct DrawState {
     bool depthWrite = true;
     int blendMode = BLEND_ALPHA;
     bool wireframe = false;
+    bool cullFront = false;   // cull front faces instead of back faces (inflated-hull outlines)
     bool scissor = false;
     int scissorX = 0, scissorY = 0, scissorW = 0, scissorH = 0;
 };

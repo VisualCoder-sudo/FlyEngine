@@ -123,6 +123,16 @@ static void DrawPreferencesRenderingTab() {
     DrawPrefsSettingRowBegin("Ambient occlusion");
     if (ImGui::Checkbox("##ao", &q.ambientOcclusion)) changed = true;
 
+    DrawPrefsSettingRowBegin("Hover outline");
+    if (ImGui::Checkbox("##hoveroutline", &q.hoverOutline)) changed = true;
+    if (q.hoverOutline) {
+        DrawPrefsSettingRowBegin("Outline thickness");
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::SliderFloat("##outlinethickness", &q.outlineThickness, 0.5f, 12.0f, "%.1f px")) changed = true;
+        DrawPrefsSettingRowBegin("Outline color");
+        if (ImGui::ColorEdit3("##outlinecolor", q.outlineColor, ImGuiColorEditFlags_NoInputs)) changed = true;
+    }
+
     const char* clouds[] = { "Low", "Medium", "High", "Ultra" };
     combo("Clouds", "##clouds", &q.clouds, clouds, 4);
     const char* fog[] = { "Plain", "Light shafts", "Fine light shafts" };

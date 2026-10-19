@@ -344,6 +344,9 @@ void SetQualityTier(int tier) {
     q.volumetrics = tier == 0 ? 0 : (tier == 1 ? 1 : 2);
     q.shadowCascades = tier == 0 ? 1 : (tier == 1 ? 2 : (tier == 2 ? 3 : 4));
     q.fpsCap = quality.fpsCap;   // the frame-rate limit is not part of a preset
+    q.hoverOutline = quality.hoverOutline;   // nor is the editor's hover outline
+    q.outlineThickness = quality.outlineThickness;
+    std::copy(quality.outlineColor, quality.outlineColor + 3, q.outlineColor);
     quality = q;
 }
 
@@ -368,6 +371,11 @@ static void ParseQuality(std::istream& in) {
         else if (key == "clouds") q.clouds = std::clamp((int)v, 0, 3);
         else if (key == "volumetrics") q.volumetrics = std::clamp((int)v, 0, 2);
         else if (key == "shadowCascades") q.shadowCascades = std::clamp((int)v, 1, 4);
+        else if (key == "hoverOutline") q.hoverOutline = v != 0.0f;
+        else if (key == "outlineThickness") q.outlineThickness = std::clamp(v, 0.5f, 12.0f);
+        else if (key == "outlineR") q.outlineColor[0] = std::clamp(v, 0.0f, 1.0f);
+        else if (key == "outlineG") q.outlineColor[1] = std::clamp(v, 0.0f, 1.0f);
+        else if (key == "outlineB") q.outlineColor[2] = std::clamp(v, 0.0f, 1.0f);
         else if (key == "fpsCap") q.fpsCap = std::clamp((int)v, 0, 1000);
     }
     quality = q;
@@ -393,6 +401,8 @@ std::string QualitySettingsText(const RenderQuality& q) {
     out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
         << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
         << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
+        << "\nhoverOutline " << (q.hoverOutline ? 1 : 0) << "\noutlineThickness " << q.outlineThickness
+        << "\noutlineR " << q.outlineColor[0] << "\noutlineG " << q.outlineColor[1] << "\noutlineB " << q.outlineColor[2]
         << "\nfpsCap " << q.fpsCap << "\n";
     return out.str();
 }
@@ -409,6 +419,8 @@ void SaveQualitySettings() {
     out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
         << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
         << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
+        << "\nhoverOutline " << (q.hoverOutline ? 1 : 0) << "\noutlineThickness " << q.outlineThickness
+        << "\noutlineR " << q.outlineColor[0] << "\noutlineG " << q.outlineColor[1] << "\noutlineB " << q.outlineColor[2]
         << "\nfpsCap " << q.fpsCap << "\n";
 }
 

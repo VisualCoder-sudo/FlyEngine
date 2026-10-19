@@ -15,7 +15,8 @@ set(FLY_SHADERS
     ${CMAKE_SOURCE_DIR}/shaders/water.glsl
     ${CMAKE_SOURCE_DIR}/shaders/sky.glsl
     ${CMAKE_SOURCE_DIR}/shaders/clouds.glsl
-    ${CMAKE_SOURCE_DIR}/shaders/post.glsl)
+    ${CMAKE_SOURCE_DIR}/shaders/post.glsl
+    ${CMAKE_SOURCE_DIR}/shaders/outline.glsl)
 set(FLY_SHADER_INCLUDES
     ${CMAKE_SOURCE_DIR}/shaders/fly_common.glsl
     ${CMAKE_SOURCE_DIR}/shaders/fly_shadow.glsl
