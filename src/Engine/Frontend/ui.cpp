@@ -1493,6 +1493,7 @@ void DrawImGuiFrame(const Camera3D& camera) {
     city::DrawCityEditorPanel();
     PumpAssetBrowserDialogs();
     DrawPathPromptModal();
+    DrawTutorial();
 
     // Debug stats window (Frustum culling, draw calls, etc.)
     if (g_showDebugStats) {

@@ -775,6 +775,25 @@ std::vector<std::string> LoadRecentPaths() {
     return out;
 }
 
+static std::string TutorialMarkerPath() {
+    return detail::JoinPath(GetAppDataDirectory(), "tutorial_done");
+}
+
+bool TutorialDone() {
+    std::error_code ec;
+    return fs::exists(U8Path(TutorialMarkerPath()), ec);
+}
+
+void SetTutorialDone(bool done) {
+    if (done) {
+        detail::EnsureDirectory(GetAppDataDirectory());
+        std::ofstream(TutorialMarkerPath(), std::ios::trunc) << "1\n";
+    } else {
+        std::error_code ec;
+        fs::remove(U8Path(TutorialMarkerPath()), ec);
+    }
+}
+
 void SaveRecentPaths(const std::vector<std::string>& paths) {
     detail::EnsureDirectory(GetAppDataDirectory());
     std::ofstream out(GetRecentFilePath(), std::ios::trunc);
@@ -1296,6 +1315,49 @@ Info ShowProjectManager() {
 
         if (!errorMsg.empty()) {
             DrawTextU(errorMsg.c_str(), ix, 336, 12, theme::DANGER);
+        }
+
+        // "Get started" card in the space under the New Project panel; pulses until the tutorial is finished.
+        {
+            const float cy = 354.0f + 16.0f;
+            const Rectangle card = { rx, cy, rw, bottom - cy };
+            if (card.height >= 110.0f) {
+                const bool fresh = !TutorialDone();
+                const float pulse = fresh ? 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 3.0f) : 0.0f;
+                DrawRectangleRec(card, theme::PANEL);
+                Color border = fresh ? theme::ACCENT : theme::BORDER;
+                border.a = static_cast<unsigned char>(fresh ? 120 + 135 * pulse : 255);
+                DrawRectangleLinesEx(card, fresh ? 2.0f : 1.0f, border);
+                DrawTextU("GET STARTED", ix, card.y + 12, 13, theme::ACCENT);
+                if (fresh) {
+                    const float bw = static_cast<float>(MeasureTextU("NEW", 11)) + 12.0f;
+                    DrawRectangleRounded({ ix + iw - bw, card.y + 10, bw, 18 }, 0.3f, 4, theme::ACCENT);
+                    DrawTextU("NEW", ix + iw - bw + 6, card.y + 14, 11, theme::BG);
+                }
+                DrawTextU("Get started with Flyengine!", ix, card.y + 36, 15, theme::TEXT);
+                DrawTextU("A guided demo: meshes, properties,", ix, card.y + 60, 12, theme::TEXT_MUTED);
+                DrawTextU("worldbuilding, plugins, C++ and visual", ix, card.y + 76, 12, theme::TEXT_MUTED);
+                DrawTextU("scripts, and exporting your game.", ix, card.y + 92, 12, theme::TEXT_MUTED);
+                const float by = card.y + card.height - 46.0f;
+                const bool startClicked = !modal && PrimaryButton({ ix, by, iw, 30 }, "Start Tutorial");
+                if (startClicked) {
+                    // Reuse an earlier tutorial project, otherwise make one from a template that has a scene and scripts.
+                    const std::string name = "Tutorial";
+                    const std::string folder = GetProjectFolder(name);
+                    std::error_code ec;
+                    const bool exists = fs::exists(U8Path(GetProjectFilePath(name)), ec);
+                    if (exists || CreateProjectFileInternal(name, "CoinDash")) {
+                        result.name = name;
+                        result.path = folder;
+                        result.templateName = "CoinDash";
+                        result.startTutorial = true;
+                        PushRecent(folder, recentPaths);
+                        done = true;
+                    } else {
+                        fail("Failed to create the tutorial project");
+                    }
+                }
+            }
         }
 
         if (confirmDelete) {

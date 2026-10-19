@@ -139,6 +139,11 @@ void ShowPreferences(bool show, int category);
 // consumes the request once per frame it was set (never while play is active).
 bool ConsumeImportRequest();
 
+// "Get started with Flyengine!" guided tour (ui_tutorial.cpp); DrawTutorial once per frame, last, from DrawImGuiFrame.
+void OpenTutorial();
+bool IsTutorialActive();
+void DrawTutorial();
+
 // Export (File > Export...), see ExportDialog.cpp.
 void OpenExportDialog();
 void DrawExportDialog();                           // once per frame, from DrawImGuiFrame

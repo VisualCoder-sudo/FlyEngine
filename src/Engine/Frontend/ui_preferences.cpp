@@ -88,6 +88,13 @@ static void DrawPreferencesGeneralTab() {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImGui::Button("English (US)", ImVec2(140.0f, 24.0f)); // only option for now
     ImGui::PopStyleColor(4);
+
+    DrawPrefsSettingRowBegin("Tutorial");
+    if (ImGui::Button("Restart tutorial", ImVec2(140.0f, 24.0f))) {
+        project::SetTutorialDone(false);
+        g_showPreferences = false;
+        OpenTutorial();
+    }
 }
 
 // How much of the machine the picture may use (gfx::RenderQuality). Kept per machine, not per scene.
