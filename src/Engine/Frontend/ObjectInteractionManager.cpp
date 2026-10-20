@@ -202,9 +202,10 @@ Vector3 RingPoint(Vector3 center, float radius, int axis, float angle) {
 }
 
 // Grid snapping: Ctrl held during a drag inverts the toolbar toggle; Shift turns it off.
-static bool SnapActive() {
+// Scale gives Ctrl another job (grow both sides), so it passes ctrlInverts = false.
+static bool SnapActive(bool ctrlInverts = true) {
     if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) return false;
-    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool ctrl = ctrlInverts && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
     return ui::GetSnapSettings().enabled != ctrl;
 }
 static float SnapValue(float v, float step) {
@@ -2009,53 +2010,54 @@ void ObjectInteractionManager::Update(float dt) {
                     *primary->GetPosPtr() = next;
                 }
             } else if (ui::GetActiveTool() == ui::TransformTool::Scale) {
-                Vector3 currentSize = *primary->GetSizePtr();
-                Vector3 nextSize = currentSize;
+                Vector3 nextSize = *primary->GetSizePtr();
+                Vector3 nextPos = startPos;
 
-                Vector2 mouseDelta = Vector2Subtract(GetMousePosition(), dragStart);
+                const Vector2 mouseDelta = Vector2Subtract(GetMousePosition(), dragStart);
+                const bool ctrlHeld = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+                const bool altHeld = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+                // Plain drag: only the grabbed face moves. Ctrl: both faces move (grow from the centre).
+                // Alt: every axis scales, anchored at the opposite face. Ctrl+Alt: every axis, from the centre.
+                // A group always scales about its centre.
+                const bool bothSides = ctrlHeld || multi;
+                const bool allAxes = altHeld && !multi;
 
                 const int sAxis = activeHandle % 3;
                 const float sSign = activeHandle < 3 ? 1.0f : -1.0f;
                 if (activeHandle >= 0 && activeHandle < 6) {
-                    Vector3 axisDir = Vector3Scale(ScaleAxisDirection(startRotation, sAxis), sSign);
-                    float startAxis = AxisSize(startSize, sAxis);
-                    Vector3 handleWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f));
-                    Vector2 handleScreen = GetWorldToScreen(handleWorld, camera);
-                    Vector3 probeWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f + 1.0f));
-                    Vector2 screenAxis = Vector2Subtract(GetWorldToScreen(probeWorld, camera), handleScreen);
-                    float screenAxisLen = Vector2Length(screenAxis);
+                    const Vector3 axisDir = Vector3Scale(ScaleAxisDirection(startRotation, sAxis), sSign);
+                    const float startAxis = AxisSize(startSize, sAxis);
+                    const Vector3 handleWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f));
+                    const Vector2 handleScreen = GetWorldToScreen(handleWorld, camera);
+                    const Vector3 probeWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f + 1.0f));
+                    const Vector2 screenAxis = Vector2Subtract(GetWorldToScreen(probeWorld, camera), handleScreen);
+                    const float screenAxisLen = Vector2Length(screenAxis);
 
-                    if (screenAxisLen > 2.0f) {
-                        Vector2 centerScreen = GetWorldToScreen(startPos, camera);
-                        float r0 = Vector2Distance(handleScreen, centerScreen);
-                        if (r0 > 2.0f) {
-                            Vector2 screenDir = Vector2Scale(screenAxis, 1.0f / screenAxisLen);
-                            float deltaAlong = Vector2DotProduct(mouseDelta, screenDir);
-                            float factor = Clamp(1.0f + deltaAlong / r0, 0.02f, 100.0f);
-                            float newAxis = fmaxf(startAxis * factor, SCALE_MIN_SIZE);
-                            if (sAxis == 0) nextSize.x = newAxis;
-                            if (sAxis == 1) nextSize.y = newAxis;
-                            if (sAxis == 2) nextSize.z = newAxis;
-                        } else {
-                            if (sAxis == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount * sSign);
-                            if (sAxis == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, startSize.y + amount * sSign);
-                            if (sAxis == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount * sSign);
-                        }
-                    } else {
-                        if (sAxis == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount * sSign);
-                        if (sAxis == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, startSize.y + amount * sSign);
-                        if (sAxis == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount * sSign);
+                    // How far the cursor has pulled the handle along its axis, in world units (end-on: from the drag amount).
+                    float deltaWorld = amount * sSign;
+                    if (screenAxisLen > 2.0f) deltaWorld = Vector2DotProduct(mouseDelta, screenAxis) / (screenAxisLen * screenAxisLen);
+                    // One moving face grows the box by the full pull, two faces by half of it each.
+                    float newAxis = startAxis + deltaWorld * (bothSides ? 2.0f : 1.0f);
+
+                    const float minStart = fminf(startSize.x, fminf(startSize.y, startSize.z));
+                    const float minAxis = allAxes ? startAxis * (SCALE_MIN_SIZE / fmaxf(minStart, 1e-5f)) : SCALE_MIN_SIZE;
+                    const float maxAxis = startAxis * 100.0f;
+                    newAxis = Clamp(newAxis, fminf(minAxis, maxAxis), maxAxis);
+                    if (SnapActive(false)) {
+                        newAxis = fmaxf(minAxis, SnapValue(newAxis, ui::GetSnapSettings().scale));
                     }
-                }
 
-                if (activeHandle >= 0 && activeHandle < 6 && SnapActive()) {
-                    const float st = ui::GetSnapSettings().scale;
-                    auto snapAxis = [&](float v) { return fmaxf(SCALE_MIN_SIZE, SnapValue(v, st)); };
-                    if (sAxis == 0) nextSize.x = snapAxis(nextSize.x);
-                    if (sAxis == 1) nextSize.y = snapAxis(nextSize.y);
-                    if (sAxis == 2) nextSize.z = snapAxis(nextSize.z);
+                    if (allAxes) {
+                        nextSize = Vector3Scale(startSize, newAxis / fmaxf(startAxis, 1e-5f));
+                    } else {
+                        if (sAxis == 0) nextSize.x = newAxis;
+                        if (sAxis == 1) nextSize.y = newAxis;
+                        if (sAxis == 2) nextSize.z = newAxis;
+                    }
+                    // The opposite face stays put, so the centre follows the grabbed face by half the growth.
+                    if (!bothSides) nextPos = Vector3Add(startPos, Vector3Scale(axisDir, (newAxis - startAxis) * 0.5f));
+                    dragReadout = newAxis;
                 }
-                if (activeHandle >= 0 && activeHandle < 6) dragReadout = AxisSize(nextSize, sAxis);
 
                 if (multi) {
                     const float pivotX = dragPivot.x, pivotY = dragPivot.y, pivotZ = dragPivot.z;
@@ -2087,6 +2089,7 @@ void ObjectInteractionManager::Update(float dt) {
                     }
                 } else {
                     *primary->GetSizePtr() = nextSize;
+                    *primary->GetPosPtr() = nextPos;
                     primary->ResetMassAuto();
                 }
             } else if (ui::GetActiveTool() == ui::TransformTool::Rotate) {
@@ -2349,18 +2352,6 @@ void ObjectInteractionManager::DrawGizmos() const {
         for (int h = 0; h < 6; ++h) {
             face[h] = ScaleFaceWorld(p, s, rotation, h);
             shown[h] = AxisScaleGrabbable(p, s, rotation, h % 3, camera);
-        }
-        // Faint outline through the handles, joined in the order they appear around the centre on screen.
-        const Vector2 centre = GetWorldToScreen(p, camera);
-        int order[6] = { 0, 1, 2, 3, 4, 5 };
-        float ang[6];
-        for (int h = 0; h < 6; ++h) {
-            const Vector2 sp = GetWorldToScreen(face[h], camera);
-            ang[h] = atan2f(sp.y - centre.y, sp.x - centre.x);
-        }
-        std::sort(order, order + 6, [&](int x, int y) { return ang[x] < ang[y]; });
-        for (int k = 0; k < 6; ++k) {
-            DrawLine3D(face[order[k]], face[order[(k + 1) % 6]], Fade(Color{ 70, 150, 255, 110 }));
         }
         for (int h = 0; h < 6; ++h) {
             if (shown[h]) DrawHandleBall(face[h], h % 3, hot == h, camera);
