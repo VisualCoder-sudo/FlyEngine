@@ -113,13 +113,16 @@ void ToggleTransformSpace();
 
 // Grid snapping for the transform gizmos. Holding Ctrl while dragging inverts `enabled`.
 struct SnapSettings {
-    bool enabled = false;
+    bool enabled = true;
     float move = 0.5f;    // world units
     float rotate = 15.0f; // degrees
     float scale = 0.1f;   // size units (uniform scale: ratio)
     bool toObject = false; // Move: snap the selection's bounds flush against nearby objects
 };
 SnapSettings& GetSnapSettings();
+
+// Dark readout next to the cursor while dragging a transform gizmo (distance, size or angle).
+bool& GizmoValueLabel();
 
 // Play mode: the top-bar Play/Stop button signals a toggle via ConsumePlayToggle(),
 // which the physics simulation consumes once. SetPlayActive mirrors the active state.

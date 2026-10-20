@@ -56,12 +56,16 @@ private:
     int activeHandle = -1;
     bool freeDrag = false; // Move tool body drag: objects follow cursor on the camera plane
     Vector2 dragStart = { 0.0f, 0.0f };
-    float dragStartAngle = 0.0f;
-    float rotateSign = 1.0f; // flips rotation direction depending on which side of the axis the camera is on
     Vector3 startPos = { 0.0f, 0.0f, 0.0f };
     Vector3 dragPlanePoint = { 0.0f, 0.0f, 0.0f }; // mouse-ray hit on the drag plane at press
     Vector3 dragPlaneNormal = { 0.0f, 1.0f, 0.0f }; // camera view direction at press
     MoveModule axisMove;                        // shared axis drag (objects + water)
+    // Gizmo drag readout, set while a handle is dragged: distance (Move), size on the axis (Scale) or degrees (Rotate).
+    float dragReadout = 0.0f;
+    Vector3 rotateRefDir = { 1.0f, 0.0f, 0.0f };  // Rotate: ring-plane direction under the cursor at press (0 degrees)
+    float rotateAccumRad = 0.0f;                  // Rotate: cursor sweep since press, unwrapped
+    float rotateLastAngle = 0.0f;                 // Rotate: cursor angle on the ring plane last frame
+    Vector3 rotateAxisDir = { 0.0f, 1.0f, 0.0f }; // Rotate: world axis being turned about
     float dragAxisWorldLen = 1.0f;              // grabbed axis handle offset (0.7 * size) in world units
     Vector3 startSize = { 1.0f, 1.0f, 1.0f };
     Vector3 startRotation = { 0.0f, 0.0f, 0.0f };
@@ -71,6 +75,8 @@ private:
     BoundingBox dragStartBounds{};               // union of the selection's world bounds at drag start
     std::vector<BoundingBox> snapTargets;        // bounds of every unselected object at drag start (Snap to Object)
 
+    void DrawDragReadout() const;
+    void DrawGizmos() const; // one pass of the transform gizmos (DrawOverlay3D calls it twice)
     float SnapToObjectThreshold() const; // capture range in world units, grows with camera distance
     void SyncSelection();
     bool IsInSelection(ScatteredObject* object) const;

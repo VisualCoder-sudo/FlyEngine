@@ -630,6 +630,11 @@ SnapSettings& GetSnapSettings() {
     return g_snap;
 }
 
+bool& GizmoValueLabel() {
+    static bool enabled = true;
+    return enabled;
+}
+
 bool ConsumePlayToggle() {
     bool toggle = g_playTogglePending;
     g_playTogglePending = false;

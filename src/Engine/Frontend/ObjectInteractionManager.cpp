@@ -27,6 +27,7 @@
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
+#include "imgui.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -177,15 +178,19 @@ Vector3 HandleAxisDirection(Vector3 rotation, int axis) {
     return AxisDirection(axis);
 }
 
-// World-space scale-corner position honoring the current transform-space toggle.
-Vector3 CornerSign(int corner); // fwd decl (defined below)
-Vector3 HandleScaleCornerWorld(Vector3 center, Vector3 size, Vector3 rotation, int corner) {
-    Vector3 s = CornerSign(corner);
-    Vector3 result = center;
-    result = Vector3Add(result, Vector3Scale(HandleAxisDirection(rotation, 0), s.x * size.x * 0.5f));
-    result = Vector3Add(result, Vector3Scale(HandleAxisDirection(rotation, 1), s.y * size.y * 0.5f));
-    result = Vector3Add(result, Vector3Scale(HandleAxisDirection(rotation, 2), s.z * size.z * 0.5f));
-    return result;
+// Scale always works on the object's own axes, whatever the transform space: a size is local, so a
+// world-axis handle on a rotated object would move a face in a different direction from the size change.
+Vector3 ScaleAxisDirection(Vector3 rotation, int axis) {
+    return RotatedAxisDirection(rotation, axis);
+}
+
+// World-space position of a scale face handle: 0..2 are the +X/+Y/+Z faces, 3..5 the -X/-Y/-Z faces.
+float AxisSize(const Vector3& size, int axis); // defined below
+float HandleWorldSize(Vector3 pos, float pixels, const Camera3D& camera); // defined below
+Vector3 ScaleFaceWorld(Vector3 center, Vector3 size, Vector3 rotation, int handle) {
+    const int axis = handle % 3;
+    const float sign = handle < 3 ? 1.0f : -1.0f;
+    return Vector3Add(center, Vector3Scale(ScaleAxisDirection(rotation, axis), sign * AxisSize(size, axis) * 0.5f));
 }
 
 Vector3 RingPoint(Vector3 center, float radius, int axis, float angle) {
@@ -196,8 +201,9 @@ Vector3 RingPoint(Vector3 center, float radius, int axis, float angle) {
     return { center.x + c, center.y + s, center.z };                // Z: XY plane
 }
 
-// Grid snapping: Ctrl held during a drag inverts the toolbar toggle.
+// Grid snapping: Ctrl held during a drag inverts the toolbar toggle; Shift turns it off.
 static bool SnapActive() {
+    if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) return false;
     const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     return ui::GetSnapSettings().enabled != ctrl;
 }
@@ -297,32 +303,109 @@ float DistanceToScreenRing(Vector2 mouse, Vector3 center, float radius, Vector3 
     return closest;
 }
 
-void DrawRotationRing(Vector3 center, float radius, int axis, Color color, bool hot = false) {
-    const float thickness = fmaxf(0.035f, radius * (hot ? 0.038f : 0.025f));
-    for (int i = 0; i < RING_SEGMENTS; ++i) {
-        float a = (float)i / RING_SEGMENTS * 2.0f * PI;
-        float b = (float)(i + 1) / RING_SEGMENTS * 2.0f * PI;
-        DrawCylinderEx(RingPoint(center, radius, axis, a), RingPoint(center, radius, axis, b),
-            thickness, thickness, 6, color);
+// Gizmos are drawn twice: faint through everything (depth test off), then solid where nothing covers them.
+// This scales the alpha of every gizmo colour for the current pass.
+float g_gizmoFade = 1.0f;
+Color Fade(Color c) {
+    c.a = (unsigned char)(c.a * g_gizmoFade);
+    return c;
+}
+
+// In-plane basis of a rotation ring: points are center + u*cos(a)*r + v*sin(a)*r. Matches RingPoint /
+// RotatedRingPoint, so what is drawn is what is picked.
+void RingBasis(Vector3 rotation, bool local, int axis, Vector3& u, Vector3& v) {
+    if (axis == 0)      { u = { 0, 1, 0 }; v = { 0, 0, 1 }; }
+    else if (axis == 1) { u = { 1, 0, 0 }; v = { 0, 0, 1 }; }
+    else                { u = { 1, 0, 0 }; v = { 0, 1, 0 }; }
+    if (local) {
+        Matrix rot = MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
+        u = Vector3Transform(u, rot);
+        v = Vector3Transform(v, rot);
     }
 }
 
-void DrawRotationRing(Vector3 center, float radius, Vector3 rotation, int axis, Color color, bool hot = false) {
-    const float thickness = fmaxf(0.035f, radius * (hot ? 0.038f : 0.025f));
+// Roblox-style look: pure red/green/blue per axis, see-through until hovered or dragged.
+Color AxisColor(int axis, bool hot) {
+    static const Color base[3] = { { 235, 20, 20, 255 }, { 20, 200, 20, 255 }, { 40, 40, 255, 255 } };
+    Color c = base[axis];
+    if (hot) {
+        c.r = (unsigned char)(c.r + (255 - c.r) * 0.2f);
+        c.g = (unsigned char)(c.g + (255 - c.g) * 0.2f);
+        c.b = (unsigned char)(c.b + (255 - c.b) * 0.2f);
+    } else {
+        c.a = 150;
+    }
+    return Fade(c);
+}
+
+Color WithAlpha(Color c, float k) {
+    c.a = (unsigned char)(c.a * k);
+    return c;
+}
+
+// Cone-tipped arrow from `from` to `tip`.
+void DrawArrow(Vector3 from, Vector3 tip, float shaftRadius, float coneRadius, float coneLen, Color color) {
+    const float len = Vector3Distance(from, tip);
+    if (len < 1e-4f) return;
+    coneLen = fminf(coneLen, len * 0.5f);
+    const Vector3 coneBase = Vector3Lerp(tip, from, coneLen / len);
+    DrawCylinderEx(from, coneBase, shaftRadius, shaftRadius, 8, color);
+    DrawCylinderEx(coneBase, tip, coneRadius, 0.0f, 12, color);
+}
+
+// Move gizmo: an arrow each way along every axis with a gap at the pivot, and a small centre dot.
+// `hotAxis` (hovered or dragged, -1 for none) is drawn solid and slightly larger.
+void DrawMoveArrows(Vector3 pivot, const Vector3 dirs[3], const float lens[3], int hotAxis, const Camera3D& camera) {
+    const float gap = HandleWorldSize(pivot, 10.0f, camera);
+    for (int i = 0; i < 3; ++i) {
+        const bool hot = hotAxis == i;
+        const float k = hot ? 1.3f : 1.0f;
+        const float shaft = HandleWorldSize(pivot, 2.2f * k, camera);
+        const float cone = HandleWorldSize(pivot, 6.0f * k, camera);
+        const float coneLen = HandleWorldSize(pivot, 18.0f * k, camera);
+        const Color c = AxisColor(i, hot);
+        for (int sign = 1; sign >= -1; sign -= 2) {
+            const Vector3 d = Vector3Scale(dirs[i], (float)sign);
+            DrawArrow(Vector3Add(pivot, Vector3Scale(d, gap)), Vector3Add(pivot, Vector3Scale(d, lens[i])),
+                      shaft, cone, coneLen, sign > 0 ? c : WithAlpha(c, 0.7f));
+        }
+    }
+    DrawSphere(pivot, HandleWorldSize(pivot, 3.0f, camera), Fade(WHITE));
+}
+
+void DrawHandleBall(Vector3 pos, int axis, bool hot, const Camera3D& camera) {
+    DrawSphere(pos, HandleWorldSize(pos, hot ? 9.0f : 7.0f, camera), AxisColor(axis, hot));
+}
+
+// Rotation dial: a thick ring in the axis colour. `tickStepDeg` > 0 adds a tick every step (longer every 90).
+void DrawRotationDial(Vector3 center, float radius, Vector3 u, Vector3 v, int axis, bool hot, float tickStepDeg, const Camera3D& camera) {
+    const Color c = AxisColor(axis, hot);
+    const float ringR = HandleWorldSize(center, hot ? 5.0f : 3.6f, camera);
+    auto at = [&](float a, float r) {
+        return Vector3Add(center, Vector3Add(Vector3Scale(u, cosf(a) * r), Vector3Scale(v, sinf(a) * r)));
+    };
     for (int i = 0; i < RING_SEGMENTS; ++i) {
-        float a = (float)i / RING_SEGMENTS * 2.0f * PI;
-        float b = (float)(i + 1) / RING_SEGMENTS * 2.0f * PI;
-        DrawCylinderEx(RotatedRingPoint(center, radius, rotation, axis, a), RotatedRingPoint(center, radius, rotation, axis, b),
-            thickness, thickness, 6, color);
+        const float a = (float)i / RING_SEGMENTS * 2.0f * PI;
+        const float b = (float)(i + 1) / RING_SEGMENTS * 2.0f * PI;
+        DrawCylinderEx(at(a, radius), at(b, radius), ringR, ringR, 6, c);
+    }
+    if (tickStepDeg <= 0.0f) return;
+    const float smallLen = HandleWorldSize(center, 12.0f, camera);
+    const float longLen = HandleWorldSize(center, 30.0f, camera);
+    const float smallR = HandleWorldSize(center, 1.6f, camera);
+    const float longR = HandleWorldSize(center, 3.4f, camera);
+    // Ticks sit on exact multiples of the step so they line up with snapping (1 degree floor for tiny steps).
+    const float spacing = fmaxf(tickStepDeg, 1.0f);
+    for (int i = 0; spacing * i < 359.99f; ++i) {
+        const float deg = spacing * i;
+        const float a = DEG2RAD * deg;
+        if (fabsf(remainderf(deg, 90.0f)) < 0.01f) DrawCylinderEx(at(a, radius - longLen * 0.5f), at(a, radius + longLen * 0.5f), longR, longR, 6, c);
+        else DrawCylinderEx(at(a, radius), at(a, radius + smallLen), smallR, smallR, 4, c);
     }
 }
 
 constexpr float SCALE_MIN_SIZE = 0.15f;
-constexpr float SCALE_AXIS_HANDLE_PIXELS = 14.0f;
-constexpr float SCALE_CORNER_HANDLE_PIXELS = 12.0f;
 constexpr float SCALE_PICK_RADIUS = 18.0f;
-constexpr float SCALE_HANDLE_MIN_WORLD = 0.12f;
-constexpr float SCALE_HANDLE_MAX_WORLD_FRACTION = 0.35f;
 
 constexpr float ROTATION_RING_PIXELS = 90.0f;
 constexpr float ROTATION_RING_MIN_WORLD = 0.3f;
@@ -343,15 +426,6 @@ float HandleWorldSize(Vector3 pos, float pixels, const Camera3D& camera) {
     float ppu = ScreenPixelsPerUnit(pos, camera);
     if (ppu < 1e-4f) ppu = 1.0f;
     return pixels / ppu;
-}
-
-// Sign multiplier for a bounding-box corner index 0..7 (one bit per axis).
-Vector3 CornerSign(int corner) {
-    return Vector3{
-        (corner & 1) ? 1.0f : -1.0f,
-        (corner & 2) ? 1.0f : -1.0f,
-        (corner & 4) ? 1.0f : -1.0f
-    };
 }
 
 float AxisSize(const Vector3& size, int axis) {
@@ -379,7 +453,7 @@ float MoveHandleWorldLen(Vector3 pos, const Vector3& size, int axis, const Camer
 // points at the camera and is ambiguous to grab - and dragging it felt like it
 // "scaled the wrong way". Such handles are skipped by picking and drawn dimmed.
 bool AxisScaleGrabbable(Vector3 pos, Vector3 size, Vector3 rotation, int axis, const Camera3D& camera) {
-    Vector3 axisDir = HandleAxisDirection(rotation, axis);
+    Vector3 axisDir = ScaleAxisDirection(rotation, axis);
     Vector3 handleWorld = Vector3Add(pos, Vector3Scale(axisDir, AxisSize(size, axis) * 0.5f));
     Vector2 handleScreen = GetWorldToScreen(handleWorld, camera);
     Vector3 probeWorld = Vector3Add(pos, Vector3Scale(axisDir, AxisSize(size, axis) * 0.5f + 1.0f));
@@ -404,13 +478,21 @@ static int PickWaterHandle(WaterBody* water, const Camera3D& cam, Vector2 mouse)
     ui::TransformTool tool = ui::GetActiveTool();
 
     if (tool == ui::TransformTool::Move) {
+        // Both tips and both halves of every axis line (the centre stays free), like the object move gizmo.
+        const float gap = HandleWorldSize(pivot, 16.0f, cam);
         for (int i = 0; i < 3; ++i) {
-            Vector2 tipScreen = GetWorldToScreen(Vector3Add(pivot, Vector3Scale(AxisDirection(i), WaterMoveHandleLen(ws, i))), cam);
-            if (Vector2Distance(tipScreen, mouse) < 14.0f) return i;
+            const Vector3 reach = Vector3Scale(AxisDirection(i), WaterMoveHandleLen(ws, i));
+            if (Vector2Distance(GetWorldToScreen(Vector3Add(pivot, reach), cam), mouse) < 14.0f) return i;
+            if (Vector2Distance(GetWorldToScreen(Vector3Subtract(pivot, reach), cam), mouse) < 14.0f) return i;
         }
         for (int i = 0; i < 3; ++i) {
-            Vector2 tipScreen = GetWorldToScreen(Vector3Add(pivot, Vector3Scale(AxisDirection(i), WaterMoveHandleLen(ws, i))), cam);
-            if (DistanceToSegment(mouse, GetWorldToScreen(pivot, cam), tipScreen) < 8.0f) return i;
+            const Vector3 dir = AxisDirection(i);
+            const Vector3 reach = Vector3Scale(dir, WaterMoveHandleLen(ws, i));
+            const Vector3 near = Vector3Scale(dir, gap);
+            if (DistanceToSegment(mouse, GetWorldToScreen(Vector3Add(pivot, near), cam),
+                                  GetWorldToScreen(Vector3Add(pivot, reach), cam)) < 10.0f) return i;
+            if (DistanceToSegment(mouse, GetWorldToScreen(Vector3Subtract(pivot, near), cam),
+                                  GetWorldToScreen(Vector3Subtract(pivot, reach), cam)) < 10.0f) return i;
         }
     } else if (tool == ui::TransformTool::Scale) {
         for (int i = 0; i < 3; ++i) {
@@ -617,6 +699,40 @@ void RestoreStandaloneScripts(std::istream& in) {
     ui::ClearScriptSelection();
 }
 
+// Water bodies ride along in undo snapshots as a "\nWATERS n" trailer: position, size and water height per body.
+std::string SerializeWaterBodies() {
+    std::ostringstream out;
+    out << std::setprecision(9) << "\nWATERS " << WaterBody::GetInstances().size() << "\n";
+    for (WaterBody* w : WaterBody::GetInstances()) {
+        const Vector3 p = *w->GetPosPtr();
+        const Vector3 s = *w->GetSizePtr();
+        out << p.x << ' ' << p.y << ' ' << p.z << ' ' << s.x << ' ' << s.y << ' ' << s.z << ' ' << w->GetWaterHeight() << '\n';
+    }
+    return out.str();
+}
+
+// Puts back the water state of the first bodies (same order as at capture). Spawned or deleted bodies are not undone.
+void RestoreWaterBodies(std::istream& in) {
+    const std::streampos base = in.tellg();
+    std::string marker;
+    size_t count = 0;
+    if (!(in >> marker) || marker != "WATERS" || !(in >> count) || count > 100000) {
+        in.clear();
+        if (base != std::streampos(-1)) in.seekg(base);
+        return;
+    }
+    const auto& waters = WaterBody::GetInstances();
+    for (size_t i = 0; i < count; ++i) {
+        Vector3 p{}, s{};
+        float h = 0.0f;
+        if (!(in >> p.x >> p.y >> p.z >> s.x >> s.y >> s.z >> h)) { in.clear(); return; }
+        if (i >= waters.size() || !waters[i]) continue;
+        *waters[i]->GetPosPtr() = p;
+        *waters[i]->GetSizePtr() = s;
+        waters[i]->SetWaterHeight(h);
+    }
+}
+
 } // namespace
 
 bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<int>& sel) const {
@@ -624,6 +740,7 @@ bool ObjectInteractionManager::CaptureSnapshot(std::string& bytes, std::vector<i
     if (!SnapshotSceneToMemory(objects, models, current.path, bytes)) return false;
     bytes += SerializeStandaloneScripts();
     bytes += city::SerializeCitiesSnapshot();
+    bytes += SerializeWaterBodies();
 
     // Selection is stored as positions in the object list: a snapshot restores objects in the same order, and
     // names can be duplicated.
@@ -747,6 +864,8 @@ void ObjectInteractionManager::RestoreFromSnapshot(const std::string& bytes, con
         }
         city::SetActiveCity(next);
     }
+
+    RestoreWaterBodies(in);
 
     SyncSelection();
     SelectObjectsByIndex(selIndices);
@@ -1003,26 +1122,34 @@ int ObjectInteractionManager::PickHandle(Vector2 mouse) const {
     Vector3 pivot = selectedObjects.size() > 1 ? SelectionCenter() : primary->GetOriginWorld();
     ui::TransformTool tool = ui::GetActiveTool();
     if (tool == ui::TransformTool::Move) {
-        // Grab anywhere along an axis line (within 8px) or at its tip (within 14px),
-        // so the whole gizmo is grabbable, not just the tiny tip spheres.
+        // Grab anywhere along an axis line (within 10px) or at either tip (within 14px),
+        // so the whole gizmo is grabbable, not just the arrow heads.
         for (int i = 0; i < 3; ++i) {
-            Vector2 tipScreen = GetWorldToScreen(Vector3Add(pivot, Vector3Scale(HandleAxisDirection(rotation, i), MoveHandleWorldLen(pivot, s, i, camera))), camera);
-            if (Vector2Distance(tipScreen, mouse) < 14.0f) return i;
+            const Vector3 reach = Vector3Scale(HandleAxisDirection(rotation, i), MoveHandleWorldLen(pivot, s, i, camera));
+            if (Vector2Distance(GetWorldToScreen(Vector3Add(pivot, reach), camera), mouse) < 14.0f) return i;
+            if (Vector2Distance(GetWorldToScreen(Vector3Subtract(pivot, reach), camera), mouse) < 14.0f) return i;
         }
+        // The centre stays free (about 6px around the pivot), so a click there drags the object, not one axis.
+        const float gap = HandleWorldSize(pivot, 16.0f, camera);
         for (int i = 0; i < 3; ++i) {
-            Vector2 tipScreen = GetWorldToScreen(Vector3Add(pivot, Vector3Scale(HandleAxisDirection(rotation, i), MoveHandleWorldLen(pivot, s, i, camera))), camera);
-            if (DistanceToSegment(mouse, GetWorldToScreen(pivot, camera), tipScreen) < 10.0f) return i;
+            const Vector3 dir = HandleAxisDirection(rotation, i);
+            const Vector3 reach = Vector3Scale(dir, MoveHandleWorldLen(pivot, s, i, camera));
+            const Vector3 near = Vector3Scale(dir, gap);
+            if (DistanceToSegment(mouse, GetWorldToScreen(Vector3Add(pivot, near), camera),
+                                  GetWorldToScreen(Vector3Add(pivot, reach), camera)) < 10.0f) return i;
+            if (DistanceToSegment(mouse, GetWorldToScreen(Vector3Subtract(pivot, near), camera),
+                                  GetWorldToScreen(Vector3Subtract(pivot, reach), camera)) < 10.0f) return i;
         }
     } else if (tool == ui::TransformTool::Scale) {
-        // Axis handles first (skipping end-on ones), then the 8 corners.
-        for (int i = 0; i < 3; ++i) {
-            if (!AxisScaleGrabbable(p, s, rotation, i, camera)) continue;
-            Vector3 handleWorld = Vector3Add(p, Vector3Scale(HandleAxisDirection(rotation, i), AxisSize(s, i) * 0.5f));
-            if (Vector2Distance(GetWorldToScreen(handleWorld, camera), mouse) < SCALE_PICK_RADIUS) return i;
+        // The six face handles (skipping end-on ones); the nearest within reach wins.
+        float closest = SCALE_PICK_RADIUS;
+        int picked = -1;
+        for (int h = 0; h < 6; ++h) {
+            if (!AxisScaleGrabbable(p, s, rotation, h % 3, camera)) continue;
+            const float d = Vector2Distance(GetWorldToScreen(ScaleFaceWorld(p, s, rotation, h), camera), mouse);
+            if (d < closest) { closest = d; picked = h; }
         }
-        for (int c = 0; c < 8; ++c) {
-            if (Vector2Distance(GetWorldToScreen(HandleScaleCornerWorld(p, s, rotation, c), camera), mouse) < SCALE_PICK_RADIUS) return 3 + c;
-        }
+        return picked;
     } else if (tool == ui::TransformTool::Rotate) {
         float radius = Clamp(HandleWorldSize(pivot, ROTATION_RING_PIXELS, camera),
                              ROTATION_RING_MIN_WORLD, ROTATION_RING_MAX_WORLD);
@@ -1632,6 +1759,12 @@ void ObjectInteractionManager::Update(float dt) {
     // 4. Block 3D Scene Interactions when hovering UI
     bool overUI = ui::IsMouseOverUI();
     if (overUI) {
+        // A drag released over a panel must still end here, or the gizmo stays in its dragging state.
+        if ((activeHandle >= 0 || freeDrag) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            EndDragUndoCapture();
+            activeHandle = -1;
+            freeDrag = false;
+        }
         return;
     }
 
@@ -1661,6 +1794,7 @@ void ObjectInteractionManager::Update(float dt) {
             dragStart = GetMousePosition();
             activeHandle = PickWaterHandle(waterSel, camera, GetMousePosition());
             if (activeHandle >= 0) {
+                BeginDragUndoCapture();
                 Vector3 wp = *waterSel->GetPosPtr();
                 float wh = waterSel->GetWaterHeight();
                 startPos = { wp.x, wh, wp.z };
@@ -1713,6 +1847,11 @@ void ObjectInteractionManager::Update(float dt) {
                         float uniformFactor = Clamp(1.0f + deltaAlong / r0, 0.02f, 100.0f);
                         ws.x = fmaxf(SCALE_MIN_SIZE, startSize.x * uniformFactor);
                         ws.z = fmaxf(SCALE_MIN_SIZE, startSize.z * uniformFactor);
+                        if (SnapActive()) {
+                            const float st = ui::GetSnapSettings().scale;
+                            ws.x = fmaxf(SCALE_MIN_SIZE, SnapValue(ws.x, st));
+                            ws.z = fmaxf(SCALE_MIN_SIZE, SnapValue(ws.z, st));
+                        }
                     }
                 } else if (activeHandle >= 0 && activeHandle < 3) {
                     Vector3 axisDir = AxisDirection(activeHandle);
@@ -1734,12 +1873,17 @@ void ObjectInteractionManager::Update(float dt) {
                             if (activeHandle == 0) ws.x = newAxis;
                             if (activeHandle == 2) ws.z = newAxis;
                         } else {
-                            if (activeHandle == 0) ws.x = fmaxf(SCALE_MIN_SIZE, ws.x + amount);
-                            if (activeHandle == 2) ws.z = fmaxf(SCALE_MIN_SIZE, ws.z + amount);
+                            if (activeHandle == 0) ws.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount);
+                            if (activeHandle == 2) ws.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount);
                         }
                     } else {
-                        if (activeHandle == 0) ws.x = fmaxf(SCALE_MIN_SIZE, ws.x + amount);
-                        if (activeHandle == 2) ws.z = fmaxf(SCALE_MIN_SIZE, ws.z + amount);
+                        if (activeHandle == 0) ws.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount);
+                        if (activeHandle == 2) ws.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount);
+                    }
+                    if (SnapActive()) {
+                        const float st = ui::GetSnapSettings().scale;
+                        if (activeHandle == 0) ws.x = fmaxf(SCALE_MIN_SIZE, SnapValue(ws.x, st));
+                        if (activeHandle == 2) ws.z = fmaxf(SCALE_MIN_SIZE, SnapValue(ws.z, st));
                     }
                 }
                 *waterSel->GetSizePtr() = ws;
@@ -1749,6 +1893,7 @@ void ObjectInteractionManager::Update(float dt) {
 
         // Release active water gizmo handle on mouse release
         if (activeHandle >= 0 && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            EndDragUndoCapture();
             activeHandle = -1;
             freeDrag = false;
             return;
@@ -1765,8 +1910,6 @@ void ObjectInteractionManager::Update(float dt) {
             if (activeHandle >= 0) {
                 BeginDragUndoCapture();
                 Vector3 pivot = selectedObjects.size() > 1 ? SelectionCenter() : primary->GetOriginWorld();
-                Vector2 centerOnScreen = GetWorldToScreen(pivot, camera);
-                dragStartAngle = atan2f(dragStart.y - centerOnScreen.y, dragStart.x - centerOnScreen.x);
                 BeginSelectionDrag();
                 startPos = *primary->GetPosPtr();
                 startSize = *primary->GetSizePtr();
@@ -1785,18 +1928,20 @@ void ObjectInteractionManager::Update(float dt) {
                 if (ui::GetActiveTool() == ui::TransformTool::Rotate) {
                     bool localSpace = ui::IsTransformLocalSpace();
                     Vector3 axisDir = localSpace ? RotatedAxisDirection(startRotation, activeHandle) : AxisDirection(activeHandle);
-                    Vector3 viewForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-                    // Rotation sense so a counter-clockwise screen drag rotates the ring
-                    // counter-clockwise for every axis orientation (verified against the
-                    // projected ring geometry). Uses the "into scene" view axis, not the
-                    // radial to-camera vector, so non-front-facing rings aren't inverted.
-                    rotateSign = (Vector3DotProduct(axisDir, viewForward) > 0.0f) ? -1.0f : 1.0f;
                     rotatePrevEuler = { DEG2RAD * startRotation.x, DEG2RAD * startRotation.y, DEG2RAD * startRotation.z };
+                    // Zero-degree reference for the angle wedge: the ring-plane direction under the cursor.
+                    rotateAxisDir = axisDir;
+                    rotateAccumRad = 0.0f;
+                    rotateLastAngle = 0.0f; // the grab point is the zero angle
+                    Vector3 toHit = Vector3Subtract(RayPlaneIntersection(GetMouseRay(dragStart, camera), pivot, axisDir), pivot);
+                    toHit = Vector3Subtract(toHit, Vector3Scale(axisDir, Vector3DotProduct(toHit, axisDir)));
+                    rotateRefDir = Vector3Length(toHit) > 1e-4f ? Vector3Normalize(toHit) : Vector3Perpendicular(axisDir);
                 } else if (ui::GetActiveTool() == ui::TransformTool::Move) {
                     dragAxisWorldLen = MoveHandleWorldLen(pivot, startSize, activeHandle, camera);
                     axisMove.Begin(GetMouseRay(GetMousePosition(), camera), startPos,
                                    HandleAxisDirection(startRotation, activeHandle));
                 }
+                dragReadout = 0.0f;
                 freeDrag = false;
                 return;
             }
@@ -1812,8 +1957,10 @@ void ObjectInteractionManager::Update(float dt) {
                     Vector3 hit = RayPlaneIntersection(ray, startPos, dragPlaneNormal);
                     Vector3 delta = Vector3Subtract(hit, dragPlanePoint);
                     if (SnapActive()) {
+                        // Snap the moved position, so Properties read round values (not start + k * step).
                         const float st = ui::GetSnapSettings().move;
-                        delta = { SnapValue(delta.x, st), SnapValue(delta.y, st), SnapValue(delta.z, st) };
+                        const Vector3 at = Vector3Add(startPos, delta);
+                        delta = Vector3Subtract({ SnapValue(at.x, st), SnapValue(at.y, st), SnapValue(at.z, st) }, startPos);
                     }
                     if (!snapTargets.empty()) {
                         for (int a = 0; a < 3; ++a) {
@@ -1822,9 +1969,16 @@ void ObjectInteractionManager::Update(float dt) {
                         }
                     }
                     next = Vector3Add(startPos, delta);
+                    dragReadout = Vector3Length(delta);
                 } else {
                     float off = axisMove.Offset(GetMouseRay(GetMousePosition(), camera));
-                    if (SnapActive()) off = SnapValue(off, ui::GetSnapSettings().move);
+                    if (SnapActive()) {
+                        // On a world axis, snap the object's own coordinate; a rotated (local) axis snaps the offset.
+                        const float st = ui::GetSnapSettings().move;
+                        const int a = fabsf(axisMove.dir.x) > 0.999f ? 0 : fabsf(axisMove.dir.y) > 0.999f ? 1 : fabsf(axisMove.dir.z) > 0.999f ? 2 : -1;
+                        if (a >= 0) off = (SnapValue(Comp(startPos, a) + Comp(axisMove.dir, a) * off, st) - Comp(startPos, a)) / Comp(axisMove.dir, a);
+                        else off = SnapValue(off, st);
+                    }
                     if (!snapTargets.empty()) {
                         // The drag is locked to one line: find the shift along it that closes the nearest face gap.
                         const BoundingBox mv = TranslatedBox(dragStartBounds, Vector3Scale(axisMove.dir, off));
@@ -1841,6 +1995,7 @@ void ObjectInteractionManager::Update(float dt) {
                         if (found) off += bestDt;
                     }
                     next = Vector3Add(axisMove.origin, Vector3Scale(axisMove.dir, off));
+                    dragReadout = Vector3DotProduct(Vector3Subtract(next, startPos), axisMove.dir);
                 }
 
                 if (multi) {
@@ -1859,25 +2014,11 @@ void ObjectInteractionManager::Update(float dt) {
 
                 Vector2 mouseDelta = Vector2Subtract(GetMousePosition(), dragStart);
 
-                float uniformFactor = 1.0f;
-                bool uniformScale = false;
-                if (activeHandle >= 3 && activeHandle < 11) {
-                    int corner = activeHandle - 3;
-                    Vector3 cornerStart = HandleScaleCornerWorld(startPos, startSize, startRotation, corner);
-                    Vector2 centerScreen = GetWorldToScreen(startPos, camera);
-                    Vector2 cornerScreen = GetWorldToScreen(cornerStart, camera);
-                    float r0 = Vector2Distance(cornerScreen, centerScreen);
-                    if (r0 > 2.0f) {
-                        Vector2 dir = Vector2Scale(Vector2Subtract(cornerScreen, centerScreen), 1.0f / r0);
-                        float deltaAlong = Vector2DotProduct(mouseDelta, dir);
-                        uniformFactor = Clamp(1.0f + deltaAlong / r0, 0.02f, 100.0f);
-                        if (SnapActive()) uniformFactor = fmaxf(SnapValue(uniformFactor, ui::GetSnapSettings().scale), 0.02f);
-                        uniformScale = true;
-                        nextSize = Vector3Scale(startSize, uniformFactor);
-                    }
-                } else if (activeHandle >= 0 && activeHandle < 3) {
-                    Vector3 axisDir = HandleAxisDirection(startRotation, activeHandle);
-                    float startAxis = AxisSize(startSize, activeHandle);
+                const int sAxis = activeHandle % 3;
+                const float sSign = activeHandle < 3 ? 1.0f : -1.0f;
+                if (activeHandle >= 0 && activeHandle < 6) {
+                    Vector3 axisDir = Vector3Scale(ScaleAxisDirection(startRotation, sAxis), sSign);
+                    float startAxis = AxisSize(startSize, sAxis);
                     Vector3 handleWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f));
                     Vector2 handleScreen = GetWorldToScreen(handleWorld, camera);
                     Vector3 probeWorld = Vector3Add(startPos, Vector3Scale(axisDir, startAxis * 0.5f + 1.0f));
@@ -1892,28 +2033,29 @@ void ObjectInteractionManager::Update(float dt) {
                             float deltaAlong = Vector2DotProduct(mouseDelta, screenDir);
                             float factor = Clamp(1.0f + deltaAlong / r0, 0.02f, 100.0f);
                             float newAxis = fmaxf(startAxis * factor, SCALE_MIN_SIZE);
-                            if (activeHandle == 0) nextSize.x = newAxis;
-                            if (activeHandle == 1) nextSize.y = newAxis;
-                            if (activeHandle == 2) nextSize.z = newAxis;
+                            if (sAxis == 0) nextSize.x = newAxis;
+                            if (sAxis == 1) nextSize.y = newAxis;
+                            if (sAxis == 2) nextSize.z = newAxis;
                         } else {
-                            if (activeHandle == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, currentSize.x + amount);
-                            if (activeHandle == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, currentSize.y + amount);
-                            if (activeHandle == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, currentSize.z + amount);
+                            if (sAxis == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount * sSign);
+                            if (sAxis == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, startSize.y + amount * sSign);
+                            if (sAxis == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount * sSign);
                         }
                     } else {
-                        if (activeHandle == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, currentSize.x + amount);
-                        if (activeHandle == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, currentSize.y + amount);
-                        if (activeHandle == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, currentSize.z + amount);
+                        if (sAxis == 0) nextSize.x = fmaxf(SCALE_MIN_SIZE, startSize.x + amount * sSign);
+                        if (sAxis == 1) nextSize.y = fmaxf(SCALE_MIN_SIZE, startSize.y + amount * sSign);
+                        if (sAxis == 2) nextSize.z = fmaxf(SCALE_MIN_SIZE, startSize.z + amount * sSign);
                     }
                 }
 
-                if (!uniformScale && activeHandle >= 0 && activeHandle < 3 && SnapActive()) {
+                if (activeHandle >= 0 && activeHandle < 6 && SnapActive()) {
                     const float st = ui::GetSnapSettings().scale;
                     auto snapAxis = [&](float v) { return fmaxf(SCALE_MIN_SIZE, SnapValue(v, st)); };
-                    if (activeHandle == 0) nextSize.x = snapAxis(nextSize.x);
-                    if (activeHandle == 1) nextSize.y = snapAxis(nextSize.y);
-                    if (activeHandle == 2) nextSize.z = snapAxis(nextSize.z);
+                    if (sAxis == 0) nextSize.x = snapAxis(nextSize.x);
+                    if (sAxis == 1) nextSize.y = snapAxis(nextSize.y);
+                    if (sAxis == 2) nextSize.z = snapAxis(nextSize.z);
                 }
+                if (activeHandle >= 0 && activeHandle < 6) dragReadout = AxisSize(nextSize, sAxis);
 
                 if (multi) {
                     const float pivotX = dragPivot.x, pivotY = dragPivot.y, pivotZ = dragPivot.z;
@@ -1922,29 +2064,23 @@ void ObjectInteractionManager::Update(float dt) {
                         if (!obj) continue;
                         DragStartState& st = dragStartStates[i];
 
-                        if (uniformScale) {
-                            *obj->GetPosPtr() = {
-                                pivotX + (st.pos.x - pivotX) * uniformFactor,
-                                pivotY + (st.pos.y - pivotY) * uniformFactor,
-                                pivotZ + (st.pos.z - pivotZ) * uniformFactor
-                            };
-                            *obj->GetSizePtr() = Vector3Scale(st.size, uniformFactor);
-                        } else if (activeHandle >= 0 && activeHandle < 3) {
-                            float factor = (activeHandle == 0) ? nextSize.x / fmaxf(st.size.x, 1e-5f)
-                                    : (activeHandle == 1) ? nextSize.y / fmaxf(st.size.y, 1e-5f)
-                                    : nextSize.z / fmaxf(st.size.z, 1e-5f);
+                        if (activeHandle >= 0 && activeHandle < 6) {
+                            // Group factor from the primary's start size, so every object scales by the same ratio.
+                            float factor = (sAxis == 0) ? nextSize.x / fmaxf(startSize.x, 1e-5f)
+                                    : (sAxis == 1) ? nextSize.y / fmaxf(startSize.y, 1e-5f)
+                                    : nextSize.z / fmaxf(startSize.z, 1e-5f);
                             if (factor <= 0.0f) factor = 1.0f;
 
-                            Vector3 np = st.pos;
-                            if (activeHandle == 0) np.x = pivotX + (st.pos.x - pivotX) * factor;
-                            if (activeHandle == 1) np.y = pivotY + (st.pos.y - pivotY) * factor;
-                            if (activeHandle == 2) np.z = pivotZ + (st.pos.z - pivotZ) * factor;
+                            // Push the centre away from the group pivot along the handle axis only.
+                            const Vector3 axisW = ScaleAxisDirection(startRotation, sAxis);
+                            const Vector3 d = Vector3Subtract(st.pos, dragPivot);
+                            Vector3 np = Vector3Add(st.pos, Vector3Scale(axisW, Vector3DotProduct(d, axisW) * (factor - 1.0f)));
                             *obj->GetPosPtr() = np;
 
                             Vector3 ns = st.size;
-                            if (activeHandle == 0) ns.x = fmaxf(SCALE_MIN_SIZE, st.size.x * factor);
-                            if (activeHandle == 1) ns.y = fmaxf(SCALE_MIN_SIZE, st.size.y * factor);
-                            if (activeHandle == 2) ns.z = fmaxf(SCALE_MIN_SIZE, st.size.z * factor);
+                            if (sAxis == 0) ns.x = fmaxf(SCALE_MIN_SIZE, st.size.x * factor);
+                            if (sAxis == 1) ns.y = fmaxf(SCALE_MIN_SIZE, st.size.y * factor);
+                            if (sAxis == 2) ns.z = fmaxf(SCALE_MIN_SIZE, st.size.z * factor);
                             *obj->GetSizePtr() = ns;
                         }
                         obj->ResetMassAuto();
@@ -1954,16 +2090,25 @@ void ObjectInteractionManager::Update(float dt) {
                     primary->ResetMassAuto();
                 }
             } else if (ui::GetActiveTool() == ui::TransformTool::Rotate) {
-                Vector2 currentMouse = GetMousePosition();
-                Vector2 pivotScreen = GetWorldToScreen(dragPivot, camera);
-                float currentAngle = atan2f(currentMouse.y - pivotScreen.y, currentMouse.x - pivotScreen.x);
-                float totalDelta = currentAngle - dragStartAngle;
-                if (totalDelta > PI) totalDelta -= 2.0f * PI;
-                if (totalDelta < -PI) totalDelta += 2.0f * PI;
-                // Total rotation from drag start is a pure function of the cursor
-                // position, so it can't accumulate per-frame error or spiral out.
-                float totalDegrees = -totalDelta * RAD2DEG * rotateSign;
+                // Angle of the cursor's ray hit on the grabbed ring's plane, from the grab point, right-hand about
+                // the axis. The grabbed point then stays under the cursor from any camera angle. Per-frame steps
+                // are wrapped and summed so the angle keeps counting past +-180 degrees.
+                const Ray cursorRay = GetMouseRay(GetMousePosition(), camera);
+                const Vector3 hit = Vector3Subtract(RayPlaneIntersection(cursorRay, dragPivot, rotateAxisDir), dragPivot);
+                // Skip frames where the ray is parallel to the ring or the cursor sits on the pivot (angle undefined).
+                if (fabsf(Vector3DotProduct(cursorRay.direction, rotateAxisDir)) > 1e-3f && Vector3Length(hit) > 1e-4f) {
+                    const float currentAngle = atan2f(Vector3DotProduct(hit, Vector3CrossProduct(rotateAxisDir, rotateRefDir)),
+                                                      Vector3DotProduct(hit, rotateRefDir));
+                    float step = currentAngle - rotateLastAngle;
+                    if (step > PI) step -= 2.0f * PI;
+                    if (step < -PI) step += 2.0f * PI;
+                    rotateAccumRad += step;
+                    rotateLastAngle = currentAngle;
+                }
+                const float totalDelta = rotateAccumRad;
+                float totalDegrees = totalDelta * RAD2DEG;
                 if (SnapActive()) totalDegrees = SnapValue(totalDegrees, ui::GetSnapSettings().rotate);
+                dragReadout = fmodf(totalDegrees, 360.0f); // wedge and label start over each full turn
 
                 bool localSpace = ui::IsTransformLocalSpace();
                 Vector3 axisDir = localSpace ? RotatedAxisDirection(startRotation, activeHandle) : AxisDirection(activeHandle);
@@ -1981,7 +2126,8 @@ void ObjectInteractionManager::Update(float dt) {
                         // through the same matrix convention keeps rendering and
                         // position exact even for angled objects (quaternion
                         // round-trips used a different axis order and were wrong).
-                        Matrix R = MatrixMultiply(groupRot, MatrixRotateXYZ({ DEG2RAD * st.rotation.x, DEG2RAD * st.rotation.y, DEG2RAD * st.rotation.z }));
+                        // raylib applies the left matrix first, so the drag turn goes on the right: it happens in the world, after the body's own rotation.
+                        Matrix R = MatrixMultiply(MatrixRotateXYZ({ DEG2RAD * st.rotation.x, DEG2RAD * st.rotation.y, DEG2RAD * st.rotation.z }), groupRot);
                         Vector3 e = MatrixToEulerContinuous(R, st.prevEulerRad);
                         st.prevEulerRad = e;
                         Vector3 nextEuler = { WrapDeg(e.x * RAD2DEG), WrapDeg(e.y * RAD2DEG), WrapDeg(e.z * RAD2DEG) };
@@ -1996,7 +2142,7 @@ void ObjectInteractionManager::Update(float dt) {
                         *obj->GetPosPtr() = Vector3Subtract(newOriginWorld, Vector3Transform(*obj->GetOriginPtr(), R));
                     }
                 } else {
-                    Matrix R = MatrixMultiply(MatrixRotate(axisDir, DEG2RAD * totalDegrees), MatrixRotateXYZ({ DEG2RAD * startRotation.x, DEG2RAD * startRotation.y, DEG2RAD * startRotation.z }));
+                    Matrix R = MatrixMultiply(MatrixRotateXYZ({ DEG2RAD * startRotation.x, DEG2RAD * startRotation.y, DEG2RAD * startRotation.z }), MatrixRotate(axisDir, DEG2RAD * totalDegrees));
                     Vector3 e = MatrixToEulerContinuous(R, rotatePrevEuler);
                     rotatePrevEuler = e;
                     Vector3 nextEuler = { WrapDeg(e.x * RAD2DEG), WrapDeg(e.y * RAD2DEG), WrapDeg(e.z * RAD2DEG) };
@@ -2009,6 +2155,7 @@ void ObjectInteractionManager::Update(float dt) {
                     *primary->GetPosPtr() = Vector3Subtract(dragPivot, Vector3Transform(origin, R));
                 }
             }
+            if (ui::GizmoValueLabel()) DrawDragReadout();
             return;
         }
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
@@ -2035,7 +2182,8 @@ void ObjectInteractionManager::Update(float dt) {
                     ToggleSelect(target.primary);
                 }
             } else {
-                if (!IsExactSelection(target.objects)) {
+                // Pressing a member of the current selection keeps it, so the whole selection drags.
+                if (!IsInSelection(target.primary) && !IsExactSelection(target.objects)) {
                     ui::SetSelection(target.objects, target.primary);
                 }
                 // Drag the whole (current) selection on the camera plane.
@@ -2098,8 +2246,37 @@ void ObjectInteractionManager::Update(float dt) {
     }
 }
 
+// Dark value tag beside the cursor while a handle is dragged (the 3D gizmo is drawn in DrawOverlay3D).
+void ObjectInteractionManager::DrawDragReadout() const {
+    char text[32];
+    const bool degrees = ui::GetActiveTool() == ui::TransformTool::Rotate;
+    float shown = degrees ? roundf(dragReadout) : roundf(dragReadout * 1000.0f) / 1000.0f;
+    if (shown == 0.0f) shown = 0.0f; // no "-0"
+    if (degrees) snprintf(text, sizeof(text), "%.0f", shown);
+    else snprintf(text, sizeof(text), "%.3f", shown);
+    const Vector2 m = GetMousePosition();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    const ImVec2 a(m.x + 16.0f, m.y + 14.0f);
+    const ImVec2 b(a.x + size.x + 12.0f, a.y + size.y + 6.0f);
+    dl->AddRectFilled(a, b, IM_COL32(32, 32, 32, 235), 4.0f);
+    dl->AddText(ImVec2(a.x + 6.0f, a.y + 3.0f), IM_COL32(255, 255, 255, 255), text);
+}
+
 void ObjectInteractionManager::DrawOverlay3D() {
     if (ui::IsPlayActive()) return; // gizmos are editing aids; Update() already ignores input during play
+    // Faint pass through everything, then the solid pass where nothing is in front.
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+    g_gizmoFade = 0.35f;
+    DrawGizmos();
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
+    g_gizmoFade = 1.0f;
+    DrawGizmos();
+}
+
+void ObjectInteractionManager::DrawGizmos() const {
     // Water body gizmo (no ScatteredObject primary needed)
     WaterBody* waterSel = ui::GetSelectedWater();
     if (waterSel && ui::GetActiveTool() != ui::TransformTool::Select &&
@@ -2111,38 +2288,28 @@ void ObjectInteractionManager::DrawOverlay3D() {
         Vector3 pivot = { wp.x, wh, wp.z };
 
         ui::TransformTool tool = ui::GetActiveTool();
+        const int hot = activeHandle >= 0 ? activeHandle
+                      : ui::IsMouseOverUI() ? -1 : PickWaterHandle(waterSel, camera, GetMousePosition());
         if (tool == ui::TransformTool::Move) {
-            for (int i = 0; i < 3; ++i) {
-                Vector3 axisDir = AxisDirection(i);
-                float len = WaterMoveHandleLen(ws, i);
-                Vector3 start = pivot;
-                Vector3 end = Vector3Add(pivot, Vector3Scale(axisDir, len));
-                Color color = (activeHandle == i) ? Color{ 255, 255, 80, 255 } : Color{ 200, 220, 255, 255 };
-                DrawLine3D(start, end, color);
-                DrawSphere(end, 0.08f, color);
-            }
+            const Vector3 dirs[3] = { AxisDirection(0), AxisDirection(1), AxisDirection(2) };
+            const float lens[3] = { WaterMoveHandleLen(ws, 0), WaterMoveHandleLen(ws, 1), WaterMoveHandleLen(ws, 2) };
+            DrawMoveArrows(pivot, dirs, lens, hot, camera);
         } else if (tool == ui::TransformTool::Scale) {
-            for (int i = 0; i < 3; ++i) {
-                if (i == 1) continue; // skip Y axis for water scale
-                if (!AxisScaleGrabbable(pivot, ws, {0,0,0}, i, camera)) continue;
-                Vector3 axisDir = AxisDirection(i);
-                float axisLen = AxisSize(ws, i);
-                Vector3 start = Vector3Add(pivot, Vector3Scale(axisDir, -axisLen * 0.5f));
-                Vector3 end = Vector3Add(pivot, Vector3Scale(axisDir, axisLen * 0.5f));
-                Color color = (activeHandle == i) ? Color{ 255, 255, 80, 255 } : Color{ 200, 255, 200, 255 };
-                DrawLine3D(start, end, color);
-                DrawSphere(end, 0.06f, color);
+            for (int i = 0; i < 3; i += 2) { // X and Z only
+                if (!AxisScaleGrabbable(pivot, ws, { 0, 0, 0 }, i, camera)) continue;
+                DrawHandleBall(Vector3Add(pivot, Vector3Scale(AxisDirection(i), AxisSize(ws, i) * 0.5f)), i, hot == i, camera);
             }
-            // Draw XZ corner handles
+            // XZ corner handles
             for (int cx = 0; cx < 2; ++cx) {
                 for (int cz = 0; cz < 2; ++cz) {
-                    Vector3 corner = {
+                    const Vector3 corner = {
                         pivot.x + (cx == 0 ? -1.0f : 1.0f) * ws.x * 0.5f,
                         pivot.y,
                         pivot.z + (cz == 0 ? -1.0f : 1.0f) * ws.z * 0.5f
                     };
-                    Color color = (activeHandle == 3 + cx * 2 + cz) ? Color{ 255, 255, 80, 255 } : Color{ 200, 255, 200, 255 };
-                    DrawSphere(corner, 0.05f, color);
+                    const bool cornerHot = hot == 3 + cx * 2 + cz;
+                    DrawSphere(corner, HandleWorldSize(corner, cornerHot ? 8.0f : 6.0f, camera),
+                               Fade(cornerHot ? WHITE : Color{ 235, 235, 235, 150 }));
                 }
             }
         }
@@ -2161,47 +2328,82 @@ void ObjectInteractionManager::DrawOverlay3D() {
     Vector3 pivot = selectedObjects.size() > 1 ? SelectionCenter() : primary->GetOriginWorld();
 
     ui::TransformTool tool = ui::GetActiveTool();
+    const int hot = activeHandle >= 0 ? activeHandle
+                  : ui::IsMouseOverUI() || freeDrag ? -1 : PickHandle(GetMousePosition());
+    const bool dragging = activeHandle >= 0;
     if (tool == ui::TransformTool::Move) {
+        Vector3 dirs[3];
+        float lens[3];
         for (int i = 0; i < 3; ++i) {
-            Vector3 axisDir = HandleAxisDirection(rotation, i);
-            float len = MoveHandleWorldLen(pivot, s, i, camera);
-            Vector3 start = pivot;
-            Vector3 end = Vector3Add(pivot, Vector3Scale(axisDir, len));
-            Color color = (activeHandle == i) ? Color{ 255, 255, 80, 255 } : Color{ 200, 220, 255, 255 };
-            DrawLine3D(start, end, color);
-            DrawSphere(end, 0.08f, color);
+            dirs[i] = HandleAxisDirection(rotation, i);
+            lens[i] = MoveHandleWorldLen(pivot, s, i, camera);
+        }
+        DrawMoveArrows(pivot, dirs, lens, hot, camera);
+        if (dragging && !freeDrag) {
+            DrawLine3D(Vector3Subtract(axisMove.origin, Vector3Scale(axisMove.dir, 1000.0f)),
+                       Vector3Add(axisMove.origin, Vector3Scale(axisMove.dir, 1000.0f)), Fade(WHITE));
         }
     } else if (tool == ui::TransformTool::Scale) {
-        for (int i = 0; i < 3; ++i) {
-            if (!AxisScaleGrabbable(p, s, rotation, i, camera)) continue;
-            Vector3 axisDir = HandleAxisDirection(rotation, i);
-            float axisLen = AxisSize(s, i);
-            Vector3 start = Vector3Add(p, Vector3Scale(axisDir, -axisLen * 0.5f));
-            Vector3 end = Vector3Add(p, Vector3Scale(axisDir, axisLen * 0.5f));
-            Color color = (activeHandle == i) ? Color{ 255, 255, 80, 255 } : Color{ 200, 255, 200, 255 };
-            DrawLine3D(start, end, color);
-            DrawSphere(end, 0.06f, color);
+        Vector3 face[6];
+        bool shown[6];
+        for (int h = 0; h < 6; ++h) {
+            face[h] = ScaleFaceWorld(p, s, rotation, h);
+            shown[h] = AxisScaleGrabbable(p, s, rotation, h % 3, camera);
         }
-        // Draw corner handles
-        for (int c = 0; c < 8; ++c) {
-            Vector3 corner = HandleScaleCornerWorld(p, s, rotation, c);
-            Color color = (activeHandle == 3 + c) ? Color{ 255, 255, 80, 255 } : Color{ 200, 255, 200, 255 };
-            DrawSphere(corner, 0.05f, color);
+        // Faint outline through the handles, joined in the order they appear around the centre on screen.
+        const Vector2 centre = GetWorldToScreen(p, camera);
+        int order[6] = { 0, 1, 2, 3, 4, 5 };
+        float ang[6];
+        for (int h = 0; h < 6; ++h) {
+            const Vector2 sp = GetWorldToScreen(face[h], camera);
+            ang[h] = atan2f(sp.y - centre.y, sp.x - centre.x);
+        }
+        std::sort(order, order + 6, [&](int x, int y) { return ang[x] < ang[y]; });
+        for (int k = 0; k < 6; ++k) {
+            DrawLine3D(face[order[k]], face[order[(k + 1) % 6]], Fade(Color{ 70, 150, 255, 110 }));
+        }
+        for (int h = 0; h < 6; ++h) {
+            if (shown[h]) DrawHandleBall(face[h], h % 3, hot == h, camera);
+        }
+        if (dragging) {
+            const Vector3 axis = ScaleAxisDirection(startRotation, activeHandle % 3);
+            DrawLine3D(Vector3Subtract(startPos, Vector3Scale(axis, 1000.0f)),
+                       Vector3Add(startPos, Vector3Scale(axis, 1000.0f)), Fade(WHITE));
         }
     } else if (tool == ui::TransformTool::Rotate) {
         float radius = Clamp(HandleWorldSize(pivot, ROTATION_RING_PIXELS, camera),
                              ROTATION_RING_MIN_WORLD, ROTATION_RING_MAX_WORLD);
         bool localSpace = ui::IsTransformLocalSpace();
         for (int i = 0; i < 3; ++i) {
-            Color color = (activeHandle == i) ? Color{ 255, 255, 80, 255 } : Color{ 200, 220, 255, 255 };
-            if (localSpace) {
-                DrawRotationRing(pivot, radius, rotation, i, color, activeHandle == i);
+            if (dragging && activeHandle != i) continue; // while turning, only the grabbed dial stays
+            Vector3 u, v;
+            if (dragging) {
+                // Guides stay put while the object turns: 0 degrees is the grab point, same as the wedge.
+                u = rotateRefDir;
+                v = Vector3CrossProduct(rotateAxisDir, rotateRefDir);
             } else {
-                // World space: slightly dimmer so local vs world is visually obvious
-                Color worldColor = Color{ (unsigned char)(color.r / 2), (unsigned char)(color.g / 2),
-                                          (unsigned char)(color.b / 2), 255 };
-                DrawRotationRing(pivot, radius, i, worldColor, activeHandle == i);
+                RingBasis(rotation, localSpace, i, u, v);
             }
+            DrawRotationDial(pivot, radius, u, v, i, hot == i,
+                             dragging ? (SnapActive() ? ui::GetSnapSettings().rotate : 5.0f) : 0.0f, camera);
+        }
+        if (dragging) {
+            // Filled wedge from the grab point (0 degrees) to the cursor, with a pointer to each end.
+            const Color fill = WithAlpha(AxisColor(activeHandle, true), 0.4f);
+            const Vector3 ref = Vector3Scale(rotateRefDir, radius);
+            const int steps = std::max(1, (int)(fabsf(dragReadout) / 3.0f));
+            Vector3 prev = ref;
+            for (int k = 1; k <= steps; ++k) {
+                const Vector3 next = Vector3RotateByAxisAngle(ref, rotateAxisDir, DEG2RAD * dragReadout * k / steps);
+                DrawTriangle3D(pivot, Vector3Add(pivot, prev), Vector3Add(pivot, next), fill);
+                DrawTriangle3D(pivot, Vector3Add(pivot, next), Vector3Add(pivot, prev), fill);
+                prev = next;
+            }
+            const float arm = HandleWorldSize(pivot, 1.5f, camera);
+            const Color armColor = AxisColor(activeHandle, true);
+            DrawCylinderEx(pivot, Vector3Add(pivot, prev), arm, arm, 6, armColor);
+            DrawCylinderEx(pivot, Vector3Add(pivot, ref), arm * 0.6f, arm * 0.6f, 6, WithAlpha(armColor, 0.6f));
+            DrawSphere(pivot, HandleWorldSize(pivot, 3.0f, camera), Fade(WHITE));
         }
     }
 }

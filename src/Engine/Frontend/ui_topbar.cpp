@@ -296,8 +296,7 @@ void DrawImGuiTopBar() {
             ImGui::TextDisabled("SNAPPING");
             ImGui::Separator();
             ImGui::Checkbox("Snap to grid", &g_snap.enabled);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("G. Hold Ctrl while dragging to invert");
-            ImGui::BeginDisabled(!g_snap.enabled);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("G. Hold Ctrl while dragging to invert, Shift to turn off");
             ImGui::Indent(8.0f);
             ImGui::SetNextItemWidth(90.0f);
             ImGui::DragFloat("Move", &g_snap.move, 0.05f, 0.01f, 1000.0f, "%.2f m");
@@ -306,10 +305,13 @@ void DrawImGuiTopBar() {
             ImGui::SetNextItemWidth(90.0f);
             ImGui::DragFloat("Scale", &g_snap.scale, 0.01f, 0.01f, 10.0f, "%.2f x");
             ImGui::Unindent(8.0f);
-            ImGui::EndDisabled();
             ImGui::Spacing();
             ImGui::Checkbox("Snap to object", &g_snap.toObject);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("H. Move: slide flush against nearby objects");
+            ImGui::Spacing();
+            ImGui::TextDisabled("GIZMOS");
+            ImGui::Separator();
+            ImGui::Checkbox("Show value while dragging", &GizmoValueLabel());
             ImGui::EndPopup();
         }
     }
