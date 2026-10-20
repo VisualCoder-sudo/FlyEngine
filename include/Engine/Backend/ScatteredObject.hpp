@@ -2,6 +2,7 @@
 #include "Entity.hpp"
 #include "Frustum.hpp"
 #include "ModelAnimator.hpp"
+#include "ObjectNode.hpp"
 #include "../PhysicsCollision.hpp"
 #include "raylib.h"
 #include "raymath.h"
@@ -166,6 +167,8 @@ public:
     void ClearRenderRotation();
     // World-space heading of the object's local X axis (physics orientation if set, else Euler).
     float GetYaw() const;
+    // The rotation the object renders with: the physics orientation if set, else the Euler angles.
+    Matrix GetRotationMatrix() const;
 
     bool isSelected = false;
     bool isHovered = false;   // editor only: the cursor is over it, drawn with the hover outline
@@ -188,6 +191,16 @@ public:
     std::string script;
     std::vector<std::string> extraScripts;
     bool runOnPlay = true;
+
+    // Child nodes (lights, decals, textures) inserted from the explorer. They move with the object.
+    std::vector<ObjectNode> nodes;
+    // Queues this object's enabled Decal / Texture nodes for gfx::DrawNodeSurfaces (main pass only).
+    void QueueNodeSurfaces() const;
+    // Where a light node sits in the world: its position, the unit axis it points along (zero for a point light) and,
+    // for a surface light, the half-extents of its emitting rectangle.
+    void GetNodeEmitter(const ObjectNode& node, Vector3& pos, Vector3& dir, Vector3& halfU, Vector3& halfV) const;
+    // Editor only: outlines of the object's light nodes (range, cone, emitter), drawn while it is selected.
+    void DrawNodeGizmos() const;
 
     // Every attached script class, primary first.
     std::vector<std::string> AllScripts() const;

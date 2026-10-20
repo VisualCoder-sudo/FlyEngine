@@ -36,6 +36,15 @@ void DrawImGuiLightingPanel() {
         ImGui::DragFloat("##daylen", &L.dayLengthMinutes, 0.1f, 0.0f, 240.0f, L.dayLengthMinutes > 0.0f ? "%.1f min" : "off (time stays put)");
         ImGui::Spacing();
         ImGui::TextWrapped("The whole scene follows this time: sun and sky, window and street lights, car and bus lights. It is saved with the scene.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Light nodes (SpotLight, PointLight, SurfaceLight)");
+        ImGui::TextDisabled("Most lights lit at once");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderInt("##maxlights", &L.maxLights, 1, 32);
+        ImGui::TextDisabled("Most shadow-casting lights");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderInt("##maxshadows", &L.maxShadowCasters, 0, 16);
+        ImGui::TextWrapped("Extra lights farthest from the camera are dropped (or lose their shadows).");
         break;
     }
     case 2:

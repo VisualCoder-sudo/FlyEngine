@@ -588,6 +588,7 @@ struct PlayerOptions {
     int height = 720;
     bool hotReload = true;
     size_t maxMemoryBytes = 0; // 0 = unlimited
+    bool noShadows = false;    // --noshadows: start with shadows off (F10 toggles them)
     int quality = -1;          // --quality: 0 low .. 3 ultra; -1 = what Preferences > Rendering saved
     int loading = -1;          // --loading / --noloading: 1 / 0; -1 = the loading screen's own settings
     bool loadingLogs = false;  // --loadinglogs
@@ -616,6 +617,7 @@ static void PrintUsage(const char* exeName) {
         "  --automation <file>  Run scripted input and checks (see Engine/Backend/Automation.hpp); quits when done\n"
         "  --fixed-dt <sec>     Advance the game by exactly <sec> per frame (e.g. 0.016667), so scripted frames mean game time\n"
         "  --maxmem4G           Budget texture/mesh memory at 4GB (reported, not enforced)\n"
+        "  --noshadows          Start with shadows off (F10 toggles them in game)\n"
         "  --quality LEVEL      Picture quality: low, medium, high or ultra\n"
         "  --noloading          No loading screen\n"
         "  --loading            Show the loading screen (even if it is switched off in the settings)\n"
@@ -679,6 +681,8 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             opts.loading = 1;
         } else if (arg == "--loadinglogs") {
             opts.loadingLogs = true;
+        } else if (arg == "--noshadows") {
+            opts.noShadows = true;
         } else if (arg == "--quality") {
             if (i + 1 < argc) {
                 const std::string level = argv[++i];
@@ -950,6 +954,7 @@ int main(int argc, char* argv[]) {
     if (embedded) gfx::LoadQualitySettingsFromText(ReadEmbeddedText("__meta/graphics.cfg"));   // chosen at export time
     else gfx::LoadQualitySettings();
     if (opts.quality >= 0) gfx::SetQualityTier(opts.quality);
+    if (opts.noShadows) gfx::SetShadowsEnabled(false);
     // The editor's FPS cap (Preferences > Rendering) also governs the player, unless the command line chose one.
     if (opts.fpsFromArgs) SetTargetFPS(opts.targetFPS);
     else gfx::ApplyFpsCap();
@@ -1078,7 +1083,7 @@ int main(int argc, char* argv[]) {
     loading::Progress(0.0f, "Starting the tools");
     TechTools::TechnicalToolsManager::Instance().Initialize(&engine);
     loading::End();
-    std::printf("[Player] Technical Tools ready. F1=Inspector, F2=Physics Debug, F3=Record, F4=Playback, F5=Screenshot, F6=Video, F9=Memory Tracker, F12=Console\n");
+    std::printf("[Player] Technical Tools ready. F1=Inspector, F2=Physics Debug, F3=Record, F4=Playback, F5=Screenshot, F6=Video, F9=Memory Tracker, F10=Shadows, F12=Console\n");
 
     // Apply the --maxmem4G budget. This is a reported limit, not an enforced
     // one: the tracker flags when texture+mesh usage crosses it, but it does
@@ -1143,6 +1148,11 @@ int main(int argc, char* argv[]) {
         // ImGui frame for Technical Tools (also calls ImGui::NewFrame())
         rlImGuiNewFrame(GetFrameTime());
         
+        if (IsKeyPressed(KEY_F10)) {
+            gfx::SetShadowsEnabled(!gfx::IsShadowsEnabled());
+            std::printf("[Player] Shadows %s\n", gfx::IsShadowsEnabled() ? "on" : "off");
+        }
+
         // Handle debug stats toggle (Ctrl+F5)
         if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_F5)) {
             g_debugStats.Toggle();

@@ -554,6 +554,8 @@ template <class F> void ForEachSelected(F&& f) {
 }
 
 MenuItem MakeInsertMenu(ScatteredObject* scriptTarget);
+// Objects whose child rows (scripts, nodes) are folded away. Runtime only; everything starts open.
+std::unordered_set<const ScatteredObject*> s_scriptClosed;
 
 void BuildObjectMenu(ScatteredObject* obj) {
     const bool singleSel = obj && g_selection.size() == 1 &&
@@ -670,7 +672,43 @@ MenuItem MakeInsertMenu(ScatteredObject* scriptTarget) {
     // With an object to attach to, "Script" adds to that object; otherwise it makes a standalone script.
     if (scriptTarget) insert.sub.push_back({ "Script", [scriptTarget] { scriptLauncher::AddObjectScript(scriptTarget); }, {} });
     else insert.sub.push_back({ "Script", [] { InsertScript(); }, {} });
+    // With an object to attach to, lights, decals and textures become its child nodes.
+    if (scriptTarget) {
+        auto addNode = [scriptTarget](ObjectNodeType t) {
+            scriptTarget->nodes.push_back(MakeNode(t));
+            g_selectedNodeObj = scriptTarget;
+            g_selectedNodeIdx = (int)scriptTarget->nodes.size() - 1;
+            g_lightingSel = 0;
+            s_scriptClosed.erase(scriptTarget);
+        };
+        insert.sub.push_back({ "SpotLight", [addNode] { addNode(ObjectNodeType::SpotLight); }, {} });
+        insert.sub.push_back({ "PointLight", [addNode] { addNode(ObjectNodeType::PointLight); }, {} });
+        insert.sub.push_back({ "SurfaceLight", [addNode] { addNode(ObjectNodeType::SurfaceLight); }, {} });
+        insert.sub.push_back({ "Decal", [addNode] { addNode(ObjectNodeType::Decal); }, {} });
+        insert.sub.push_back({ "Texture", [addNode] { addNode(ObjectNodeType::Texture); }, {} });
+    }
     return insert;
+}
+
+// Menu for one child node row (light / decal / texture) under an object.
+void BuildNodeMenu(ScatteredObject* obj, int idx) {
+    if (!obj || idx < 0 || idx >= (int)obj->nodes.size()) return;
+    AddMenu(obj->nodes[(size_t)idx].enabled ? "Disable" : "Enable", [obj, idx] {
+        if (idx < (int)obj->nodes.size()) obj->nodes[(size_t)idx].enabled = !obj->nodes[(size_t)idx].enabled;
+    });
+    AddMenu("Duplicate", [obj, idx] {
+        if (idx >= (int)obj->nodes.size()) return;
+        ObjectNode copy = obj->nodes[(size_t)idx];
+        obj->nodes.insert(obj->nodes.begin() + idx + 1, std::move(copy));
+        g_selectedNodeObj = obj;
+        g_selectedNodeIdx = idx + 1;
+    });
+    AddMenu("Delete", [obj, idx] {
+        if (idx >= (int)obj->nodes.size()) return;
+        obj->nodes.erase(obj->nodes.begin() + idx);
+        g_selectedNodeObj = nullptr;
+        g_selectedNodeIdx = -1;
+    });
 }
 
 void BuildEmptyMenu() {
@@ -746,6 +784,7 @@ void OpenExplorerMenu(Vector2 pos, ExplorerMenuMode mode, ScatteredObject* obj, 
         case ExplorerMenuMode::Model:  if (model) BuildModelMenu(model); break;
         case ExplorerMenuMode::Empty:  BuildEmptyMenu(); break;
         case ExplorerMenuMode::Script: BuildScriptMenu(scriptIndex); break;
+        case ExplorerMenuMode::Node:   if (obj) BuildNodeMenu(obj, scriptIndex); break;
     }
 }
 
@@ -904,9 +943,6 @@ void HandleGroupRow(ModelGroup* g, const std::vector<ScatteredObject*>& all, boo
     }
 }
 
-// Objects whose script child is folded away. Runtime only; everything starts open.
-std::unordered_set<const ScatteredObject*> s_scriptClosed;
-
 // The script attached to an object, shown as a child row under it.
 void DrawObjectScriptRow(ScatteredObject* obj, const std::string& name, int idx, int depth) {
     ImGui::PushID(obj);
@@ -935,18 +971,49 @@ void DrawObjectScriptRow(ScatteredObject* obj, const std::string& name, int idx,
     }
 }
 
+// A light / decal / texture attached to an object, shown as a child row under it.
+void DrawObjectNodeRow(ScatteredObject* obj, int idx, int depth) {
+    ObjectNode& n = obj->nodes[(size_t)idx];
+    ImGui::PushID(obj);
+    RowDesc d;
+    d.idInt = 1000 + idx;
+    d.icon = n.IsLight() ? ROWICON_LIGHT : n.type == ObjectNodeType::Decal ? ROWICON_DECAL : ROWICON_TEXTURE;
+    d.label = n.name.c_str();
+    d.selected = g_selectedNodeObj == obj && g_selectedNodeIdx == idx;
+    d.depth = depth;
+    d.dimmed = obj->IsHiddenEffective() || !n.enabled;
+    RowResult r = DrawRow(d);
+    ImGui::PopID();
+    if (r.clicked && !ExplorerRenameActive() && !g_explorerMenuOpen) {
+        s_selGroup = nullptr;
+        SetSelection({ obj }, obj);
+        g_selectedNodeObj = obj;
+        g_selectedNodeIdx = idx;
+        g_lightingSel = 0;
+        s_ctx.rowClickedThisFrame = true;
+    } else if (r.rightClicked && !ExplorerRenameActive()) {
+        SetSelection({ obj }, obj);
+        g_selectedNodeObj = obj;
+        g_selectedNodeIdx = idx;
+        s_ctx.rightClickHandled = true;
+        s_ctx.rowClickedThisFrame = true;
+        OpenExplorerMenu(s_ctx.mouse, ExplorerMenuMode::Node, obj, idx);
+    }
+}
+
 void DrawObjectRow(ScatteredObject* obj, int depth) {
     s_ctx.order.push_back(obj);
     const std::string label = obj->GetName();
     const bool hasScript = !obj->script.empty();
-    const bool scriptOpen = hasScript && s_scriptClosed.count(obj) == 0;
+    const bool hasChildren = hasScript || !obj->nodes.empty();
+    const bool scriptOpen = hasChildren && s_scriptClosed.count(obj) == 0;
     RowDesc d;
     d.id = obj;
     d.icon = ROWICON_OBJECT;
     d.label = label.c_str();
     d.selected = obj->isSelected;
     d.depth = depth;
-    d.hasArrow = hasScript;
+    d.hasArrow = hasChildren;
     d.open = scriptOpen;
     d.hidden = &obj->hidden;
     d.locked = &obj->locked;
@@ -968,9 +1035,10 @@ void DrawObjectRow(ScatteredObject* obj, int depth) {
         }
         HandleObjectRow(obj, r);
     }
-    if (hasScript && (scriptOpen || FilterActive())) {
+    if (hasChildren && (scriptOpen || FilterActive())) {
         const std::vector<std::string> names = obj->AllScripts();
         for (size_t i = 0; i < names.size(); ++i) DrawObjectScriptRow(obj, names[i], static_cast<int>(i), depth + 1);
+        for (size_t i = 0; i < obj->nodes.size(); ++i) DrawObjectNodeRow(obj, static_cast<int>(i), depth + 1);
     }
 }
 

@@ -55,6 +55,7 @@ layout(binding=1) uniform fs_params {
     vec3 ambientColor;      // linear light from the sky
     int useTriplanar;
     vec3 cameraPos;
+@include_block lit_light_uniforms
 };
 layout(binding=0) uniform texture2D albedoTex0;
 layout(binding=1) uniform texture2D albedoTex1;
@@ -71,6 +72,12 @@ layout(binding=11) uniform texture2D roughnessTex3;
 layout(binding=12) uniform texture2D splatmap;
 layout(binding=0) uniform sampler layer_smp;
 layout(binding=1) uniform sampler splatmap_smp;
+layout(binding=13) uniform texture2D nodeShadowMap;
+layout(binding=2) uniform sampler nodeShadow_smp;
+@image_sample_type nodeShadowMap depth
+@sampler_type nodeShadow_smp comparison
+@include_block fly_rt_uv
+@include_block lit_node_lights
 
 in vec3 worldPos;
 in vec3 worldNormal;
@@ -162,7 +169,7 @@ void main() {
     vec3 specular = D * G * F * lightColor * NdotL;
     vec3 diffuse = albedo / PI * lightColor * NdotL;
     // Linear light; fog and the sRGB encoding come later, in the post passes.
-    vec3 color = diffuse + specular + albedo * ambientColor;
+    vec3 color = diffuse + specular + albedo * (ambientColor + NodeLights(worldPos, N));
     fragColor = vec4(color, 1.0);
 }
 @end

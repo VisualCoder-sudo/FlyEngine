@@ -16,6 +16,16 @@ void BindMap();                               // puts the first cascade's depth 
 int CascadeData(float out[16 * kMaxCascades]);
 Texture2D FarMapDepth(int farIndex);          // depth map of far cascade 1 + farIndex
 
+// Light-node shadow atlas (Shadows.cpp). Plan() hands out tiles to the shadow-casting lights (count of them in
+// `casters`, in the order given); it fills firstTile[i] (-1 = no shadow) and texelAngle[i] (negative = a cube of
+// six tiles). Data() returns the tile matrices (16 floats each) and rects (cx, cy, sx, sy in tile-adjusted NDC).
+constexpr int kMaxNodeShadowTiles = 16;
+struct NodeShadowRequest { Vector3 pos, dir; int kind; float outerAngleDeg; float range; int res; const void* host; };
+void PlanNodeShadows(const NodeShadowRequest* requests, const bool* wantShadow, int count, int maxCasters,
+                     float* firstTile, float* texelAngle);
+int NodeShadowData(float* viewProj, float* rects);   // returns the number of tiles
+Texture2D NodeShadowAtlas();                         // depth atlas (id 0 when there is none)
+
 } // namespace shadow
 
 namespace detail {

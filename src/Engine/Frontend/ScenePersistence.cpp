@@ -107,6 +107,15 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
     for (const auto& name : object->extraScripts) file << ' ' << std::quoted(name);
     // v30: skeletal animation (clip name, loop, speed, playing).
     file << ' ' << std::quoted(object->animClip) << ' ' << (int)object->animLoop << ' ' << object->animSpeed << ' ' << (int)object->animPlay;
+    // v31: child nodes (lights, decals, textures).
+    file << ' ' << object->nodes.size();
+    for (const ObjectNode& n : object->nodes) {
+        file << ' ' << (int)n.type << ' ' << std::quoted(n.name) << ' ' << (int)n.enabled << ' ' << (int)n.face
+             << ' ' << n.color[0] << ' ' << n.color[1] << ' ' << n.color[2] << ' ' << n.brightness << ' ' << n.range << ' ' << n.angle
+             << ' ' << n.surfaceSize[0] << ' ' << n.surfaceSize[1] << ' ' << (int)n.falloff << ' ' << (int)n.castShadows << ' ' << n.shadowRes
+             << ' ' << std::quoted(n.texturePath) << ' ' << n.tint[0] << ' ' << n.tint[1] << ' ' << n.tint[2] << ' ' << n.transparency
+             << ' ' << n.studsPerTile[0] << ' ' << n.studsPerTile[1] << ' ' << n.offset[0] << ' ' << n.offset[1];
+    }
     file << '\n';
 }
 } // namespace
@@ -167,7 +176,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 30\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 32\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -334,6 +343,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
              << L.cloudScale << ' ' << L.windSpeed << ' ' << L.windDirection << "\n";
         file << "LIGHTING6 " << (L.hasPicture ? 1 : 0) << ' ' << L.toneCurve << ' ' << L.exposure << ' ' << (L.autoExposure ? 1 : 0) << ' ' << L.bloom << ' '
              << L.vignette << ' ' << L.contrast << ' ' << L.saturation << ' ' << L.temperature << ' ' << L.filmGrain << "\n";
+        file << "LIGHTING7 " << L.maxLights << ' ' << L.maxShadowCasters << "\n";
     }
 
     vscript::Save(file);
@@ -527,6 +537,35 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
         object->animLoop = loop != 0;
         object->animPlay = play != 0;
     }
+    if (version >= 31) {
+        size_t nodeCount = 0;
+        if (!(file >> nodeCount) || nodeCount > 4096) return false;
+        for (size_t i = 0; i < nodeCount; ++i) {
+            ObjectNode n;
+            int type = 0, enabled = 1, face = 0, falloff = 1, shadows = 0;
+            if (!(file >> type >> std::quoted(n.name) >> enabled >> face
+                       >> n.color[0] >> n.color[1] >> n.color[2] >> n.brightness >> n.range >> n.angle
+                       >> n.surfaceSize[0] >> n.surfaceSize[1] >> falloff >> shadows >> n.shadowRes
+                       >> std::quoted(n.texturePath) >> n.tint[0] >> n.tint[1] >> n.tint[2] >> n.transparency
+                       >> n.studsPerTile[0] >> n.studsPerTile[1] >> n.offset[0] >> n.offset[1])) return false;
+            if (type < (int)ObjectNodeType::SpotLight || type > (int)ObjectNodeType::Texture) return false;
+            n.type = (ObjectNodeType)type;
+            n.enabled = enabled != 0;
+            n.face = (NodeFace)std::clamp(face, 0, 5);
+            n.falloff = falloff == 0 ? LightFalloff::Linear : LightFalloff::InverseSquare;
+            n.castShadows = version < 32 || shadows != 0;   // v32: lights shadow by default; v31 files never chose
+            n.shadowRes = std::clamp(n.shadowRes, 128, 4096);
+            n.brightness = std::clamp(n.brightness, 0.0f, 100.0f);
+            n.range = std::clamp(n.range, 0.1f, 10000.0f);
+            n.angle = std::clamp(n.angle, 1.0f, 89.0f);
+            n.transparency = std::clamp(n.transparency, 0.0f, 1.0f);
+            for (int a = 0; a < 2; ++a) {
+                n.studsPerTile[a] = std::max(n.studsPerTile[a], 0.01f);
+                n.surfaceSize[a] = std::clamp(n.surfaceSize[a], 0.01f, 1.0f);
+            }
+            object->nodes.push_back(std::move(n));
+        }
+    }
 
     out = std::move(object);
     return true;
@@ -558,8 +597,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
-        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 32 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 32) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 32).", version);
         return false;
     }
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
@@ -984,6 +1023,10 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
                             N.saturation = std::clamp(N.saturation, 0.0f, 2.0f);
                             N.temperature = std::clamp(N.temperature, -1.0f, 1.0f);
                             N.filmGrain = std::clamp(N.filmGrain, 0.0f, 1.0f);
+                        } else if (tagN == "LIGHTING7") {
+                            ok = static_cast<bool>(file >> N.maxLights >> N.maxShadowCasters);
+                            N.maxLights = std::clamp(N.maxLights, 1, 32);
+                            N.maxShadowCasters = std::clamp(N.maxShadowCasters, 0, 16);
                         }
                     }
                     if (!ok) {
@@ -1042,7 +1085,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 30\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD 32\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -1118,8 +1161,8 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 30 || count > kMaxSceneCount) {
-        if (signature == "SIMPLE_ENGINE_BUILD" && version > 30) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 30).", version);
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 32 || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > 32) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 32).", version);
         return false;
     }
 

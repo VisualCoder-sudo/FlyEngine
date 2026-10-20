@@ -276,6 +276,7 @@ void DrawImGuiTopBar() {
         const bool hov = ImGui::IsItemHovered();
         if (hov) MarkHand();
         const bool open = ImGui::IsPopupOpen("##ToolsPopup");
+        SaveSnapSettingsIfChanged(); // every frame: the G / H shortcuts change these outside the popup
         const bool active = g_snap.enabled || g_snap.toObject;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p1(p0.x + pillSize.x, p0.y + pillSize.y);

@@ -93,3 +93,103 @@ vec3 fly_view_pos(vec2 ndcPos, float viewDepth, vec4 camProj, vec4 camDepth) {
     return vec3((ndcPos.x + camProj.z) * camProj.x * viewDepth, (ndcPos.y + camProj.w) * camProj.y * viewDepth, -viewDepth);
 }
 @end
+
+// Light nodes (SpotLight / PointLight / SurfaceLight under objects), filled per frame by gfx::SetNodeLights:
+//   nodeLightCount  x = how many lights are lit
+//   nodeLightPos    xyz = world position, w = range (m)
+//   nodeLightDir    xyz = unit axis it points along, w = kind (0 point, 1 spot, 2 surface)
+//   nodeLightColor  rgb = linear colour x brightness, w = falloff (0 linear, 1 inverse square)
+//   nodeLightCone   x = cos of the outer cone angle, y = cos of the inner one, z = first shadow tile (-1 = none),
+//                   w = angle one shadow texel covers (negative = six tiles, a cube)
+//   nodeLightU/V    surface lights: xyz = half-extent of the emitting rectangle along its two sides (world)
+@block lit_light_uniforms
+    vec4 nodeLightCount;
+    vec4 nodeLightPos[32];
+    vec4 nodeLightDir[32];
+    vec4 nodeLightColor[32];
+    vec4 nodeLightCone[32];
+    vec4 nodeLightU[32];
+    vec4 nodeLightV[32];
+    mat4 nodeShadowVP[16];     // the light-node shadow tiles' view-projections (see gfx::shadow::PlanNodeShadows)
+    vec4 nodeShadowRect[16];   // xy = tile centre, zw = half size, in the tiles' NDC
+@end
+
+// Light from the light nodes (the uniforms are above). The includer declares the texture nodeShadowMap
+// (depth) and the comparison sampler nodeShadow_smp, and has fly_rt_uv in scope.
+@block lit_node_lights
+// Light from the light nodes: linear light on a surface at `pos` facing `n`, before the surface colour.
+float NodeLightFalloff(float kind, float dist, float range) {
+    if (kind < 0.5) return clamp(1.0 - dist / range, 0.0, 1.0);
+    float x = dist / range;
+    float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+    float q = dist / (range * 0.25);
+    return window * window / (1.0 + q * q);
+}
+
+// 1 = lit, 0 = in the shadow of something, for light i at distance dist from the point (pos, normal n).
+float NodeShadow(int i, vec3 pos, vec3 n, vec3 lightPos, float dist) {
+    float first = nodeLightCone[i].z;
+    if (first < -0.5) return 1.0;
+    float texelAngle = nodeLightCone[i].w;
+    int tile = int(first + 0.5);
+    if (texelAngle < 0.0) {
+        // A cube of six tiles: the face the point lies in (+x, -x, +y, -y, +z, -z).
+        vec3 d = pos - lightPos;
+        vec3 a = abs(d);
+        int face = (a.x >= a.y && a.x >= a.z) ? (d.x >= 0.0 ? 0 : 1) : (a.y >= a.z ? (d.y >= 0.0 ? 2 : 3) : (d.z >= 0.0 ? 4 : 5));
+        tile += face;
+    }
+    float texel = dist * abs(texelAngle);              // metres one shadow texel covers here
+    vec4 q = nodeShadowVP[tile] * vec4(pos + n * texel * 1.5, 1.0);
+    if (q.w <= 0.0) return 1.0;
+    vec3 ndc = q.xyz / q.w;
+    vec4 rect = nodeShadowRect[tile];
+    vec2 local = (ndc.xy - rect.xy) / rect.zw;
+    if (abs(local.x) > 0.97 || abs(local.y) > 0.97) return 1.0;
+    // Depth bias in depth-buffer units: a distance in metres, scaled by how fast the depth changes there.
+    float range = max(nodeLightPos[i].w, 0.1);
+    float depthPerMetre = (range * 0.05) / ((range - 0.05) * max(q.w * q.w, 1e-3));
+    float bias = (texel * 1.0 + 0.01) * depthPerMetre;
+    float depth = ndc.z * 0.5 + 0.5 - bias;
+    vec2 uv = fly_rt_uv(ndc.xy);
+    const float px = 1.0 / 4096.0;
+    float lit = 0.0;
+    for (int x = -1; x <= 1; ++x)
+        for (int y = -1; y <= 1; ++y)
+            lit += texture(sampler2DShadow(nodeShadowMap, nodeShadow_smp), vec3(uv + vec2(x, y) * px, depth));
+    return lit / 9.0;
+}
+
+vec3 NodeLights(vec3 pos, vec3 n) {
+    vec3 sum = vec3(0.0);
+    int count = int(nodeLightCount.x + 0.5);
+    for (int i = 0; i < 32; ++i) {
+        if (i >= count) break;
+        vec3 lpos = nodeLightPos[i].xyz;
+        float range = max(nodeLightPos[i].w, 0.01);
+        float kind = nodeLightDir[i].w;
+        vec3 axis = nodeLightDir[i].xyz;
+        if (kind > 1.5) {
+            // Surface light: the nearest point on the emitting rectangle.
+            vec3 u = nodeLightU[i].xyz;
+            vec3 v = nodeLightV[i].xyz;
+            vec3 d0 = pos - lpos;
+            lpos += u * clamp(dot(d0, u) / max(dot(u, u), 1e-6), -1.0, 1.0) + v * clamp(dot(d0, v) / max(dot(v, v), 1e-6), -1.0, 1.0);
+        }
+        vec3 toLight = lpos - pos;
+        float dist = length(toLight);
+        if (dist >= range) continue;
+        vec3 L = toLight / max(dist, 1e-4);
+        float att = NodeLightFalloff(nodeLightColor[i].w, dist, range);
+        if (kind > 0.5) {
+            float cd = dot(-L, axis);
+            att *= smoothstep(nodeLightCone[i].x, nodeLightCone[i].y, cd);
+            if (kind > 1.5) att *= max(cd, 0.0);   // a surface emits like a lamp panel: brightest straight out
+        }
+        float ndl = max(dot(n, L), 0.0);
+        if (att * ndl > 0.001) att *= NodeShadow(i, pos, n, lpos, dist);
+        sum += nodeLightColor[i].rgb * att * ndl;
+    }
+    return sum;
+}
+@end

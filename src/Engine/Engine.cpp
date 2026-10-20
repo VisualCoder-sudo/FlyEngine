@@ -142,6 +142,48 @@ void Engine::Update(float deltaTime) {
     pendingEntities.clear();
 }
 
+namespace {
+// Collects the enabled light nodes of the visible objects, nearest to the camera first, up to the scene's cap,
+// and hands them to the lit shaders.
+void GatherNodeLights(const std::vector<std::unique_ptr<Entity>>& entities, const Camera3D& camera) {
+    struct Cand { float dist; gfx::NodeLight light; };
+    std::vector<Cand> found;
+    for (const auto& entity : entities) {
+        auto* obj = dynamic_cast<ScatteredObject*>(entity.get());
+        if (!obj || obj->nodes.empty() || obj->IsHiddenEffective()) continue;
+        for (const ObjectNode& n : obj->nodes) {
+            if (!n.enabled || !n.IsLight()) continue;
+            gfx::NodeLight l;
+            l.range = n.range;
+            l.castShadows = n.castShadows;
+            l.shadowRes = n.shadowRes;
+            l.host = obj;
+            l.color = { n.color[0] * n.brightness, n.color[1] * n.brightness, n.color[2] * n.brightness };
+            l.falloff = n.falloff == LightFalloff::Linear ? 0 : 1;
+            Vector3 hu, hv;
+            obj->GetNodeEmitter(n, l.pos, l.dir, hu, hv);
+            l.kind = n.type == ObjectNodeType::PointLight ? 0 : n.type == ObjectNodeType::SpotLight ? 1 : 2;
+            if (l.kind != 0) {
+                const float outer = DEG2RAD * std::clamp(n.angle, 1.0f, 89.0f);
+                l.cosOuter = std::cos(outer);
+                l.cosInner = std::cos(outer * 0.7f);
+                l.u = hu;
+                l.v = hv;
+            }
+            found.push_back({ Vector3Distance(l.pos, camera.position), l });
+        }
+    }
+    const int cap = std::clamp(gfx::Lighting().maxLights, 1, gfx::kMaxNodeLights);
+    if ((int)found.size() > cap) {
+        std::partial_sort(found.begin(), found.begin() + cap, found.end(), [](const Cand& a, const Cand& b) { return a.dist < b.dist; });
+        found.resize((size_t)cap);
+    }
+    gfx::NodeLight lights[gfx::kMaxNodeLights];
+    for (size_t i = 0; i < found.size(); ++i) lights[i] = found[i].light;
+    gfx::SetNodeLights(lights, (int)found.size());
+}
+} // namespace
+
 void Engine::Draw() {
     // Update LOD camera position so objects can compute distance-based textures
     SetLODCameraPos(camera.position);
@@ -152,6 +194,7 @@ void Engine::Draw() {
     ClearBackground(skyColor);
 
     double p0 = GetTime();
+    GatherNodeLights(entities, camera);   // before the shadow passes: they need to know which lights cast
     // 0. Shadow map pass: render occluders from the light's point of view.
     // (Once per shadow cascade; the further cascades only ask for it every few frames.)
     for (int cascade = 0; cascade < gfx::ShadowCascadeCount(); cascade++) {
@@ -167,6 +210,18 @@ void Engine::Draw() {
     }
     double p1 = GetTime();
 
+    // Shadows of the light nodes: the scene drawn once into each tile of their atlas.
+    for (int tile = 0; tile < gfx::NodeShadowTileCount(); tile++) {
+        if (!gfx::BeginNodeShadowTile(tile)) continue;
+        gfx::BeginShapeBatch();
+        for (auto& entity : entities) {
+            if (isPlayerBuild && entity->IsEditorOnly()) continue;
+            entity->Draw();
+        }
+        gfx::EndShapeBatch();
+        foliage::Draw(camera, true);   // trees and rocks shadow the light too
+        gfx::EndNodeShadowTile();
+    }
     gfx::UpdateLighting(camera);
 
     // 0.5 Planar reflection pass - render the opaque world from a camera mirrored
@@ -243,6 +298,7 @@ void Engine::Draw() {
             }
         }
         gfx::EndShapeBatch();
+        gfx::DrawNodeSurfaces();   // Decal and Texture nodes, on top of the surfaces they cover
         foliage::Draw(camera, false);
         occlusion::EndFrame();
         pOpaque = GetTime();

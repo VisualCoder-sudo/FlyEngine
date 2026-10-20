@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -90,6 +91,22 @@ Camera3D lightCamera{};
 Matrix lightView = MatrixIdentity();
 Matrix lightProj = MatrixIdentity();
 Matrix lightViewProj = MatrixIdentity();
+
+// --- Light nodes: one shared depth atlas, a tile per spot/surface light, six per point light.
+constexpr int kNodeAtlasSize = 4096;
+RenderTexture2D nodeAtlas{};
+struct NodeTile {
+    Vector3 pos{}, target{}, up{};
+    float fovDeg = 90.0f, nearPlane = 0.1f, farPlane = 50.0f;
+    int px = 0, py = 0, size = 0;       // pixels of the atlas (top-left origin)
+    Matrix viewProj = MatrixIdentity();
+    Matrix projection = MatrixIdentity();
+    float rect[4] = { 0, 0, 0, 0 };
+    const void* host = nullptr;
+};
+std::vector<NodeTile> nodeTiles;
+const void* nodeSkipHost = nullptr;
+bool nodeTileActive = false;
 
 }
 
@@ -237,6 +254,41 @@ bool IsInShadowPass() {
     return inShadowPass;
 }
 
+int NodeShadowTileCount() { return shadowsEnabled ? (int)nodeTiles.size() : 0; }
+const void* NodeShadowSkipHost() { return nodeSkipHost; }
+
+bool BeginNodeShadowTile(int index) {
+    if (!shadowsEnabled || nodeAtlas.id == 0 || index < 0 || index >= (int)nodeTiles.size()) return false;
+    const NodeTile& t = nodeTiles[(size_t)index];
+    BeginTextureMode(nodeAtlas);
+    if (index == 0) ClearBackground(WHITE);
+    Camera3D cam{};
+    cam.position = t.pos;
+    cam.target = t.target;
+    cam.up = t.up;
+    cam.fovy = t.fovDeg;
+    cam.projection = CAMERA_PERSPECTIVE;
+    BeginMode3D(cam);
+    rlSetMatrixProjection(t.projection);
+    // The tile is a rectangle of the atlas: the scissor keeps the draw inside it (rlScissor counts from the bottom).
+    rlEnableScissorTest();
+    rlScissor(t.px, kNodeAtlasSize - (t.py + t.size), t.size, t.size);
+    inShadowPass = true;
+    nodeTileActive = true;
+    nodeSkipHost = t.host;
+    return true;
+}
+
+void EndNodeShadowTile() {
+    if (!nodeTileActive) return;
+    rlDisableScissorTest();
+    EndMode3D();
+    EndTextureMode();
+    inShadowPass = false;
+    nodeTileActive = false;
+    nodeSkipHost = nullptr;
+}
+
 int ShadowCascadeCount() {
     return (shadowsEnabled && shadowMap.id != 0) ? Clamp(Quality().shadowCascades, 1, kMaxCascades) : 1;
 }
@@ -319,6 +371,99 @@ bool IsShadowPassReused() { return inShadowPass && shadowPassReused; }
 
 namespace shadow {
 
+// Tiles are handed out left to right in rows (shelf packing), biggest lights first.
+void PlanNodeShadows(const NodeShadowRequest* req, const bool* wantShadow, int count, int maxCasters,
+                     float* firstTile, float* texelAngle) {
+    nodeTiles.clear();
+    for (int i = 0; i < count; i++) { firstTile[i] = -1.0f; texelAngle[i] = 0.0f; }
+    if (!shadowsEnabled || maxCasters <= 0) return;
+
+    int cursorX = 0, cursorY = 0, rowH = 0, casters = 0;
+    auto place = [&](int size, int& outX, int& outY) {
+        if (cursorX + size > kNodeAtlasSize) { cursorX = 0; cursorY += rowH; rowH = 0; }
+        if (cursorY + size > kNodeAtlasSize) return false;
+        outX = cursorX; outY = cursorY;
+        cursorX += size;
+        rowH = rowH > size ? rowH : size;
+        return true;
+    };
+    for (int i = 0; i < count && casters < maxCasters; i++) {
+        if (!wantShadow[i]) continue;
+        const NodeShadowRequest& r = req[i];
+        const bool cube = r.kind == 0 || r.outerAngleDeg > 60.0f;
+        const int need = cube ? 6 : 1;
+        if ((int)nodeTiles.size() + need > kMaxNodeShadowTiles) continue;
+        int size = r.res < 128 ? 128 : r.res;
+        const int cap = cube ? 1024 : 2048;
+        if (size > cap) size = cap;
+        size = 1 << (int)std::floor(std::log2((double)size));   // a power of two
+        const size_t before = nodeTiles.size();
+        const int cx0 = cursorX, cy0 = cursorY, rh0 = rowH;
+        bool ok = true;
+        for (int f = 0; f < need && ok; f++) {
+            NodeTile t;
+            t.host = r.host;
+            t.pos = r.pos;
+            t.size = size;
+            t.nearPlane = 0.05f;
+            t.farPlane = r.range > 0.5f ? r.range : 0.5f;
+            if (cube) {
+                static const Vector3 look[6] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+                static const Vector3 up[6] = { {0,1,0}, {0,1,0}, {0,0,1}, {0,0,-1}, {0,1,0}, {0,1,0} };
+                t.target = Vector3Add(r.pos, look[f]);
+                t.up = up[f];
+                t.fovDeg = 94.0f;   // a little over 90: the faces overlap, so the seams are inside a tile
+            } else {
+                t.target = Vector3Add(r.pos, r.dir);
+                t.up = fabsf(r.dir.y) > 0.95f ? Vector3{ 0.0f, 0.0f, 1.0f } : Vector3{ 0.0f, 1.0f, 0.0f };
+                t.fovDeg = fminf(2.0f * r.outerAngleDeg + 6.0f, 140.0f);
+            }
+            ok = place(size, t.px, t.py);
+            if (ok) nodeTiles.push_back(t);
+        }
+        if (!ok) {   // out of room: this light goes without a shadow, and the space it took is given back
+            nodeTiles.resize(before);
+            cursorX = cx0; cursorY = cy0; rowH = rh0;
+            continue;
+        }
+        float texel = 2.0f * tanf(DEG2RAD * nodeTiles[before].fovDeg * 0.5f) / (float)size;
+        firstTile[i] = (float)before;
+        texelAngle[i] = cube ? -texel : texel;
+        casters++;
+    }
+    if (nodeTiles.empty()) return;
+    if (nodeAtlas.id == 0) nodeAtlas = LoadRenderTextureDepth(kNodeAtlasSize, kNodeAtlasSize);
+
+    // Matrices. The tile's NDC square is moved to its place in the atlas, so the receiving shader can look a
+    // point up with the same uv = f(ndc) as for the sun's maps.
+    const float W = (float)kNodeAtlasSize;
+    for (NodeTile& t : nodeTiles) {
+        const float half = (float)t.size / W;                                // half the tile's width in NDC
+        const float cx = 2.0f * ((float)t.px + (float)t.size * 0.5f) / W - 1.0f;
+        const float cy = 1.0f - 2.0f * ((float)t.py + (float)t.size * 0.5f) / W;
+        Matrix fit = MatrixIdentity();
+        fit.m0 = half; fit.m12 = cx;
+        fit.m5 = half; fit.m13 = cy;
+        const Matrix view = MatrixLookAt(t.pos, t.target, t.up);
+        t.projection = MatrixMultiply(MatrixPerspective(t.fovDeg * DEG2RAD, 1.0, t.nearPlane, t.farPlane), fit);
+        t.viewProj = MatrixMultiply(view, t.projection);
+        t.rect[0] = cx; t.rect[1] = cy; t.rect[2] = half; t.rect[3] = half;
+    }
+}
+
+int NodeShadowData(float* viewProj, float* rects) {
+    int n = 0;
+    for (const NodeTile& t : nodeTiles) {
+        const float16 f = MatrixToFloatV(t.viewProj);
+        memcpy(viewProj + 16 * n, f.v, sizeof(float) * 16);
+        memcpy(rects + 4 * n, t.rect, sizeof(float) * 4);
+        n++;
+    }
+    return n;
+}
+
+Texture2D NodeShadowAtlas() { return (shadowsEnabled && !nodeTiles.empty()) ? nodeAtlas.depth : Texture2D{}; }
+
 void Init() {
     // Depth-only target: the lit shaders sample it through a comparison
     // sampler (hardware PCF), so no color attachment is needed.
@@ -333,6 +478,8 @@ void Init() {
 
 void Shutdown() {
     if (shadowMap.id > 0) UnloadRenderTexture(shadowMap);
+    if (nodeAtlas.id > 0) { UnloadRenderTexture(nodeAtlas); nodeAtlas = {}; }
+    nodeTiles.clear();
     for (FarCascade& fc : farCascades) {
         if (fc.map.id > 0) UnloadRenderTexture(fc.map);
         fc = FarCascade{};

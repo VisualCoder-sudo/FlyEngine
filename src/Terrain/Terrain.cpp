@@ -1015,6 +1015,7 @@ void Terrain::UpdateShaderUniforms(const Camera3D& camera) {
         if (shaderLocs[LocFogDensity] >= 0) SetShaderValue(terrainShader, shaderLocs[LocFogDensity], &fogD, SHADER_UNIFORM_FLOAT);
         if (shaderLocs[LocFogColor] >= 0) SetShaderValue(terrainShader, shaderLocs[LocFogColor], &fogC, SHADER_UNIFORM_VEC3);
     }
+    gfx::UploadWaterShadows(terrainShader);   // the light nodes (the sun's shadow cascades are not in this shader)
     
     // Bind layer textures
     for (size_t i = 0; i < layers.size() && i < 4; i++) {

@@ -72,6 +72,7 @@ enum class DialogPurpose {
     ExportIcon,
     PickSound,      // Visual Script's Play Sound node
     PickFoliageModel,   // the terrain panel's Foliage tab: a model for a plant type
+    PickNodeTexture,    // the image of a Decal / Texture child node
 };
 
 // Only one dialog can be in flight at a time; the editor UI is modal anyway.

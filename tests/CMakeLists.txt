@@ -260,6 +260,13 @@ target_link_libraries(explorer_tree_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME explorer_tree COMMAND explorer_tree_test)
 set_tests_properties(explorer_tree PROPERTIES LABELS needs_display)
 
+# Child nodes of an object (lights, decals, textures): save/load round trip, clone, lights change the picture.
+# Opens a window, so ctest needs a display (label needs_display): build/tests/object_nodes_test
+add_executable(object_nodes_test object_nodes_test.cpp)
+target_link_libraries(object_nodes_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME object_nodes COMMAND object_nodes_test)
+set_tests_properties(object_nodes PROPERTIES LABELS needs_display)
+
 # The C++ scripting API (fly.hpp) offers what the Visual Script nodes do. Header-only, runs against a fake engine table.
 add_executable(fly_actions_test fly_actions_test.cpp)
 target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
@@ -338,3 +345,8 @@ target_link_libraries(terrain_io_fuzz_test PRIVATE FlyEngineCore FlyRL)
 add_executable(windows_cloud_test windows_cloud_test.cpp)
 target_link_libraries(windows_cloud_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME windows_cloud COMMAND windows_cloud_test)
+
+# Snap steps persist to the per-user config dir (ui.cpp Load/SaveSnapSettings).
+add_executable(snap_settings_test snap_settings_test.cpp)
+target_link_libraries(snap_settings_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME snap_settings COMMAND snap_settings_test)

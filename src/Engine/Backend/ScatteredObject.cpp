@@ -494,6 +494,7 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     copy->runOnPlay = runOnPlay;
     copy->script = script;
     copy->extraScripts = extraScripts;
+    copy->nodes = nodes;
     copy->texturePath = texturePath;
     if (!texturePath.empty()) copy->textureNeedsBind = true;
     
@@ -567,6 +568,9 @@ void ScatteredObject::Draw() {
         }
     }
 
+    // A light's own host does not shadow it (a lamp inside its bulb would otherwise black out the room).
+    if (gfx::IsInShadowPass() && gfx::NodeShadowSkipHost() == this) return;
+
     // Lazy texture bind: was deferred from SetTexturePath to avoid blocking
     if (textureNeedsBind && hasOwnModel && !texturePath.empty() && model.materials != nullptr) {
         bool pending = false;
@@ -599,6 +603,8 @@ void ScatteredObject::Draw() {
     }
 
     gfx::IncrementRenderedEntityCount(1);
+    QueueNodeSurfaces();
+    if (isSelected && !nodes.empty() && !ui::IsPlayActive() && !gfx::IsInShadowPass() && !gfx::IsInReflectionPass()) DrawNodeGizmos();
 
     // Apply transparency to alpha channel (0 = visible, 1 = invisible)
     Color drawColor = color;
@@ -668,6 +674,98 @@ void ScatteredObject::Draw() {
         const Matrix outlineXf = gfx::ComposeTRS(size, rotMat, pos);
         if (!gfx::QueueShapeOutline(shape, outlineXf)) gfx::DrawModelOutline(gfx::GetShapeModel(shape), outlineXf);
     }
+}
+
+void ScatteredObject::QueueNodeSurfaces() const {
+    if (nodes.empty() || gfx::IsInShadowPass() || gfx::IsInReflectionPass()) return;
+    const Model* mesh = hasOwnModel ? &model : &gfx::GetShapeModel(shape);
+    if (mesh->meshCount <= 0) return;
+    const Matrix rot = GetRotationMatrix();
+    const Matrix xf = gfx::ComposeTRS(size, rot, pos);
+    for (const ObjectNode& n : nodes) {
+        if (!n.enabled || !n.IsSurfaceNode()) continue;
+        gfx::NodeSurface s;
+        s.model = mesh;
+        s.transform = xf;
+        s.size = size;
+        float fn[3], fu[3], fv[3];
+        NodeFaceAxes(n.face, fn, fu, fv);
+        s.faceN = { fn[0], fn[1], fn[2] };
+        s.faceU = { fu[0], fu[1], fu[2] };
+        s.faceV = { fv[0], fv[1], fv[2] };
+        s.tiled = n.type == ObjectNodeType::Texture;
+        s.metresPerTile = { n.studsPerTile[0], n.studsPerTile[1] };
+        s.offset = { n.offset[0], n.offset[1] };
+        s.tint = { (unsigned char)(std::clamp(n.tint[0], 0.0f, 1.0f) * 255.0f + 0.5f), (unsigned char)(std::clamp(n.tint[1], 0.0f, 1.0f) * 255.0f + 0.5f),
+                   (unsigned char)(std::clamp(n.tint[2], 0.0f, 1.0f) * 255.0f + 0.5f), (unsigned char)(std::clamp(1.0f - n.transparency, 0.0f, 1.0f) * 255.0f + 0.5f) };
+        if (!n.texturePath.empty()) {
+            bool pending = false;
+            s.texture = textureManager::GetGPUTextureAsync(n.texturePath, pending);   // id 0 while it loads: the checker shows
+        }
+        gfx::QueueNodeSurface(s);
+    }
+}
+
+void ScatteredObject::GetNodeEmitter(const ObjectNode& n, Vector3& outPos, Vector3& dir, Vector3& halfU, Vector3& halfV) const {
+    const Matrix rot = GetRotationMatrix();
+    dir = halfU = halfV = Vector3Zero();
+    outPos = pos;
+    if (n.type == ObjectNodeType::PointLight) return;
+    float fn[3], fu[3], fv[3];
+    NodeFaceAxes(n.face, fn, fu, fv);
+    // The emitter sits on the chosen face, a hair out so the part itself is not lit edge-on.
+    dir = Vector3Normalize(Vector3Transform({ fn[0], fn[1], fn[2] }, rot));
+    outPos = Vector3Add(Vector3Transform({ fn[0] * 0.5f, fn[1] * 0.5f, fn[2] * 0.5f }, gfx::ComposeTRS(size, rot, pos)), Vector3Scale(dir, 0.02f));
+    if (n.type == ObjectNodeType::SurfaceLight) {
+        // Half-extent of the emitting rectangle across the face (a fraction of the face's size).
+        halfU = Vector3Transform({ fu[0] * size.x * 0.5f * n.surfaceSize[0], fu[1] * size.y * 0.5f * n.surfaceSize[0], fu[2] * size.z * 0.5f * n.surfaceSize[0] }, rot);
+        halfV = Vector3Transform({ fv[0] * size.x * 0.5f * n.surfaceSize[1], fv[1] * size.y * 0.5f * n.surfaceSize[1], fv[2] * size.z * 0.5f * n.surfaceSize[1] }, rot);
+    }
+}
+
+void ScatteredObject::DrawNodeGizmos() const {
+    for (const ObjectNode& n : nodes) {
+        if (!n.IsLight() || !n.enabled) continue;
+        Vector3 p, d, hu, hv;
+        GetNodeEmitter(n, p, d, hu, hv);
+        const Color col = { (unsigned char)(255 * n.color[0]), (unsigned char)(255 * n.color[1]), (unsigned char)(255 * n.color[2]), 200 };
+        const Color c = { (unsigned char)(120 + col.r / 2), (unsigned char)(120 + col.g / 2), (unsigned char)(120 + col.b / 2), 220 };
+        if (n.type == ObjectNodeType::PointLight) {
+            DrawCircle3D(p, n.range, { 1, 0, 0 }, 90.0f, c);
+            DrawCircle3D(p, n.range, { 0, 1, 0 }, 90.0f, c);
+            DrawCircle3D(p, n.range, { 0, 0, 1 }, 90.0f, c);
+            continue;
+        }
+        // Cone (or the surface light's spread): a ring at the far end, joined to the emitter by four lines.
+        const float reach = n.range;
+        const float radius = reach * tanf(DEG2RAD * fminf(n.angle, 85.0f));
+        const Vector3 ref = fabsf(d.y) > 0.9f ? Vector3{ 1, 0, 0 } : Vector3{ 0, 1, 0 };
+        const Vector3 right = Vector3Normalize(Vector3CrossProduct(d, ref));
+        const Vector3 up = Vector3CrossProduct(right, d);
+        const Vector3 end = Vector3Add(p, Vector3Scale(d, reach));
+        Vector3 prev = Vector3Add(end, Vector3Scale(right, radius));
+        for (int i = 1; i <= 32; ++i) {
+            const float a = (float)i / 32.0f * 2.0f * PI;
+            const Vector3 q = Vector3Add(end, Vector3Add(Vector3Scale(right, cosf(a) * radius), Vector3Scale(up, sinf(a) * radius)));
+            DrawLine3D(prev, q, c);
+            prev = q;
+        }
+        for (int i = 0; i < 4; ++i) {
+            const float a = (float)i * 0.5f * PI;
+            DrawLine3D(p, Vector3Add(end, Vector3Add(Vector3Scale(right, cosf(a) * radius), Vector3Scale(up, sinf(a) * radius))), c);
+        }
+        if (n.type == ObjectNodeType::SurfaceLight) {
+            const Vector3 a = Vector3Add(p, Vector3Add(hu, hv)), b = Vector3Add(p, Vector3Subtract(hu, hv));
+            const Vector3 e = Vector3Subtract(p, Vector3Add(hu, hv)), f = Vector3Add(p, Vector3Subtract(hv, hu));
+            DrawLine3D(a, b, c); DrawLine3D(b, e, c); DrawLine3D(e, f, c); DrawLine3D(f, a, c);
+        }
+    }
+}
+
+Matrix ScatteredObject::GetRotationMatrix() const {
+    return useRenderRotation
+        ? renderRotation
+        : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
 }
 
 BoundingBox ScatteredObject::GetBoundingBox() const {

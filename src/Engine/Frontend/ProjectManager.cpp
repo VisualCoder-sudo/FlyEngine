@@ -50,7 +50,7 @@ namespace detail {
 
     const char* kSignature = "FLYENGINE_PROJECT";
     constexpr int kVersion = 1;
-    constexpr int kMaxSceneVersion = 30;   // keep in step with ScenePersistence.cpp
+    constexpr int kMaxSceneVersion = 32;   // keep in step with ScenePersistence.cpp
 
     namespace theme {
         constexpr Color BG         = Color{ 24, 26, 32, 255 };

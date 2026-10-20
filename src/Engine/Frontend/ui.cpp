@@ -18,6 +18,9 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -60,6 +63,8 @@ ModelGroup* g_lastExplorerModelClick = nullptr;
 double g_lastExplorerClickTime = 0.0;
 WaterBody* g_selectedWater = nullptr;
 int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather, 7 Clouds, 8 Picture
+ScatteredObject* g_selectedNodeObj = nullptr;
+int g_selectedNodeIdx = -1;
 BasicTerrain* g_selectedTerrain = nullptr;
 char g_nameBuffer[256] = "";
 float g_colorPickerAnchorY = -1.0f;
@@ -250,6 +255,7 @@ static Image LoadEditorIcon(const std::string& name) {
 }
 
 void Init() {
+    LoadSnapSettings();
     // platform::ResolveFontPath() already applies the precedence: a font in
     // the working directory wins, then the system candidates. Empty means
     // nothing was found, and raylib's built-in bitmap font is the fallback.
@@ -278,7 +284,8 @@ void Init() {
         }
     }
 
-    constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png", "explorericons/Group.png" };
+    constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png", "explorericons/Group.png",
+                                                         "explorericons/Light.png", "explorericons/Decal.png", "explorericons/Texture.png" };
     for (int i = 0; i < ROWICON_COUNT; ++i) {
         Image img = LoadEditorIcon(rowIconNames[i]);
         if (img.data != nullptr) {
@@ -514,6 +521,9 @@ void SetSelection(const std::vector<ScatteredObject*>& selection, ScatteredObjec
     // panel. Empty selections (deselect / sculpt strokes) leave it alone.
     if (!selection.empty()) BasicTerrain::SetActive(nullptr);
 
+    // A selected child node belongs to one object; selecting anything else drops it.
+    if (g_selectedNodeObj && !(selection.size() == 1 && selection[0] == g_selectedNodeObj)) { g_selectedNodeObj = nullptr; g_selectedNodeIdx = -1; }
+
     // Clear water body selection when selecting ScatteredObjects
     if (!selection.empty() && g_selectedWater) {
         WaterBody* prev = g_selectedWater;
@@ -632,6 +642,55 @@ void SetTransformLocalSpace(bool local) {
 
 void ToggleTransformSpace() {
     g_transformLocalSpace = !g_transformLocalSpace;
+}
+
+// Snap steps live in the per-user config dir (%APPDATA% on Windows, $XDG_CONFIG_HOME or ~/.config elsewhere).
+static std::filesystem::path SnapSettingsPath() {
+    namespace fs = std::filesystem;
+    const char* base = std::getenv("APPDATA");
+    fs::path dir;
+    if (base && *base) dir = base;
+    else if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) dir = xdg;
+    else if (const char* home = std::getenv("HOME"); home && *home) dir = fs::path(home) / ".config";
+    else return {};
+    return dir / "FlyEngine" / "snap.ini";
+}
+
+// Last values on disk (or loaded), so saving only happens on a real change.
+static float g_savedMove = 0.5f, g_savedRotate = 15.0f, g_savedScale = 0.1f;
+static bool g_savedEnabled = true, g_savedToObject = false;
+
+void LoadSnapSettings() {
+    const auto path = SnapSettingsPath();
+    if (path.empty()) return;
+    std::ifstream in(path);
+    TraceLog(LOG_INFO, "SnapSettings: load %s (%s)", path.string().c_str(), in ? "found" : "missing");
+    std::string key;
+    float v;
+    while (in >> key >> v) {
+        if (key == "move" && v >= 0.01f) g_snap.move = v;
+        else if (key == "rotate" && v >= 0.1f) g_snap.rotate = v;
+        else if (key == "scale" && v >= 0.01f) g_snap.scale = v;
+        else if (key == "enabled") g_snap.enabled = v != 0.0f;
+        else if (key == "toObject") g_snap.toObject = v != 0.0f;
+    }
+    g_savedMove = g_snap.move; g_savedRotate = g_snap.rotate; g_savedScale = g_snap.scale;
+    g_savedEnabled = g_snap.enabled; g_savedToObject = g_snap.toObject;
+}
+
+void SaveSnapSettingsIfChanged() {
+    if (g_snap.move == g_savedMove && g_snap.rotate == g_savedRotate && g_snap.scale == g_savedScale &&
+        g_snap.enabled == g_savedEnabled && g_snap.toObject == g_savedToObject) return;
+    g_savedMove = g_snap.move; g_savedRotate = g_snap.rotate; g_savedScale = g_snap.scale;
+    g_savedEnabled = g_snap.enabled; g_savedToObject = g_snap.toObject;
+    const auto path = SnapSettingsPath();
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) TraceLog(LOG_WARNING, "SnapSettings: save %s FAILED", path.string().c_str());
+    out << "move " << g_snap.move << "\nrotate " << g_snap.rotate << "\nscale " << g_snap.scale
+        << "\nenabled " << (g_snap.enabled ? 1 : 0) << "\ntoObject " << (g_snap.toObject ? 1 : 0) << "\n";
 }
 
 SnapSettings& GetSnapSettings() {
@@ -1498,6 +1557,7 @@ void DrawImGuiFrame(const Camera3D& camera) {
     DrawImGuiTopBar();
     DrawImGuiExplorer();
     DrawImGuiLightingPanel();
+    DrawImGuiNodePanel();
     DrawImGuiExplorerMenu();
     DrawImGuiAssetBrowser(camera);
     DrawImGuiAssetBrowserPopups();

@@ -101,6 +101,52 @@ bool IsShadowPassReused(); // true inside a shadow pass whose depth map is being
 
 // Up to 32 point lights for the night glow on roads, buildings and props: (x, y, z, radius) each.
 void SetNightLights(const Vector4* lights, int count);          // 0 = full day, 1 = full night
+
+// Light nodes (SpotLight / PointLight / SurfaceLight): at most 32 lights, uploaded to the lit shaders by UpdateLighting.
+struct NodeLight {
+    Vector3 pos{};          // world position
+    float range = 16.0f;    // metres
+    Vector3 dir{};          // unit axis it points along (spot, surface)
+    int kind = 0;           // 0 point, 1 spot, 2 surface
+    Vector3 color{};        // linear colour times brightness
+    int falloff = 1;        // 0 linear, 1 inverse square
+    float cosOuter = 0.0f;  // cone edge
+    float cosInner = 0.0f;  // cone where the light is at full strength
+    Vector3 u{}, v{};       // surface: half-extent of the emitter along its two sides (world)
+    bool castShadows = false;
+    int shadowRes = 1024;   // shadow map size for this light (a point light's six faces each get this)
+    const void* host = nullptr;   // the object carrying the light: it does not shadow its own light
+};
+constexpr int kMaxNodeLights = 32;
+void SetNodeLights(const NodeLight* lights, int count);   // call before the shadow passes and UpdateLighting each frame
+
+// Shadows of light nodes: every shadow-casting light gets one tile (a point light six) of one shared depth atlas.
+// SetNodeLights() hands the tiles out; the engine then draws the scene once into each:
+//     for (int t = 0; t < NodeShadowTileCount(); t++) {
+//         if (!BeginNodeShadowTile(t)) continue;
+//         ... draw the casters (the same entity loop as a shadow cascade) ...
+//         EndNodeShadowTile();
+//     }
+int NodeShadowTileCount();
+bool BeginNodeShadowTile(int index);
+void EndNodeShadowTile();
+const void* NodeShadowSkipHost();   // during a tile pass: the object that must not cast (the light's own host)
+
+// Decal / Texture child nodes: an image projected onto one face of an object's mesh. ScatteredObject::Draw queues
+// them; the engine draws the queue (DrawNodeSurfaces) right after the opaque objects, so they sit on the surface.
+struct NodeSurface {
+    const Model* model = nullptr;       // the mesh(es) to draw again
+    Matrix transform{};                 // the object's model matrix
+    Vector3 size{};                     // the object's size in metres
+    Vector3 faceN{}, faceU{}, faceV{};  // the face, in the object's local axes
+    bool tiled = false;                 // true: a repeating Texture; false: one Decal over the whole face
+    Vector2 metresPerTile{ 4.0f, 4.0f };
+    Vector2 offset{};                   // in tiles
+    Color tint = WHITE;                 // a = opacity
+    Texture2D texture{};                // id 0: the checker texture
+};
+void QueueNodeSurface(const NodeSurface& surface);
+void DrawNodeSurfaces();                // draws and clears the queue
 void DrawWeather(const Camera3D& camera);   // falling rain around the camera (call inside the 3D pass)
 
 // Toggles the shadow-receiving ground plane.

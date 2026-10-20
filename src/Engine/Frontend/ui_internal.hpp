@@ -70,7 +70,7 @@ inline ImU32 AccentU32(int alpha = 255) {
 } // namespace theme
 
 // Explorer row-type icons: object, water, terrain, script, group.
-enum RowIconType { ROWICON_OBJECT = 0, ROWICON_WATER, ROWICON_TERRAIN, ROWICON_SCRIPT, ROWICON_GROUP, ROWICON_COUNT };
+enum RowIconType { ROWICON_OBJECT = 0, ROWICON_WATER, ROWICON_TERRAIN, ROWICON_SCRIPT, ROWICON_GROUP, ROWICON_LIGHT, ROWICON_DECAL, ROWICON_TEXTURE, ROWICON_COUNT };
 // Terrain sculpt tool icons (Raise/Lower/Smooth/Flatten/Paint/None), matching
 // BasicTerrain::Tool's ordering.
 enum TerrainToolIconType { TTOOLICON_RAISE = 0, TTOOLICON_LOWER, TTOOLICON_SMOOTH, TTOOLICON_FLATTEN, TTOOLICON_PAINT, TTOOLICON_ERODE, TTOOLICON_NOISE, TTOOLICON_RAMP, TTOOLICON_NONE, TTOOLICON_COUNT };
@@ -156,6 +156,8 @@ void DrawImGuiPreferencesWindow();
 extern Texture2D g_toolIcons[5];
 extern TransformTool g_activeTool;
 extern SnapSettings g_snap;
+void LoadSnapSettings();
+void SaveSnapSettingsIfChanged(); // writes snap steps to the user config dir when they changed
 extern MenuAction g_pendingFileAction;  // set by the File menu, consumed by ProcessContextMenu()
 extern bool g_playTogglePending;
 extern bool g_importRequested;
@@ -164,6 +166,9 @@ void DrawImGuiTopBar();
 
 // ui_lighting.cpp: settings of the Lighting item selected in the explorer.
 void DrawImGuiLightingPanel();
+
+// ui_nodes.cpp: settings of the object child node selected in the explorer.
+void DrawImGuiNodePanel();
 
 // ui_theme.cpp: Dear ImGui styling.
 void ApplyImGuiTheme();
@@ -306,7 +311,7 @@ void DrawPropertiesPanel();
 void DrawScriptErrorPanel();
 
 // ui_explorer.cpp / ui.cpp (Explorer)
-enum class ExplorerMenuMode { Object, Empty, Script, Model };
+enum class ExplorerMenuMode { Object, Empty, Script, Model, Node };
 extern int g_explorerAnchorIndex;
 extern ExplorerMenuMode g_explorerMenuMode;
 extern ScatteredObject* g_explorerMenuObject;
@@ -318,6 +323,9 @@ extern ScatteredObject* g_lastExplorerClick;
 extern double g_lastExplorerClickTime;
 extern ModelGroup* g_lastExplorerModelClick;
 extern int g_lightingSel;
+// The selected child node (light / decal / texture) of an object, shown by ui_nodes.cpp. Null object = none.
+extern ScatteredObject* g_selectedNodeObj;
+extern int g_selectedNodeIdx;
 extern char g_nameBuffer[256];
 // Copies `name` into g_nameBuffer; a name that does not fit is cut at a UTF-8 character boundary.
 inline void SetNameBuffer(const std::string& name) {

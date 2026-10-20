@@ -190,6 +190,11 @@ layout(binding=0) uniform texture2D texture0;
 layout(binding=0) uniform sampler texture0_smp;
 layout(binding=2) uniform texture2D cloudShadowTex;
 layout(binding=2) uniform sampler cloudShadowTex_smp;
+layout(binding=6) uniform texture2D nodeShadowMap;
+layout(binding=3) uniform sampler nodeShadow_smp;
+@image_sample_type nodeShadowMap depth
+@sampler_type nodeShadow_smp comparison
+@include_block lit_node_lights
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -224,7 +229,8 @@ vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
 
     // Light from the sky on what faces up, light bounced off the ground on what faces down.
     vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, shadowsOff ? 0.5 : normal.y * 0.5 + 0.5);
-    vec3 lit = (amb + (1.0 - shadow) * diffuse * CloudLight() * sunColor.rgb) * fly_srgb_to_linear(baseColor * colDiffuse.rgb);
+    vec3 albedo = fly_srgb_to_linear(baseColor * colDiffuse.rgb);
+    vec3 lit = (amb + (1.0 - shadow) * diffuse * CloudLight() * sunColor.rgb + NodeLights(fragWorldPos, normal)) * albedo;
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;
     if (depthBelow > 0.0) {
@@ -261,6 +267,7 @@ layout(binding=1) uniform fs_params {
     vec4 cloudShadow;
     float waterSurfaceY;
     mat4 shadowVP[4];
+@include_block lit_light_uniforms
 };
 @include_block lit_fs_common
 void main() {
@@ -312,6 +319,7 @@ layout(binding=1) uniform fs_road_params {
     vec4 camPos;        // xyz = camera position
     mat4 shadowVP[4];
     mat4 matProjection;
+@include_block lit_light_uniforms
 };
 @include_block lit_fs_common
 @include_block night_glow
@@ -382,6 +390,7 @@ layout(binding=1) uniform fs_building_params {
     vec4 nightLights[32];
     vec4 weather;           // x = wetness 0..1, y = time (s)
     mat4 shadowVP[4];
+@include_block lit_light_uniforms
 };
 @include_block lit_fs_common
 @include_block night_glow
@@ -510,7 +519,81 @@ void main() {
 }
 @end
 
+
+// Decal / Texture child nodes: the parent's own mesh drawn again, pushed a hair outward, showing an image
+// projected straight along the node's face axis (see gfx::DrawNodeSurfaces). The pixels are lit like the surface
+// underneath, so shadows and light nodes apply to them too.
+@vs vs_decal
+@include_block fly_clip
+layout(binding=0) uniform vs_decal_params {
+    mat4 mvp;
+    mat4 matNormal;
+    mat4 matModel;
+    mat4 lightVP;
+    vec4 meshCenter;     // xyz = centre of the mesh's bounding box
+    vec4 meshExtent;     // xyz = size of the mesh's bounding box
+    vec4 normalOffset;   // xyz = how far to push a vertex along its normal, in mesh units per axis
+};
+@include_block lit_vs_inputs
+@include_block lit_vs_outputs
+out vec3 fragLocal;     // position in the parent's box, -0.5 .. 0.5 per axis
+out vec3 fragLocalN;
+void main() {
+    vec3 p = vertexPosition + vertexNormal * normalOffset.xyz;
+    fragTexCoord = vertexTexCoord;
+    fragColor = vertexColor;
+    fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
+    fragShadowCoord = lightVP * matModel * vec4(p, 1.0);
+    fragWorldPos = vec3(matModel * vec4(p, 1.0));
+    fragLocal = (vertexPosition - meshCenter.xyz) / meshExtent.xyz;
+    fragLocalN = vertexNormal;
+    gl_Position = fly_clip(mvp * vec4(p, 1.0));
+}
+@end
+
+@fs fs_decal
+layout(binding=1) uniform fs_decal_params {
+    vec4 colDiffuse;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambientSky;
+    vec4 ambientGround;
+    vec4 cloudShadow;
+    float waterSurfaceY;
+    mat4 shadowVP[4];
+@include_block lit_light_uniforms
+    vec4 faceN;      // the face the image is projected onto, in the parent's box: its normal,
+    vec4 faceU;      // the direction across it that the image's x runs along,
+    vec4 faceV;      // and the one its y runs up
+    vec4 faceInfo;   // xy = the face's size in metres, z = 1 for a repeating Texture (0 = one Decal over the face)
+    vec4 tile;       // Texture: xy = metres per tile, zw = offset in tiles
+    vec4 tint;       // rgb = colour multiplied in, a = opacity
+};
+@include_block lit_fs_common
+in vec3 fragLocal;
+in vec3 fragLocalN;
+void main() {
+    if (dot(normalize(fragLocalN), faceN.xyz) < 0.05) discard;       // not turned towards the face
+    vec2 p = vec2(dot(fragLocal, faceU.xyz), dot(fragLocal, faceV.xyz));
+    vec4 tex;
+    if (faceInfo.z < 0.5) {
+        vec2 uv = vec2(p.x + 0.5, 0.5 - p.y);
+        if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) discard;
+        tex = texture(sampler2D(texture0, texture0_smp), uv);
+    } else {
+        vec2 uv = vec2((p.x + 0.5) * faceInfo.x, (0.5 - p.y) * faceInfo.y) / max(tile.xy, vec2(0.001)) + tile.zw;
+        tex = textureGrad(sampler2D(texture0, texture0_smp), fract(uv), dFdx(uv), dFdy(uv));
+    }
+    float alpha = tex.a * tint.a;
+    if (alpha < 0.003) discard;
+    float a;
+    vec3 lit = ShadeLitWith(tex.rgb * tint.rgb, alpha, a);
+    finalColor = vec4(lit, a);
+}
+@end
+
 @program lit vs fs
 @program lit_road vs_road fs_road
 @program lit_instanced vs_instanced fs_building
 @program lit_shape_instanced vs_shape_instanced fs
+@program lit_decal vs_decal fs_decal

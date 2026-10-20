@@ -64,6 +64,11 @@ struct LightingSettings {
     float saturation = 1.0f;          // 0..2
     float temperature = 0.0f;         // -1 cool .. 1 warm
     float filmGrain = 0.0f;           // 0..1
+
+    // Light nodes (SpotLight / PointLight / SurfaceLight inserted under objects): how many are lit at once, and how
+    // many of those may cast shadows. Extra lights are dropped / shadowless, farthest from the camera first.
+    int maxLights = 32;               // 1..32
+    int maxShadowCasters = 4;         // 0..16
 };
 LightingSettings& Lighting();
 void ResetLighting();                 // back to noon, no running cycle (a scene that stores no lighting loads like this)

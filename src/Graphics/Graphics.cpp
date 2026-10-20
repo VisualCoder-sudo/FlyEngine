@@ -11,6 +11,7 @@
 #include "rlgl.h"
 #include "../../include/Engine/Frontend/ui.hpp"
 #include "../../include/Engine/Platform/Platform.hpp"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <unordered_map>
@@ -54,8 +55,10 @@ struct LitLocs {
     int night = -1, lightCount = -1, lights = -1, weather = -1, camPos = -1;
     int cloudShadow = -1, cloudShadowTex = -1;
     int shadowVP = -1, shadowMapFar[3] = { -1, -1, -1 };
+    int nodeCount = -1, nodePos = -1, nodeDir = -1, nodeColor = -1, nodeCone = -1, nodeU = -1, nodeV = -1;
+    int nodeShadowVP = -1, nodeShadowRect = -1, nodeShadowMap = -1;
 };
-LitLocs litLocs, roadLocs, cityLocs, shapeLocs;
+LitLocs litLocs, roadLocs, cityLocs, shapeLocs, decalLocs;
 void FindLitLocs(Shader& sh, LitLocs& l) {
     l.sunDir = GetShaderLocation(sh, "sunDir");
     l.sunColor = GetShaderLocation(sh, "sunColor");
@@ -73,6 +76,16 @@ void FindLitLocs(Shader& sh, LitLocs& l) {
     l.cloudShadow = GetShaderLocation(sh, "cloudShadow");
     l.cloudShadowTex = GetShaderLocation(sh, "cloudShadowTex");
     l.shadowVP = GetShaderLocation(sh, "shadowVP");
+    l.nodeCount = GetShaderLocation(sh, "nodeLightCount");
+    l.nodePos = GetShaderLocation(sh, "nodeLightPos");
+    l.nodeDir = GetShaderLocation(sh, "nodeLightDir");
+    l.nodeColor = GetShaderLocation(sh, "nodeLightColor");
+    l.nodeCone = GetShaderLocation(sh, "nodeLightCone");
+    l.nodeU = GetShaderLocation(sh, "nodeLightU");
+    l.nodeV = GetShaderLocation(sh, "nodeLightV");
+    l.nodeShadowVP = GetShaderLocation(sh, "nodeShadowVP");
+    l.nodeShadowRect = GetShaderLocation(sh, "nodeShadowRect");
+    l.nodeShadowMap = GetShaderLocation(sh, "nodeShadowMap");
     l.shadowMapFar[0] = GetShaderLocation(sh, "shadowMap1");
     l.shadowMapFar[1] = GetShaderLocation(sh, "shadowMap2");
     l.shadowMapFar[2] = GetShaderLocation(sh, "shadowMap3");
@@ -87,10 +100,19 @@ Shader cityInstancedShader{};
 Material cityInstancedMaterial{};
 bool cityInstancedReady = false;
 float nightLightData[32 * 4] = {};
+// Light nodes as the shader reads them, vec4 per light (see lit_light_uniforms in lit.glsl).
+float nodeLightPosData[32 * 4], nodeLightDirData[32 * 4], nodeLightColorData[32 * 4], nodeLightConeData[32 * 4],
+      nodeLightUData[32 * 4], nodeLightVData[32 * 4];
+int nodeLightCount = 0;
 // Road shader: lit fragment shader with a depth-biased vertex stage, used only
 // for the flat road/pad/parks mesh so it wins the depth test against the
 // near-coplanar ground plane at altitude.
 Shader roadShader{};
+// Decal / Texture nodes (lit_decal): the object's mesh drawn again with an image projected onto one face.
+Shader decalShader{};
+Material decalMaterial{};
+std::vector<gfx::NodeSurface> nodeSurfaces;
+Vector3 nodeCamPos{};   // the camera UpdateLighting() last saw
 // Instanced variant of the plain lit shader for loose objects (ShapeBatch.cpp).
 Shader shapeInstancedShader{};
 Material shapeInstancedMaterial{};
@@ -139,6 +161,13 @@ void Init() {
     Image checker = GenImageChecked(64, 64, 8, 8, LIGHTGRAY, GRAY);
     defaultTexture = LoadTextureFromImage(checker);
     UnloadImage(checker);
+
+    decalShader = LoadShaderProgram("lit_decal");
+    if (decalShader.id != 0) {
+        FindLitLocs(decalShader, decalLocs);
+        decalMaterial = LoadMaterialDefault();
+        decalMaterial.shader = decalShader;
+    }
 
     shapeInstancedShader = LoadShaderProgram("lit_shape_instanced");
     if (shapeInstancedShader.id != 0) FindLitLocs(shapeInstancedShader, shapeLocs);
@@ -292,6 +321,102 @@ void DrawWeather(const Camera3D& camera) {
         DrawLine3D(a, b, col);
     }
 }
+void QueueNodeSurface(const NodeSurface& surface) {
+    if (decalShader.id == 0 || !surface.model || surface.model->meshCount <= 0 || surface.tint.a == 0) return;
+    if (nodeSurfaces.size() < 4096) nodeSurfaces.push_back(surface);
+}
+
+void DrawNodeSurfaces() {
+    if (nodeSurfaces.empty()) return;
+    if (decalShader.id == 0 || IsInShadowPass()) { nodeSurfaces.clear(); return; }
+    shadow::BindMap();
+    static const int uCenter = GetShaderLocation(decalShader, "meshCenter");
+    static const int uExtent = GetShaderLocation(decalShader, "meshExtent");
+    static const int uOffset = GetShaderLocation(decalShader, "normalOffset");
+    static const int uN = GetShaderLocation(decalShader, "faceN");
+    static const int uU = GetShaderLocation(decalShader, "faceU");
+    static const int uV = GetShaderLocation(decalShader, "faceV");
+    static const int uInfo = GetShaderLocation(decalShader, "faceInfo");
+    static const int uTile = GetShaderLocation(decalShader, "tile");
+    static const int uTint = GetShaderLocation(decalShader, "tint");
+    // Blended over the surface they sit on: no depth writes, so decals stack without hiding each other.
+    BeginBlendMode(BLEND_ALPHA);
+    rlDisableDepthMask();
+    for (const NodeSurface& s : nodeSurfaces) {
+        const Model& model = *s.model;
+        BoundingBox box = GetMeshBoundingBox(model.meshes[0]);
+        for (int i = 1; i < model.meshCount; ++i) {
+            const BoundingBox b = GetMeshBoundingBox(model.meshes[i]);
+            box.min = Vector3Min(box.min, b.min);
+            box.max = Vector3Max(box.max, b.max);
+        }
+        const Vector3 center = Vector3Scale(Vector3Add(box.min, box.max), 0.5f);
+        const Vector3 extent = Vector3Max(Vector3Subtract(box.max, box.min), { 1e-4f, 1e-4f, 1e-4f });
+        // The pushed-out copy must clear the surface it covers by more than the depth buffer can resolve.
+        const Vector3 world = { s.transform.m12, s.transform.m13, s.transform.m14 };
+        const float dist = Vector3Distance(world, nodeCamPos);
+        const float eps = 0.004f + 0.0007f * dist;
+        const Vector3 meshSize = { s.size.x * extent.x, s.size.y * extent.y, s.size.z * extent.z };
+        const Vector4 c4 = { center.x, center.y, center.z, 0.0f };
+        const Vector4 e4 = { extent.x, extent.y, extent.z, 0.0f };
+        const Vector4 off = { eps / std::max(meshSize.x, 1e-4f), eps / std::max(meshSize.y, 1e-4f), eps / std::max(meshSize.z, 1e-4f), 0.0f };
+        const Vector4 n4 = { s.faceN.x, s.faceN.y, s.faceN.z, 0.0f };
+        const Vector4 u4 = { s.faceU.x, s.faceU.y, s.faceU.z, 0.0f };
+        const Vector4 v4 = { s.faceV.x, s.faceV.y, s.faceV.z, 0.0f };
+        // The face's size in metres along the image's two directions.
+        const float fw = fabsf(s.faceU.x) * s.size.x + fabsf(s.faceU.y) * s.size.y + fabsf(s.faceU.z) * s.size.z;
+        const float fh = fabsf(s.faceV.x) * s.size.x + fabsf(s.faceV.y) * s.size.y + fabsf(s.faceV.z) * s.size.z;
+        const Vector4 info = { fw, fh, s.tiled ? 1.0f : 0.0f, 0.0f };
+        const Vector4 tile = { s.metresPerTile.x, s.metresPerTile.y, s.offset.x, s.offset.y };
+        const Vector4 tint = { s.tint.r / 255.0f, s.tint.g / 255.0f, s.tint.b / 255.0f, s.tint.a / 255.0f };
+        if (uCenter != -1) SetShaderValue(decalShader, uCenter, &c4, SHADER_UNIFORM_VEC4);
+        if (uExtent != -1) SetShaderValue(decalShader, uExtent, &e4, SHADER_UNIFORM_VEC4);
+        if (uOffset != -1) SetShaderValue(decalShader, uOffset, &off, SHADER_UNIFORM_VEC4);
+        if (uN != -1) SetShaderValue(decalShader, uN, &n4, SHADER_UNIFORM_VEC4);
+        if (uU != -1) SetShaderValue(decalShader, uU, &u4, SHADER_UNIFORM_VEC4);
+        if (uV != -1) SetShaderValue(decalShader, uV, &v4, SHADER_UNIFORM_VEC4);
+        if (uInfo != -1) SetShaderValue(decalShader, uInfo, &info, SHADER_UNIFORM_VEC4);
+        if (uTile != -1) SetShaderValue(decalShader, uTile, &tile, SHADER_UNIFORM_VEC4);
+        if (uTint != -1) SetShaderValue(decalShader, uTint, &tint, SHADER_UNIFORM_VEC4);
+        decalMaterial.maps[MATERIAL_MAP_DIFFUSE].texture = s.texture.id != 0 ? s.texture : defaultTexture;
+        decalMaterial.maps[MATERIAL_MAP_DIFFUSE].color = WHITE;
+        for (int i = 0; i < model.meshCount; ++i) DrawMesh(model.meshes[i], decalMaterial, s.transform);
+    }
+    rlEnableDepthMask();
+    EndBlendMode();
+    nodeSurfaces.clear();
+}
+
+void SetNodeLights(const NodeLight* lights, int count) {
+    count = Clamp(count, 0, kMaxNodeLights);
+    nodeLightCount = count;
+    for (int i = 0; i < count; i++) {
+        const NodeLight& n = lights[i];
+        const int k = i * 4;
+        nodeLightPosData[k] = n.pos.x; nodeLightPosData[k + 1] = n.pos.y; nodeLightPosData[k + 2] = n.pos.z; nodeLightPosData[k + 3] = n.range;
+        nodeLightDirData[k] = n.dir.x; nodeLightDirData[k + 1] = n.dir.y; nodeLightDirData[k + 2] = n.dir.z; nodeLightDirData[k + 3] = (float)n.kind;
+        nodeLightColorData[k] = n.color.x; nodeLightColorData[k + 1] = n.color.y; nodeLightColorData[k + 2] = n.color.z; nodeLightColorData[k + 3] = (float)n.falloff;
+        nodeLightConeData[k] = n.cosOuter; nodeLightConeData[k + 1] = n.cosInner; nodeLightConeData[k + 2] = -1.0f; nodeLightConeData[k + 3] = 0.0f;
+        nodeLightUData[k] = n.u.x; nodeLightUData[k + 1] = n.u.y; nodeLightUData[k + 2] = n.u.z; nodeLightUData[k + 3] = 0.0f;
+        nodeLightVData[k] = n.v.x; nodeLightVData[k + 1] = n.v.y; nodeLightVData[k + 2] = n.v.z; nodeLightVData[k + 3] = 0.0f;
+    }
+
+    // Shadow tiles for the lights that want them: z = first tile (-1 none), w = texel angle (negative: a cube of six).
+    shadow::NodeShadowRequest requests[kMaxNodeLights];
+    bool want[kMaxNodeLights];
+    float firstTile[kMaxNodeLights], texelAngle[kMaxNodeLights];
+    for (int i = 0; i < count; i++) {
+        const NodeLight& n = lights[i];
+        requests[i] = { n.pos, n.dir, n.kind, RAD2DEG * acosf(Clamp(n.cosOuter, -1.0f, 1.0f)), n.range, n.shadowRes, n.host };
+        want[i] = n.castShadows;
+    }
+    shadow::PlanNodeShadows(requests, want, count, Lighting().maxShadowCasters, firstTile, texelAngle);
+    for (int i = 0; i < count; i++) {
+        nodeLightConeData[i * 4 + 2] = firstTile[i];
+        nodeLightConeData[i * 4 + 3] = texelAngle[i];
+    }
+}
+
 void SetNightLights(const Vector4* lights, int count) {
     count = Clamp(count, 0, 32);
     for (int i = 0; i < count; i++) {
@@ -316,8 +441,29 @@ Vector3 lightingCamPos{};   // the camera UpdateLighting() last saw
 bool cityEnvironmentStale = true;   // the instanced city shader has not been given this frame's light yet
 
 // The scene's light for one of the lit programs (see the uniform list in shaders/lit.glsl).
+void UploadNodeLights(Shader& sh, const LitLocs& l) {
+    if (l.nodeCount == -1) return;
+    const Vector4 count = { (float)nodeLightCount, 0.0f, 0.0f, 0.0f };
+    SetShaderValue(sh, l.nodeCount, &count, SHADER_UNIFORM_VEC4);
+    if (nodeLightCount == 0) return;
+    if (l.nodePos != -1) SetShaderValueV(sh, l.nodePos, nodeLightPosData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    if (l.nodeDir != -1) SetShaderValueV(sh, l.nodeDir, nodeLightDirData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    if (l.nodeColor != -1) SetShaderValueV(sh, l.nodeColor, nodeLightColorData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    if (l.nodeCone != -1) SetShaderValueV(sh, l.nodeCone, nodeLightConeData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    if (l.nodeU != -1) SetShaderValueV(sh, l.nodeU, nodeLightUData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    if (l.nodeV != -1) SetShaderValueV(sh, l.nodeV, nodeLightVData, SHADER_UNIFORM_VEC4, nodeLightCount);
+    float vp[16 * shadow::kMaxNodeShadowTiles], rects[4 * shadow::kMaxNodeShadowTiles];
+    const int tiles = shadow::NodeShadowData(vp, rects);
+    if (tiles > 0) {
+        if (l.nodeShadowVP != -1) SetShaderValueV(sh, l.nodeShadowVP, vp, SHADER_UNIFORM_VEC4, 4 * tiles);
+        if (l.nodeShadowRect != -1) SetShaderValueV(sh, l.nodeShadowRect, rects, SHADER_UNIFORM_VEC4, tiles);
+    }
+    if (l.nodeShadowMap != -1) SetShaderValueTexture(sh, l.nodeShadowMap, shadow::NodeShadowAtlas());
+}
+
 void UploadLitEnvironment(Shader& sh, const LitLocs& l) {
     if (sh.id == 0) return;
+    UploadNodeLights(sh, l);
     const Vector3 dir = SunDirection(), sun = SunRadiance(), sky = AmbientSky(), ground = AmbientGround(), refl = SkyRadiance();
     float cascades[16 * shadow::kMaxCascades];
     const int cascadeCount = shadow::CascadeData(cascades);
@@ -376,6 +522,7 @@ void UploadWaterShadows(Shader& shader) {
 void UpdateLighting(const Camera3D& camera) {
     shadow::SetViewCamera(camera);
     lightingCamPos = camera.position;
+    nodeCamPos = camera.position;
 
     if (camera.projection == CAMERA_PERSPECTIVE) {
         const double h = fabs((double)camera.position.y);
@@ -387,6 +534,7 @@ void UpdateLighting(const Camera3D& camera) {
     UpdateCloudShadow(camera);
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
+    if (decalShader.id != 0) UploadLitEnvironment(decalShader, decalLocs);
     if (shapeInstancedReady) UploadLitEnvironment(shapeInstancedShader, shapeLocs);
     cityEnvironmentStale = true;
 

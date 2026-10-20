@@ -280,12 +280,18 @@ layout(binding=1) uniform fs_params {
     int objectCount;
     vec4 sunDir;                    // xyz = unit vector the sunlight travels along, w = shadow cascade count (0 = shadows off)
     mat4 shadowVP[4];               // world to shadow-map space, one per cascade
+@include_block lit_light_uniforms
 };
 layout(binding=0) uniform texture2D reflectionTex;   // planar mirror of the world
 layout(binding=0) uniform sampler reflectionTex_smp;
 layout(binding=2) uniform texture2D rippleTexFS;     // r = ripple height, g = foam trail
 layout(binding=2) uniform sampler rippleTexFS_smp;
+layout(binding=7) uniform texture2D nodeShadowMap;
+layout(binding=7) uniform sampler nodeShadow_smp;
+@image_sample_type nodeShadowMap depth
+@sampler_type nodeShadow_smp comparison
 @include_block fly_shadow
+@include_block lit_node_lights
 
 in vec3 worldPos;
 in vec3 worldNormal;
@@ -514,6 +520,8 @@ void main() {
     vec3 color = mix(baseColor * diffuse, reflTerm, reflMix);
     color += fly_srgb_to_linear(waterBodyFoamColor) * totalFoam * (vsSceneA.w + sunLight);
     color += sunLight * spec;
+    // Light nodes shine on the water body itself, not in the mirror image, so they are added after the reflection mix.
+    color += baseColor * NodeLights(worldPos, N);
 
     float edgeAlpha = mix(alpha, 1.0, fresnel * 0.5);
 

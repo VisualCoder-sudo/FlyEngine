@@ -41,6 +41,7 @@ layout(binding=1) uniform fs_params {
     vec4 cloudShadow;       // where the clouds' shadow texture lies on the world (see CloudLight in lit.glsl); w = 0: no clouds
     vec4 sunDir;            // xyz = unit vector the sunlight travels along, w = shadow cascade count (0 = shadows off)
     mat4 shadowVP[4];       // world to shadow-map space, one per cascade
+@include_block lit_light_uniforms
 };
 // Bindings 0..5 belong to the shadow cascades (fly_shadow.glsl), so the terrain's own textures sit above them.
 layout(binding=6) uniform texture2D splatmap;
@@ -55,8 +56,13 @@ layout(binding=10) uniform texture2D albedoTex3;
 layout(binding=10) uniform sampler albedoTex3_smp;
 layout(binding=11) uniform texture2D cloudShadowTex;
 layout(binding=11) uniform sampler cloudShadowTex_smp;
+layout(binding=12) uniform texture2D nodeShadowMap;
+layout(binding=2) uniform sampler nodeShadow_smp;
+@image_sample_type nodeShadowMap depth
+@sampler_type nodeShadow_smp comparison
 @include_block fly_rt_uv
 @include_block fly_shadow
+@include_block lit_node_lights
 in vec3 worldPos;
 in vec3 worldNormal;
 in vec2 texCoord;
@@ -84,7 +90,7 @@ void main() {
         sun *= textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
     }
     sun *= 1.0 - ShadowCalculation(worldPos, N);
-    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * sun);
+    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * sun + NodeLights(worldPos, N));
     fragColor = vec4(color, 1.0);
 }
 @end
