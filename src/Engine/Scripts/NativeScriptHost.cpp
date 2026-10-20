@@ -235,6 +235,8 @@ FlyApi MakeScriptApi() {
     a.UIGetVisible = FlyNative_UIGetVisible;
     a.UIGetLayout = FlyNative_UIGetLayout;
     a.UIGetColor = FlyNative_UIGetColor;
+    a.GetMouseDelta = FlyNative_GetMouseDelta;
+    a.DebugText = FlyNative_DebugText;
     return a;
 }
 

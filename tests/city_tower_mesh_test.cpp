@@ -3,7 +3,7 @@
 // Opens a window (needs GL for the mesh upload); not registered with ctest: build/tests/city_tower_mesh_test
 #include "raylib.h"
 #include "Engine.hpp"
-#include "Engine/Graphics.hpp"
+#include "Graphics/Graphics.hpp"
 
 #include <cmath>
 #include <cstdio>

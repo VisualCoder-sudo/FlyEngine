@@ -2,7 +2,7 @@
 // a ready-made FlyPlayer.exe. Uses a stand-in executable with a valid PE header; checks target discovery, the
 // wrong-kind-of-player guard, the script/plugin restriction, the .exe output and that the archive reads back. No window.
 #include "Engine/ExportManager.hpp"
-#include "Engine/Vfs.hpp"
+#include "Graphics/Vfs.hpp"
 
 #include <cstdio>
 #include <cstdlib>

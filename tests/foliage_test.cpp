@@ -4,8 +4,8 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
-#include "Engine/Graphics.hpp"
-#include "Engine/Particles.hpp"
+#include "Graphics/Graphics.hpp"
+#include "Graphics/Particles.hpp"
 #include "../include/Terrain/BasicTerrain.hpp"
 #include "../include/Terrain/Foliage.hpp"
 

@@ -152,6 +152,7 @@ short FlyNative_SetSize_Impl(unsigned long long h, float x, float y, float z) {
     if (!obj) return 0;
     *obj->GetSizePtr() = Vector3{ x, y, z };
     obj->ResetMassAuto();
+    if (ScriptRuntime* rt = ActiveRuntime()) rt->RebuildBody(obj);   // the collider was built for the old size
     return 1;
 }
 short FlyNative_SetRotation_Impl(unsigned long long h, float x, float y, float z) {
@@ -210,7 +211,12 @@ short FlyNative_GetAnchored_Impl(unsigned long long h) {
     return obj ? obj->anchored : 0;
 }
 void FlyNative_SetAnchored_Impl(unsigned long long h, short v) {
-    if (auto* obj = Resolve(h)) obj->anchored = v != 0;
+    auto* obj = Resolve(h);
+    if (!obj) return;
+    const bool anchored = v != 0;
+    if (obj->anchored == anchored) return;
+    obj->anchored = anchored;
+    if (ScriptRuntime* rt = ActiveRuntime()) rt->RebuildBody(obj);
 }
 
 short FlyNative_GetCanCollide_Impl(unsigned long long h) {
@@ -218,7 +224,12 @@ short FlyNative_GetCanCollide_Impl(unsigned long long h) {
     return obj ? obj->canCollide : 0;
 }
 void FlyNative_SetCanCollide_Impl(unsigned long long h, short v) {
-    if (auto* obj = Resolve(h)) obj->canCollide = v != 0;
+    auto* obj = Resolve(h);
+    if (!obj) return;
+    const bool collide = v != 0;
+    if (obj->canCollide == collide) return;
+    obj->canCollide = collide;
+    if (ScriptRuntime* rt = ActiveRuntime()) rt->RebuildBody(obj);
 }
 
 float FlyNative_GetMass_Impl(unsigned long long h) {
@@ -260,6 +271,7 @@ void FlyNative_SetCollisionAccuracy_Impl(unsigned long long h, int a) {
         default: return;
     }
     obj->SetCollisionAccuracy(acc);
+    if (ScriptRuntime* rt = ActiveRuntime()) rt->RebuildBody(obj);
 }
 
 // ---- world services ----
@@ -868,6 +880,34 @@ FLY_API short FlyNative_UIGetColor(const char* id, unsigned char* out8) {
         out8[4] = i.color2.r; out8[5] = i.color2.g; out8[6] = i.color2.b; out8[7] = i.color2.a;
         return 1;
     } FLY_CATCH(return 0;)
+}
+
+FLY_API void FlyNative_GetMouseDelta(float* out2) {
+    FLY_TRY {
+        if (!out2) return;
+        const Vector2 d = GetMouseDelta();
+        out2[0] = d.x; out2[1] = d.y;
+    } FLY_CATCH()
+}
+
+// Debug lines: one text widget per key, stacked down the top-left corner in the order the keys first appeared.
+FLY_API void FlyNative_DebugText(const char* key, const char* text) {
+    FLY_TRY {
+        if (!key || !*key) return;
+        static std::vector<std::string> rows;
+        const std::string id = std::string("dbg_") + key;
+        auto it = std::find(rows.begin(), rows.end(), key);
+        if (!text || !*text) {
+            if (it != rows.end()) { gameui::Remove(id); rows.erase(it); }
+            return;
+        }
+        if (it == rows.end()) { rows.push_back(key); it = rows.end() - 1; }
+        const float y = 8.0f + 18.0f * static_cast<float>(it - rows.begin());
+        gameui::Create(id, gameui::Kind::Text);
+        gameui::SetLayout(id, gameui::Anchor::TopLeft, 8.0f, y, 600.0f, 18.0f);
+        gameui::SetPrimaryColor(id, Color{ 255, 235, 90, 255 });
+        gameui::SetText(id, text, 14.0f);
+    } FLY_CATCH()
 }
 
 // FindObject and GetSelf

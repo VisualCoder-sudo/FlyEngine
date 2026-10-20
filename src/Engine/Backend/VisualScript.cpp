@@ -1371,7 +1371,16 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
     }
 }
 
+// "Mouse Left" / "Mouse Right" / "Mouse Middle" name the mouse buttons; -1 for anything else.
+int MouseButtonFor(const std::string& name) {
+    if (name == "Mouse Left")   return MOUSE_BUTTON_LEFT;
+    if (name == "Mouse Right")  return MOUSE_BUTTON_RIGHT;
+    if (name == "Mouse Middle") return MOUSE_BUTTON_MIDDLE;
+    return -1;
+}
+
 bool KeyPressed(const std::string& name) {
+    if (const int m = MouseButtonFor(name); m >= 0) return IsMouseButtonPressed(m);
     const int k = KeyCodeFor(name);
     return k >= 0 && IsKeyPressed(k);
 }
@@ -1569,6 +1578,7 @@ bool SoundFlag(const Node& n, const std::string& key) { return SoundOption(n, ke
 ScatteredObject* ResolveObject(ScriptRuntime& rt, const std::string& path) { return FindTarget(rt, path); }
 
 bool IsKeyHeld(const std::string& keyName) {
+    if (const int m = MouseButtonFor(keyName); m >= 0) return IsMouseButtonDown(m);
     const int k = KeyCodeFor(keyName);
     return k >= 0 && IsKeyDown(k);
 }

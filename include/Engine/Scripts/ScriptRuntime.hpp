@@ -105,6 +105,7 @@ public:
     // Visual-script object actions. Vectors use console syntax "(x, y, z)"; failures fill outError.
     void DestroyObject(ScatteredObject* obj);                 // scene list, physics body and engine entity
     ScatteredObject* CloneObject(ScatteredObject* source, bool deferSpawn = false);   // copy added to the scene; null if impossible
+    void RebuildBody(ScatteredObject* obj);                   // remakes the body after a size / anchored / collide change
     void FinishCreate(ScatteredObject* obj);                  // gives an object made with deferSpawn its physics body
     // Adds a prefab (.flyprefab, project-relative or absolute) to the scene with its pivot at `at`. While playing the
     // objects get physics bodies and their scripts start, and they are taken out again when play stops. Returns the

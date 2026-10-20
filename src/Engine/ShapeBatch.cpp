@@ -19,6 +19,10 @@ bool batching = false;
 std::vector<Item> items;
 std::vector<Matrix> group;
 
+// Hover outlines wait until the instanced draws are in, so the hull is depth-tested against the shape's own faces.
+struct Outline { int shape; Matrix transform; };
+std::vector<Outline> outlines;
+
 }
 
 namespace gfx {
@@ -28,6 +32,13 @@ void BeginShapeBatch() {
     static const bool off = std::getenv("FLY_NO_SHAPE_BATCH") != nullptr;
     batching = !off && detail::ShapeInstancedReady();
     items.clear();
+    outlines.clear();
+}
+
+bool QueueShapeOutline(ShapeType shape, const Matrix& transform) {
+    if (!batching) return false;
+    outlines.push_back({ (int)shape, transform });
+    return true;
 }
 
 bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Color tint) {
@@ -48,6 +59,12 @@ bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Col
 void EndShapeBatch() {
     if (!batching) return;
     batching = false;
+    struct FlushOutlines {
+        ~FlushOutlines() {
+            for (const Outline& o : outlines) DrawModelOutline(GetShapeModel((ShapeType)o.shape), o.transform);
+            outlines.clear();
+        }
+    } flushOutlines;
     if (items.empty()) return;
 
     std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {

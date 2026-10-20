@@ -2,7 +2,7 @@
 // raylib's file functions), reject damage, and read from several threads at once. No window.
 #include "raylib.h"
 #include "Engine/PackArchive.hpp"
-#include "Engine/Vfs.hpp"
+#include "Graphics/Vfs.hpp"
 
 #include <atomic>
 #include <cstdio>

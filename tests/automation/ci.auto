@@ -1,0 +1,7 @@
+# CI smoke (software GL, so no image compare): scene loads, player exists and walks forward.
+5 expect exists PlayerCharacter
+6 dump
+10 key down W
+40 key up W
+41 dump
+41 expect exists PlayerCharacter

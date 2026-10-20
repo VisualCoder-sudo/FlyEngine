@@ -1,0 +1,7 @@
+# Smoke: project loads, player exists, screenshot matches golden (first run creates the golden).
+5 expect exists PlayerCharacter
+10 key down W
+40 key up W
+41 dump
+42 screenshot tests/automation/out/smoke.png
+42 compare tests/automation/out/smoke.png tests/automation/golden/smoke.png 8

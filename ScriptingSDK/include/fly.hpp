@@ -276,7 +276,23 @@ inline std::string Raycast(Vec3 origin, Vec3 direction, float maxDistance = 100.
     return detail::Api()->Raycast(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, maxDistance);
 }
 
-// Keys by name: "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right", "1".."4", "Shift", "Ctrl".
+namespace detail {
+inline bool HaveDebug() { return Api()->size >= offsetof(FlyApi, DebugText) + sizeof(void*); }
+}
+// Mouse movement since the last frame in pixels (x right, y down). Both are 0 on an engine too old to say.
+inline void MouseDelta(float& dx, float& dy) {
+    float d[2] = { 0.0f, 0.0f };
+    if (detail::HaveDebug()) detail::Api()->GetMouseDelta(d);
+    dx = d[0]; dy = d[1];
+}
+// A line of text in the top-left corner of the game view, one row per key, so a script's state can be watched live.
+// An empty text removes the row. Does nothing on an engine too old to have it.
+inline void DebugText(const std::string& key, const std::string& text) {
+    if (detail::HaveDebug()) detail::Api()->DebugText(key.c_str(), text.c_str());
+}
+
+// Keys by name: "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right", "1".."4", "Shift", "Ctrl",
+// and the mouse buttons "Mouse Left", "Mouse Right", "Mouse Middle".
 inline bool KeyDown(const char* key)    { return detail::HaveActions() && detail::Api()->KeyDown(key) != 0; }      // held
 inline bool KeyPressed(const char* key) { return detail::HaveActions() && detail::Api()->KeyPressed(key) != 0; }   // went down this frame
 

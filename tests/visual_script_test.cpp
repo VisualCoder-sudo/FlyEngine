@@ -170,6 +170,8 @@ void Clear() { g_uiInfo.clear(); g_ui.push_back("clear"); }
 extern "C" {
 bool IsKeyPressed(int key) { return key == g_keyPressed; }
 bool IsKeyDown(int key) { return key == g_keyHeld; }
+bool IsMouseButtonDown(int) { return false; }
+bool IsMouseButtonPressed(int) { return false; }
 // No controller in the test: the gamepad nodes read as "nothing connected, nothing pressed".
 bool IsGamepadAvailable(int) { return false; }
 bool IsGamepadButtonPressed(int, int) { return false; }

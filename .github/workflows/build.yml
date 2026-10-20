@@ -197,6 +197,14 @@ jobs:
           grep -E "DISPLAY: Window created" wayland.log \
             || { echo "::error::the engine did not initialise a display"; cat wayland.log; exit 1; }
 
+      # Scripted input and checks (tests/automation). Software GL, so no image compare here; the golden-image
+      # compare in smoke.auto is for a machine with a real GPU.
+      - name: Automation smoke test
+        run: |
+          export LIBGL_ALWAYS_SOFTWARE=1
+          timeout 120 xvfb-run -a tests/automation/run.sh build/FlyPlayer assets/templates/PhysicsPlayground \
+            tests/automation/ci.auto
+
   tests-windows:
     name: Unit tests (Windows)
     runs-on: windows-latest

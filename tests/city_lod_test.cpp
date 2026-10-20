@@ -4,9 +4,9 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
-#include "Engine/Clouds.hpp"
-#include "Engine/Graphics.hpp"
-#include "Engine/PostFX.hpp"
+#include "Graphics/Clouds.hpp"
+#include "Graphics/Graphics.hpp"
+#include "Graphics/PostFX.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <chrono>

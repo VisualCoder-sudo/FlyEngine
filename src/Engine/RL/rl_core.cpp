@@ -536,6 +536,23 @@ bool IsMouseButtonPressed(int button) {
 
 bool IsMouseButtonDown(int button) { return ValidButton(button) && Core().mouseDown[button]; }
 
+void FlyInjectKey(int key, bool down) {
+    if (!(key > 0 && key < kMaxKeys)) return;
+    CoreState& c = Core();
+    c.keyDown[key] = down;
+    if (down) c.keyQueue.push_back(key);
+}
+
+void FlyInjectMouseButton(int button, bool down) {
+    if (ValidButton(button)) Core().mouseDown[button] = down;
+}
+
+void FlyInjectMouseDelta(float dx, float dy) {
+    CoreState& c = Core();
+    c.mouseDelta.x += dx;
+    c.mouseDelta.y += dy;
+}
+
 bool IsMouseButtonReleased(int button) {
     if (!ValidButton(button)) return false;
     const CoreState& c = Core();

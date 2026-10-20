@@ -418,9 +418,17 @@ int g_logCount = 0;   // total entries currently held
 unsigned long long g_logTotal = 0;
 unsigned long long g_logSeenTotal = 0;
 
+static std::FILE* g_logMirror = nullptr;
+
+void SetLogMirror(std::FILE* file) { g_logMirror = file; }
+
 static void LogImpl(LogSeverity severity, const char* fmt, va_list args) {
     char buf[kLogLineLen];
     vsnprintf(buf, sizeof(buf), fmt, args);
+    if (g_logMirror) {
+        std::fprintf(g_logMirror, "%s%s\n", severity == LogSeverity::Error ? "[error] " : "", buf);
+        std::fflush(g_logMirror);
+    }
 
     loading::AddLogLine(buf);       // shown on the loading screen while a project loads
     snprintf(g_log[g_logWrite].text, sizeof(g_log[g_logWrite].text), "%s", buf);

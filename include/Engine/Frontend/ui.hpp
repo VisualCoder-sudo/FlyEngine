@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raylib.h"
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -185,6 +186,9 @@ void Log(const char* fmt, ...);
 void LogAlways(const char* fmt, ...);
 void LogWithSeverity(LogSeverity severity, const char* fmt, ...);
 void ClearLog();
+// Copies every log line (script Print included) to `file` as it is written, flushed per line, so a run can be read
+// without opening the in-engine console. Pass nullptr to stop. The caller owns the FILE.
+void SetLogMirror(std::FILE* file);
 
 // Re-skins the editor's accent colour (selection highlights, panel headings,
 // buttons, sliders). Hover/pressed shades are derived from it. Exposed to

@@ -665,7 +665,8 @@ void ScatteredObject::Draw() {
     if (isSelected && !ui::IsPlayActive()) {
         DrawShapeModel(shape, pos, size, rotMat, WHITE, GetTexture(), true);
     } else if (isHovered && !ui::IsPlayActive() && !gfx::IsInShadowPass() && gfx::Quality().hoverOutline) {
-        gfx::DrawModelOutline(gfx::GetShapeModel(shape), gfx::ComposeTRS(size, rotMat, pos));
+        const Matrix outlineXf = gfx::ComposeTRS(size, rotMat, pos);
+        if (!gfx::QueueShapeOutline(shape, outlineXf)) gfx::DrawModelOutline(gfx::GetShapeModel(shape), outlineXf);
     }
 }
 

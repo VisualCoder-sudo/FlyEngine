@@ -202,6 +202,10 @@ typedef struct FlyApi {
     short     (*UIGetVisible)(const char* id);
     short     (*UIGetLayout)(const char* id, float* out6);          /* anchor x y w h fontSize; 1 if the widget exists */
     short     (*UIGetColor)(const char* id, unsigned char* out8);   /* r g b a, then the bar background r g b a; 1 if it exists */
+
+    /* Reading input and debugging. Added after the UI: fly.hpp checks `size` first. */
+    void      (*GetMouseDelta)(float* out2);                        /* pixels moved since the last frame: x y */
+    void      (*DebugText)(const char* key, const char* text);      /* a line of text in the top-left corner, one row per key; "" removes the row */
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

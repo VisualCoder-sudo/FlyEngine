@@ -145,6 +145,12 @@ void ScriptRuntime::FinishCreate(ScatteredObject* obj)
     sim->SetBodyVelocity(obj, obj->GetVelocity());
 }
 
+void ScriptRuntime::RebuildBody(ScatteredObject* obj)
+{
+    if (!obj || !isPlaying || !sim) return;
+    sim->RebuildBodyForObject(obj);
+}
+
 void ScriptRuntime::DestroyObject(ScatteredObject* obj)
 {
     if (!obj || !objectsPtr) return;

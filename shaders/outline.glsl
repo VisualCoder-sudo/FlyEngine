@@ -20,7 +20,12 @@ void main() {
     vec4 tip = mvp * vec4(vertexPosition + dir, 1.0);
     vec2 d = tip.xy / tip.w - c.xy / c.w;
     float len = length(d);
+    // Vertices at or behind the camera plane have no usable screen direction (floors reach past the camera).
+    if (c.w < 0.05 || tip.w < 0.05) len = 0.0;
     if (len > 1e-5) c.xy += (d / len) * invViewport * thickness * c.w;
+    // Nudge the hull back so it never wins the depth test against the surface it hugs (flat or thin
+    // shapes put the hull in the same plane as their own faces); only the pixel-wide rim stays visible.
+    c.z += c.w * 1e-4;
     gl_Position = fly_clip(c);
 }
 @end

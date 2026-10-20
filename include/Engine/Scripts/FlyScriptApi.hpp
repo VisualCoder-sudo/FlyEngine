@@ -151,6 +151,8 @@ FLY_API int   FlyNative_UIGetText(const char* id, char* out, int capacity);
 FLY_API short FlyNative_UIGetVisible(const char* id);
 FLY_API short FlyNative_UIGetLayout(const char* id, float* out6);
 FLY_API short FlyNative_UIGetColor(const char* id, unsigned char* out8);
+FLY_API void  FlyNative_GetMouseDelta(float* out2);
+FLY_API void  FlyNative_DebugText(const char* key, const char* text);
 FLY_API void  FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
 
 // Physics (game.Physics.* - routed to the simulation).

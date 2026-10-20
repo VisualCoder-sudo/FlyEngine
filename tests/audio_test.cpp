@@ -2,7 +2,7 @@
 // engine and look at the samples. No window.
 #include "Engine/Audio.hpp"
 #include "Engine/PackArchive.hpp"
-#include "Engine/Vfs.hpp"
+#include "Graphics/Vfs.hpp"
 
 #include <chrono>
 #include <cmath>

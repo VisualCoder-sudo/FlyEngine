@@ -4,9 +4,9 @@
 // with ctest: build/tests/new_project_test
 #include "raylib.h"
 #include "Engine.hpp"
-#include "Engine/Atmosphere.hpp"
-#include "Engine/Clouds.hpp"
-#include "Engine/Graphics.hpp"
+#include "Graphics/Atmosphere.hpp"
+#include "Graphics/Clouds.hpp"
+#include "Graphics/Graphics.hpp"
 #include "Engine/Frontend/ProjectManager.hpp"
 #include "Engine/Backend/ScenePersistence.hpp"
 

@@ -4,7 +4,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "Engine.hpp"
-#include "Engine/Graphics.hpp"
+#include "Graphics/Graphics.hpp"
 #include "../include/CityGen/City.hpp"
 #include "../include/Terrain/BasicTerrain.hpp"
 

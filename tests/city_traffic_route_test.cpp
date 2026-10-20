@@ -3,7 +3,7 @@
 // step; needs a display (mesh upload), so it is not registered with ctest:
 //   build/tests/city_traffic_route_test
 #include "raylib.h"
-#include "Engine/Graphics.hpp"
+#include "Graphics/Graphics.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <cmath>

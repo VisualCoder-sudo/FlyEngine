@@ -1231,6 +1231,9 @@ RLAPI void SetGamepadVibration(int gamepad, float leftMotor, float rightMotor, f
 
 // Input-related functions: mouse
 RLAPI bool IsMouseButtonPressed(int button);                  // Check if a mouse button has been pressed once
+RLAPI void FlyInjectKey(int key, bool down);                      // FlyEngine: press or release a key as if typed (automation)
+RLAPI void FlyInjectMouseButton(int button, bool down);           // FlyEngine: the same for a mouse button
+RLAPI void FlyInjectMouseDelta(float dx, float dy);               // FlyEngine: relative mouse movement for this frame
 RLAPI bool IsMouseButtonDown(int button);                     // Check if a mouse button is being pressed
 RLAPI bool IsMouseButtonReleased(int button);                 // Check if a mouse button has been released once
 RLAPI bool IsMouseButtonUp(int button);                       // Check if a mouse button is NOT being pressed

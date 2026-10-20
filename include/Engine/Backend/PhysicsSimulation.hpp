@@ -50,6 +50,9 @@ public:
 
     void StartPlay();  // Made public for player auto-start
     void SpawnBodyForObject(ScatteredObject* obj, b3BodyType type = b3_dynamicBody);
+    // Remakes the body of an object that already has one so a changed size, anchored flag, canCollide or collision
+    // accuracy takes effect. Keeps the object's current velocity and the start state Stop restores.
+    void RebuildBodyForObject(ScatteredObject* obj);
     // Removes the physical body for an object that is being destroyed. Must be
     // called before the ScatteredObject is freed so bodyMap/bodyToObject never
     // hold dangling pointers (the editor can delete objects mid-play).

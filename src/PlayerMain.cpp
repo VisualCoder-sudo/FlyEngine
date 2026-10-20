@@ -9,6 +9,7 @@
 #include "Engine/Backend/TextureManager.hpp"
 #include "Engine/Backend/PhysicsSimulation.hpp"
 #include "Engine/Backend/ScatteredObject.hpp"
+#include "Engine/Backend/Automation.hpp"
 #include "Engine/Backend/CameraController.hpp"
 #include "Engine/Backend/CharacterController.hpp"
 #include "Engine/Platform/Platform.hpp"
@@ -590,6 +591,10 @@ struct PlayerOptions {
     int quality = -1;          // --quality: 0 low .. 3 ultra; -1 = what Preferences > Rendering saved
     int loading = -1;          // --loading / --noloading: 1 / 0; -1 = the loading screen's own settings
     bool loadingLogs = false;  // --loadinglogs
+    bool logStdout = false;    // --log-stdout
+    std::string logFile;       // --logfile <path>
+    std::string automationFile;// --automation <path>
+    float fixedDt = 0.0f;      // --fixed-dt <seconds>: every frame advances the game by exactly this much
 };
 
 static void PrintUsage(const char* exeName) {
@@ -606,6 +611,10 @@ static void PrintUsage(const char* exeName) {
         "  --fullscreen         Start in fullscreen mode\n"
         "  --res WxH            Window resolution (e.g., --res 1920x1080)\n"
         "  --nohotreload        Disable script hot-reload\n"
+        "  --log-stdout         Copy the in-engine log (script Print included) to stdout\n"
+        "  --logfile <path>     Copy the in-engine log to a file\n"
+        "  --automation <file>  Run scripted input and checks (see Engine/Backend/Automation.hpp); quits when done\n"
+        "  --fixed-dt <sec>     Advance the game by exactly <sec> per frame (e.g. 0.016667), so scripted frames mean game time\n"
         "  --maxmem4G           Budget texture/mesh memory at 4GB (reported, not enforced)\n"
         "  --quality LEVEL      Picture quality: low, medium, high or ultra\n"
         "  --noloading          No loading screen\n"
@@ -654,6 +663,14 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
             if (i + 1 < argc) ParseResolution(argv[++i], opts.width, opts.height);
         } else if (arg == "--nohotreload") {
             opts.hotReload = false;
+        } else if (arg == "--log-stdout") {
+            opts.logStdout = true;
+        } else if (arg == "--logfile") {
+            if (i + 1 < argc) opts.logFile = argv[++i];
+        } else if (arg == "--fixed-dt") {
+            if (i + 1 < argc) opts.fixedDt = std::max(0.0f, static_cast<float>(std::atof(argv[++i])));
+        } else if (arg == "--automation") {
+            if (i + 1 < argc) opts.automationFile = argv[++i];
         } else if (arg == "--maxmem4G") {
             opts.maxMemoryBytes = 4ull * 1024 * 1024 * 1024;
         } else if (arg == "--noloading") {
@@ -829,6 +846,15 @@ int main(int argc, char* argv[]) {
         }
     }
     PlayerOptions opts = ParseArgs(argc, argv);
+    // Mirror the in-engine log (script Print included) to stdout and/or a file, so a run can be read from a terminal.
+    if (opts.logStdout || std::getenv("FLY_LOG_STDOUT")) ui::SetLogMirror(stdout);
+    std::FILE* logFile = nullptr;
+    if (!opts.logFile.empty()) {
+        logFile = std::fopen(opts.logFile.c_str(), "w");
+        if (logFile) ui::SetLogMirror(logFile);
+        else std::fprintf(stderr, "[Player] cannot open log file %s\n", opts.logFile.c_str());
+    }
+    if (!opts.automationFile.empty() && !automation::Load(opts.automationFile)) return 1;
     if (embedded) {
         // The game cannot be pointed at another project, and it never builds scripts at startup.
         opts.projectPath = vfs::VirtualPath(emb.projectFile);
@@ -1103,8 +1129,10 @@ int main(int argc, char* argv[]) {
     const int exitAfterFrames = exitAfterEnv ? std::atoi(exitAfterEnv) : 0;
     int frameCounter = 0;
 
+    int automationFrame = 0;
     while (!WindowShouldClose()) {
         g_debugStats.FrameStart();
+        if (automation::Active() && automation::BeforeUpdate(++automationFrame, engine.GetCamera(), rawObjectPtrs)) break;
         
         // Handle Technical Tools input
         TechTools::TechnicalToolsManager::Instance().HandleInput();
@@ -1192,12 +1220,13 @@ int main(int argc, char* argv[]) {
         g_debugStats.processMemoryMB = TechTools::MemoryTracker::GetProcessMemoryBytes() / (1024 * 1024);
         
         // Update engine (runs entity updates, physics, etc.)
-        float dt = fminf(GetFrameTime(), Engine::MAX_FRAME_DT);
+        float dt = opts.fixedDt > 0.0f ? opts.fixedDt : fminf(GetFrameTime(), Engine::MAX_FRAME_DT);
         engine.UpdateFrame(dt);
         
         // Render frame: the overlay callbacks above draw the debug stats,
         // Technical Tools and ImGui before the frame is presented.
         engine.RenderFrame();
+        if (automation::Active()) automation::AfterRender();
         
         g_debugStats.FrameEnd();
 
@@ -1214,5 +1243,11 @@ int main(int argc, char* argv[]) {
     rlImGuiShutdown();
 
     textureManager::Shutdown();
+    ui::SetLogMirror(nullptr);
+    if (logFile) std::fclose(logFile);
+    if (automation::Active() && automation::Failures() > 0) {
+        std::fprintf(stderr, "[automation] %d check(s) failed\n", automation::Failures());
+        return 1;
+    }
     return 0;
 }

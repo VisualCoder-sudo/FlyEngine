@@ -4,7 +4,7 @@
 // (city_loading_<n>.png). Opens a window, so it is not registered with ctest: build/tests/city_loading_test
 #include "raylib.h"
 #include "Engine.hpp"
-#include "Engine/Graphics.hpp"
+#include "Graphics/Graphics.hpp"
 #include "../include/CityGen/City.hpp"
 
 #include <cstdio>

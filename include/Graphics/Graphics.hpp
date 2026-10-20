@@ -52,6 +52,8 @@ void DrawCityInstancesBuffered(Mesh mesh, unsigned int instanceVbo, int count, C
 void BeginShapeBatch();
 bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Color tint);
 void EndShapeBatch();
+// Defers a hover outline until EndShapeBatch() has drawn the batched shapes. False when not batching.
+bool QueueShapeOutline(ShapeType shape, const Matrix& transform);
 
 void UpdateLighting(const Camera3D& camera); // call once per frame before drawing
 void SetUnderwaterParams(float waterY, Vector3 absorption, float fogDensity, Vector3 fogColor); // call per ocean per frame

@@ -568,6 +568,34 @@ void Simulation::SpawnBodyForObject(ScatteredObject* obj, b3BodyType type) {
     bodyToObject.push_back({ bodyId, obj });   // raycasts and contacts name objects made during play, too
 }
 
+void Simulation::RebuildBodyForObject(ScatteredObject* obj) {
+    if (!obj || !playing || !world) return;
+    auto it = bodyMap.find(obj);
+    if (it == bodyMap.end() || !b3Body_IsValid(it->second.bodyId)) return;
+
+    BodyRecord saved = it->second;
+    Vector3 vel = Vector3Zero();
+    Vector3 angVel = Vector3Zero();
+    if (b3Body_GetType(saved.bodyId) != b3_staticBody) {
+        vel = b3wrap::GetBodyLinearVelocity(saved.bodyId);
+        angVel = b3wrap::GetBodyAngularVelocity(saved.bodyId);
+    }
+
+    RemoveObject(obj);
+    SpawnBodyForObject(obj);
+
+    auto fresh = bodyMap.find(obj);
+    if (fresh == bodyMap.end()) return;
+    fresh->second.startPos = saved.startPos;
+    fresh->second.startLinVel = saved.startLinVel;
+    fresh->second.startAngVel = saved.startAngVel;
+    fresh->second.wasAnchored = saved.wasAnchored;
+    if (b3Body_GetType(fresh->second.bodyId) != b3_staticBody) {
+        b3wrap::SetBodyLinearVelocity(fresh->second.bodyId, vel);
+        b3wrap::SetBodyAngularVelocity(fresh->second.bodyId, angVel);
+    }
+}
+
 void Simulation::SetBodyType(ScatteredObject* obj, b3BodyType type) {
     if (!obj || !world || !world->IsValid()) return;
     auto it = bodyMap.find(obj);
