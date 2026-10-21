@@ -739,6 +739,10 @@ should reach for anything platform-specific. It covers:
 
 ---
 
+Maintainer documentation (architecture, code map, file formats, recipes) is in [docs/README.md](docs/README.md).
+
+---
+
 ## Credits
 
 * VisualCoder-sudo

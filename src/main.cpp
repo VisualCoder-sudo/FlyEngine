@@ -100,7 +100,7 @@ void ShowSplashWindow(float displaySeconds) {
 
             DrawTextEx(arialFont, "Flyengine", titlePos, 32.0f, 1.0f, RAYWHITE);
             DrawTextEx(arialFont, "owned and developed by Ascend Softworks(TM)", subtitlePos, 16.0f, 1.0f, LIGHTGRAY);
-            DrawTextEx(arialFont, "Flyengine version 1.0.4 BETA", verPos, 16.0f, 1.0f, LIGHTGRAY);
+            DrawTextEx(arialFont, "Flyengine version 1.1.2 STABLE", verPos, 16.0f, 1.0f, LIGHTGRAY);
             DrawTextEx(arialFont, "ASCEND SOFTWORKS 2026, ALL RIGHTS RESERVED", rightsPos, 12.0f, 1.0f, LIGHTGRAY);
         EndDrawing();
     }
