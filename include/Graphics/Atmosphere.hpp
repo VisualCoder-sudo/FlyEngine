@@ -45,6 +45,10 @@ struct AtmosphereLocs {
 };
 AtmosphereLocs FindAtmosphereLocs(Shader shader);
 void SetAtmosphereUniforms(Shader shader, const AtmosphereLocs& locs);
+// The sky-view table drawn this frame and the planet it was drawn for (atPlanet: planet radius, top of the
+// air, camera height, km), for passes that look the sky up in every direction (the baked environment).
+Texture2D AtmosphereSkyView();
+Vector4 AtmospherePlanet();
 Vector3 AtmosphereSunLight();   // the sun's light above the air (linear)
 Vector3 AtmosphereMoonLight();  // the moon's
 

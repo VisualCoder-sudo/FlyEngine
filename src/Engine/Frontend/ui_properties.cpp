@@ -440,7 +440,7 @@ void DrawColorPickerPopupWindow() {
     if (!g_showColorPickerWindow || (!g_color && !g_selectedWater)) return;
 
     // Resolve working color pointer: either g_color or water body's base color
-    Color* workColor = g_color;
+    Color* workColor = g_pickerTarget ? g_pickerTarget : g_color;
     if (!workColor && g_selectedWater) {
         g_colorPickerTemp = g_selectedWater->GetBaseColor();
         workColor = &g_colorPickerTemp;
@@ -568,7 +568,12 @@ void DrawColorPickerPopupWindow() {
 
     // Multi-select: while the picker is open the primary's color is mirrored to
     // every other selected object.
-    if (g_color && g_selection.size() > 1) {
+    if (g_pickerTarget && g_selectedObject && g_pickerTarget == &g_selectedObject->surface.emissive && g_selection.size() > 1) {
+        for (auto* obj : g_selection) {
+            if (obj && obj != g_selectedObject) obj->surface.emissive = *g_pickerTarget;
+        }
+    }
+    if (g_color && !g_pickerTarget && g_selection.size() > 1) {
         for (auto* obj : g_selection) {
             if (obj && obj != g_selectedObject) *obj->GetColorPtr() = *g_color;
         }
@@ -697,6 +702,7 @@ static float PropertiesContentHeight() {
     if (g_selectedObject && g_selectedObject->GetAnimationCount() > 0) h += rowHeight; // animation row
     h += 2 * rowHeight;                                         // texture label + preset dropdown row
     if (g_selectedObject && g_selectedObject->HasModel() && !g_playActive) h += rowHeight; // browse / clear row
+    if (g_selectedObject) h += group(g_materialOpen, g_selectedObject->HasModel() ? 4.0f : 3.0f);  // Material
     if (g_selectedObject) h += group(g_waterInteractOpen, 3.0f);  // Water Interactions
     h += group(g_positionOpen, 3.0f);     // Position
     h += group(g_sizeOpen, 3.0f);         // Size
@@ -960,7 +966,10 @@ if (g_selection.size() > 1) {
         if (swatchHovered) MarkHand();
 
         if (!g_playActive && swatchHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            g_showColorPickerWindow = !g_showColorPickerWindow;
+            // The picker may have been showing the glow colour: switch it back to the object's colour.
+            g_showColorPickerWindow = g_pickerTarget ? true : !g_showColorPickerWindow;
+            g_pickerTarget = nullptr;
+            if (g_color) g_hsv = ColorToHSV(*g_color);
         }
         y += rowHeight;
 
@@ -1418,6 +1427,78 @@ if (g_selection.size() > 1) {
         }
     }
     y += groupGap;
+
+    // --- Material (physically based: metallic, roughness, glow) ---
+    if (g_selectedObject) {
+        y = DrawGroupHeader(panelRec, y, "Material", g_materialOpen, 112);
+        if (g_materialOpen) {
+            gfx::SurfaceMaterial& m = g_selectedObject->surface;
+            auto forSelection = [&](auto&& apply) {
+                for (auto* obj : g_selection) if (obj && obj != g_selectedObject) apply(*obj);
+            };
+            // An imported model keeps its file's materials until this is unticked.
+            if (g_selectedObject->HasModel()) {
+                DrawTextArial("Model's own:", labelX, y + 3.0f, 13.0f, theme::TEXT_MUTED);
+                Rectangle check = { generalControlX, y, 22.0f, 22.0f };
+                const bool on = g_selectedObject->useModelMaterial;
+                const bool hovered = CheckCollisionPointRec(mouse, check);
+                const float t = HoverProgress(40, hovered);
+                DrawRectangleRounded(check, 0.2f, 4, Mix(theme::BG_INPUT, theme::BG_INPUT_HOVER, t));
+                DrawRectangleLinesEx(check, hovered ? 2.0f : 1.0f, hovered ? theme::ACCENT : theme::BORDER);
+                if (on) {
+                    Vector2 c1 = { check.x + 3.0f, check.y + check.height * 0.5f };
+                    Vector2 c2 = { check.x + check.width * 0.5f, check.y + check.height - 5.0f };
+                    Vector2 c3 = { check.x + check.width - 3.0f, check.y + 4.0f };
+                    DrawLineEx(c1, c2, 2.5f, theme::SUCCESS);
+                    DrawLineEx(c2, c3, 2.5f, theme::SUCCESS);
+                }
+                if (hovered) MarkHand();
+                if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    const bool nv = !on;
+                    g_selectedObject->useModelMaterial = nv;
+                    forSelection([&](ScatteredObject& o) { o.useModelMaterial = nv; });
+                    Log("'%s' uses %s material", g_selectedObject->GetName().c_str(), nv ? "the model's" : "its own");
+                }
+                y += rowHeight;
+            }
+            // Editing either value on a model switches it to its own material (otherwise the edit would not show).
+            float metallic = m.metallic, roughness = m.roughness;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_METALLIC, metallic, "Metallic:", labelX) &&
+                metallic != m.metallic) {
+                m.metallic = Clamp(metallic, 0.0f, 1.0f);
+                g_selectedObject->useModelMaterial = false;
+                forSelection([&](ScatteredObject& o) { o.surface.metallic = m.metallic; o.useModelMaterial = false; });
+            }
+            y += rowHeight;
+            if (DrawNumberInput({ inputX, y, inputWidth, inputHeight }, FIELD_ROUGHNESS, roughness, "Roughness:", labelX) &&
+                roughness != m.roughness) {
+                m.roughness = Clamp(roughness, 0.0f, 1.0f);
+                g_selectedObject->useModelMaterial = false;
+                forSelection([&](ScatteredObject& o) { o.surface.roughness = m.roughness; o.useModelMaterial = false; });
+            }
+            y += rowHeight;
+            // Glow: strength, and a swatch that points the colour picker at the glow colour.
+            float glow = m.emissiveStrength;
+            if (DrawNumberInput({ inputX, y, inputWidth - 30.0f, inputHeight }, FIELD_GLOW, glow, "Glow:", labelX) && glow != m.emissiveStrength) {
+                m.emissiveStrength = Clamp(glow, 0.0f, 1000.0f);
+                forSelection([&](ScatteredObject& o) { o.surface.emissiveStrength = m.emissiveStrength; });
+            }
+            Rectangle glowSwatch = { generalControlX, y, 22.0f, 22.0f };
+            const bool glowHovered = CheckCollisionPointRec(mouse, glowSwatch);
+            const float glowT = HoverProgress(41, glowHovered);
+            DrawRectangleRounded(glowSwatch, 0.2f, 4, m.emissive);
+            DrawRectangleLinesEx(glowSwatch, glowHovered ? 2.0f : 1.0f, Mix(theme::BORDER_STRONG, theme::ACCENT_HOVER, glowT));
+            if (glowHovered) MarkHand();
+            if (!g_playActive && glowHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                const bool already = g_showColorPickerWindow && g_pickerTarget == &m.emissive;
+                g_pickerTarget = already ? nullptr : &m.emissive;
+                g_showColorPickerWindow = !already;
+                g_hsv = ColorToHSV(m.emissive);
+            }
+            y += rowHeight;
+        }
+        y += groupGap;
+    }
 
     // --- Water Interactions ---
     if (g_selectedObject) {

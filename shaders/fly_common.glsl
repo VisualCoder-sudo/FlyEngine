@@ -160,36 +160,172 @@ float NodeShadow(int i, vec3 pos, vec3 n, vec3 lightPos, float dist) {
     return lit / 9.0;
 }
 
+// Light i as it arrives at `pos` (facing n): its direction L (towards the light) and its colour after the falloff,
+// the cone and the shadow, before any n.L. False when it does not reach the point at all.
+bool NodeLightAt(int i, vec3 pos, vec3 n, out vec3 L, out vec3 light) {
+    L = vec3(0.0, 1.0, 0.0);
+    light = vec3(0.0);
+    vec3 lpos = nodeLightPos[i].xyz;
+    float range = max(nodeLightPos[i].w, 0.01);
+    float kind = nodeLightDir[i].w;
+    vec3 axis = nodeLightDir[i].xyz;
+    if (kind > 1.5) {
+        // Surface light: the nearest point on the emitting rectangle.
+        vec3 u = nodeLightU[i].xyz;
+        vec3 v = nodeLightV[i].xyz;
+        vec3 d0 = pos - lpos;
+        lpos += u * clamp(dot(d0, u) / max(dot(u, u), 1e-6), -1.0, 1.0) + v * clamp(dot(d0, v) / max(dot(v, v), 1e-6), -1.0, 1.0);
+    }
+    vec3 toLight = lpos - pos;
+    float dist = length(toLight);
+    if (dist >= range) return false;
+    L = toLight / max(dist, 1e-4);
+    float att = NodeLightFalloff(nodeLightColor[i].w, dist, range);
+    if (kind > 0.5) {
+        float cd = dot(-L, axis);
+        att *= smoothstep(nodeLightCone[i].x, nodeLightCone[i].y, cd);
+        if (kind > 1.5) att *= max(cd, 0.0);   // a surface emits like a lamp panel: brightest straight out
+    }
+    if (att * max(dot(n, L), 0.0) <= 0.001) return false;
+    att *= NodeShadow(i, pos, n, lpos, dist);
+    light = nodeLightColor[i].rgb * att;
+    return true;
+}
+
 vec3 NodeLights(vec3 pos, vec3 n) {
     vec3 sum = vec3(0.0);
     int count = int(nodeLightCount.x + 0.5);
     for (int i = 0; i < 32; ++i) {
         if (i >= count) break;
-        vec3 lpos = nodeLightPos[i].xyz;
-        float range = max(nodeLightPos[i].w, 0.01);
-        float kind = nodeLightDir[i].w;
-        vec3 axis = nodeLightDir[i].xyz;
-        if (kind > 1.5) {
-            // Surface light: the nearest point on the emitting rectangle.
-            vec3 u = nodeLightU[i].xyz;
-            vec3 v = nodeLightV[i].xyz;
-            vec3 d0 = pos - lpos;
-            lpos += u * clamp(dot(d0, u) / max(dot(u, u), 1e-6), -1.0, 1.0) + v * clamp(dot(d0, v) / max(dot(v, v), 1e-6), -1.0, 1.0);
-        }
-        vec3 toLight = lpos - pos;
-        float dist = length(toLight);
-        if (dist >= range) continue;
-        vec3 L = toLight / max(dist, 1e-4);
-        float att = NodeLightFalloff(nodeLightColor[i].w, dist, range);
-        if (kind > 0.5) {
-            float cd = dot(-L, axis);
-            att *= smoothstep(nodeLightCone[i].x, nodeLightCone[i].y, cd);
-            if (kind > 1.5) att *= max(cd, 0.0);   // a surface emits like a lamp panel: brightest straight out
-        }
-        float ndl = max(dot(n, L), 0.0);
-        if (att * ndl > 0.001) att *= NodeShadow(i, pos, n, lpos, dist);
-        sum += nodeLightColor[i].rgb * att * ndl;
+        vec3 L, light;
+        if (NodeLightAt(i, pos, n, L, light)) sum += light * max(dot(n, L), 0.0);
     }
     return sum;
+}
+@end
+
+// The light nodes on a physically based surface (fly_pbr): diffuse and the specular highlight. Included after
+// lit_node_lights and fly_pbr.
+@block lit_node_lights_pbr
+vec3 NodeLightsPbr(FlySurface s, vec3 pos, vec3 n, vec3 v) {
+    vec3 sum = vec3(0.0);
+    int count = int(nodeLightCount.x + 0.5);
+    for (int i = 0; i < 32; ++i) {
+        if (i >= count) break;
+        vec3 L, light;
+        if (NodeLightAt(i, pos, n, L, light)) sum += light * FlyBrdfDirect(s, n, v, L);
+    }
+    return sum;
+}
+@end
+
+// Physically based shading: Lambert diffuse plus a GGX specular lobe (Smith height-correlated visibility, Schlick
+// Fresnel), the metallic/roughness model glTF uses.
+//
+// Light in this engine is given as what a white Lambert surface facing it reflects (irradiance / pi: sunColor,
+// the node lights, the ambient colours), so the diffuse term is the plain albedo and the specular lobe is
+// scaled by pi to stay in the same units.
+@block fly_pbr
+const float FLY_PI = 3.14159265358979;
+
+struct FlySurface {
+    vec3 diffuse;   // linear albedo that scatters (none for a metal)
+    vec3 f0;        // reflectance straight on: 4% for most non-metals, the albedo for a metal
+    float rough;    // perceptual roughness, 0 = mirror
+    float alpha;    // GGX width (rough squared)
+    vec3 energy;    // multiple-scattering compensation on the specular lobe (FlyEnergy in fly_ibl), 1 = none
+};
+
+FlySurface FlyMakeSurface(vec3 albedo, float metallic, float roughness) {
+    FlySurface s;
+    float m = clamp(metallic, 0.0, 1.0);
+    s.diffuse = albedo * (1.0 - m);
+    s.f0 = mix(vec3(0.04), albedo, m);
+    // A perfectly sharp lobe would turn the sun into a single blazing pixel.
+    s.rough = clamp(roughness, 0.045, 1.0);
+    s.alpha = s.rough * s.rough;
+    s.energy = vec3(1.0);
+    return s;
+}
+
+float FlyD_GGX(float NoH, float a) {
+    float a2 = a * a;
+    float d = (NoH * a2 - NoH) * NoH + 1.0;
+    return a2 / (FLY_PI * d * d);
+}
+
+float FlyV_Smith(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float gv = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+    float gl = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+    return 0.5 / max(gv + gl, 1e-5);
+}
+
+vec3 FlyF_Schlick(vec3 f0, float VoH) {
+    float f = pow(1.0 - VoH, 5.0);
+    return f0 + (1.0 - f0) * f;
+}
+
+// What the surface sends towards the eye (v) per unit of light arriving along L (both unit vectors from the
+// surface), n.L included: multiply by the light's colour.
+vec3 FlyBrdfDirect(FlySurface s, vec3 n, vec3 v, vec3 L) {
+    float NoL = dot(n, L);
+    if (NoL <= 0.0) return vec3(0.0);
+    vec3 h = normalize(v + L);
+    float NoV = max(dot(n, v), 1e-4);
+    float NoH = clamp(dot(n, h), 0.0, 1.0);
+    float VoH = clamp(dot(v, h), 0.0, 1.0);
+    vec3 spec = FlyD_GGX(NoH, s.alpha) * FlyV_Smith(NoV, NoL, s.alpha) * FlyF_Schlick(s.f0, VoH);
+    return (s.diffuse + spec * s.energy * FLY_PI) * NoL;
+}
+
+// Karis' fit of the split-sum lookup table: (scale, bias) on f0, for when the baked table is not there.
+vec2 FlyEnvBrdfApprox(float NoV, float rough) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = rough * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+@end
+
+// Light from the surroundings on a physically based surface: the baked environment (src/Engine/RL/rl_ibl.cpp)
+// for diffuse and reflections, or the sky/ground ambient colours until it exists. The includer declares, after
+// fly_pbr:
+//   textureCube envSpecular with sampler env_smp, textureCube envIrradiance and texture2D brdfLut with sampler
+//   envLinear_smp (two samplers: the specular cube's needs its mips, the other two have none)
+//   vec4 envParams in a uniform block: x = the specular cube's last mip, y = 1 once the environment is baked
+@block fly_ibl
+// The split-sum table: (scale, bias) on f0 for a view at n.v and roughness `rough`.
+vec2 FlyEnvAB(float NoV, float rough) {
+    if (envParams.y > 0.5) return textureLod(sampler2D(brdfLut, envLinear_smp), vec2(NoV, rough), 0.0).rg;
+    return FlyEnvBrdfApprox(NoV, rough);
+}
+
+// A single GGX bounce loses the light that bounces between the microfacets more than once, which leaves rough
+// metals too dark; scale the lobe back up by what it lost (Fdez-Aguera, as Filament does). Call once per pixel.
+void FlyEnergy(inout FlySurface s, vec3 n, vec3 v) {
+    vec2 ab = FlyEnvAB(clamp(dot(n, v), 1e-4, 1.0), s.rough);
+    s.energy = 1.0 + s.f0 * (1.0 / max(ab.x + ab.y, 1e-3) - 1.0);
+}
+
+// ao = how much of the surroundings the point sees (1 = all of it). skyAmb / groundAmb: the fallback ambient.
+vec3 FlyAmbient(FlySurface s, vec3 n, vec3 v, float ao, vec3 skyAmb, vec3 groundAmb) {
+    float NoV = clamp(dot(n, v), 1e-4, 1.0);
+    vec3 r = reflect(-v, n);
+    vec3 irr, pre;
+    if (envParams.y > 0.5) {
+        irr = texture(samplerCube(envIrradiance, envLinear_smp), n).rgb;
+        // A rough lobe leans towards the normal (Frostbite's dominant direction).
+        vec3 rd = normalize(mix(r, n, s.rough * s.rough));
+        pre = textureLod(samplerCube(envSpecular, env_smp), rd, s.rough * envParams.x).rgb;
+    } else {
+        irr = mix(groundAmb, skyAmb, n.y * 0.5 + 0.5);
+        pre = mix(groundAmb, skyAmb, smoothstep(-0.25, 0.25, r.y));
+    }
+    vec2 ab = FlyEnvAB(NoV, s.rough);
+    // Lagarde's specular occlusion: an occluded crevice does not mirror the sky either.
+    float so = clamp(pow(NoV + ao, exp2(-16.0 * s.rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    return s.diffuse * irr * ao + pre * (s.f0 * ab.x + ab.y) * s.energy * so;
 }
 @end

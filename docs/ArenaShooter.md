@@ -141,12 +141,21 @@ Add a reaction delay (0.45 s in Counter Guns) and cap the fire rate, otherwise b
 
 ### Movement
 
-There is no navmesh. Counter Guns bots walk straight lines between waypoints. That works only if the layout is open enough. Two cheap fixes that matter a lot:
+Use `fly::Nav` (see [ScriptAPI.md](ScriptAPI.md#navigation)). Bake the map once the map is built, then give each bot a `fly::Nav::Agent`:
+
+```cpp
+fly::Nav::Build({ -60, -5, -60 }, { 60, 30, 60 });   // after the walls and floors exist
+fly::Nav::Agent agent(5.0f);
+// per frame, while chasing
+agent.SetTarget(enemy.Position());
+const fly::Vec3 v = agent.Step(bot.Position(), fly::DeltaTime());
+bot.SetVelocity({ v.x, bot.Velocity().y, v.z });
+```
+
+Doorways must be at least three cells wide (1.5 m at the defaults), or the map has no gap there. Counter Guns used to walk straight lines between waypoints, which needed these fixes, and they are still worth keeping as a fallback when `FindPath` returns nothing:
 
 - Stuck detection: every 0.5 s, if a bot that wants to move has moved less than 0.1 m, pick a nearby waypoint and walk there for up to 3 s before resuming the chase.
 - Waypoints in doorways, so a bot aims for the gap instead of the wall next to it.
-
-A real navigation helper would be the biggest improvement to this part.
 
 ### Bot bodies
 

@@ -1773,6 +1773,25 @@ RLAPI const char *GetGraphicsBackendName(void);                       // "OpenGL
 typedef bool (*FlyEventHook)(const void *sappEvent);                  // Receives every sapp_event before raylib input does
 RLAPI void SetEventHook(FlyEventHook hook);
 RLAPI void SetShaderHotReload(bool enabled);                          // Watches shaders/*.glsl and recompiles+swaps changed programs in place (editor/dev builds; default on)
+
+// Image-based lighting (src/Engine/RL/rl_ibl.cpp, shaders/ibl.glsl): the surroundings baked into cube maps
+// that the lit shaders read for ambient light and reflections. Light values are linear, in the scene's units.
+typedef struct FlyEnvironment {
+    int atmosphere;             // 1: the sky is the atmosphere's sky-view table (skyView, planet); 0: zenith/horizon colours
+    Texture2D skyView;          // the atmosphere's sky-view table
+    float planet[4];            // the atmosphere's atPlanet: planet radius, top of the air, camera height (km)
+    float zenith[3];            // a sky of one colour: its light straight up
+    float horizon[3];           // ... and at the horizon
+    float ambientSky[3];        // the scene's light from the sky on a surface facing up (the bake is scaled to match it)
+    float ambientGround[3];     // the light coming off the ground (everything below the horizon)
+    float overcast;             // 0..1: greys a sky that has no clouds to do it
+} FlyEnvironment;
+RLAPI void BakeEnvironment(const FlyEnvironment *env);                // Redraws the cubes below (a few small passes; call when the light changes, not every frame)
+RLAPI bool IsEnvironmentBaked(void);
+RLAPI TextureCubemap GetEnvSpecular(void);                           // RGBA16F cube, roughness = mip / (GetEnvSpecularMips() - 1); id 0 before the first bake
+RLAPI TextureCubemap GetEnvIrradiance(void);                         // RGBA16F cube: the light on a surface facing each direction
+RLAPI Texture2D GetEnvBrdfLut(void);                                 // split-sum table: (scale, bias) on f0 by (n.v, roughness)
+RLAPI int GetEnvSpecularMips(void);
 RLAPI unsigned long long GetTextureImGuiId(Texture2D texture);        // ImTextureID for sokol_imgui
 RLAPI void SetWindowClass(const char *name);                          // X11 WM_CLASS (desktop file StartupWMClass)
 

@@ -2234,6 +2234,11 @@ Material LoadMaterialDefault(void)
     material.maps[MATERIAL_MAP_DIFFUSE].color = WHITE;    // Diffuse color
     material.maps[MATERIAL_MAP_SPECULAR].color = WHITE;   // Specular color
 
+    // FlyEngine: the lit shader is physically based (metallic/roughness, see shaders/lit.glsl). A material
+    // that does not say otherwise is a fairly rough non-metal, not a mirror.
+    material.maps[MATERIAL_MAP_METALNESS].value = 0.0f;
+    material.maps[MATERIAL_MAP_ROUGHNESS].value = 0.6f;
+
     return material;
 }
 
@@ -5592,14 +5597,16 @@ static Model LoadGLTF(const char *fileName)
                         UnloadImage(imMetallic);
                         UnloadImage(imMetallicRoughness);
                     }
-
-                    // Load metallic/roughness material properties
-                    float roughness = data->materials[i].pbr_metallic_roughness.roughness_factor;
-                    model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].value = roughness;
-
-                    float metallic = data->materials[i].pbr_metallic_roughness.metallic_factor;
-                    model.materials[j].maps[MATERIAL_MAP_METALNESS].value = metallic;
                 }
+
+                // Load metallic/roughness material properties
+                // FlyEngine: the factors apply with or without a metallic-roughness texture (upstream only read them
+                // when the texture was there, leaving untextured glTF materials at raylib's defaults).
+                float roughness = data->materials[i].pbr_metallic_roughness.roughness_factor;
+                model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].value = roughness;
+
+                float metallic = data->materials[i].pbr_metallic_roughness.metallic_factor;
+                model.materials[j].maps[MATERIAL_MAP_METALNESS].value = metallic;
 
                 // Load normal texture
                 if (data->materials[i].normal_texture.texture)
@@ -5632,13 +5639,16 @@ static Model LoadGLTF(const char *fileName)
                         model.materials[j].maps[MATERIAL_MAP_EMISSION].texture = LoadTextureFromImage(imEmissive);
                         UnloadImage(imEmissive);
                     }
-
-                    // Load emissive color factor
-                    model.materials[j].maps[MATERIAL_MAP_EMISSION].color.r = (unsigned char)(data->materials[i].emissive_factor[0]*255);
-                    model.materials[j].maps[MATERIAL_MAP_EMISSION].color.g = (unsigned char)(data->materials[i].emissive_factor[1]*255);
-                    model.materials[j].maps[MATERIAL_MAP_EMISSION].color.b = (unsigned char)(data->materials[i].emissive_factor[2]*255);
-                    model.materials[j].maps[MATERIAL_MAP_EMISSION].color.a = 255;
                 }
+
+                // Load emissive color factor
+                // FlyEngine: also without an emissive texture (a plain glowing material). value = strength
+                // (KHR_materials_emissive_strength), 1 when absent.
+                model.materials[j].maps[MATERIAL_MAP_EMISSION].color.r = (unsigned char)(fminf(data->materials[i].emissive_factor[0], 1.0f)*255);
+                model.materials[j].maps[MATERIAL_MAP_EMISSION].color.g = (unsigned char)(fminf(data->materials[i].emissive_factor[1], 1.0f)*255);
+                model.materials[j].maps[MATERIAL_MAP_EMISSION].color.b = (unsigned char)(fminf(data->materials[i].emissive_factor[2], 1.0f)*255);
+                model.materials[j].maps[MATERIAL_MAP_EMISSION].color.a = 255;
+                model.materials[j].maps[MATERIAL_MAP_EMISSION].value = data->materials[i].has_emissive_strength ? data->materials[i].emissive_strength.emissive_strength : 1.0f;
             }
 
             // Other possible materials not supported by raylib pipeline:

@@ -116,6 +116,13 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
              << ' ' << std::quoted(n.texturePath) << ' ' << n.tint[0] << ' ' << n.tint[1] << ' ' << n.tint[2] << ' ' << n.transparency
              << ' ' << n.studsPerTile[0] << ' ' << n.studsPerTile[1] << ' ' << n.offset[0] << ' ' << n.offset[1];
     }
+    // v33: physically based material (metallic, roughness, emission colour and strength, use the model's own).
+    {
+        const gfx::SurfaceMaterial& m = object->surface;
+        auto fin1 = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+        file << ' ' << fin1(m.metallic, 0.0f) << ' ' << fin1(m.roughness, 0.6f) << ' ' << (int)m.emissive.r << ' ' << (int)m.emissive.g
+             << ' ' << (int)m.emissive.b << ' ' << fin1(m.emissiveStrength, 0.0f) << ' ' << (int)object->useModelMaterial;
+    }
     file << '\n';
 }
 } // namespace
@@ -176,7 +183,7 @@ bool SaveSceneToStream(std::ostream& file, const std::vector<ScatteredObject*>& 
                        const std::vector<std::unique_ptr<ModelGroup>>& models,
                        const std::string& baseDir,
                        terrain::Terrain* terrain) {
-    file << "SIMPLE_ENGINE_BUILD 32\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD " << kSceneFormatVersion << "\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -566,6 +573,16 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
             object->nodes.push_back(std::move(n));
         }
     }
+    if (version >= 33) {
+        gfx::SurfaceMaterial& m = object->surface;
+        int r = 255, g = 255, b = 255, useModel = 1;
+        if (!(file >> m.metallic >> m.roughness >> r >> g >> b >> m.emissiveStrength >> useModel)) return false;
+        m.metallic = std::clamp(m.metallic, 0.0f, 1.0f);
+        m.roughness = std::clamp(m.roughness, 0.0f, 1.0f);
+        m.emissiveStrength = std::clamp(m.emissiveStrength, 0.0f, 1000.0f);
+        m.emissive = { (unsigned char)std::clamp(r, 0, 255), (unsigned char)std::clamp(g, 0, 255), (unsigned char)std::clamp(b, 0, 255), 255 };
+        object->useModelMaterial = useModel != 0;
+    }
 
     out = std::move(object);
     return true;
@@ -597,8 +614,8 @@ bool LoadSceneFromStream(std::istream& file, Engine& engine, std::vector<Scatter
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 32 || count > kMaxSceneCount) {
-        if (signature == "SIMPLE_ENGINE_BUILD" && version > 32) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 32).", version);
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > kSceneFormatVersion || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > kSceneFormatVersion) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to %d).", version, kSceneFormatVersion);
         return false;
     }
     gfx::ResetLighting();   // a scene that does not store lighting starts at noon
@@ -1085,7 +1102,7 @@ bool SnapshotSceneToMemory(const std::vector<ScatteredObject*>& objects,
                            const std::string& baseDir,
                            std::string& out) {
     std::ostringstream file;
-    file << "SIMPLE_ENGINE_BUILD 32\n" << objects.size() << "\n" << std::setprecision(9);
+    file << "SIMPLE_ENGINE_BUILD " << kSceneFormatVersion << "\n" << objects.size() << "\n" << std::setprecision(9);
     for (auto* object : objects) {
         if (!object) continue;
         WriteObjectRecord(file, object, baseDir);
@@ -1161,8 +1178,8 @@ bool AppendSnapshot(std::istream& file, Engine& engine,
     std::string signature;
     int version = 0;
     size_t count = 0;
-    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > 32 || count > kMaxSceneCount) {
-        if (signature == "SIMPLE_ENGINE_BUILD" && version > 32) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to 32).", version);
+    if (!(file >> signature >> version >> count) || signature != "SIMPLE_ENGINE_BUILD" || version < 1 || version > kSceneFormatVersion || count > kMaxSceneCount) {
+        if (signature == "SIMPLE_ENGINE_BUILD" && version > kSceneFormatVersion) ui::LogAlways("[scene] made with a newer Flyengine (scene format %d, this build reads up to %d).", version, kSceneFormatVersion);
         return false;
     }
 

@@ -25,17 +25,34 @@ struct Widget {
     float value = 0.0f;
     std::string image;
     bool visible = true;
+    int state = 0;   // State bits
 };
 
 std::vector<Widget> g_widgets;                 // creation order is draw order
 std::map<std::string, Texture2D> g_textures;   // loaded when first drawn
 std::map<std::string, Font> g_fonts;           // by file path; id 0 = could not be loaded
 std::string g_projectPath;
+bool g_mouseFree = false;
+std::string g_captured;   // id of the widget the left button went down on, until it comes up
+Rectangle g_lastArea = { 0, 0, 1280, 720 };
+Vector2 g_lastPointer = { 0, 0 };
+bool g_pointerOverWidget = false;
 std::map<std::string, std::string> g_fontPaths;   // font name -> resolved file (also misses); cleared when the project path changes
 
 Widget* Find(const std::string& id) {
     for (Widget& w : g_widgets) if (w.id == id) return &w;
     return nullptr;
+}
+
+// What a fresh widget looks like before a script sets anything.
+void InitialLook(Widget& w) {
+    switch (w.kind) {
+        case Kind::Panel: w.color = { 0, 0, 0, 140 }; break;
+        case Kind::Button: w.color = { 60, 90, 150, 255 }; w.color2 = { 255, 255, 255, 255 }; w.w = 160; w.h = 40; break;
+        case Kind::Slider: w.color = { 80, 200, 90, 255 }; w.color2 = { 0, 0, 0, 160 }; w.w = 200; w.h = 20; break;
+        case Kind::Toggle: w.color = { 80, 200, 90, 255 }; w.color2 = { 0, 0, 0, 160 }; w.w = 200; w.h = 24; break;
+        default: break;
+    }
 }
 
 Texture2D TextureFor(const std::string& file) {
@@ -135,12 +152,13 @@ bool Create(const std::string& id, Kind kind) {
         g_widgets[at] = Widget{};
         g_widgets[at].id = id;
         g_widgets[at].kind = kind;
+        InitialLook(g_widgets[at]);
         return true;
     }
     Widget w;
     w.id = id;
     w.kind = kind;
-    if (kind == Kind::Panel) w.color = { 0, 0, 0, 140 };
+    InitialLook(w);
     g_widgets.push_back(std::move(w));
     return true;
 }
@@ -170,12 +188,16 @@ void SetVisible(const std::string& id, bool visible) {
     if (Widget* wd = Find(id)) wd->visible = visible;
 }
 void Remove(const std::string& id) {
+    if (g_captured == id) g_captured.clear();
     g_widgets.erase(std::remove_if(g_widgets.begin(), g_widgets.end(), [&](const Widget& w) { return w.id == id; }), g_widgets.end());
 }
 size_t Count() { return g_widgets.size(); }
 
 void Clear() {
     g_widgets.clear();
+    g_captured.clear();
+    g_mouseFree = false;
+    g_pointerOverWidget = false;
     if (IsWindowReady()) for (auto& [file, tex] : g_textures) if (tex.id != 0) UnloadTexture(tex);
     g_textures.clear();
     if (IsWindowReady()) for (auto& [file, font] : g_fonts) if (font.texture.id != 0) UnloadFont(font);
@@ -227,10 +249,124 @@ std::vector<std::string> ListFonts(const std::string& projectPath) {
     return out;
 }
 
-void Draw(float x, float y, float w, float h) {
-    if (g_widgets.empty()) return;
+int StateOf(const std::string& id) {
+    const Widget* w = Find(id);
+    return w ? w->state : 0;
+}
+
+namespace {
+
+bool Interactive(const Widget& w) {
+    return w.visible && (w.kind == Kind::Button || w.kind == Kind::Slider || w.kind == Kind::Toggle);
+}
+
+Color Shade(Color c, int amount) {
+    auto clampc = [](int v) { return static_cast<unsigned char>(std::clamp(v, 0, 255)); };
+    return { clampc(c.r + amount), clampc(c.g + amount), clampc(c.b + amount), c.a };
+}
+
+bool Inside(const Rectangle& r, float x, float y) { return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height; }
+
+} // namespace
+
+void UpdateInput(Rectangle area, const Pointer& pointer) {
+    g_lastArea = area;
+    g_lastPointer = { pointer.x, pointer.y };
+    const float scale = ScaleFor(area.height);
+    for (Widget& w : g_widgets) w.state &= (kHovered | kHeld);   // clicked / changed last one update
+    for (Widget& w : g_widgets) w.state &= ~kHovered;
+
+    // The topmost interactive widget under the pointer (the last one created is drawn last).
+    Widget* hover = nullptr;
+    if (pointer.active) {
+        for (auto it = g_widgets.rbegin(); it != g_widgets.rend(); ++it) {
+            if (!Interactive(*it)) continue;
+            if (Inside(LayoutRect(it->anchor, it->x, it->y, it->w, it->h, area, scale), pointer.x, pointer.y)) { hover = &*it; break; }
+        }
+    }
+    g_pointerOverWidget = hover != nullptr;
+
+    Widget* captured = g_captured.empty() ? nullptr : Find(g_captured);
+    if (!captured) g_captured.clear();
+
+    if (pointer.pressed && hover && !captured) {
+        captured = hover;
+        g_captured = hover->id;
+        hover->state |= kHeld;
+    }
+    if (captured) {
+        const Rectangle r = LayoutRect(captured->anchor, captured->x, captured->y, captured->w, captured->h, area, scale);
+        if (captured->kind == Kind::Slider && (pointer.down || pointer.released) && r.width > 0.0f) {
+            const float v = std::clamp((pointer.x - r.x) / r.width, 0.0f, 1.0f);
+            if (v != captured->value) { captured->value = v; captured->state |= kChanged; }
+        }
+        if (pointer.released || !pointer.down) {
+            const bool over = pointer.active && Inside(r, pointer.x, pointer.y);
+            if (over && captured->kind == Kind::Button) captured->state |= kClicked;
+            if (over && captured->kind == Kind::Toggle) {
+                captured->value = captured->value > 0.5f ? 0.0f : 1.0f;
+                captured->state |= kClicked | kChanged;
+            }
+            captured->state &= ~kHeld;
+            g_captured.clear();
+            captured = nullptr;
+        }
+    }
+    if (hover) hover->state |= kHovered;
+}
+
+bool PointerOverWidget() { return g_pointerOverWidget; }
+
+Vector2 PointerInUiPixels() {
+    const float scale = ScaleFor(g_lastArea.height);
+    return { (g_lastPointer.x - g_lastArea.x) / scale, (g_lastPointer.y - g_lastArea.y) / scale };
+}
+
+void SetMouseFree(bool free) {
+    if (free == g_mouseFree) return;
+    g_mouseFree = free;
+    if (!IsWindowReady()) return;
+    if (free) EnableCursor(); else DisableCursor();
+}
+bool MouseFree() { return g_mouseFree; }
+
+namespace {
+
+// Text of the widget's font and size in `r`: from its top-left corner, or centred across (centerX) and / or down (centerY) it.
+void DrawLabel(const Widget& wd, const char* text, Rectangle r, Color color, float scale, bool centerX, bool centerY, int shadowPx) {
+    const int size = std::max(1, static_cast<int>(wd.fontSize * scale));
+    const Font* font = FontFor(wd.font);
+    const float spacing = size * 0.02f;
+    const float tw = font ? MeasureTextEx(*font, text, static_cast<float>(size), spacing).x : static_cast<float>(MeasureText(text, size));
+    float px = r.x, py = r.y;
+    if (centerX) px = r.x + (r.width - tw) * 0.5f;
+    if (centerY) py = r.y + (r.height - size) * 0.5f;
+    const Color shade = { 0, 0, 0, static_cast<unsigned char>(color.a * 160 / 255) };
+    if (font) {
+        if (shadowPx > 0) DrawTextEx(*font, text, { px + shadowPx, py + shadowPx }, static_cast<float>(size), spacing, shade);
+        DrawTextEx(*font, text, { px, py }, static_cast<float>(size), spacing, color);
+    } else {
+        if (shadowPx > 0) DrawText(text, static_cast<int>(px) + shadowPx, static_cast<int>(py) + shadowPx, size, shade);
+        DrawText(text, static_cast<int>(px), static_cast<int>(py), size, color);
+    }
+}
+
+} // namespace
+
+void Draw(float x, float y, float w, float h, bool inputEnabled) {
+    if (g_widgets.empty()) { g_pointerOverWidget = false; return; }
     const Rectangle area = { x, y, w, h };
     const float scale = ScaleFor(h);
+
+    Pointer pointer;
+    const Vector2 mouse = GetMousePosition();
+    pointer.x = mouse.x; pointer.y = mouse.y;
+    pointer.down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    pointer.pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    pointer.released = IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+    pointer.active = inputEnabled && !IsCursorHidden();
+    UpdateInput(area, pointer);
+
     BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
     for (const Widget& wd : g_widgets) {
         if (!wd.visible) continue;
@@ -260,14 +396,44 @@ void Draw(float x, float y, float w, float h) {
                 const float tw = font ? MeasureTextEx(*font, wd.text.c_str(), static_cast<float>(size), spacing).x
                                       : static_cast<float>(MeasureText(wd.text.c_str(), size));
                 const Rectangle r = LayoutRect(wd.anchor, wd.x, wd.y, tw / scale, static_cast<float>(size) / scale, area, scale);
-                const int shadow = std::max(1, size / 14);
-                const Color shade = { 0, 0, 0, static_cast<unsigned char>(wd.color.a * 160 / 255) };
-                if (font) {
-                    DrawTextEx(*font, wd.text.c_str(), { r.x + shadow, r.y + shadow }, static_cast<float>(size), spacing, shade);
-                    DrawTextEx(*font, wd.text.c_str(), { r.x, r.y }, static_cast<float>(size), spacing, wd.color);
-                } else {
-                    DrawText(wd.text.c_str(), static_cast<int>(r.x) + shadow, static_cast<int>(r.y) + shadow, size, shade);
-                    DrawText(wd.text.c_str(), static_cast<int>(r.x), static_cast<int>(r.y), size, wd.color);
+                DrawLabel(wd, wd.text.c_str(), r, wd.color, scale, false, false, std::max(1, size / 14));
+                break;
+            }
+            case Kind::Button: {
+                const Rectangle r = LayoutRect(wd.anchor, wd.x, wd.y, wd.w, wd.h, area, scale);
+                Color face = wd.color;
+                if (wd.state & kHeld) face = Shade(face, -35);
+                else if (wd.state & kHovered) face = Shade(face, 30);
+                DrawRectangleRounded(r, 0.2f, 6, face);
+                DrawRectangleRoundedLinesEx(r, 0.2f, 6, std::max(1.0f, scale), Shade(face, 45));
+                if (!wd.text.empty()) DrawLabel(wd, wd.text.c_str(), r, wd.color2, scale, true, true, 0);
+                break;
+            }
+            case Kind::Slider: {
+                const Rectangle r = LayoutRect(wd.anchor, wd.x, wd.y, wd.w, wd.h, area, scale);
+                const float track = std::max(2.0f, r.height * 0.3f);
+                const Rectangle bar = { r.x, r.y + (r.height - track) * 0.5f, r.width, track };
+                DrawRectangleRec(bar, wd.color2);
+                DrawRectangleRec({ bar.x, bar.y, bar.width * wd.value, bar.height }, wd.color);
+                const float knobW = std::max(4.0f, r.height * 0.5f);
+                Color knob = { 240, 240, 240, 255 };
+                if (wd.state & kHeld) knob = Shade(knob, -40);
+                else if (wd.state & kHovered) knob = { 255, 255, 255, 255 };
+                DrawRectangleRounded({ r.x + (r.width - knobW) * wd.value, r.y, knobW, r.height }, 0.3f, 4, knob);
+                break;
+            }
+            case Kind::Toggle: {
+                const Rectangle r = LayoutRect(wd.anchor, wd.x, wd.y, wd.w, wd.h, area, scale);
+                const Rectangle box = { r.x, r.y, r.height, r.height };
+                DrawRectangleRounded(box, 0.2f, 4, (wd.state & kHovered) ? Shade(wd.color2, 25) : wd.color2);
+                DrawRectangleRoundedLinesEx(box, 0.2f, 4, std::max(1.0f, scale), { 230, 230, 230, 255 });
+                if (wd.value > 0.5f) {
+                    const float inset = box.width * 0.22f;
+                    DrawRectangleRounded({ box.x + inset, box.y + inset, box.width - 2 * inset, box.height - 2 * inset }, 0.2f, 4, wd.color);
+                }
+                if (!wd.text.empty()) {
+                    const Rectangle label = { r.x + r.height + 8.0f * scale, r.y, r.width - r.height, r.height };
+                    DrawLabel(wd, wd.text.c_str(), label, { 255, 255, 255, 255 }, scale, false, true, 0);
                 }
                 break;
             }

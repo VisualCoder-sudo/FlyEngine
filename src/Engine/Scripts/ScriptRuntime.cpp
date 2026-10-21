@@ -14,6 +14,7 @@
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Graphics/Vfs.hpp"
 #include "../../../include/Engine/GameUI.hpp"
+#include "../../../include/Engine/Navigation.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <cstring>
@@ -437,6 +438,7 @@ void ScriptRuntime::StopAllScripts()
 void ScriptRuntime::OnPlayStarted()
 {
     gameui::Clear();
+    nav::ResetWorld();
     gameui::SetProjectPath(m_projectPath);
     ClearSnippetValues();
     // Everything that will be put back when play stops is recorded BEFORE any script runs. The visual script's Start
@@ -533,6 +535,7 @@ void ScriptRuntime::OnPlayStopped()
     RollbackCreatedObjects();
     RestoreWorldSettings();
     gameui::Clear();
+    nav::ResetWorld();
     if (g_postPlayHook) g_postPlayHook();   // last: the editor puts the scene back once nothing can change it any more
 }
 

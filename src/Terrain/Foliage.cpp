@@ -901,6 +901,10 @@ void Draw(const Camera3D& camera, bool shadowPass) {
     Material& mat = gfx::detail::ShapeInstancedMaterial();
     mat.maps[MATERIAL_MAP_DIFFUSE].texture = g_white;
     mat.maps[MATERIAL_MAP_DIFFUSE].color = WHITE;
+    // The shape batches leave their last material here; plants are rough, matte leaves and bark.
+    gfx::SurfaceMaterial plant;
+    plant.roughness = 0.75f;
+    gfx::ApplySurfaceMaterial(mat, plant);
     if (g_windLoc == -2) g_windLoc = GetShaderLocation(mat.shader, "foliageWind");
     if (g_fadeLoc == -2) g_fadeLoc = GetShaderLocation(mat.shader, "foliageFade");
     if (g_camLoc == -2) g_camLoc = GetShaderLocation(mat.shader, "foliageCam");

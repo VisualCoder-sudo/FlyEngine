@@ -68,6 +68,39 @@ Vector3 NormalizeMeshVertices(Model& model, BoundingBox bounds) {
     return extent;
 }
 
+// Readies a loaded model's physically based materials: the loaders leave their maps point-sampled with no mips
+// (fine for pixel art, shimmering on anything else), and a normal map needs tangents, which many files lack.
+// Call after NormalizeMeshVertices(): tangents are taken in the space the vertices end up in.
+void PreparePbrMaterials(Model& model) {
+    const unsigned int defaultTex = rlGetTextureIdDefault();
+    const int maps[] = { MATERIAL_MAP_ALBEDO, MATERIAL_MAP_METALNESS, MATERIAL_MAP_NORMAL, MATERIAL_MAP_ROUGHNESS,
+                         MATERIAL_MAP_OCCLUSION, MATERIAL_MAP_EMISSION };
+    std::vector<unsigned int> done;
+    for (int i = 0; i < model.materialCount; ++i) {
+        if (!model.materials[i].maps) continue;
+        for (int slot : maps) {
+            Texture2D& tex = model.materials[i].maps[slot].texture;
+            if (tex.id == 0 || tex.id == defaultTex || std::find(done.begin(), done.end(), tex.id) != done.end()) continue;
+            done.push_back(tex.id);
+            if (tex.mipmaps <= 1) GenTextureMipmaps(&tex);
+            SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR);
+        }
+    }
+    for (int m = 0; m < model.meshCount; ++m) {
+        Mesh& mesh = model.meshes[m];
+        const int mat = model.meshMaterial ? model.meshMaterial[m] : 0;
+        if (mat < 0 || mat >= model.materialCount || !model.materials[mat].maps) continue;
+        if (model.materials[mat].maps[MATERIAL_MAP_NORMAL].texture.id == 0 || mesh.tangents) continue;
+        if (!mesh.texcoords || !mesh.normals) continue;
+        // GenMeshTangents would hand the result to rlgl's own buffer; this layer keeps one per attribute instead.
+        unsigned int* vbo = mesh.vboId;
+        mesh.vboId = nullptr;
+        GenMeshTangents(&mesh);
+        mesh.vboId = vbo;
+        if (mesh.tangents) UpdateMeshBuffer(mesh, 4, mesh.tangents, mesh.vertexCount * 4 * (int)sizeof(float), 0);
+    }
+}
+
 // One loaded+normalized copy of each model file, shared by every object that
 // uses it (duplicates, copy/paste, repeated placements). Meshes and their GPU
 // buffers live here once; each object only owns a private materials array so a
@@ -115,9 +148,10 @@ BoundingBox ModelBounds(const Model& model) {
 // wireframeOverlay draws a slightly enlarged wireframe pass (used for the
 // selection outline) instead of a solid, lit, textured pass.
 void DrawShapeModel(ShapeType shape, Vector3 pos, Vector3 size, Matrix rotMat,
-                     Color tint, Texture2D texture, bool wireframeOverlay) {
+                     Color tint, Texture2D texture, bool wireframeOverlay, const gfx::SurfaceMaterial& surface = {}) {
     Model& model = gfx::GetShapeModel(shape);
     model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = texture;
+    gfx::ApplySurfaceMaterial(model.materials[0], surface);
 
     Vector3 drawSize = wireframeOverlay ? Vector3Scale(size, 1.02f) : size;
 
@@ -373,6 +407,7 @@ bool ScatteredObject::SetModel(const std::string& path) {
         SharedModelEntry entry;
         const BoundingBox loadedBounds = ModelBounds(loaded);
         entry.extent = NormalizeMeshVertices(loaded, loadedBounds);
+        PreparePbrMaterials(loaded);
         {
             // The same affine map NormalizeMeshVertices applied, for the skeleton.
             const Vector3 inv = { 1.0f / entry.extent.x, 1.0f / entry.extent.y, 1.0f / entry.extent.z };
@@ -515,6 +550,8 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
     copy->collisionAccuracy = collisionAccuracy;
     copy->canCollide = canCollide;
     copy->transparency = transparency;
+    copy->surface = surface;
+    copy->useModelMaterial = useModelMaterial;
     return copy;
 }
 
@@ -628,6 +665,27 @@ void ScatteredObject::Draw() {
         // materials internally, so this is the last point we can see them; the
         // ids are deduplicated per frame by gfx, so a hundred objects sharing
         // one texture count as one.
+        // The object's material over the file's (see ScatteredObject::surface). The shared entry keeps the
+        // file's values, so turning useModelMaterial back on restores them.
+        auto sharedIt = g_sharedModels.find(sharedModelKey);
+        const Model* fileModel = sharedIt != g_sharedModels.end() ? &sharedIt->second.model : nullptr;
+        for (int m = 0; m < model.materialCount; ++m) {
+            Material& mat = model.materials[m];
+            if (!mat.maps) continue;
+            if (!useModelMaterial) {
+                gfx::ApplySurfaceMaterial(mat, surface);
+            } else if (fileModel && m < fileModel->materialCount && fileModel->materials[m].maps) {
+                const MaterialMap* src = fileModel->materials[m].maps;
+                mat.maps[MATERIAL_MAP_METALNESS].value = src[MATERIAL_MAP_METALNESS].value;
+                mat.maps[MATERIAL_MAP_ROUGHNESS].value = src[MATERIAL_MAP_ROUGHNESS].value;
+                mat.maps[MATERIAL_MAP_EMISSION].color = src[MATERIAL_MAP_EMISSION].color;
+                mat.maps[MATERIAL_MAP_EMISSION].value = src[MATERIAL_MAP_EMISSION].value;
+                if (surface.emissiveStrength > 0.0f) {
+                    mat.maps[MATERIAL_MAP_EMISSION].color = surface.emissive;
+                    mat.maps[MATERIAL_MAP_EMISSION].value = surface.emissiveStrength;
+                }
+            }
+        }
         for (int m = 0; m < model.materialCount; ++m) {
             gfx::NoteMaterialUsed(model.materials[m].shader.id);
             if (model.materials[m].maps) {
@@ -661,8 +719,8 @@ void ScatteredObject::Draw() {
         : MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z });
     // Opaque shapes are batched into one instanced draw per (shape, texture) while the engine's
     // object loops run; anything else (transparent, no batch active) is drawn right here.
-    if (!gfx::QueueShape(shape, GetTexture(), gfx::ComposeTRS(size, rotMat, pos), drawColor)) {
-        DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false);
+    if (!gfx::QueueShape(shape, GetTexture(), gfx::ComposeTRS(size, rotMat, pos), drawColor, surface)) {
+        DrawShapeModel(shape, pos, size, rotMat, drawColor, GetTexture(), false, surface);
         gfx::IncrementDrawCallCount(1);
         gfx::AddMeshCount(1);
         gfx::AddModelTriangles(gfx::GetShapeModel(shape));

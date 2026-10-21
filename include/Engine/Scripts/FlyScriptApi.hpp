@@ -153,6 +153,20 @@ FLY_API short FlyNative_UIGetLayout(const char* id, float* out6);
 FLY_API short FlyNative_UIGetColor(const char* id, unsigned char* out8);
 FLY_API void  FlyNative_GetMouseDelta(float* out2);
 FLY_API void  FlyNative_DebugText(const char* key, const char* text);
+FLY_API short FlyNative_NavBuild(const float* in13);
+FLY_API void  FlyNative_NavClear(void);
+FLY_API short FlyNative_NavReady(void);
+FLY_API int   FlyNative_NavFindPath(const float* from3, const float* to3, float* out, int maxPoints, short allowPartial);
+FLY_API short FlyNative_NavNearest(const float* in3, float* out3);
+FLY_API short FlyNative_NavIsWalkable(const float* in3);
+FLY_API short FlyNative_NavRandomPoint(const float* center3, float radius, float* out3);
+FLY_API void  FlyNative_NavDebug(short on);
+FLY_API short FlyNative_NavLineClear(const float* from3, const float* to3);
+FLY_API short FlyNative_NavMoveAlong(const float* from3, const float* delta3, float* out3);
+FLY_API int   FlyNative_UIGetState(const char* id);
+FLY_API void  FlyNative_GetMousePosition(float* out2);
+FLY_API void  FlyNative_SetMouseFree(short free);
+FLY_API short FlyNative_MouseOverUI(void);
 FLY_API void  FlyNative_SpawnDecal(float x, float y, float z, float nx, float ny, float nz, float size, unsigned char r, unsigned char g, unsigned char b, unsigned char a, float seconds);
 
 // Physics (game.Physics.* - routed to the simulation).

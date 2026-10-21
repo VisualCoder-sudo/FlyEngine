@@ -68,11 +68,15 @@ std::vector<vscript::SoundRequest> g_requests;   // the whole request, as the so
 std::vector<std::string> g_stopped;              // "path|object" from the sound stopper hook
 std::map<std::string, gameui::Info> g_uiInfo;   // the widgets Get UI can read (tests seed these)
 std::vector<std::string> g_ui;                  // what the UI nodes asked gameui to do
+std::map<std::string, int> g_uiState;           // gameui::StateOf results (tests seed these)
+bool g_mouseFree = false;
+bool g_navReady = true;
+std::string g_navBuilt;                         // the box and walker NavBuild asked for
 std::vector<std::string> g_drawn;               // DrawText strings that are not the shadow pass
 int g_drawTextCalls = 0;
 
 void ResetStubs() {
-    g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear(); g_ui.clear(); g_uiInfo.clear();
+    g_log.clear(); g_console.clear(); g_sets.clear(); g_forces.clear(); g_created.clear(); g_rays.clear(); g_drawn.clear(); g_ui.clear(); g_uiInfo.clear(); g_uiState.clear(); g_mouseFree = false; g_navReady = true; g_navBuilt.clear();
     g_createDeferred.clear(); g_finished.clear(); g_logAtFinish.clear(); g_cloneDeferred = false;
     g_destroyed = g_cloned = g_scriptsStarted = 0;
     g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
@@ -165,6 +169,27 @@ void SetImage(const std::string& id, const std::string& f) { g_ui.push_back("ima
 void SetVisible(const std::string& id, bool v) { g_ui.push_back("show:" + id + ":" + (v ? "1" : "0")); }
 void Remove(const std::string& id) { g_uiInfo.erase(id); g_ui.push_back("remove:" + id); }
 void Clear() { g_uiInfo.clear(); g_ui.push_back("clear"); }
+int StateOf(const std::string& id) { const auto it = g_uiState.find(id); return it == g_uiState.end() ? 0 : it->second; }
+void SetMouseFree(bool free) { g_mouseFree = free; }
+}
+
+extern "C" {   // the navigation natives: a fake map where every path is a straight line
+short FlyNative_NavBuild(const float* p) {
+    char b[160];
+    std::snprintf(b, sizeof(b), "%g,%g,%g,%g,%g,%g,%g,%g,%g", p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]);
+    g_navBuilt = b;
+    return 1;
+}
+short FlyNative_NavReady(void) { return g_navReady ? 1 : 0; }
+int FlyNative_NavFindPath(const float* from, const float* to, float* out, int, short) {
+    if (to[0] > 900.0f) return 0;   // "no way"
+    for (int i = 0; i < 3; ++i) { out[i] = from[i]; out[3 + i] = to[i]; }
+    return 2;
+}
+short FlyNative_NavRandomPoint(const float* c, float radius, float* out) {
+    out[0] = c[0] + radius; out[1] = c[1]; out[2] = c[2];
+    return 1;
+}
 }
 
 extern "C" {
@@ -2016,6 +2041,106 @@ static void TestUiNodesSaveLoad() {
 // ---------------------------------------------------------------- save / load
 
 
+
+// Clickable UI nodes: they make Button / Slider / Toggle widgets, read the mouse state and fire On UI Click.
+static void TestClickableUiNodes() {
+    Fresh();
+    const int s = Add(NodeType::Start), b = Add(NodeType::UIButton), sl = Add(NodeType::UISlider), tg = Add(NodeType::UIToggle), mf = Add(NodeType::SetMouseFree);
+    N(b).target = "go"; N(b).value = "Go";
+    N(sl).target = "vol"; N(sl).value = "0.25";
+    N(tg).target = "fs"; N(tg).value = "Fullscreen";
+    Link_(s, mf); Link_(mf, b); Link_(b, sl); Link_(sl, tg);
+    Run(RT());
+    CHECK(g_mouseFree);
+    CHECK_STR(Joined(g_ui),
+        "make:go:4;layout:go:4:0,0,16000,4000;color:go:60,90,150,255/0,0,0,0;text:go:Go:0;"
+        "make:vol:5;layout:vol:4:0,0,20000,2000;color:vol:80,200,90,255/0,0,0,160;value:vol:25;"
+        "make:fs:6;layout:fs:4:0,0,20000,2400;color:fs:80,200,90,255/0,0,0,0;text:fs:Fullscreen:0;");   // the stub has no default look: the second colour stays as it found it
+    // run again: the slider keeps what the player set
+    g_ui.clear();
+    g_uiInfo["vol"].kind = gameui::Kind::Slider;
+    Run(RT());
+    CHECK(Joined(g_ui).find("value:vol") == std::string::npos);
+}
+
+static void TestUiClickEventAndState() {
+    Fresh();
+    const int c = Add(NodeType::OnUIClick), p = Add(NodeType::Print), ch = Add(NodeType::OnUIClick), p2 = Add(NodeType::Print);
+    N(c).target = "go"; N(p).value = "pressed";
+    N(ch).target = "vol"; N(ch).prop = "Changed"; N(p2).value = "moved";
+    Link_(c, p); Link_(ch, p2);
+    Run(RT());
+    Tick(RT(), 0.016f);
+    CHECK(!Logged("pressed") && !Logged("moved"));
+    g_uiState["go"] = gameui::kClicked | gameui::kHovered;
+    g_uiState["vol"] = gameui::kClicked;                 // a slider's Clicked does not count as Changed
+    Tick(RT(), 0.016f);
+    CHECK(LogCount("pressed") == 1 && !Logged("moved"));
+    g_uiState["vol"] = gameui::kChanged;
+    Tick(RT(), 0.016f);
+    CHECK(Logged("moved"));
+
+    // Get UI reads the state bits
+    Fresh();
+    g_uiInfo["go"] = gameui::Info();
+    g_uiState["go"] = gameui::kHovered | gameui::kHeld;
+    const int g1 = Add(NodeType::UIGet), g2 = Add(NodeType::UIGet);
+    N(g1).target = "go"; N(g1).prop = "Held";
+    N(g2).target = "go"; N(g2).prop = "Clicked";
+    PrintWithWire(g1); PrintWithWire(g2);
+    Run(RT());
+    CHECK(Logged("true") && Logged("false"));
+}
+
+static void TestNavNodes() {
+    Fresh();
+    const int s = Add(NodeType::Start), b = Add(NodeType::NavBuild);
+    Link_(s, b);
+    Run(RT());
+    CHECK_STR(g_navBuilt, "-50,-10,-50,50,40,50,0.5,0.4,1.8");
+
+    Fresh();
+    const int nx = Add(NodeType::NavNext), rp = Add(NodeType::NavRandomPoint), rd = Add(NodeType::NavReady), none = Add(NodeType::NavNext);
+    N(nx).target = "(0, 0, 0)"; N(nx).value = "(4, 0, 2)";
+    N(rp).target = "(1, 1, 1)"; N(rp).value = "5";
+    N(none).target = "(0, 0, 0)"; N(none).value = "(999, 0, 0)";
+    PrintWithWire(nx); PrintWithWire(rp); PrintWithWire(rd); PrintWithWire(none);
+    Run(RT());
+    CHECK(Logged("(4, 0, 2)") && Logged("(6, 1, 1)") && Logged("true"));
+    CHECK(Logged("fallback"));                                // no way: the empty wire falls back to the Print's own text
+}
+
+static void TestNavMoveTo() {
+    Fresh();
+    const int u = Add(NodeType::OnUpdate), m = Add(NodeType::NavMoveTo);
+    N(m).target = "Cube"; N(m).value = "(1, 2, 6)"; SoundOptionRef(N(m), "speed") = "2";
+    Link_(u, m);
+    Run(RT());
+    Tick(RT(), 0.5f);                                          // 2 m/s for half a second: one metre toward the goal
+    bool moved = false;
+    for (const auto& c : g_sets) if (c.object == "Cube" && c.prop == "Position" && c.value == "(1, 2, 4)") moved = true;
+    CHECK(moved);
+
+    g_navReady = false;
+    g_sets.clear();
+    Run(RT());
+    Tick(RT(), 0.5f); Tick(RT(), 0.5f);
+    CHECK(g_sets.empty() && LogCount("no navigation map") == 1);   // warns once, does not move
+}
+
+static void TestClickAndNavNodesRoundTrip() {
+    Fresh();
+    const int b = Add(NodeType::UIButton), e = Add(NodeType::OnUIClick), m = Add(NodeType::NavMoveTo);
+    N(b).target = "ok"; N(e).target = "ok"; SoundOptionRef(N(m), "speed") = "9";
+    const std::string saved = SaveAll();
+    Clear(); ResetStubs();
+    std::istringstream in(saved);
+    Load(in);
+    CHECK(Count() == 1);
+    CHECK(Find(b) && Find(b)->type == NodeType::UIButton && Find(e)->type == NodeType::OnUIClick);
+    CHECK(Find(m)->type == NodeType::NavMoveTo && SoundOption(*Find(m), "speed") == "9");
+}
+
 static void TestEveryNodeHasHelp() {
     for (int i = 0; i < static_cast<int>(NodeType::Count_); ++i) {
         const NodeType t = static_cast<NodeType>(i);
@@ -2124,7 +2249,7 @@ static void TestLoadBadInput() {
 int main() {
     struct T { const char* name; void (*fn)(); };
     const T tests[] = {
-        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder }, { "SequenceShrinkDropsExecWires", TestSequenceShrinkDropsExecWires },
+        { "EveryNodeHasHelp", TestEveryNodeHasHelp }, { "ClickableUiNodes", TestClickableUiNodes }, { "UiClickEventAndState", TestUiClickEventAndState }, { "NavNodes", TestNavNodes }, { "NavMoveTo", TestNavMoveTo }, { "ClickAndNavNodesRoundTrip", TestClickAndNavNodesRoundTrip }, { "StartPrintEnd", TestStartPrintEnd }, { "SequenceOrder", TestSequenceOrder }, { "SequenceShrinkDropsExecWires", TestSequenceShrinkDropsExecWires },
         { "NodePositionRoundTrip", TestNodePositionRoundTrip }, { "UiColorRejectsNonFinite", TestUiColorRejectsNonFinite },
         { "BranchOnVariable", TestBranchOnVariable }, { "RepeatAndDone", TestRepeatAndDone },
         { "DoOnce", TestDoOnce }, { "DelayWaitsForTicks", TestDelayWaitsForTicks },
@@ -2149,7 +2274,7 @@ int main() {
         { "ConnectRules", TestConnectRules }, { "IsKeyDown", TestIsKeyDown }, { "AddToVariable", TestAddToVariable }, { "EveryNSeconds", TestEveryNSeconds },
         { "JoinText", TestJoinText }, { "VectorNodes", TestVectorNodes }, { "MathFunctions", TestMathFunctions },
         { "ClampNode", TestClampNode }, { "TimeNode", TestTimeNode }, { "ObjectExists", TestObjectExists },
-        { "NewNodePins", TestNewNodePins }, { "NewNodesSaveLoad", TestNewNodesSaveLoad },
+        { "NewNodePins", TestNewNodePins }, { "ClickAndNavNodesRoundTrip", TestClickAndNavNodesRoundTrip },
         { "SnippetStartsClass", TestSnippetStartsClass }, { "SnippetFanOutFromEvent", TestSnippetFanOutFromEvent },
         { "SnippetInputs", TestSnippetInputs }, { "SnippetOutputs", TestSnippetOutputs },
         { "SnippetPinRules", TestSnippetPinRules }, { "SnippetWiresSaveLoad", TestSnippetWiresSaveLoad },

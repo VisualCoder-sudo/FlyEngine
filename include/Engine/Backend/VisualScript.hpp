@@ -76,6 +76,19 @@ enum class NodeType {
     UISet = 60,         // changes a widget that exists: prop = one of UiSetProperties(), value / data input 0 = the new one
     UIRemove = 61,      // target = widget id; empty removes every widget
     UIGet = 62,         // value node: target = widget id, prop = what to read (see UiGetProperties); "" if the widget is not there
+    // Clickable UI (see GameUI.hpp). The three make a widget like the other UI nodes: Button / Toggle take Id, Label, Anchor,
+    // Offset, Size, Colour; Slider takes Id, Value, Anchor, Offset, Size, Colour, Background. A Slider / Toggle keeps what the
+    // player set: Value only applies when the widget is made.
+    UIButton = 63, UISlider = 64, UIToggle = 65,
+    OnUIClick = 66,     // event: target = widget id, prop = "Clicked" (button pressed, toggle flipped) or "Changed" (slider moved)
+    SetMouseFree = 67,  // exec: value / data input 0 = true frees the cursor for the UI (no look-around), false gives it back
+    // Navigation (see Navigation.hpp). Object positions are feet-level: the node adds and removes half the object's height.
+    NavBuild = 68,      // exec: bakes the walkable map. target = min corner, value = max corner, prop = cell size; "radius" and
+                        // "height" options (the agent). Run it once, after the level is built
+    NavMoveTo = 69,     // exec: target = object, value = destination, "speed" option (m/s). Run it every frame (On Update)
+    NavNext = 70,       // value node: From (target), To (value) -> the next corner to walk to as (x, y, z), "" if no way
+    NavRandomPoint = 71,// value node: Center (target), Radius (value) -> a random walkable point, "" if none
+    NavReady = 72,      // value node: true once NavBuild has made a map
     Count_
 };
 
@@ -174,6 +187,7 @@ const std::vector<std::string>& HudPositions();
 const std::vector<std::string>& UiAnchors();      // the anchors of the UI nodes, in gameui::Anchor order
 const std::vector<std::string>& UiSetProperties(); // what a Set UI node changes
 const std::vector<std::string>& UiGetProperties(); // what a Get UI node reads
+const std::vector<std::string>& UiEventProperties(); // what an On UI Click node waits for
 // Change and Get Property nodes aim at a UI item with the target "UI/<id>"; the properties are UiSetProperties() / UiGetProperties().
 bool IsUiTarget(const std::string& target);
 std::string UiTargetId(const std::string& target);   // "UI/hp" -> "hp"

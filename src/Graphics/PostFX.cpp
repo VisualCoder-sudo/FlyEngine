@@ -345,6 +345,7 @@ void SetQualityTier(int tier) {
     q.shadowCascades = tier == 0 ? 1 : (tier == 1 ? 2 : (tier == 2 ? 3 : 4));
     q.fpsCap = quality.fpsCap;   // the frame-rate limit is not part of a preset
     q.hoverOutline = quality.hoverOutline;   // nor is the editor's hover outline
+    q.environmentLighting = quality.environmentLighting;   // nor the sky reflections switch
     q.outlineThickness = quality.outlineThickness;
     std::copy(quality.outlineColor, quality.outlineColor + 3, q.outlineColor);
     quality = q;
@@ -368,6 +369,7 @@ static void ParseQuality(std::istream& in) {
         else if (key == "antiAliasing") q.antiAliasing = std::clamp((int)v, 0, 2);
         else if (key == "bloom") q.bloom = v != 0.0f;
         else if (key == "ambientOcclusion") q.ambientOcclusion = v != 0.0f;
+        else if (key == "environmentLighting") q.environmentLighting = v != 0.0f;
         else if (key == "clouds") q.clouds = std::clamp((int)v, 0, 3);
         else if (key == "volumetrics") q.volumetrics = std::clamp((int)v, 0, 2);
         else if (key == "shadowCascades") q.shadowCascades = std::clamp((int)v, 1, 4);
@@ -400,6 +402,7 @@ std::string QualitySettingsText(const RenderQuality& q) {
     std::ostringstream out;
     out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
         << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
+        << "\nenvironmentLighting " << (q.environmentLighting ? 1 : 0)
         << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
         << "\nhoverOutline " << (q.hoverOutline ? 1 : 0) << "\noutlineThickness " << q.outlineThickness
         << "\noutlineR " << q.outlineColor[0] << "\noutlineG " << q.outlineColor[1] << "\noutlineB " << q.outlineColor[2]
@@ -418,6 +421,7 @@ void SaveQualitySettings() {
     const RenderQuality& q = quality;
     out << "tier " << q.tier << "\nrenderScale " << q.renderScale << "\nantiAliasing " << q.antiAliasing
         << "\nbloom " << (q.bloom ? 1 : 0) << "\nambientOcclusion " << (q.ambientOcclusion ? 1 : 0)
+        << "\nenvironmentLighting " << (q.environmentLighting ? 1 : 0)
         << "\nclouds " << q.clouds << "\nvolumetrics " << q.volumetrics << "\nshadowCascades " << q.shadowCascades
         << "\nhoverOutline " << (q.hoverOutline ? 1 : 0) << "\noutlineThickness " << q.outlineThickness
         << "\noutlineR " << q.outlineColor[0] << "\noutlineG " << q.outlineColor[1] << "\noutlineB " << q.outlineColor[2]

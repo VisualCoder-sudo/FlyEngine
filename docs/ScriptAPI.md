@@ -65,9 +65,61 @@ if (UI::Find("tip")) UI::Find("tip").Hide();
 
 In Visual Script, **Set UI** changes Text, Value, Visible, Color, Background, Font, Font Size, Anchor, Offset, Size or Image, and the **Get UI** node reads Exists, Text, Value, Visible, Color, Background, Font Size, Anchor, Offset or Size.
 
+Visual Script also has the clickable and navigation nodes:
+
+- **UI Button**, **UI Slider**, **UI Toggle** make the widgets. **On UI Click** (Id, then *Clicked* or *Changed*) runs when the player uses one. **Get UI** also reads Hovered, Held, Clicked and Changed. A slider or toggle keeps what the player set; the node's Value only applies when it makes the widget.
+- **Free Mouse** (true/false) shows the cursor and stops the camera turning, so the player can click.
+- **Build Navigation** (Min, Max, Cell size, Radius, Height) bakes the walkable map once. **Move Along Path** (object, destination, speed) walks an object there; run it from **On Update**. **Next Path Point**, **Random Walkable Point** and **Navigation Ready** are value nodes.
+
 The **Change** node also works on UI items: in its Target picker open **UI** and pick an item (the picker lists the ids your UI nodes make). The Property list is then Text, Value, Visible, Color, Background, Font, Font Size, Anchor, Offset, Size and Image, each with a fitting editor (colour picker, checkbox, anchor and font dropdowns), and **+ New Property** sets several at once. **Get Property** reads them back the same way (type `UI/hp` as the target). A Change **overrides** the UI node: it is remembered for that id until Play stops (or a UI Remove), so it works even when it runs before the UI node makes the item, and the UI node's own fields no longer undo it when it runs again.
 
-Not yet: buttons and mouse input, stacks, custom fonts. `ShowText` is separate and still works.
+### Buttons, sliders and toggles
+
+```cpp
+UI::SetMouseFree(true);                                            // show the cursor, stop the first-person look
+UI::Button("play", "Play", { UI::Anchor::Center, 0, 0, 220, 48 });
+UI::Slider("vol", 1.0f, { UI::Anchor::Center, 0, 60, 220, 22 });
+UI::Toggle("fs", "Fullscreen", false, { UI::Anchor::Center, 0, 100, 220, 24 });
+// each frame
+if (UI::Find("play").Clicked()) StartGame();
+if (UI::Find("vol").Changed())  fly::SetVolume(UI::Find("vol").Value());
+if (UI::Find("fs").Changed())   Fullscreen(UI::Find("fs").Value() > 0.5f);
+```
+
+- `Button(id, text, layout, color, textColor, fontSize, font)`: `color` is the face (it lightens under the mouse and darkens while pressed). `Slider(id, value, layout, fill, background)` is dragged by the player and holds 0..1. `Toggle(id, label, on, layout, mark, fontSize)` flips on a click; `Value() > 0.5f` is on.
+- On a widget: `Hovered()`, `Held()`, `Clicked()` (pressed and released on it) and `Changed()` (a slider moved, a toggle flipped). `Clicked` and `Changed` are true for one frame, so poll them once per frame. The topmost widget under the mouse gets the click.
+- `UI::SetMouseFree(true)` releases the cursor and the first-person view stops following the mouse (movement keys still work, so stop moving yourself if the menu pauses the game). `false` locks it again. Everything resets when play starts and stops.
+- `UI::MouseOverUI()` is true while the mouse is over a button, slider or toggle: skip shooting then. `UI::MousePosition()` gives the mouse in layout pixels (1280 x 720).
+- Not yet: stacks and automatic layout, text fields, disabled buttons, Visual Script nodes for buttons (use C++ scripts). `ShowText` is separate and still works.
+
+## Navigation
+
+Bake the walkable ground once, then ask for paths. It works on whatever the level is made of: floors, ramps, stairs, platforms, terrain, the city. Things that move (the player, crates, projectiles, any object with Anchored off) are not part of the map.
+
+```cpp
+fly::Nav::Build({ -60, -5, -60 }, { 60, 30, 60 });            // the box to bake, while playing
+fly::Nav::Path p = fly::Nav::FindPath(bot.Position(), player.Position());
+if (p.Valid()) { /* p.points: the corners from start to end */ }
+
+fly::Nav::Agent agent(4.0f);                                    // walks a path for you, 4 m/s
+agent.SetTarget(player.Position());                             // fine to call every frame
+agent.Move(bot, fly::DeltaTime(), 0.75f);                       // an anchored 1.5 m cube: its middle is 0.75 m above its feet
+
+// or move a physics body yourself:
+fly::Vec3 v = agent.Step(feet, fly::DeltaTime());               // where to head, flat (y is 0)
+body.SetVelocity({ v.x, body.Velocity().y, v.z });
+```
+
+- `Build(min, max)` or `Build(Settings)`: `cellSize` (0.5 m), `agentRadius` (0.4), `agentHeight` (1.8), `maxStep` (0.5, the highest step walked up) and `maxSlope` (45 degrees). Gaps narrower than three cells (1.5 m at the defaults) are closed by the agent's radius. A smaller cell is more exact and slower: a 160 x 160 m level at 0.5 m bakes in about 70 ms. Keep the box no bigger than the level; over 4 million squares is refused. Baking again replaces the map; bake after you move or add level geometry.
+- The map has a square for every spot an agent can stand: ground that is flat enough, with room for `agentHeight` above, and `agentRadius` away from walls and ledges. Two squares are joined when the step between them is small enough and nothing thin (a wall under half a metre thick) stands between them. Several floors above each other are fine.
+- `FindPath(from, to, allowPartial = false)`: both ends are moved onto the nearest walkable ground (a few squares sideways, two agent heights up or down). Empty when there is no way. With `allowPartial` an unreachable goal gives the path to the closest point that can be reached, and `Path::partial` is true. The path is straightened: only the corners remain.
+- `Agent(speed, repathSeconds = 0.5, arriveDistance = 0.4)`: `SetTarget`, `Step(position, dt)`, `Move(...)`, `Arrived()`, `HasPath()`, `NextPoint()`, `Stuck()`, `ClearTarget()`. It asks for a new path every `repathSeconds` and when the target has moved over a metre, so it follows a moving target and goes round new obstacles after the next bake. Keep `arriveDistance` no bigger than `cellSize`.
+- `Agent::Move(Vec3& feet, dt)` steps and moves `feet` with `MoveAlong` (so the agent slides along walls and never leaves the map; `feet.y` follows the ground) and returns the flat velocity it really moved at (slower while sliding along a wall, zero when blocked or when `feet` is nowhere near the map). `Move(Object body, dt, feetToCentre = 0)` does the same for an anchored object moved by its position; `feetToCentre` is how far its position sits above its feet (half the height for a cube whose middle is its position). For objects physics moves, use `Step` and `SetVelocity`.
+- Before heading for the next corner the agent checks that the straight line from where it really stands is clear; if not it goes back to the corner it came from or asks for a new path (at most every 0.25 s). If it wants to move but gets nowhere for `SetStuckTime(seconds)` (1 s; 0 turns it off) it asks for a new path; if that does not help, `Stuck()` is true until it moves again (a target that keeps moving does not reset it). It never picks another target by itself: do that when `Stuck()` says so.
+- `MoveAlong(from, delta, out)`: moves a point by the flat part of `delta` over walkable ground, sliding along walls and ledges instead of crossing them; `out` is always on the map and `out.y` is the ground height. A `from` up to two squares off the map is pulled back onto it. Use it for anything else that pushes an agent (knock-back, keeping bots apart). False (and `out = from + delta`) when there is no map or no ground near `from`. `LineClear(from, to)`: true when an agent at `from` can walk straight to `to`. `CanMove()`: false on an engine too old for these two.
+- `Nearest(p, out)`, `IsWalkable(p)`, `RandomPoint(center, radius, out)` (a place to patrol to), `Ready()`, `Clear()`.
+- `ShowDebug()` draws the squares (green, orange at the edges) and the last path in the 3D view. Use it to see why a bot will not go somewhere.
+- Not yet: doors and other changes while playing (bake again), off-mesh links such as jumps and ladders, crowds avoiding each other, and a Visual Script node.
 
 ## Prefabs
 

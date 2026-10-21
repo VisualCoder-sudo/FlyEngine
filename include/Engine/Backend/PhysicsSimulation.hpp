@@ -136,6 +136,8 @@ public:
     
     // Check if object has a physics body
     bool HasBody(ScatteredObject* obj) const { return bodyMap.find(obj) != bodyMap.end(); }
+    // True when the object's body never moves (an anchored object). False for dynamic and kinematic bodies, and for objects with none.
+    bool IsStaticBody(ScatteredObject* obj) const;
 
 private:
     bool FindBodyId(ScatteredObject* obj, b3BodyId& out) const;

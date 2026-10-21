@@ -42,11 +42,13 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::Branch: case NodeType::Sequence: case NodeType::Delay:
         case NodeType::Repeat: case NodeType::DoOnce: return IM_COL32(150, 110, 30, 255);
         case NodeType::Print: return IM_COL32(110, 70, 160, 255);
-        case NodeType::OnKey: case NodeType::EveryN: case NodeType::OnGamepadButton: return IM_COL32(40, 130, 60, 255);
+        case NodeType::OnKey: case NodeType::EveryN: case NodeType::OnGamepadButton: case NodeType::OnUIClick: return IM_COL32(40, 130, 60, 255);
         case NodeType::AddToVariable: return IM_COL32(40, 130, 140, 255);
         case NodeType::PlaySound: case NodeType::StopSound: case NodeType::SetVolume: return IM_COL32(170, 90, 40, 255);
         case NodeType::ShowText: case NodeType::UIText: case NodeType::UIPanel: case NodeType::UIBar: case NodeType::UIImage:
-        case NodeType::UISet: case NodeType::UIRemove: return IM_COL32(110, 70, 160, 255);
+        case NodeType::UISet: case NodeType::UIRemove: case NodeType::UIButton: case NodeType::UISlider: case NodeType::UIToggle:
+        case NodeType::SetMouseFree: return IM_COL32(110, 70, 160, 255);
+        case NodeType::NavBuild: case NodeType::NavMoveTo: return IM_COL32(40, 95, 170, 255);
         case NodeType::SetWorld: return IM_COL32(40, 95, 170, 255);
         case NodeType::CodeSnippet: return IM_COL32(60, 60, 70, 255);
         case NodeType::CreateObject: case NodeType::Destroy: case NodeType::Clone: case NodeType::SetVelocity:
@@ -92,6 +94,13 @@ int BodyRows(NodeType t) {
         case NodeType::UIBar: return 7;                            // Id, Value, Anchor, Offset, Size, Colour, Background
         case NodeType::UISet: return 3;                            // Id, Property, Value
         case NodeType::UIRemove: return 1;
+        case NodeType::UIButton: case NodeType::UIToggle: return 6;   // Id, Label, Anchor, Offset, Size, Colour
+        case NodeType::UISlider: return 7;                            // Id, Value, Anchor, Offset, Size, Colour, Background
+        case NodeType::OnUIClick: return 2;                           // Id, Event
+        case NodeType::SetMouseFree: return 1;
+        case NodeType::NavBuild: return 5;                            // Min, Max, Cell size, Radius, Height
+        case NodeType::NavMoveTo: return 3;                           // Object, Destination, Speed
+        case NodeType::NavNext: case NodeType::NavRandomPoint: return 2;
         case NodeType::CodeSnippet: return 9;   // Inputs, Outputs, then the code box (7 rows)
         case NodeType::UIGet: return 2;                            // Id, Property
         case NodeType::KeyDown: case NodeType::Normalize: case NodeType::Time: case NodeType::ObjectExists:
@@ -124,6 +133,7 @@ int DataPinRow(const Node& n, int pin) {
         case NodeType::AddToVariable: return 1;
         case NodeType::VecPart: case NodeType::VecMath: case NodeType::MathFunc: return pin + 1;   // a mode row comes first
         case NodeType::PlaySound: return 1;
+        case NodeType::NavMoveTo: return pin + 1;   // the object row comes first
         case NodeType::Compare: return pin == 0 ? 0 : 2;
         default: return pin;
     }
@@ -799,6 +809,40 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             else StrRow(n, o, 2, "Value", n.value, "##val", wired(2));
             break;
         case NodeType::UIRemove: StrRow(n, o, 0, "Id", n.target, "##id", wired(0)); break;
+        case NodeType::UIButton: case NodeType::UIToggle:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            StrRow(n, o, 1, "Label", n.value, "##label", wired(1));
+            ComboRow(n, o, 2, "Anchor", n.prop, UiAnchors(), wired(2));
+            StrRow(n, o, 3, "Offset", SoundOptionRef(n, "offset", "(0, 0)"), "##off", wired(3));
+            StrRow(n, o, 4, "Size", SoundOptionRef(n, "size", n.type == NodeType::UIButton ? "(160, 40)" : "(200, 24)"), "##size", wired(4));
+            ColorRow(n, o, 5, "Colour", SoundOptionRef(n, "color", ""), wired(5));
+            break;
+        case NodeType::UISlider:
+            StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
+            StrRow(n, o, 1, "Value", n.value, "##val", wired(1));
+            ComboRow(n, o, 2, "Anchor", n.prop, UiAnchors(), wired(2));
+            StrRow(n, o, 3, "Offset", SoundOptionRef(n, "offset", "(0, 0)"), "##off", wired(3));
+            StrRow(n, o, 4, "Size", SoundOptionRef(n, "size", "(200, 20)"), "##size", wired(4));
+            ColorRow(n, o, 5, "Colour", SoundOptionRef(n, "color", ""), wired(5));
+            ColorRow(n, o, 6, "Background", SoundOptionRef(n, "background", ""), wired(6));
+            break;
+        case NodeType::OnUIClick:
+            StrRow(n, o, 0, "Id", n.target, "##id");
+            ComboRow(n, o, 1, "When", n.prop, UiEventProperties());
+            break;
+        case NodeType::SetMouseFree: StrRow(n, o, 0, "Free", n.value, "##free", wired(0)); break;
+        case NodeType::NavBuild:
+            StrRow(n, o, 0, "Min", n.target, "##min", wired(0));
+            StrRow(n, o, 1, "Max", n.value, "##max", wired(1));
+            StrRow(n, o, 2, "Cell size", n.prop, "##cell", wired(2));
+            StrRow(n, o, 3, "Radius", SoundOptionRef(n, "radius", "0.4"), "##rad", wired(3));
+            StrRow(n, o, 4, "Height", SoundOptionRef(n, "height", "1.8"), "##hgt", wired(4));
+            break;
+        case NodeType::NavMoveTo:
+            ObjectRow(n, o, 0, scene);
+            StrRow(n, o, 1, "Destination", n.value, "##dest", wired(0));
+            StrRow(n, o, 2, "Speed", SoundOptionRef(n, "speed", "4"), "##spd", wired(1));
+            break;
         case NodeType::UIGet:
             StrRow(n, o, 0, "Id", n.target, "##id", wired(0));
             ComboRow(n, o, 1, "Read", n.prop, UiGetProperties(), wired(1));
@@ -1254,7 +1298,9 @@ void DrawEditor(const SceneListing& scene) {
             { "Input", { NodeType::KeyDown, NodeType::GamepadButtonDown, NodeType::GamepadAxis } },
             { "Flow", { NodeType::Branch, NodeType::Sequence, NodeType::Delay, NodeType::Repeat, NodeType::DoOnce, NodeType::End } },
             { "Actions", { NodeType::Change, NodeType::SetWorld, NodeType::Print, NodeType::ShowText, NodeType::CodeSnippet } },
-            { "UI", { NodeType::UIText, NodeType::UIPanel, NodeType::UIBar, NodeType::UIImage, NodeType::UISet, NodeType::UIGet, NodeType::UIRemove } },
+            { "UI", { NodeType::UIText, NodeType::UIPanel, NodeType::UIBar, NodeType::UIImage, NodeType::UISet, NodeType::UIGet, NodeType::UIRemove,
+                    NodeType::UIButton, NodeType::UISlider, NodeType::UIToggle, NodeType::OnUIClick, NodeType::SetMouseFree } },
+            { "Navigation", { NodeType::NavBuild, NodeType::NavMoveTo, NodeType::NavNext, NodeType::NavRandomPoint, NodeType::NavReady } },
             { "Audio", { NodeType::PlaySound, NodeType::StopSound, NodeType::SetVolume } },
             { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
             { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },

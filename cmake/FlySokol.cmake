@@ -16,7 +16,8 @@ set(FLY_SHADERS
     ${CMAKE_SOURCE_DIR}/shaders/sky.glsl
     ${CMAKE_SOURCE_DIR}/shaders/clouds.glsl
     ${CMAKE_SOURCE_DIR}/shaders/post.glsl
-    ${CMAKE_SOURCE_DIR}/shaders/outline.glsl)
+    ${CMAKE_SOURCE_DIR}/shaders/outline.glsl
+    ${CMAKE_SOURCE_DIR}/shaders/ibl.glsl)
 set(FLY_SHADER_INCLUDES
     ${CMAKE_SOURCE_DIR}/shaders/fly_common.glsl
     ${CMAKE_SOURCE_DIR}/shaders/fly_shadow.glsl
@@ -159,6 +160,7 @@ add_library(${target} STATIC
     src/Engine/RL/rl_shader_hotreload.cpp
     src/Engine/RL/rl_textures.cpp
     src/Engine/RL/rl_models.cpp
+    src/Engine/RL/rl_ibl.cpp
     src/Engine/RL/rl_misc.cpp
     src/Engine/RL/rl_raymath.c
     # raylib's CPU-side modules (zlib license), compiled against the rlgl

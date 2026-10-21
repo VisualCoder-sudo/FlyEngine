@@ -229,6 +229,21 @@ void GfxInit(int width, int height) {
         g.dummyVolumeTexture = CreateTexture(id, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false, false);
         g.textures[g.dummyVolumeTexture].volume = true;
     }
+    // 1x1 black cube, for textureCube slots with nothing bound.
+    {
+        const uint32_t black[6] = { 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u };
+        sg_image_desc id{};
+        id.type = SG_IMAGETYPE_CUBE;
+        id.width = 1;
+        id.height = 1;
+        id.pixel_format = SG_PIXELFORMAT_RGBA8;
+        id.data.mip_levels[0] = { black, sizeof(black) };
+        id.label = "fly-black-cube";
+        g.dummyCubeTexture = CreateTexture(id, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, false, false);
+        g.textures[g.dummyCubeTexture].cube = true;
+        g.textures[g.dummyCubeTexture].filter = TEXTURE_FILTER_BILINEAR;
+        g.textures[g.dummyCubeTexture].wrap = TEXTURE_WRAP_CLAMP;
+    }
 
     sg_buffer_desc bd{};
     bd.size = kBatchBufferSize;
@@ -259,6 +274,7 @@ void GfxShutdown() {
     GfxState& g = Gfx();
     if (!g.initialized) return;
     BatchShutdown();
+    IblShutdown();
     ResetTextureState();
     for (auto& kv : g.pipelines) sg_destroy_pipeline(kv.second);
     for (auto& kv : g.samplers) sg_destroy_sampler(kv.second);

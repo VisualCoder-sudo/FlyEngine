@@ -221,11 +221,22 @@ unsigned int LoadProgram(const char* name) {
                     break;
                 }
             }
-            if (u.viewSlot >= 0 && u.viewSlot < SG_MAX_VIEW_BINDSLOTS)
+            if (u.viewSlot >= 0 && u.viewSlot < SG_MAX_VIEW_BINDSLOTS) {
                 u.volume = desc->views[u.viewSlot].texture.image_type == SG_IMAGETYPE_3D;
+                u.cube = desc->views[u.viewSlot].texture.image_type == SG_IMAGETYPE_CUBE;
+            }
         }
         if (u.name == "texture1") u.unit = 1;
         if (u.name == "texture2") u.unit = 2;
+        // PBR material maps read the units of their raylib MATERIAL_MAP_* slot (DrawMesh binds them there).
+        static const struct { const char* name; int unit; } kMaterialMaps[] = {
+            { "metalnessMap", MATERIAL_MAP_METALNESS }, { "normalMap", MATERIAL_MAP_NORMAL },
+            { "roughnessMap", MATERIAL_MAP_ROUGHNESS }, { "occlusionMap", MATERIAL_MAP_OCCLUSION },
+            { "emissionMap", MATERIAL_MAP_EMISSION },
+        };
+        for (const auto& mm : kMaterialMaps) {
+            if (u.name == mm.name) { u.unit = mm.unit; u.materialMap = true; }
+        }
         sh.uniforms.push_back(u);
     }
 
@@ -255,7 +266,16 @@ unsigned int LoadProgram(const char* name) {
     sh.locs[SHADER_LOC_MAP_DIFFUSE] = uni("texture0");
     sh.locs[SHADER_LOC_MAP_SPECULAR] = uni("texture1");
     sh.locs[SHADER_LOC_MAP_NORMAL] = uni("texture2");
+    // PBR material maps (shaders/lit.glsl). Metalness shares raylib's location with the old "texture1".
+    auto pbrMap = [&](int loc, const char* n) { const int u = uni(n); if (u >= 0) sh.locs[loc] = u; };
+    pbrMap(SHADER_LOC_MAP_METALNESS, "metalnessMap");
+    pbrMap(SHADER_LOC_MAP_NORMAL, "normalMap");
+    pbrMap(SHADER_LOC_MAP_ROUGHNESS, "roughnessMap");
+    pbrMap(SHADER_LOC_MAP_OCCLUSION, "occlusionMap");
+    pbrMap(SHADER_LOC_MAP_EMISSION, "emissionMap");
     sh.locLinearTarget = uni("flyLinearTarget");
+    sh.locMatPbr = uni("matPbr");
+    sh.locMatEmissive = uni("matEmissive");
 
     // Uniform blocks start zeroed; colDiffuse defaults to white like GL's
     // "uniform not set" path would leave it after raylib's first draw.
@@ -310,14 +330,15 @@ void ResolveShaderTextures(const ShaderRec& sh, const unsigned int* drawUnits, s
         if (!u.isTexture || u.viewSlot < 0 || u.samplerSlot < 0) continue;
         unsigned int id = u.explicitTexture;
         if (!id && drawUnits) id = drawUnits[u.unit];
-        if (!id) id = g.units[u.unit];
+        if (!id && !u.materialMap) id = g.units[u.unit];
         TextureRec* t = GetTextureForBinding(id);
         // A depth texture is read through a comparison sampler (shadow maps) or,
         // for its raw values, a nearest one (@sampler_type nonfiltering).
-        bool usable = t && !IsBoundAsAttachment(id) && t->volume == u.volume && (!t->attachment || t->rendered);
+        bool usable = t && !IsBoundAsAttachment(id) && t->volume == u.volume && t->cube == u.cube && (!t->attachment || t->rendered);
         if (usable) usable = u.compare ? t->depth : (!t->depth || u.nonfiltering);
         if (!usable) {
-            t = GetTextureForBinding(u.volume ? g.dummyVolumeTexture : u.compare ? g.dummyDepthTexture : g.whiteTexture);
+            t = GetTextureForBinding(u.volume ? g.dummyVolumeTexture : u.cube ? g.dummyCubeTexture
+                                     : u.compare ? g.dummyDepthTexture : g.whiteTexture);
         }
         if (!t) continue;
         bind.views[u.viewSlot] = t->view;

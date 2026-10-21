@@ -6,6 +6,7 @@
 #include "rlgl.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <unordered_map>
@@ -316,6 +317,23 @@ void DrawMeshInternal(const Mesh& mesh, const Material& material, const Matrix& 
         if (locs[SHADER_LOC_COLOR_SPECULAR] >= 0) {
             const Vector4 c = ColorVec(material.maps[MATERIAL_MAP_SPECULAR].color);
             SetUniformValue(*sh, locs[SHADER_LOC_COLOR_SPECULAR], &c, SHADER_UNIFORM_VEC4, 1);
+        }
+        // Physically based materials (shaders/lit.glsl): factors from the map values, flags for the bound maps.
+        const MaterialMap* mm = material.maps;
+        if (sh->locMatPbr >= 0) {
+            const bool anyMap = mm[MATERIAL_MAP_METALNESS].texture.id > 0 || mm[MATERIAL_MAP_ROUGHNESS].texture.id > 0 ||
+                                mm[MATERIAL_MAP_OCCLUSION].texture.id > 0 || mm[MATERIAL_MAP_EMISSION].texture.id > 0;
+            const Vector4 pbr = { mm[MATERIAL_MAP_METALNESS].value, mm[MATERIAL_MAP_ROUGHNESS].value,
+                                  mm[MATERIAL_MAP_NORMAL].texture.id > 0 ? 1.0f : 0.0f, anyMap ? 1.0f : 0.0f };
+            SetUniformValue(*sh, sh->locMatPbr, &pbr, SHADER_UNIFORM_VEC4, 1);
+        }
+        if (sh->locMatEmissive >= 0) {
+            // The colour is sRGB like every other picked colour; value scales it (1 = as bright as a white surface in full sun).
+            const Color c = mm[MATERIAL_MAP_EMISSION].color;
+            const float k = mm[MATERIAL_MAP_EMISSION].value;
+            auto lin = [](unsigned char v) { const float f = v / 255.0f; return f <= 0.04045f ? f / 12.92f : powf((f + 0.055f) / 1.055f, 2.4f); };
+            const Vector4 e = { lin(c.r) * k, lin(c.g) * k, lin(c.b) * k, 0.0f };
+            SetUniformValue(*sh, sh->locMatEmissive, &e, SHADER_UNIFORM_VEC4, 1);
         }
     }
 

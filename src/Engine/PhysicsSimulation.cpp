@@ -890,6 +890,11 @@ void Simulation::DestroyJoint(b3JointId jointId) {
     }
 }
 
+bool Simulation::IsStaticBody(ScatteredObject* obj) const {
+    const auto it = bodyMap.find(obj);
+    return it != bodyMap.end() && b3Body_IsValid(it->second.bodyId) && b3Body_GetType(it->second.bodyId) == b3_staticBody;
+}
+
 RaycastHit Simulation::RayCast(Vector3 origin, Vector3 end) {
     return RayCast(origin, Vector3Normalize(Vector3Subtract(end, origin)), Vector3Distance(origin, end), nullptr);
 }

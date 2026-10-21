@@ -1,5 +1,5 @@
 // BasicTerrain splat-painting shader: four albedo layers blended by an RGBA
-// splatmap, sunlight plus sky and ground ambient, in linear light. The sun's shadow cascades
+// splatmap, lit by the shared physically based model (sun, light nodes, baked surroundings) in linear light. The sun's shadow cascades
 // (shaders/fly_shadow.glsl) shade it the way they shade every lit mesh.
 @module terrain_paint
 @include fly_common.glsl
@@ -41,6 +41,8 @@ layout(binding=1) uniform fs_params {
     vec4 cloudShadow;       // where the clouds' shadow texture lies on the world (see CloudLight in lit.glsl); w = 0: no clouds
     vec4 sunDir;            // xyz = unit vector the sunlight travels along, w = shadow cascade count (0 = shadows off)
     mat4 shadowVP[4];       // world to shadow-map space, one per cascade
+    vec4 camPos;            // xyz = the camera's position
+    vec4 envParams;         // the baked surroundings (see fly_ibl)
 @include_block lit_light_uniforms
 };
 // Bindings 0..5 belong to the shadow cascades (fly_shadow.glsl), so the terrain's own textures sit above them.
@@ -60,9 +62,17 @@ layout(binding=12) uniform texture2D nodeShadowMap;
 layout(binding=2) uniform sampler nodeShadow_smp;
 @image_sample_type nodeShadowMap depth
 @sampler_type nodeShadow_smp comparison
+layout(binding=13) uniform textureCube envSpecular;
+layout(binding=14) uniform textureCube envIrradiance;
+layout(binding=15) uniform texture2D brdfLut;
+layout(binding=0) uniform sampler env_smp;
+layout(binding=3) uniform sampler envLinear_smp;
 @include_block fly_rt_uv
 @include_block fly_shadow
+@include_block fly_pbr
 @include_block lit_node_lights
+@include_block lit_node_lights_pbr
+@include_block fly_ibl
 in vec3 worldPos;
 in vec3 worldNormal;
 in vec2 texCoord;
@@ -82,15 +92,17 @@ void main() {
 
     vec3 N = normalize(worldNormal);
     vec3 L = normalize(-lightDir);
-    float NdotL = max(dot(N, L), 0.0);
-    vec3 amb = mix(ambientGround, ambientColor, N.y * 0.5 + 0.5);
-    float sun = NdotL;
+    vec3 V = normalize(camPos.xyz - worldPos);
+    float sun = 1.0;
     if (cloudShadow.w > 0.0) {
         vec2 q = worldPos.xz + L.xz * (max(cloudShadow.w - worldPos.y, 0.0) / max(L.y, 0.12));
         sun *= textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
     }
     sun *= 1.0 - ShadowCalculation(worldPos, N);
-    vec3 color = fly_srgb_to_linear(albedo) * (amb + lightColor * sun + NodeLights(worldPos, N));
+    // Painted ground: a rough non-metal.
+    FlySurface s = FlyMakeSurface(fly_srgb_to_linear(albedo), 0.0, 0.85);
+    vec3 color = lightColor * sun * FlyBrdfDirect(s, N, V, L) + NodeLightsPbr(s, worldPos, N, V)
+               + FlyAmbient(s, N, V, 1.0, ambientColor, ambientGround);
     fragColor = vec4(color, 1.0);
 }
 @end

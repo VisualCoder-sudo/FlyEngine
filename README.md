@@ -5,7 +5,8 @@ A 3D game engine and editor built on [sokol](https://github.com/floooh/sokol)
 [Box3D](https://github.com/erincatto/box3d).
 
 Terrain with splatmap painting and LOD geomorphing, water bodies, rigid-body
-physics, glTF/OBJ/FBX/PLY model import, a PBR terrain shader, a procedural
+physics, glTF/OBJ/FBX/PLY model import, physically based materials lit by the
+sky (metallic/roughness, normal maps, image-based lighting), a procedural
 [city maker](#city-maker) with traffic, an ImGui editor, and
 [C++ scripting](#c-scripting) with hot reload.
 
@@ -256,8 +257,10 @@ The editor console (`` ` ``) takes commands such as `Cube.Position = (0, 5, 0)`,
 
 ### Gameplay API
 
-Ray casts with hit info, sphere overlaps, touch events, joints, camera control, particles, decals, tweens and events.
+Ray casts with hit info, sphere overlaps, touch events, joints, camera control, particles, decals, tweens and events,
+clickable in-game UI (buttons, sliders, toggles) and navigation (`fly::Nav`: bake the walkable ground, find paths, follow them).
 See [docs/ScriptAPI.md](docs/ScriptAPI.md), and [docs/FirstGame.md](docs/FirstGame.md) for a tutorial.
+See [docs/PBR.md](docs/PBR.md) for the PBR / sky-reflection pipeline, the scene-format version rule, and the related tests.
 
 ### Sample projects
 
@@ -442,13 +445,30 @@ already in its Lighting section.
   contrast, saturation, temperature, vignette and film grain.
 - **Shadows** reach further through cascades: up to three wider shadow maps
   beyond the one round the camera, redrawn every few frames.
+- **Materials** are physically based (`shaders/fly_common.glsl`: GGX specular,
+  Lambert diffuse, the glTF metallic/roughness model). Objects, terrain, roads
+  and city buildings share it; water keeps its own shading. An object's
+  **Material** group in Properties sets metallic, roughness and glow; an imported
+  model keeps its file's materials and maps (base colour, normal, metalness,
+  roughness, occlusion, emission from glTF and FBX; normal maps from OBJ) until
+  *Model's own* is unticked. Normal-mapped meshes without tangents get them
+  generated on import.
+- **Sky reflections** (`src/Engine/RL/rl_ibl.cpp`, `shaders/ibl.glsl`): the sky
+  and ground are baked into cube maps (diffuse light, and reflections blurred
+  per roughness), scaled to the scene's ambient light so the sky's brightness
+  settings keep their meaning. The bake is redrawn only when the light changes
+  (the sun moves half a degree, the ambient a few percent). A GPU that takes six
+  colour attachments draws each cube mip in one pass (14 passes a bake);
+  `FLY_IBL_ONE_FACE=1` forces one face per pass.
 
 Scenes saved before these existed load as they were: a sky of one colour and
 the neutral picture.
 
 **Preferences > Rendering** has four tiers (*Low* to *Ultra*) and the parts they
 set: render scale, anti-aliasing (off, FXAA, temporal), bloom, ambient
-occlusion, cloud and fog quality, shadow cascades. The player takes
+occlusion, cloud and fog quality, shadow cascades. *Sky reflections* is a
+separate switch there (off: a flat sky and ground colour instead of the baked
+environment). The player takes
 `--quality low|medium|high|ultra`. F2 in the viewport shows what each pass
 costs on the CPU side.
 

@@ -4,6 +4,7 @@
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
 #include "../../../include/Engine/GameUI.hpp"
+#include "../../../include/Engine/Scripts/FlyScriptApi.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
 #include <algorithm>
 #include <iomanip>
@@ -167,6 +168,15 @@ Node& AddNode(NodeType type, float x, float y) {
     else if (type == NodeType::UISet) { n.target = "label"; n.prop = "Text"; n.value = "Hello"; }
     else if (type == NodeType::UIRemove) n.target = "label";
     else if (type == NodeType::UIGet) { n.target = "label"; n.prop = "Text"; }
+    else if (type == NodeType::UIButton) { n.target = "button"; n.value = "Click me"; n.prop = "Center"; SoundOptionRef(n, "offset", "(0, 0)"); SoundOptionRef(n, "size", "(160, 40)"); SoundOptionRef(n, "color", "(60, 90, 150)"); }
+    else if (type == NodeType::UISlider) { n.target = "slider"; n.value = "0.5"; n.prop = "Center"; SoundOptionRef(n, "offset", "(0, 0)"); SoundOptionRef(n, "size", "(200, 20)"); SoundOptionRef(n, "color", "(80, 200, 90)"); SoundOptionRef(n, "background", "(0, 0, 0, 160)"); }
+    else if (type == NodeType::UIToggle) { n.target = "toggle"; n.value = "Option"; n.prop = "Center"; SoundOptionRef(n, "offset", "(0, 0)"); SoundOptionRef(n, "size", "(200, 24)"); SoundOptionRef(n, "color", "(80, 200, 90)"); }
+    else if (type == NodeType::OnUIClick) { n.target = "button"; n.prop = "Clicked"; }
+    else if (type == NodeType::SetMouseFree) n.value = "true";
+    else if (type == NodeType::NavBuild) { n.target = "(-50, -10, -50)"; n.value = "(50, 40, 50)"; n.prop = "0.5"; SoundOptionRef(n, "radius", "0.4"); SoundOptionRef(n, "height", "1.8"); }
+    else if (type == NodeType::NavMoveTo) { n.value = "(0, 0, 0)"; SoundOptionRef(n, "speed", "4"); }
+    else if (type == NodeType::NavNext) { n.target = "(0, 0, 0)"; n.value = "(0, 0, 0)"; }
+    else if (type == NodeType::NavRandomPoint) { n.target = "(0, 0, 0)"; n.value = "10"; }
     else if (type == NodeType::KeyDown) n.prop = "Space";
     else if (type == NodeType::AddToVariable) { n.target = "flag"; n.value = "1"; }
     else if (type == NodeType::EveryN) n.value = "1";
@@ -204,14 +214,15 @@ void RemoveNode(int id) {
 namespace {
 bool IsEvent(NodeType t) {
     return t == NodeType::Start || t == NodeType::OnUpdate || t == NodeType::OnStop || t == NodeType::OnKey ||
-           t == NodeType::EveryN || t == NodeType::OnGamepadButton;
+           t == NodeType::EveryN || t == NodeType::OnGamepadButton || t == NodeType::OnUIClick;
 }
 }
 
 bool IsPure(NodeType t) {
     return t == NodeType::UIGet || (t >= NodeType::GetVariable && t <= NodeType::Raycast) ||
            (t >= NodeType::KeyDown && t <= NodeType::ObjectExists && t != NodeType::AddToVariable && t != NodeType::EveryN) ||
-           t == NodeType::GamepadButtonDown || t == NodeType::GamepadAxis;
+           t == NodeType::GamepadButtonDown || t == NodeType::GamepadAxis ||
+           t == NodeType::NavNext || t == NodeType::NavRandomPoint || t == NodeType::NavReady;
 }
 
 int DataOutputCount(const Node& n) {
@@ -274,6 +285,12 @@ int DataInputCount(NodeType t) {
         case NodeType::UISet: return 3;
         case NodeType::UIGet: return 2;
         case NodeType::UIRemove: return 1;
+        case NodeType::UIButton: case NodeType::UIToggle: return 6;   // Id, Label, Anchor, Offset, Size, Colour
+        case NodeType::UISlider: return 7;                            // Id, Value, Anchor, Offset, Size, Colour, Background
+        case NodeType::SetMouseFree: return 1;
+        case NodeType::NavBuild: return 5;                            // Min, Max, Cell Size, Radius, Height
+        case NodeType::NavMoveTo: return 2;                           // Destination, Speed
+        case NodeType::NavNext: case NodeType::NavRandomPoint: return 2;
         default: return 0;
     }
 }
@@ -304,6 +321,14 @@ const char* DataInputLabel(NodeType t, int pin) {
         case NodeType::UISet: { static const char* const l[] = { "Id", "Property", "Value" }; return pin >= 0 && pin < 3 ? l[pin] : ""; }
         case NodeType::UIGet: return pin == 0 ? "Id" : "Read";
         case NodeType::UIRemove: return "Id";
+        case NodeType::UIButton: { static const char* const l[] = { "Id", "Label", "Anchor", "Offset", "Size", "Colour" }; return pin >= 0 && pin < 6 ? l[pin] : ""; }
+        case NodeType::UIToggle: { static const char* const l[] = { "Id", "Label", "Anchor", "Offset", "Size", "Colour" }; return pin >= 0 && pin < 6 ? l[pin] : ""; }
+        case NodeType::UISlider: { static const char* const l[] = { "Id", "Value", "Anchor", "Offset", "Size", "Colour", "Background" }; return pin >= 0 && pin < 7 ? l[pin] : ""; }
+        case NodeType::SetMouseFree: return "Free";
+        case NodeType::NavBuild: { static const char* const l[] = { "Min", "Max", "Cell Size", "Radius", "Height" }; return pin >= 0 && pin < 5 ? l[pin] : ""; }
+        case NodeType::NavMoveTo: return pin == 0 ? "Destination" : "Speed";
+        case NodeType::NavNext: return pin == 0 ? "From" : "To";
+        case NodeType::NavRandomPoint: return pin == 0 ? "Center" : "Radius";
         default: return pin == 0 ? "A" : "B";
     }
 }
@@ -473,14 +498,20 @@ std::vector<std::string> UiIds() {
     std::vector<std::string> ids;
     for (const Graph& g : g_scripts)
         for (const Node& n : g.nodes)
-            if ((n.type == NodeType::UIText || n.type == NodeType::UIPanel || n.type == NodeType::UIBar || n.type == NodeType::UIImage) &&
+            if ((n.type == NodeType::UIText || n.type == NodeType::UIPanel || n.type == NodeType::UIBar || n.type == NodeType::UIImage ||
+             n.type == NodeType::UIButton || n.type == NodeType::UISlider || n.type == NodeType::UIToggle) &&
                 !n.target.empty() && std::find(ids.begin(), ids.end(), n.target) == ids.end())
                 ids.push_back(n.target);
     std::sort(ids.begin(), ids.end());
     return ids;
 }
 const std::vector<std::string>& UiGetProperties() {
-    static const std::vector<std::string> p = { "Exists", "Text", "Value", "Visible", "Color", "Background", "Font Size", "Anchor", "Offset", "Size" };
+    static const std::vector<std::string> p = { "Exists", "Text", "Value", "Visible", "Color", "Background", "Font Size", "Anchor", "Offset", "Size",
+                                                 "Hovered", "Held", "Clicked", "Changed" };
+    return p;
+}
+const std::vector<std::string>& UiEventProperties() {
+    static const std::vector<std::string> p = { "Clicked", "Changed" };
     return p;
 }
 
@@ -534,6 +565,16 @@ const char* TypeName(NodeType t) {
         case NodeType::UIImage: return "UI Image";
         case NodeType::UISet: return "Set UI";
         case NodeType::UIRemove: return "Remove UI";
+        case NodeType::UIButton: return "UI Button";
+        case NodeType::UISlider: return "UI Slider";
+        case NodeType::UIToggle: return "UI Toggle";
+        case NodeType::OnUIClick: return "On UI Click";
+        case NodeType::SetMouseFree: return "Free Mouse";
+        case NodeType::NavBuild: return "Build Navigation";
+        case NodeType::NavMoveTo: return "Move Along Path";
+        case NodeType::NavNext: return "Next Path Point";
+        case NodeType::NavRandomPoint: return "Random Walkable Point";
+        case NodeType::NavReady: return "Navigation Ready";
         case NodeType::UIGet: return "Get UI";
         case NodeType::SetWorld: return "Set World Property";
         case NodeType::CodeSnippet: return "Code Snippet";
@@ -586,6 +627,16 @@ const char* NodeHelp(NodeType t) {
         case NodeType::UIImage: return "Shows a picture from your project (like assets/ui/heart.png). Size (0, 0) keeps the picture's own size.";
         case NodeType::UISet: return "Changes something on a UI item that is already on screen: its Text, Bar value, Visible (true/false), Colour, Background, Font, Font Size, Anchor, Offset, Size or Image. Wire a value in to update it every frame.";
         case NodeType::UIGet: return "Reads something from a UI item: whether it Exists, its Text, bar Value, Visible, Colour, Background, Font Size, Anchor, Offset or Size. Empty if there is no such item.";
+        case NodeType::UIButton: return "A clickable button. Label is its text. Use On UI Click with the same id to react, or Get UI > Clicked to poll. Free Mouse must be on for the player to click it.";
+        case NodeType::UISlider: return "A draggable slider from 0 to 1. Value is where it starts; after that the player's drag is kept. Read it with Get UI > Value, react with On UI Click > Changed.";
+        case NodeType::UIToggle: return "A checkbox with a label. Read it with Get UI > Value (1 = on), react with On UI Click.";
+        case NodeType::OnUIClick: return "Runs once each time a button is pressed or a toggle flipped (Clicked), or a slider moved (Changed).";
+        case NodeType::SetMouseFree: return "true shows the mouse cursor and stops the camera turning, so the player can click UI. false gives the mouse back to the game.";
+        case NodeType::NavBuild: return "Scans the level and builds the walkable map used by the navigation nodes. Run it once after the level exists. Min / Max is the box to scan, Radius and Height the size of the walker.";
+        case NodeType::NavMoveTo: return "Walks an object toward the destination around walls and over steps. Run it every frame (On Update). The object moves by its position, so anchor it or let nothing else push it.";
+        case NodeType::NavNext: return "The next corner on the way from one position to another, as (x, y, z). Empty if there is no way.";
+        case NodeType::NavRandomPoint: return "A random walkable position within Radius of Center. Empty if the map has none there.";
+        case NodeType::NavReady: return "True once Build Navigation has made a map.";
         case NodeType::UIRemove: return "Takes a UI item off the screen. An empty id removes all of them.";
         case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
         case NodeType::Destroy: return "Removes an object from the scene.";
@@ -781,7 +832,7 @@ bool Truthy(const std::string& v) { return !v.empty() && v != "0" && v != "false
 
 std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth);
 
-bool IsUiNode(NodeType t) { return t >= NodeType::UIText && t <= NodeType::UIGet; }
+bool IsUiNode(NodeType t) { return (t >= NodeType::UIText && t <= NodeType::UIGet) || (t >= NodeType::UIButton && t <= NodeType::UIToggle); }
 
 // What an unwired pin of a UI node holds: the field its row edits. Pin numbers are the rows, top to bottom.
 std::string UiLiteral(const Node& n, int pin) {
@@ -798,6 +849,12 @@ std::string UiLiteral(const Node& n, int pin) {
         case NodeType::UIImage:
             return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(20, 20)")
                  : pin == 4 ? opt("size", "(0, 0)") : opt("color", "(255, 255, 255)");
+        case NodeType::UIButton: case NodeType::UIToggle:
+            return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(0, 0)")
+                 : pin == 4 ? opt("size", n.type == NodeType::UIButton ? "(160, 40)" : "(200, 24)") : opt("color", "");
+        case NodeType::UISlider:
+            return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? opt("offset", "(0, 0)")
+                 : pin == 4 ? opt("size", "(200, 20)") : pin == 5 ? opt("color", "") : opt("background", "");
         case NodeType::UISet: return pin == 0 ? n.target : pin == 1 ? n.prop : n.value;
         case NodeType::UIGet: return pin == 0 ? n.target : n.prop;
         default: return n.target;   // Remove UI
@@ -843,6 +900,11 @@ std::string ReadUiProperty(const std::string& id, const std::string& prop) {
     if (prop == "Offset") return "(" + num(i.x) + ", " + num(i.y) + ")";
     if (prop == "Size") return "(" + num(i.w) + ", " + num(i.h) + ")";
     if (prop == "Image") return i.image;
+    const int state = gameui::StateOf(id);
+    if (prop == "Hovered") return state & gameui::kHovered ? "true" : "false";
+    if (prop == "Held") return state & gameui::kHeld ? "true" : "false";
+    if (prop == "Clicked") return state & gameui::kClicked ? "true" : "false";
+    if (prop == "Changed") return state & gameui::kChanged ? "true" : "false";
     return {};
 }
 
@@ -908,10 +970,17 @@ void RunUiNode(ScriptRuntime& rt, int gi, const Node& n) {
     //               Bar   Id Value Anchor Offset Size Colour Background   Image  Id File Anchor Offset Size Tint
     int pAnchor = 2, pOffset = 3, pSize = 4, pColor = 5, pBack = -1, pMain = 1;   // pMain: the text, bar value or image file
     gameui::Kind kind = gameui::Kind::Text;
-    if (n.type == NodeType::UIPanel) { kind = gameui::Kind::Panel; pAnchor = 1; pOffset = 2; pSize = 3; pColor = 4; pMain = -1; }
+    if (n.type == NodeType::UIButton || n.type == NodeType::UIToggle) {
+        kind = n.type == NodeType::UIButton ? gameui::Kind::Button : gameui::Kind::Toggle;
+        pAnchor = 2; pOffset = 3; pSize = 4; pColor = 5; pMain = 1;
+    }
+    else if (n.type == NodeType::UISlider) { kind = gameui::Kind::Slider; pBack = 6; }
+    else if (n.type == NodeType::UIPanel) { kind = gameui::Kind::Panel; pAnchor = 1; pOffset = 2; pSize = 3; pColor = 4; pMain = -1; }
     else if (n.type == NodeType::UIBar) { kind = gameui::Kind::Bar; pBack = 6; }
     else if (n.type == NodeType::UIImage) { kind = gameui::Kind::Image; }
     else { pSize = -1; }   // Text: pin 4 is the font size, there is no size
+    gameui::Info before;
+    const bool existed = gameui::Get(id, before);
     gameui::Create(id, kind);
 
     const auto& anchors = UiAnchors();
@@ -928,14 +997,21 @@ void RunUiNode(ScriptRuntime& rt, int gi, const Node& n) {
     }
     gameui::SetLayout(id, anchor, ox, oy, w, h);
 
-    const Color fallback = kind == gameui::Kind::Panel ? Color{ 0, 0, 0, 140 } : kind == gameui::Kind::Bar ? Color{ 80, 200, 90, 255 } : WHITE;
-    gameui::SetColor(id, ParseUiColor(in(pColor), fallback), pBack >= 0 ? ParseUiColor(in(pBack), Color{ 0, 0, 0, 160 }) : Color{ 0, 0, 0, 160 });
+    gameui::Info look;   // the widget's own defaults (a button's face and text colours) fill in an empty colour field
+    gameui::Get(id, look);
+    const Color fallback = kind == gameui::Kind::Panel ? Color{ 0, 0, 0, 140 } : kind == gameui::Kind::Bar ? Color{ 80, 200, 90, 255 } : look.color;
+    const bool clickable = kind == gameui::Kind::Button || kind == gameui::Kind::Slider || kind == gameui::Kind::Toggle;
+    const Color second = clickable ? look.color2 : Color{ 0, 0, 0, 160 };
+    gameui::SetColor(id, ParseUiColor(in(pColor), fallback), pBack >= 0 ? ParseUiColor(in(pBack), second) : second);
     const std::string main = pMain >= 0 ? in(pMain) : std::string();
     if (kind == gameui::Kind::Text) {
         gameui::SetText(id, main, static_cast<float>(std::atof(in(4).c_str())));
         gameui::SetFont(id, in(6));
     }
     else if (kind == gameui::Kind::Bar) gameui::SetValue(id, static_cast<float>(std::atof(main.c_str())));
+    else if (kind == gameui::Kind::Button) gameui::SetText(id, main, 0.0f);
+    else if (kind == gameui::Kind::Toggle) gameui::SetText(id, main, 0.0f);
+    else if (kind == gameui::Kind::Slider) { if (!existed) gameui::SetValue(id, static_cast<float>(std::atof(main.c_str()))); }
     else if (kind == gameui::Kind::Image) gameui::SetImage(id, main);
     ApplyUiOverrides(id);   // what Change / Set UI asked for wins over this node's own fields
 }
@@ -960,7 +1036,7 @@ int KeyCodeFor(const std::string& name) {
         { "Space", KEY_SPACE }, { "Enter", KEY_ENTER }, { "W", KEY_W }, { "A", KEY_A }, { "S", KEY_S }, { "D", KEY_D },
         { "Q", KEY_Q }, { "E", KEY_E }, { "R", KEY_R }, { "F", KEY_F }, { "Up", KEY_UP }, { "Down", KEY_DOWN },
         { "Left", KEY_LEFT }, { "Right", KEY_RIGHT }, { "1", KEY_ONE }, { "2", KEY_TWO }, { "3", KEY_THREE }, { "4", KEY_FOUR },
-        { "Shift", KEY_LEFT_SHIFT }, { "Ctrl", KEY_LEFT_CONTROL } };
+        { "Shift", KEY_LEFT_SHIFT }, { "Ctrl", KEY_LEFT_CONTROL }, { "Tab", KEY_TAB }, { "Escape", KEY_ESCAPE }, { "P", KEY_P } };
     const auto it = codes.find(name);
     return it == codes.end() ? -1 : it->second;
 }
@@ -999,6 +1075,54 @@ std::string VecStr(double x, double y, double z) {
     char b[96];
     std::snprintf(b, sizeof(b), "(%.7g, %.7g, %.7g)", x, y, z);
     return b;
+}
+
+// Move Along Path: each walker (node + object) keeps the path it follows and the destination it was found for.
+struct NavWalk { std::vector<float> pts; size_t next = 1; float dest[3] = {}; bool have = false; };
+std::map<std::pair<long long, const ScatteredObject*>, NavWalk> g_navWalks;
+bool g_navWarned = false;
+
+void RunNavMove(ScriptRuntime& rt, int gi, const Node& n) {
+    ScatteredObject* obj = FindTarget(rt, n.target);
+    if (!obj) { ui::Log("[script] No object '%s'", TargetName(n.target).c_str()); return; }
+    if (!FlyNative_NavReady()) {
+        if (!g_navWarned) ui::Log("[script] Move Along Path: there is no navigation map yet - run Build Navigation first");
+        g_navWarned = true;
+        return;
+    }
+    std::string ps, ss;
+    double pos[3] = {}, size[3] = {}, dst[3] = {};
+    if (!rt.GetObjectProperty(obj, "Position", ps) || !ParseVec(ps, pos)) return;
+    if (rt.GetObjectProperty(obj, "Size", ss)) ParseVec(ss, size);
+    ParseVec(Input(rt, gi, n, 0, 0), dst);
+    const double half = size[1] * 0.5;   // positions are the middle of the object, paths are at its feet
+    const float feet[3] = { (float)pos[0], (float)(pos[1] - half), (float)pos[2] };
+    const float goal[3] = { (float)dst[0], (float)dst[1], (float)dst[2] };
+
+    NavWalk& w = g_navWalks[{ (static_cast<long long>(gi) << 32) | static_cast<unsigned>(n.id), obj }];
+    const float dx = goal[0] - w.dest[0], dy = goal[1] - w.dest[1], dz = goal[2] - w.dest[2];
+    if (!w.have || dx * dx + dy * dy + dz * dz > 1.0f) {   // a new destination, or one that moved over 1 m
+        float pts[256 * 3];
+        const int count = FlyNative_NavFindPath(feet, goal, pts, 256, 1);
+        const int kept = std::min(std::abs(count), 256);
+        w.pts.assign(pts, pts + kept * 3);
+        w.next = 1;
+        std::copy(goal, goal + 3, w.dest);
+        w.have = true;
+    }
+    float step = std::max(0.0f, static_cast<float>(std::atof(Input(rt, gi, n, 1, 0).c_str()))) * g_dt;
+    float at[3] = { feet[0], feet[1], feet[2] };
+    while (step > 0.0f && w.next * 3 + 2 < w.pts.size()) {
+        const float* t = &w.pts[w.next * 3];
+        const float vx = t[0] - at[0], vy = t[1] - at[1], vz = t[2] - at[2];
+        const float len = std::sqrt(vx * vx + vy * vy + vz * vz);
+        if (len <= step) { std::copy(t, t + 3, at); step -= len; ++w.next; }
+        else { at[0] += vx / len * step; at[1] += vy / len * step; at[2] += vz / len * step; step = 0.0f; }
+    }
+    if (at[0] == feet[0] && at[1] == feet[1] && at[2] == feet[2]) return;
+    std::string error;
+    rt.SetObjectProperty(obj, "Position", VecStr(at[0], at[1] + half, at[2]), error);
+    if (!error.empty()) ui::Log("[script] %s", error.c_str());
 }
 
 bool ToNumber(const std::string& s, double& out) {
@@ -1051,6 +1175,9 @@ std::string Input(ScriptRuntime& rt, int gi, const Node& n, int pin, int depth) 
     if (n.type == NodeType::CodeSnippet) return {};   // an unwired snippet input is empty (its `value` is the code)
     if (IsUiNode(n.type)) return UiLiteral(n, pin);
     if (n.type == NodeType::Change && pin >= 1 && pin <= static_cast<int>(n.extra.size())) return n.extra[pin - 1].second;
+    if (n.type == NodeType::NavBuild)
+        return pin == 0 ? n.target : pin == 1 ? n.value : pin == 2 ? n.prop : pin == 3 ? SoundOption(n, "radius", "0.4") : SoundOption(n, "height", "1.8");
+    if (n.type == NodeType::NavMoveTo && pin == 1) return SoundOption(n, "speed", "4");
     if (IsPure(n.type)) return pin == 0 ? n.target : pin == 1 ? n.value : n.prop;
     if (n.type == NodeType::Branch) {   // unwired Branch tests the variable named in its field
         const auto it = g_vars.find(n.target);
@@ -1149,6 +1276,24 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
         case NodeType::Time: return NumStr(n.prop == "Time Since Play" ? g_time : g_dt);
         case NodeType::ObjectExists: return FindTarget(rt, n.target) ? "true" : "false";
         case NodeType::UIGet: return ReadUiProperty(in(0), in(1));
+        case NodeType::NavReady: return FlyNative_NavReady() ? "true" : "false";
+        case NodeType::NavNext: {
+            double a[3] = {}, b[3] = {};
+            ParseVec(in(0), a); ParseVec(in(1), b);
+            const float from[3] = { (float)a[0], (float)a[1], (float)a[2] }, to[3] = { (float)b[0], (float)b[1], (float)b[2] };
+            float pts[64 * 3];
+            const int count = FlyNative_NavFindPath(from, to, pts, 64, 0);
+            if (count <= 0) return {};
+            const int at = count > 1 ? 1 : 0;   // the path starts where the walker stands
+            return VecStr(pts[at * 3], pts[at * 3 + 1], pts[at * 3 + 2]);
+        }
+        case NodeType::NavRandomPoint: {
+            double a[3] = {}; ParseVec(in(0), a);
+            const float c[3] = { (float)a[0], (float)a[1], (float)a[2] };
+            float out[3];
+            if (!FlyNative_NavRandomPoint(c, static_cast<float>(num(1)), out)) return {};
+            return VecStr(out[0], out[1], out[2]);
+        }
         case NodeType::Raycast: {
             std::string error;
             std::string hit = rt.RayCastName(in(0), in(1), static_cast<float>(num(2)), error);
@@ -1288,8 +1433,27 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                 break;
             }
             case NodeType::UIText: case NodeType::UIPanel: case NodeType::UIBar: case NodeType::UIImage:
-            case NodeType::UISet: case NodeType::UIRemove:
+            case NodeType::UISet: case NodeType::UIRemove: case NodeType::UIButton: case NodeType::UISlider: case NodeType::UIToggle:
                 RunUiNode(rt, gi, *n);
+                stack.push_back({ n->id, 0 });
+                break;
+            case NodeType::SetMouseFree:
+                gameui::SetMouseFree(Truthy(Input(rt, gi, *n, 0, 0)));
+                stack.push_back({ n->id, 0 });
+                break;
+            case NodeType::NavBuild: {
+                double lo[3] = {}, hi[3] = {};
+                ParseVec(Input(rt, gi, *n, 0, 0), lo); ParseVec(Input(rt, gi, *n, 1, 0), hi);
+                const float p[13] = { (float)lo[0], (float)lo[1], (float)lo[2], (float)hi[0], (float)hi[1], (float)hi[2],
+                    static_cast<float>(std::atof(Input(rt, gi, *n, 2, 0).c_str())), static_cast<float>(std::atof(Input(rt, gi, *n, 3, 0).c_str())),
+                    static_cast<float>(std::atof(Input(rt, gi, *n, 4, 0).c_str())), 0.5f, 45.0f, 0.0f, 0.0f };
+                if (!FlyNative_NavBuild(p)) ui::Log("[script] Build Navigation failed - check the box and cell size, and that the level has floors");
+                g_navWarned = false;
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::NavMoveTo:
+                RunNavMove(rt, gi, *n);
                 stack.push_back({ n->id, 0 });
                 break;
             case NodeType::SetVolume:
@@ -1395,7 +1559,7 @@ void FireEvents(ScriptRuntime& rt, NodeType type) {
 }
 
 void Run(ScriptRuntime& rt) {
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear(); g_navWalks.clear(); g_navWarned = false;
     g_dt = 0.0f; g_time = 0.0f;
     FireEvents(rt, NodeType::Start);
 }
@@ -1432,6 +1596,14 @@ void Tick(ScriptRuntime& rt, float dt) {
         for (const auto& [id, key] : keys) if (KeyPressed(key)) Emit(rt, gi, id, 0);
     }
     for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
+        std::vector<std::pair<int, std::pair<std::string, std::string>>> clicks;
+        for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnUIClick) clicks.push_back({ n.id, { n.target, n.prop } });
+        for (const auto& [id, what] : clicks) {
+            const int state = gameui::StateOf(what.first);
+            if (state & (what.second == "Changed" ? gameui::kChanged : gameui::kClicked)) Emit(rt, gi, id, 0);
+        }
+    }
+    for (int gi = 0; gi < static_cast<int>(g_scripts.size()); ++gi) {
         std::vector<std::pair<int, std::string>> buttons;
         for (const Node& n : g_scripts[gi].nodes) if (n.type == NodeType::OnGamepadButton) buttons.push_back({ n.id, n.prop });
         for (const auto& [id, button] : buttons) if (WasGamepadButtonPressed(0, button)) Emit(rt, gi, id, 0);
@@ -1440,7 +1612,7 @@ void Tick(ScriptRuntime& rt, float dt) {
 
 void Stop(ScriptRuntime& rt) {
     FireEvents(rt, NodeType::OnStop);
-    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear();
+    g_delays.clear(); g_vars.clear(); g_once.clear(); g_hud.clear(); g_uiOverrides.clear(); g_every.clear(); g_navWalks.clear(); g_navWarned = false;
 }
 
 std::vector<int> SetupChainNodes() {

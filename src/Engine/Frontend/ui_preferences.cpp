@@ -178,6 +178,9 @@ static void DrawPreferencesRenderingTab() {
     if (ImGui::Checkbox("##bloom", &q.bloom)) changed = true;
     DrawPrefsSettingRowBegin("Ambient occlusion");
     if (ImGui::Checkbox("##ao", &q.ambientOcclusion)) changed = true;
+    DrawPrefsSettingRowBegin("Sky reflections");
+    if (ImGui::Checkbox("##envlight", &q.environmentLighting)) changed = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ambient light and reflections from the sky, baked into cube maps.\nOff: a flat sky and ground colour.");
 
     DrawPrefsSettingRowBegin("Hover outline");
     if (ImGui::Checkbox("##hoveroutline", &q.hoverOutline)) changed = true;

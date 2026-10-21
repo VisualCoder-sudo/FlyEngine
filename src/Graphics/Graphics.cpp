@@ -57,6 +57,7 @@ struct LitLocs {
     int shadowVP = -1, shadowMapFar[3] = { -1, -1, -1 };
     int nodeCount = -1, nodePos = -1, nodeDir = -1, nodeColor = -1, nodeCone = -1, nodeU = -1, nodeV = -1;
     int nodeShadowVP = -1, nodeShadowRect = -1, nodeShadowMap = -1;
+    int envSpecular = -1, envIrradiance = -1, brdfLut = -1, envParams = -1;
 };
 LitLocs litLocs, roadLocs, cityLocs, shapeLocs, decalLocs;
 void FindLitLocs(Shader& sh, LitLocs& l) {
@@ -89,6 +90,10 @@ void FindLitLocs(Shader& sh, LitLocs& l) {
     l.shadowMapFar[0] = GetShaderLocation(sh, "shadowMap1");
     l.shadowMapFar[1] = GetShaderLocation(sh, "shadowMap2");
     l.shadowMapFar[2] = GetShaderLocation(sh, "shadowMap3");
+    l.envSpecular = GetShaderLocation(sh, "envSpecular");
+    l.envIrradiance = GetShaderLocation(sh, "envIrradiance");
+    l.brdfLut = GetShaderLocation(sh, "brdfLut");
+    l.envParams = GetShaderLocation(sh, "envParams");
     int shadowSlot = gfx::shadow::kTextureSlot;
     if (l.shadowMap != -1) SetShaderValue(sh, l.shadowMap, &shadowSlot, SHADER_UNIFORM_INT);
     // A texture unit nothing else binds: with no clouds the sampler reads the default white texture.
@@ -440,6 +445,65 @@ namespace {
 Vector3 lightingCamPos{};   // the camera UpdateLighting() last saw
 bool cityEnvironmentStale = true;   // the instanced city shader has not been given this frame's light yet
 
+// The surroundings baked for the physically based shaders (BakeEnvironment, src/Engine/RL/rl_ibl.cpp). A bake
+// is a handful of small passes, so it is redone only when the light it was made from has moved on: the sun by
+// more than its half-degree steps, the ambient colours by a few percent, the camera by 50 m of height.
+struct EnvKey {
+    float v[20] = {};
+    int atmosphere = -1;
+};
+EnvKey bakedEnv;
+bool EnvChanged(const EnvKey& a, const EnvKey& b) {
+    if (a.atmosphere != b.atmosphere) return true;
+    for (int i = 0; i < 20; i++) {
+        const float d = fabsf(a.v[i] - b.v[i]);
+        if (d > 0.002f + 0.03f * fmaxf(fabsf(a.v[i]), fabsf(b.v[i]))) return true;
+    }
+    return false;
+}
+void UpdateEnvironment() {
+    if (IsInReflectionPass()) return;
+    FlyEnvironment env{};
+    env.atmosphere = AtmosphereActive() ? 1 : 0;
+    const Vector3 sky = AmbientSky(), ground = AmbientGround(), sun = SunPosition();
+    if (env.atmosphere) {
+        env.skyView = AtmosphereSkyView();
+        const Vector4 planet = AtmospherePlanet();
+        env.planet[0] = planet.x; env.planet[1] = planet.y; env.planet[2] = planet.z; env.planet[3] = planet.w;
+        if (env.skyView.id == 0) return;
+    } else {
+        // A sky of one colour: a little deeper overhead than at the horizon.
+        const Vector3 c = SrgbToLinear(CurrentSky());
+        env.horizon[0] = c.x; env.horizon[1] = c.y; env.horizon[2] = c.z;
+        env.zenith[0] = c.x * 0.75f; env.zenith[1] = c.y * 0.8f; env.zenith[2] = c.z * 0.9f;
+    }
+    env.ambientSky[0] = sky.x; env.ambientSky[1] = sky.y; env.ambientSky[2] = sky.z;
+    env.ambientGround[0] = ground.x; env.ambientGround[1] = ground.y; env.ambientGround[2] = ground.z;
+    env.overcast = CloudsActive() ? 0.0f : OvercastNow();
+
+    EnvKey key;
+    key.atmosphere = env.atmosphere;
+    const float vals[20] = { sky.x, sky.y, sky.z, ground.x, ground.y, ground.z, sun.x, sun.y, sun.z,
+                             env.horizon[0], env.horizon[1], env.horizon[2], env.overcast,
+                             roundf(env.planet[2] * 20.0f) / 20.0f, (float)env.skyView.id,
+                             MoonPosition().y, DayAmountNow(), 0.0f, 0.0f, 0.0f };
+    for (int i = 0; i < 20; i++) key.v[i] = vals[i];
+    if (IsEnvironmentBaked() && !EnvChanged(key, bakedEnv)) return;
+    BakeEnvironment(&env);
+    bakedEnv = key;
+}
+// Hands the baked surroundings to a physically based shader (see fly_ibl in shaders/fly_common.glsl).
+void UploadEnvironment(Shader& sh, int specLoc, int irrLoc, int lutLoc, int paramsLoc) {
+    if (paramsLoc == -1) return;
+    const bool baked = IsEnvironmentBaked() && Quality().environmentLighting;
+    const Vector4 params = { (float)(GetEnvSpecularMips() - 1), baked ? 1.0f : 0.0f, 0.0f, 0.0f };
+    SetShaderValue(sh, paramsLoc, &params, SHADER_UNIFORM_VEC4);
+    if (!baked) return;
+    if (specLoc != -1) SetShaderValueTexture(sh, specLoc, GetEnvSpecular());
+    if (irrLoc != -1) SetShaderValueTexture(sh, irrLoc, GetEnvIrradiance());
+    if (lutLoc != -1) SetShaderValueTexture(sh, lutLoc, GetEnvBrdfLut());
+}
+
 // The scene's light for one of the lit programs (see the uniform list in shaders/lit.glsl).
 void UploadNodeLights(Shader& sh, const LitLocs& l) {
     if (l.nodeCount == -1) return;
@@ -489,6 +553,7 @@ void UploadLitEnvironment(Shader& sh, const LitLocs& l) {
         SetShaderValue(sh, l.camPos, &cp, SHADER_UNIFORM_VEC4);
     }
     if (l.lightVP != -1) SetShaderValueMatrix(sh, l.lightVP, GetLightViewProj());
+    UploadEnvironment(sh, l.envSpecular, l.envIrradiance, l.brdfLut, l.envParams);
     if (l.cloudShadow != -1) {
         const Vector4 cs = GetCloudShadowParams();
         SetShaderValue(sh, l.cloudShadow, &cs, SHADER_UNIFORM_VEC4);
@@ -532,6 +597,7 @@ void UpdateLighting(const Camera3D& camera) {
     UpdateAtmosphere(camera);
     UpdateClouds(GetFrameTime());
     UpdateCloudShadow(camera);
+    if (Quality().environmentLighting) UpdateEnvironment();
     UploadLitEnvironment(litShader, litLocs);
     UploadLitEnvironment(roadShader, roadLocs);
     if (decalShader.id != 0) UploadLitEnvironment(decalShader, decalLocs);

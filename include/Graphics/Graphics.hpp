@@ -2,6 +2,7 @@
 #include "raylib.h"
 #include "../Engine/Backend/ScatteredObject.hpp"
 #include "Lighting.hpp"
+#include "SurfaceMaterial.hpp"
 
 #include <string>
 #include <vector>
@@ -50,7 +51,9 @@ void DrawCityInstancesBuffered(Mesh mesh, unsigned int instanceVbo, int count, C
 // returns false when batching is off or unavailable; the caller then draws the shape itself.
 // EndShapeBatch() must run inside the same pass (and before any state that changes it) as the queueing.
 void BeginShapeBatch();
-bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Color tint);
+// Writes `surface` into a raylib material's metalness/roughness/emission map values (what DrawMesh hands the shader).
+void ApplySurfaceMaterial(Material& material, const SurfaceMaterial& surface);
+bool QueueShape(ShapeType shape, Texture2D texture, const Matrix& transform, Color tint, const SurfaceMaterial& surface = {});
 void EndShapeBatch();
 // Defers a hover outline until EndShapeBatch() has drawn the batched shapes. False when not batching.
 bool QueueShapeOutline(ShapeType shape, const Matrix& transform);

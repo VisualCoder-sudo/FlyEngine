@@ -4,6 +4,7 @@
 #include "ModelAnimator.hpp"
 #include "ObjectNode.hpp"
 #include "../PhysicsCollision.hpp"
+#include "../../Graphics/SurfaceMaterial.hpp"
 #include "raylib.h"
 #include "raymath.h"
 #include <memory>
@@ -239,6 +240,12 @@ public:
     // Frustum culling support
     bool IsVisible(const Frustum& frustum) const override;
     BoundingBox GetCullBounds() const override { return GetBoundingBox(); }
+
+    // Physically based material (metallic, roughness, emission). A primitive shape always uses it. An imported
+    // model uses its file's own materials (and their maps) while useModelMaterial is on; off, `surface` replaces
+    // their values on every part, with the maps still modulating them. A non-zero emission always applies.
+    gfx::SurfaceMaterial surface;
+    bool useModelMaterial = true;
 
     // Transparency: 0 = fully visible/opaque, 1 = fully invisible/transparent
     float GetTransparency() const;

@@ -19,10 +19,20 @@ bool IsFBXPath(const std::string& path);
 // LoadFBXCpu parses the file and builds indexed mesh arrays; it touches no
 // GPU/raylib state and is safe off the main thread. UploadFBXCpu (main thread
 // only) uploads the meshes, builds the materials and takes ownership of them.
+// A material's physically based values and maps (files found beside the .fbx; empty = none).
+struct FbxMaterialPbr {
+    float metallic = 0.0f;
+    float roughness = 0.6f;
+    Color emissive = { 0, 0, 0, 255 };
+    float emissiveStrength = 0.0f;
+    std::string normalFile, metalnessFile, roughnessFile, occlusionFile, emissionFile;
+};
+
 struct FbxCpuData {
     std::vector<Mesh> meshes;
     std::vector<int> meshMaterial;
     std::vector<Color> materialColors;   // one per material (>= 1)
+    std::vector<FbxMaterialPbr> materialPbr;   // one per material, like materialColors
     std::string diffuseFile;             // base-colour texture found beside the file
 };
 bool LoadFBXCpu(const std::string& path, FbxCpuData& out);

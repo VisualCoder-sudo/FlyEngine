@@ -132,6 +132,130 @@ int main() {
     fly::UI::Text("a", "b"); fly::UI::Bar("c", 1, {}); fly::UI::SetText("a", "c"); fly::UI::Remove("a");
     CHECK(g_log.empty());
 
+    // Clickable UI and the mouse: kinds 4/5/6, the state bits, the free cursor. An engine without them ignores the calls.
+    {
+        static int s_state = 0;
+        static short s_free = -1;
+        FlyApi in{};
+        in.size = sizeof(FlyApi);
+        in.UICreate = [](const char* id, int k) -> short { Log(std::string("make:") + id + ":" + std::to_string(k)); return 1; };
+        in.UISetLayout = [](const char*, int, float, float, float, float) {};
+        in.UISetColor = [](const char*, unsigned char, unsigned char, unsigned char, unsigned char, unsigned char, unsigned char, unsigned char, unsigned char) {};
+        in.UISetText = [](const char* id, const char* t, float size) { Log(std::string("text:") + id + ":" + t + ":" + std::to_string((int)size)); };
+        in.UISetValue = [](const char* id, float v) { Log(std::string("value:") + id + ":" + std::to_string((int)(v * 100))); };
+        in.UIGetState = [](const char*) -> int { return s_state; };
+        in.GetMousePosition = [](float* o) { o[0] = 12; o[1] = 34; };
+        in.SetMouseFree = [](short f) { s_free = f; };
+        in.MouseOverUI = []() -> short { return 1; };
+        fly::detail::Api() = &in;
+        g_log.clear();
+        fly::UI::Button("play", "Play", { fly::UI::Anchor::Center, 0, 0, 200, 50 });
+        fly::UI::Slider("vol", 0.5f, {});
+        fly::UI::Toggle("fs", "Fullscreen", true);
+        CHECK(g_log == "make:play:4;text:play:Play:22;make:vol:5;value:vol:50;make:fs:6;text:fs:Fullscreen:20;value:fs:100;");
+        s_state = 0;
+        CHECK(!fly::UI::Find("play").Hovered() && !fly::UI::Find("play").Clicked());
+        s_state = 1 | 4;
+        CHECK(fly::UI::Find("play").Hovered() && fly::UI::Find("play").Clicked() && !fly::UI::Find("play").Held() && !fly::UI::Find("play").Changed());
+        s_state = 2 | 8;
+        CHECK(fly::UI::Find("play").Held() && fly::UI::Find("play").Changed());
+        fly::UI::SetMouseFree(true);
+        CHECK(s_free == 1);
+        fly::UI::SetMouseFree(false);
+        CHECK(s_free == 0);
+        CHECK(fly::UI::MousePosition().x == 12.0f && fly::UI::MousePosition().y == 34.0f && fly::UI::MouseOverUI());
+
+        FlyApi older{};
+        older.size = offsetof(FlyApi, NavDebug) + sizeof(void*);   // has navigation, not the mouse
+        fly::detail::Api() = &older;
+        g_log.clear();
+        s_free = -1;
+        fly::UI::SetMouseFree(true);
+        CHECK(s_free == -1 && !fly::UI::MouseOverUI() && !fly::UI::Find("play").Clicked() && fly::UI::MousePosition().x == 0.0f);
+    }
+
+    // Navigation: the wrappers pass points through the table; the agent follows what comes back; an older engine does nothing.
+    {
+        static int s_findCalls = 0;
+        static float s_goalX = 0;
+        FlyApi in{};
+        in.size = sizeof(FlyApi);
+        in.NavBuild = [](const float* v) -> short { Log("build:" + std::to_string((int)v[0]) + "," + std::to_string((int)v[3]) + "," + std::to_string((int)(v[6] * 10)) + "," + std::to_string((int)v[10])); return 1; };
+        in.NavReady = []() -> short { return 1; };
+        in.NavClear = []() { Log("clear"); };
+        in.NavDebug = [](short on) { Log(on ? "debug:on" : "debug:off"); };
+        in.NavFindPath = [](const float* from, const float* to, float* out, int max, short partial) -> int {
+            ++s_findCalls;
+            s_goalX = to[0];
+            const float pts[9] = { from[0], 0, from[2], 5, 0, 0, to[0], 0, to[2] };
+            const int n = max < 3 ? max : 3;
+            for (int i = 0; i < n * 3; ++i) out[i] = pts[i];
+            return partial ? -n : n;
+        };
+        in.NavNearest = [](const float* p, float* o) -> short { o[0] = p[0]; o[1] = 0; o[2] = p[2]; return p[0] < 100; };
+        in.NavIsWalkable = [](const float* p) -> short { return p[1] < 1; };
+        in.NavRandomPoint = [](const float* c, float r, float* o) -> short { o[0] = c[0] + r; o[1] = 0; o[2] = c[2]; return r > 0; };
+        in.NavLineClear = [](const float*, const float* b) -> short { return b[0] < 100; };
+        in.NavMoveAlong = [](const float* p, const float* d, float* o) -> short { o[0] = p[0] + d[0]; o[1] = 0; o[2] = p[2] + d[2]; return 1; };
+        fly::detail::Api() = &in;
+        g_log.clear();
+
+        fly::Nav::Settings st;
+        st.min = { -9, -1, -9 }; st.max = { 9, 5, 9 }; st.cellSize = 0.25f; st.maxSlope = 30.0f;
+        CHECK(fly::Nav::Available() && fly::Nav::Build(st) && fly::Nav::Ready());
+        fly::Nav::ShowDebug();
+        fly::Nav::ShowDebug(false);
+        fly::Nav::Clear();
+        CHECK(g_log == "build:-9,9,2,30;debug:on;debug:off;clear;");
+
+        const fly::Nav::Path path = fly::Nav::FindPath({ 0, 0, 0 }, { 10, 0, 10 });
+        CHECK(path.Valid() && path.points.size() == 3 && !path.partial && path.points[1].x == 5.0f);
+        CHECK(fly::Nav::FindPath({ 0, 0, 0 }, { 10, 0, 10 }, true).partial);
+        CHECK(fly::Nav::FindPath({ 0, 0, 0 }, { 10, 0, 10 }, false, 2).points.size() == 2);
+        CHECK(std::fabs(path.Length() - (5.0f + std::sqrt(25.0f + 100.0f))) < 1e-3f);
+        fly::Vec3 v;
+        CHECK(fly::Nav::Nearest({ 1, 2, 3 }, v) && v.y == 0.0f && !fly::Nav::Nearest({ 500, 0, 0 }, v));
+        CHECK(fly::Nav::IsWalkable({ 0, 0, 0 }) && !fly::Nav::IsWalkable({ 0, 5, 0 }));
+        CHECK(fly::Nav::RandomPoint({ 1, 0, 1 }, 4, v) && v.x == 5.0f && !fly::Nav::RandomPoint({ 1, 0, 1 }, 0, v));
+        CHECK(fly::Nav::CanMove() && fly::Nav::LineClear({ 0, 0, 0 }, { 5, 0, 0 }) && !fly::Nav::LineClear({ 0, 0, 0 }, { 500, 0, 0 }));
+        CHECK(fly::Nav::MoveAlong({ 1, 2, 3 }, { 1, 0, 1 }, v) && v.x == 2.0f && v.y == 0.0f && v.z == 4.0f);
+
+        // The agent heads for the first corner after its own position, flat and at its speed, and does not ask for a path
+        // every frame while the target barely moves.
+        fly::Nav::Agent agent(2.0f, 1.0f, 0.3f);
+        CHECK(agent.Step({ 0, 0, 0 }, 0.1f).x == 0.0f && !agent.HasTarget());
+        s_findCalls = 0;
+        agent.SetTarget({ 10, 0, 10 });
+        fly::Vec3 vel = agent.Step({ 0, 0, 0 }, 0.1f);
+        CHECK(s_findCalls == 1 && std::fabs(vel.x - 2.0f) < 1e-4f && vel.y == 0.0f && std::fabs(vel.z) < 1e-4f);   // towards (5,0,0)
+        agent.SetTarget({ 10.2f, 0, 10 });
+        agent.Step({ 1, 0, 0 }, 0.1f);
+        CHECK(s_findCalls == 1);
+        agent.SetTarget({ 20, 0, 10 });
+        agent.Step({ 1, 0, 0 }, 0.1f);
+        CHECK(s_findCalls == 2 && s_goalX == 20.0f);
+        vel = agent.Step({ 5, 0, 0 }, 0.1f);                    // reached the corner, heads for the end
+        CHECK(vel.x > 0.0f && vel.z > 0.0f && !agent.Arrived());
+        vel = agent.Step({ 20, 0, 10 }, 0.1f);
+        CHECK(agent.Arrived() && vel.x == 0.0f && vel.z == 0.0f);
+        agent.SetTarget({ 20, 0, 40 });
+        CHECK(!agent.Arrived());
+        agent.ClearTarget();
+        CHECK(!agent.HasTarget() && agent.Step({ 0, 0, 0 }, 0.1f).x == 0.0f);
+
+        FlyApi old{};
+        old.size = offsetof(FlyApi, DebugText) + sizeof(void*);
+        fly::detail::Api() = &old;
+        g_log.clear();
+        CHECK(!fly::Nav::Available() && !fly::Nav::Build({ 0, 0, 0 }, { 1, 1, 1 }) && !fly::Nav::Ready() && !fly::Nav::FindPath({}, {}).Valid());
+        CHECK(!fly::Nav::Nearest({}, v) && !fly::Nav::IsWalkable({}) && !fly::Nav::RandomPoint({}, 1, v));
+        CHECK(!fly::Nav::CanMove() && !fly::Nav::MoveAlong({ 1, 2, 3 }, { 1, 0, 0 }, v) && v.x == 2.0f && v.y == 2.0f);
+        fly::Nav::ShowDebug(); fly::Nav::Clear();
+        fly::Nav::Agent idle;
+        idle.SetTarget({ 1, 0, 1 });
+        CHECK(idle.Step({}, 0.1f).x == 0.0f && g_log.empty());
+    }
+
     std::printf(g_fail ? "fly_actions_test: %d FAILED\n" : "fly_actions_test: ok\n", g_fail);
     return g_fail ? 1 : 0;
 }

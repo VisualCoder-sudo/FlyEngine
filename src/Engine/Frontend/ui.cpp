@@ -39,6 +39,7 @@ Texture2D g_terrainToolIcons[TTOOLICON_COUNT] = {};
 Vector3* g_pos = nullptr;
 Vector3* g_size = nullptr;
 Color* g_color = nullptr;
+Color* g_pickerTarget = nullptr;
 Vector3* g_rotation = nullptr;
 Vector3* g_origin = nullptr;
 const std::vector<ScatteredObject*>* g_sceneObjects = nullptr;
@@ -217,6 +218,7 @@ bool g_mouseDrag = false;
 // Collapsible property-group state (all open by default).
 bool g_generalOpen = true;
 bool g_waterInteractOpen = true;
+bool g_materialOpen = true;
 bool g_positionOpen = true;
 bool g_sizeOpen = true;
 bool g_rotationOpen = true;
@@ -383,6 +385,7 @@ void SetSelectedObject(Vector3* pos, Vector3* size, Color* color, Vector3* rotat
     g_pos = pos;
     g_size = size;
     g_color = color;
+    g_pickerTarget = nullptr;
     g_rotation = rotation;
     g_origin = origin;
     g_activeField = FIELD_NONE;

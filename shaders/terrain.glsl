@@ -1,5 +1,6 @@
 // Chunked-terrain shader (terrain::Terrain): 4-layer splatmap blending with
-// normal/roughness maps, optional triplanar mapping and simple GGX lighting.
+// normal/roughness maps, optional triplanar mapping, lit with the shared physically based model
+// (fly_pbr) and the baked surroundings (fly_ibl).
 //
 // Differences from the GLSL 330 original, forced by sokol-shdc:
 //   * sampler arrays (albedoTex[4], ...) become numbered textures; the engine's
@@ -55,6 +56,7 @@ layout(binding=1) uniform fs_params {
     vec3 ambientColor;      // linear light from the sky
     int useTriplanar;
     vec3 cameraPos;
+    vec4 envParams;         // the baked surroundings (see fly_ibl)
 @include_block lit_light_uniforms
 };
 layout(binding=0) uniform texture2D albedoTex0;
@@ -76,8 +78,16 @@ layout(binding=13) uniform texture2D nodeShadowMap;
 layout(binding=2) uniform sampler nodeShadow_smp;
 @image_sample_type nodeShadowMap depth
 @sampler_type nodeShadow_smp comparison
+layout(binding=14) uniform textureCube envSpecular;
+layout(binding=15) uniform textureCube envIrradiance;
+layout(binding=16) uniform texture2D brdfLut;
+layout(binding=3) uniform sampler env_smp;
+layout(binding=4) uniform sampler envLinear_smp;
 @include_block fly_rt_uv
+@include_block fly_pbr
 @include_block lit_node_lights
+@include_block lit_node_lights_pbr
+@include_block fly_ibl
 
 in vec3 worldPos;
 in vec3 worldNormal;
@@ -87,8 +97,6 @@ in vec3 tangent;
 in vec3 bitangent;
 in float heightNormalized;
 out vec4 fragColor;
-
-const float PI = 3.14159265358979323846;
 
 vec3 TriplanarSample(texture2D tex, vec3 p, vec3 normal, float scale) {
     vec3 an = abs(normal);
@@ -154,22 +162,11 @@ void main() {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewDir);
     vec3 L = normalize(-lightDir);
-    vec3 H = normalize(V + L);
-    float NdotL = max(dot(N, L), 0.0);
-    float NdotH = max(dot(N, H), 0.0);
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float f = (NdotH * (a - 1.0) + 1.0);
-    float D = a2 / (PI * f * f);
-    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-    float VdotH = max(dot(V, H), 0.0);
-    float G = VdotH / (VdotH * (1.0 - k) + k);
-    vec3 F0 = vec3(0.04);
-    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
-    vec3 specular = D * G * F * lightColor * NdotL;
-    vec3 diffuse = albedo / PI * lightColor * NdotL;
+    FlySurface s = FlyMakeSurface(albedo, 0.0, roughness);
+    // lightColor is the sun's irradiance (times pi); the shared BRDF takes it divided by pi like every other light.
     // Linear light; fog and the sRGB encoding come later, in the post passes.
-    vec3 color = diffuse + specular + albedo * (ambientColor + NodeLights(worldPos, N));
+    vec3 color = lightColor / FLY_PI * FlyBrdfDirect(s, N, V, L) + NodeLightsPbr(s, worldPos, N, V)
+               + FlyAmbient(s, N, V, 1.0, ambientColor, ambientColor * 0.72);
     fragColor = vec4(color, 1.0);
 }
 @end

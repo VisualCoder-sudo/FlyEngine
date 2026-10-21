@@ -197,7 +197,8 @@ int main() {
     lamp->nodes.back().face = NodeFace::Bottom;                        // hidden under the cube: the top shows no green
     const float hidden = redness("decal_bottom", 0.2f, 0.45f);
     std::printf("redness: decal on top %.1f, decal underneath %.1f\n", withDecal, hidden);
-    CHECK(withDecal < hidden - 15.0f);
+    // (10, not more: the physically based lighting adds a sheen on the decal that the tone curve turns a little less green.)
+    CHECK(withDecal < hidden - 10.0f);
 
     // --- shadows of the lights ----------------------------------------------------------------------------
     // A lamp above a slab: with Cast shadows the floor under the slab is dark, without it the light reaches it.

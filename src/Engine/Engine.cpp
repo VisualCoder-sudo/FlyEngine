@@ -6,6 +6,7 @@
 #include "../../include/Engine/Scripts/CommandConsole.hpp"
 #include "../../include/Engine/Backend/VisualScript.hpp"
 #include "../../include/Engine/GameUI.hpp"
+#include "../../include/Engine/Navigation.hpp"
 #include "../../include/Engine/Audio.hpp"
 #include "../../include/Graphics/Particles.hpp"
 #include "../../include/Terrain/Foliage.hpp"
@@ -311,6 +312,7 @@ void Engine::Draw() {
         }
         gfx::DrawWeather(camera);   // falling rain (nothing unless the Weather item sets rain)
         fx::Draw(camera);           // particles and decals
+        nav::DrawWorldDebug(camera.position);   // fly::Nav::ShowDebug
         // Editor overlays (transform gizmos) render after every entity so they
         // stay readable even when buried inside another object.
         for (auto& entity : entities) {
@@ -363,7 +365,7 @@ void Engine::Draw() {
         if (!isPlayerBuild) { const Rectangle mid = ui::GetConsoleBarArea(); area = { mid.x, 126.0f, mid.width, (float)GetScreenHeight() - 126.0f }; }
         gfx::DrawLoadingStatus(area);
         vscript::DrawHud(area.x, area.y, area.width, area.height);   // Show Text messages
-        gameui::Draw(area.x, area.y, area.width, area.height);       // fly::UI widgets
+        gameui::Draw(area.x, area.y, area.width, area.height, isPlayerBuild || !ui::IsMouseOverUI());   // fly::UI widgets
     }
 
     // ImGui pass (draws after every raylib overlay so it stays on top)

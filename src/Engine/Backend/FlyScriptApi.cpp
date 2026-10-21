@@ -11,6 +11,7 @@
 #include "../../../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Graphics/Particles.hpp"
 #include "../../../include/Engine/GameUI.hpp"
+#include "../../../include/Engine/Navigation.hpp"
 #include "../../../ScriptingSDK/include/FlyScriptABI.h"
 #include "raymath.h"
 
@@ -825,7 +826,7 @@ FLY_API unsigned long long FlyNative_SpawnPrefab(const char* file, float x, floa
 
 FLY_API short FlyNative_UICreate(const char* id, int kind) {
     FLY_TRY {
-        if (!id || kind < 0 || kind > static_cast<int>(gameui::Kind::Image)) return 0;
+        if (!id || kind < 0 || kind > static_cast<int>(gameui::Kind::Toggle)) return 0;
         return gameui::Create(id, static_cast<gameui::Kind>(kind)) ? 1 : 0;
     } FLY_CATCH(return 0;)
 }
@@ -909,6 +910,107 @@ FLY_API void FlyNative_DebugText(const char* key, const char* text) {
         gameui::SetText(id, text, 14.0f);
     } FLY_CATCH()
 }
+
+// ---- navigation ----
+
+namespace {
+
+// The first part of the level a ray hits. Objects that can move (the player, crates, projectiles) are looked through:
+// they are not part of the floor plan.
+bool LevelRay(phys::Simulation* sim, Vector3 origin, Vector3 dir, float maxDistance, Vector3& point, Vector3& normal) {
+    float left = maxDistance;
+    for (int i = 0; i < 12 && left > 0.0f; ++i) {
+        const phys::RaycastHit hit = sim->RayCast(origin, dir, left);
+        if (!hit.hit) return false;
+        if (!hit.object || sim->IsStaticBody(hit.object)) { point = hit.point; normal = hit.normal; return true; }
+        const float advance = hit.fraction * left + 0.01f;
+        origin = Vector3Add(origin, Vector3Scale(dir, advance));
+        left -= advance;
+    }
+    return false;
+}
+
+} // namespace
+
+FLY_API short FlyNative_NavBuild(const float* in) {
+    FLY_TRY {
+        ScriptRuntime* rt = ActiveRuntime();
+        if (!in || !rt || !rt->GetSimulation()) return 0;
+        nav::Params p;
+        p.min = { in[0], in[1], in[2] };
+        p.max = { in[3], in[4], in[5] };
+        p.cellSize = in[6]; p.agentRadius = in[7]; p.agentHeight = in[8]; p.maxStep = in[9]; p.maxSlope = in[10];
+        phys::Simulation* sim = rt->GetSimulation();
+        nav::Active& world = nav::World();
+        world.lastPath.clear();
+        const bool ok = world.mesh.Build(p, [sim](Vector3 o, Vector3 d, float m, Vector3& pt, Vector3& n) { return LevelRay(sim, o, d, m, pt, n); });
+        if (!ok) std::fprintf(stderr, "[nav] could not bake a navigation mesh (check the box, cell size and that the level has floors)\n");
+        else std::fprintf(stderr, "[nav] baked %zu cells (%d x %d columns)\n", world.mesh.CellCount(), world.mesh.ColumnsX(), world.mesh.ColumnsZ());
+        return ok ? 1 : 0;
+    } FLY_CATCH(return 0;)
+}
+FLY_API void FlyNative_NavClear(void) { FLY_TRY { nav::ResetWorld(); } FLY_CATCH() }
+FLY_API short FlyNative_NavReady(void) { FLY_TRY { return nav::World().mesh.Built() ? 1 : 0; } FLY_CATCH(return 0;) }
+FLY_API int FlyNative_NavFindPath(const float* from3, const float* to3, float* out, int maxPoints, short allowPartial) {
+    FLY_TRY {
+        if (!from3 || !to3) return 0;
+        nav::Active& world = nav::World();
+        std::vector<Vector3> path;
+        const nav::PathResult r = world.mesh.FindPath({ from3[0], from3[1], from3[2] }, { to3[0], to3[1], to3[2] }, path, allowPartial != 0);
+        world.lastPath = path;
+        if (r == nav::PathResult::None) return 0;
+        const int n = out && maxPoints > 0 ? std::min(static_cast<int>(path.size()), maxPoints) : static_cast<int>(path.size());
+        for (int i = 0; out && i < n; ++i) { out[i * 3] = path[i].x; out[i * 3 + 1] = path[i].y; out[i * 3 + 2] = path[i].z; }
+        return r == nav::PathResult::Partial ? -n : n;
+    } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_NavNearest(const float* in3, float* out3) {
+    FLY_TRY {
+        Vector3 p{};
+        if (!in3 || !out3 || !nav::World().mesh.Nearest({ in3[0], in3[1], in3[2] }, p)) return 0;
+        out3[0] = p.x; out3[1] = p.y; out3[2] = p.z;
+        return 1;
+    } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_NavIsWalkable(const float* in3) {
+    FLY_TRY { return in3 && nav::World().mesh.IsWalkable({ in3[0], in3[1], in3[2] }) ? 1 : 0; } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_NavRandomPoint(const float* center3, float radius, float* out3) {
+    FLY_TRY {
+        Vector3 p{};
+        if (!center3 || !out3 || !nav::World().mesh.RandomPoint({ center3[0], center3[1], center3[2] }, radius, p)) return 0;
+        out3[0] = p.x; out3[1] = p.y; out3[2] = p.z;
+        return 1;
+    } FLY_CATCH(return 0;)
+}
+FLY_API void FlyNative_NavDebug(short on) { FLY_TRY { nav::World().debug = on != 0; } FLY_CATCH() }
+FLY_API short FlyNative_NavLineClear(const float* from3, const float* to3) {
+    FLY_TRY {
+        return from3 && to3 && nav::World().mesh.LineClear({ from3[0], from3[1], from3[2] }, { to3[0], to3[1], to3[2] }) ? 1 : 0;
+    } FLY_CATCH(return 0;)
+}
+FLY_API short FlyNative_NavMoveAlong(const float* from3, const float* delta3, float* out3) {
+    FLY_TRY {
+        if (!from3 || !delta3 || !out3) return 0;
+        Vector3 p{};
+        const bool ok = nav::World().mesh.MoveAlong({ from3[0], from3[1], from3[2] }, { delta3[0], delta3[1], delta3[2] }, p);
+        out3[0] = p.x; out3[1] = p.y; out3[2] = p.z;
+        return ok ? 1 : 0;
+    } FLY_CATCH(return 0;)
+}
+
+// ---- mouse and clickable UI ----
+
+FLY_API int FlyNative_UIGetState(const char* id) { FLY_TRY { return id ? gameui::StateOf(id) : 0; } FLY_CATCH(return 0;) }
+FLY_API void FlyNative_GetMousePosition(float* out2) {
+    FLY_TRY {
+        if (!out2) return;
+        const Vector2 p = gameui::PointerInUiPixels();
+        out2[0] = p.x; out2[1] = p.y;
+    } FLY_CATCH()
+}
+FLY_API void FlyNative_SetMouseFree(short free) { FLY_TRY { gameui::SetMouseFree(free != 0); } FLY_CATCH() }
+FLY_API short FlyNative_MouseOverUI(void) { FLY_TRY { return gameui::PointerOverWidget() ? 1 : 0; } FLY_CATCH(return 0;) }
 
 // FindObject and GetSelf
 FLY_API unsigned long long FlyNative_FindObject(const char* name) {

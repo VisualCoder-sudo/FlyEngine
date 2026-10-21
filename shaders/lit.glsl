@@ -35,11 +35,15 @@ layout(binding=0) uniform vs_params {
     mat4 lightVP;
 };
 @include_block lit_vs_inputs
+in vec4 vertexTangent;      // xyz = the direction the texture's u runs along, w = which way v runs (normal maps)
 @include_block lit_vs_outputs
+out vec4 fragTangent;
 void main() {
     fragTexCoord = vertexTexCoord;
     fragColor = vertexColor;
     fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
+    // A tangent lies in the surface, so it follows the model matrix itself (the normal takes its inverse transpose).
+    fragTangent = vec4(normalize(mat3(matModel) * vertexTangent.xyz + vec3(1e-6, 0.0, 0.0)), vertexTangent.w < 0.0 ? -1.0 : 1.0);
     fragShadowCoord = lightVP * matModel * vec4(vertexPosition, 1.0);
     fragWorldPos = vec3(matModel * vec4(vertexPosition, 1.0));
     gl_Position = fly_clip(mvp * vec4(vertexPosition, 1.0));
@@ -186,6 +190,7 @@ void main() {
 @include_block fly_rt_uv
 @include_block fly_color
 @include_block fly_shadow
+@include_block fly_pbr
 layout(binding=0) uniform texture2D texture0;
 layout(binding=0) uniform sampler texture0_smp;
 layout(binding=2) uniform texture2D cloudShadowTex;
@@ -194,7 +199,15 @@ layout(binding=6) uniform texture2D nodeShadowMap;
 layout(binding=3) uniform sampler nodeShadow_smp;
 @image_sample_type nodeShadowMap depth
 @sampler_type nodeShadow_smp comparison
+// The baked surroundings (gfx::UploadLitEnvironment binds them; see fly_ibl).
+layout(binding=7) uniform textureCube envSpecular;
+layout(binding=8) uniform textureCube envIrradiance;
+layout(binding=9) uniform texture2D brdfLut;
+layout(binding=4) uniform sampler env_smp;
+layout(binding=6) uniform sampler envLinear_smp;
 @include_block lit_node_lights
+@include_block lit_node_lights_pbr
+@include_block fly_ibl
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -218,19 +231,30 @@ float CloudLight() {
     return textureLod(sampler2D(cloudShadowTex, cloudShadowTex_smp), (q - cloudShadow.xy) * cloudShadow.z, 0.0).r;
 }
 
-// baseColor is the surface's sRGB colour; the result is linear light.
-vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
-    vec3 normal = normalize(fragNormal);
-    // Shadows off (sunDir.w = 0): no side of anything is shaded either, so a face turned from the sun is not left dark
-    // while the ground shows no shadow. Every side gets the same even light.
-    bool shadowsOff = sunDir.w < 0.5;
-    float diffuse = shadowsOff ? 0.65 : max(dot(normal, -sunDir.xyz), 0.0);
-    float shadow = ShadowCalculation(normal);
-
-    // Light from the sky on what faces up, light bounced off the ground on what faces down.
-    vec3 amb = mix(ambientGround.rgb, ambientSky.rgb, shadowsOff ? 0.5 : normal.y * 0.5 + 0.5);
+// A physically based surface (fly_pbr) in the scene's light: the sun, the light nodes and the surroundings.
+// baseColor is the surface's sRGB colour, `normal` its (unit) shading normal, ao how open it is to the sky;
+// the result is linear light.
+vec3 ShadeSurface(vec3 baseColor, float baseAlpha, vec3 normal, float metallic, float roughness, float ao, out float alpha) {
     vec3 albedo = fly_srgb_to_linear(baseColor * colDiffuse.rgb);
-    vec3 lit = (amb + (1.0 - shadow) * diffuse * CloudLight() * sunColor.rgb + NodeLights(fragWorldPos, normal)) * albedo;
+    FlySurface s = FlyMakeSurface(albedo, metallic, roughness);
+    vec3 v = normalize(camPos.xyz - fragWorldPos);
+    // Seen from behind (thin double-sided parts), shade the side that faces the eye.
+    if (dot(normal, v) < 0.0 && dot(fragNormal, v) < 0.0) normal = -normal;
+    FlyEnergy(s, normal, v);
+    vec3 toSun = -sunDir.xyz;
+    vec3 sunLight = sunColor.rgb * CloudLight() * (1.0 - ShadowCalculation(normal));
+    vec3 direct;
+    if (sunDir.w < 0.5) {
+        // Shadows off (sunDir.w = 0): no side of anything is shaded either, so a face turned from the sun is not
+        // left dark while the ground shows no shadow. Every side gets the same even light; highlights stay.
+        FlySurface glossOnly = s;
+        glossOnly.diffuse = vec3(0.0);
+        direct = sunLight * (s.diffuse * 0.65 + FlyBrdfDirect(glossOnly, normal, v, toSun));
+    } else {
+        direct = sunLight * FlyBrdfDirect(s, normal, v, toSun);
+    }
+    vec3 lit = direct + NodeLightsPbr(s, fragWorldPos, normal, v)
+             + FlyAmbient(s, normal, v, ao, ambientSky.rgb, ambientGround.rgb);
 
     float depthBelow = waterSurfaceY - fragWorldPos.y;
     if (depthBelow > 0.0) {
@@ -242,6 +266,11 @@ vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
     }
     alpha = baseAlpha * colDiffuse.a;
     return lit;
+}
+
+// The scene's own surfaces (city, roads, decals): rough non-metals. baseColor is sRGB; the result is linear light.
+vec3 ShadeLitWith(vec3 baseColor, float baseAlpha, out float alpha) {
+    return ShadeSurface(baseColor, baseAlpha, normalize(fragNormal), 0.0, 0.8, 1.0, alpha);
 }
 
 vec3 ShadeLit(out float alpha) {
@@ -257,6 +286,12 @@ vec3 ShadeLit(out float alpha) {
 //   ambientSky     rgb = linear light from the sky on a surface that faces up
 //   ambientGround  rgb = linear light bounced off the ground on a surface that faces down
 //   cloudShadow    where the clouds' shadow texture lies on the world (see CloudLight)
+//   camPos         xyz = the camera's position (the eye the highlights and reflections are seen from)
+//   envParams      the baked surroundings (see fly_ibl in fly_common.glsl)
+// and the surface's material (gfx sets these per draw from the raylib Material, see DrawMesh):
+//   matPbr         x = metallic, y = roughness, z = normal map strength (0 = no normal map),
+//                  w = 1 when the metalness/roughness/occlusion/emission maps are bound
+//   matEmissive    rgb = light the surface gives off (linear), multiplied by the emission map
 @fs fs
 layout(binding=1) uniform fs_params {
     vec4 colDiffuse;
@@ -265,15 +300,72 @@ layout(binding=1) uniform fs_params {
     vec4 ambientSky;
     vec4 ambientGround;
     vec4 cloudShadow;
+    vec4 camPos;
+    vec4 envParams;
+    vec4 matPbr;
+    vec4 matEmissive;
+    float waterSurfaceY;
+    mat4 shadowVP[4];
+@include_block lit_light_uniforms
+};
+@include_block lit_fs_common
+// A model's material maps (raylib's MATERIAL_MAP_* slots; a missing map reads white). They share one sampler.
+layout(binding=10) uniform texture2D metalnessMap;
+layout(binding=11) uniform texture2D normalMap;
+layout(binding=12) uniform texture2D roughnessMap;
+layout(binding=13) uniform texture2D occlusionMap;
+layout(binding=14) uniform texture2D emissionMap;
+layout(binding=5) uniform sampler material_smp;
+in vec4 fragTangent;
+void main() {
+    vec4 texelColor = texture(sampler2D(texture0, texture0_smp), fragTexCoord);
+    vec3 n = normalize(fragNormal);
+    if (matPbr.z > 0.0) {
+        // Tangent-space normal map; the tangent is re-orthogonalised against the interpolated normal.
+        vec3 t = normalize(fragTangent.xyz - n * dot(n, fragTangent.xyz));
+        vec3 b = cross(n, t) * fragTangent.w;
+        vec3 m = texture(sampler2D(normalMap, material_smp), fragTexCoord).xyz * 2.0 - 1.0;
+        m.xy *= matPbr.z;
+        n = normalize(t * m.x + b * m.y + n * max(m.z, 1e-3));
+    }
+    float metallic = matPbr.x, roughness = matPbr.y, ao = 1.0;
+    vec3 emit = matEmissive.rgb;
+    if (matPbr.w > 0.5) {
+        // glTF packs metalness in blue and roughness in green; the loaders hand them over as separate one-channel maps.
+        metallic *= texture(sampler2D(metalnessMap, material_smp), fragTexCoord).r;
+        roughness *= texture(sampler2D(roughnessMap, material_smp), fragTexCoord).r;
+        ao = texture(sampler2D(occlusionMap, material_smp), fragTexCoord).r;
+        emit *= fly_srgb_to_linear(texture(sampler2D(emissionMap, material_smp), fragTexCoord).rgb);
+    }
+    float alpha;
+    vec3 lit = ShadeSurface(texelColor.rgb * fragColor.rgb, texelColor.a, n, metallic, roughness, ao, alpha);
+    finalColor = vec4(lit + emit, alpha);
+}
+@end
+
+// Loose primitive shapes (instanced): the material is one metallic/roughness/emission per draw, no maps.
+@fs fs_shape
+layout(binding=1) uniform fs_shape_params {
+    vec4 colDiffuse;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambientSky;
+    vec4 ambientGround;
+    vec4 cloudShadow;
+    vec4 camPos;
+    vec4 envParams;
+    vec4 matPbr;
+    vec4 matEmissive;
     float waterSurfaceY;
     mat4 shadowVP[4];
 @include_block lit_light_uniforms
 };
 @include_block lit_fs_common
 void main() {
+    vec4 texelColor = texture(sampler2D(texture0, texture0_smp), fragTexCoord);
     float alpha;
-    vec3 lit = ShadeLit(alpha);
-    finalColor = vec4(lit, alpha);
+    vec3 lit = ShadeSurface(texelColor.rgb * fragColor.rgb, texelColor.a, normalize(fragNormal), matPbr.x, matPbr.y, 1.0, alpha);
+    finalColor = vec4(lit + matEmissive.rgb, alpha);
 }
 @end
 
@@ -317,6 +409,7 @@ layout(binding=1) uniform fs_road_params {
     vec4 nightLights[32];
     vec4 weather;       // x = wetness 0..1
     vec4 camPos;        // xyz = camera position
+    vec4 envParams;
     mat4 shadowVP[4];
     mat4 matProjection;
 @include_block lit_light_uniforms
@@ -389,6 +482,8 @@ layout(binding=1) uniform fs_building_params {
     float lightCount;
     vec4 nightLights[32];
     vec4 weather;           // x = wetness 0..1, y = time (s)
+    vec4 camPos;
+    vec4 envParams;
     mat4 shadowVP[4];
 @include_block lit_light_uniforms
 };
@@ -432,6 +527,7 @@ void main() {
     vec3 lit;
     vec3 emit = vec3(0.0);   // linear
     vec3 glowBase = fragColor.rgb;
+    float roughness = 0.8;   // walls; window glass is smooth and mirrors the sky
     if (fragInst.w < 0.5) {
         lit = ShadeLit(alpha);
     } else if (fragInst.w > 1.5) {
@@ -502,6 +598,7 @@ void main() {
                     emit = fly_srgb_to_linear(glass) * nightAmount * (0.9 + 1.7 * fract(r * 13.7));
                 }
                 base = glass;
+                roughness = 0.12;
             } else {
                 float band = smoothstep(0.0, 0.06, fv) * (1.0 - smoothstep(0.94, 1.0, fv));
                 base = wall * (0.82 + 0.18 * band);                   // slab edges shade the wall
@@ -509,7 +606,7 @@ void main() {
                 if (plinth) base = wall * 0.74;                       // concrete-ish plinth
             }
         }
-        lit = ShadeLitWith(base, 1.0, alpha);
+        lit = ShadeSurface(base, 1.0, normalize(fragNormal), 0.0, roughness, 1.0, alpha);
         glowBase = base;
     }
     if (nightAmount > 0.02 && lightCount > 0.5 && fragInst.w > 0.5)
@@ -559,6 +656,8 @@ layout(binding=1) uniform fs_decal_params {
     vec4 ambientSky;
     vec4 ambientGround;
     vec4 cloudShadow;
+    vec4 camPos;
+    vec4 envParams;
     float waterSurfaceY;
     mat4 shadowVP[4];
 @include_block lit_light_uniforms
@@ -595,5 +694,5 @@ void main() {
 @program lit vs fs
 @program lit_road vs_road fs_road
 @program lit_instanced vs_instanced fs_building
-@program lit_shape_instanced vs_shape_instanced fs
+@program lit_shape_instanced vs_shape_instanced fs_shape
 @program lit_decal vs_decal fs_decal

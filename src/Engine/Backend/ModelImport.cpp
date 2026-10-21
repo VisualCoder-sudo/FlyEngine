@@ -245,19 +245,28 @@ void CopyFbxWithDeps(const fs::path& src, const fs::path& targetDir,
     ufbx_error error;
     ufbx_scene* scene = ufbx_load_file(src.string().c_str(), &opts, &error);
     if (scene) {
-        // Only the base-colour map is used by the renderer, so only that is
-        // brought into the project (normal/roughness/metal/alpha maps can be
-        // many megabytes each and nothing reads them yet).
+        // The maps the renderer reads (see FbxModel.cpp): base colour plus the physically based ones (normal,
+        // metalness, roughness, occlusion, emission). Others (specular, gloss, opacity, ...) can be many
+        // megabytes each and nothing reads them, so they stay behind.
         std::unordered_set<const ufbx_texture*> wanted;
+        auto want = [&](const ufbx_texture* tex) {
+            if (!tex) return;
+            wanted.insert(tex);
+            // Layered/shader textures wrap one or more plain file textures.
+            for (size_t f = 0; f < tex->file_textures.count; ++f) wanted.insert(tex->file_textures.data[f]);
+        };
         for (size_t i = 0; i < scene->materials.count; ++i) {
             const ufbx_material* mat = scene->materials.data[i];
             if (!mat) continue;
             const ufbx_texture* base = mat->pbr.base_color.texture;
             if (!base) base = mat->fbx.diffuse_color.texture;
-            if (!base) continue;
-            wanted.insert(base);
-            // Layered/shader textures wrap one or more plain file textures.
-            for (size_t f = 0; f < base->file_textures.count; ++f) wanted.insert(base->file_textures.data[f]);
+            want(base);
+            want(mat->pbr.normal_map.texture);
+            want(mat->fbx.normal_map.texture);
+            want(mat->pbr.metalness.texture);
+            want(mat->pbr.roughness.texture);
+            want(mat->pbr.ambient_occlusion.texture);
+            want(mat->pbr.emission_color.texture);
         }
         for (size_t i = 0; i < scene->textures.count; ++i) {
             const ufbx_texture* tex = scene->textures.data[i];

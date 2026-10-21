@@ -1,6 +1,7 @@
 // CharacterController.cpp - Player-controlled character with kinematic/dynamic modes.
 
 #include "../../../include/Engine/Backend/CharacterController.hpp"
+#include "../../../include/Engine/GameUI.hpp"
 #include "../../../include/Engine.hpp"
 #include "../../../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
@@ -220,7 +221,8 @@ void CharacterController::ProcessInput() {
     }
 
     // Mouse look - GetMouseDelta gives relative movement (works best with disabled cursor)
-    if (lookInput.x == 0 && lookInput.y == 0) {
+    // (a script that shows a menu frees the cursor; the view then stays put)
+    if (lookInput.x == 0 && lookInput.y == 0 && !gameui::MouseFree()) {
         Vector2 delta = GetMouseDelta();
         lookInput = delta;
     }

@@ -237,6 +237,20 @@ FlyApi MakeScriptApi() {
     a.UIGetColor = FlyNative_UIGetColor;
     a.GetMouseDelta = FlyNative_GetMouseDelta;
     a.DebugText = FlyNative_DebugText;
+    a.NavBuild = FlyNative_NavBuild;
+    a.NavClear = FlyNative_NavClear;
+    a.NavReady = FlyNative_NavReady;
+    a.NavFindPath = FlyNative_NavFindPath;
+    a.NavNearest = FlyNative_NavNearest;
+    a.NavIsWalkable = FlyNative_NavIsWalkable;
+    a.NavRandomPoint = FlyNative_NavRandomPoint;
+    a.NavDebug = FlyNative_NavDebug;
+    a.UIGetState = FlyNative_UIGetState;
+    a.GetMousePosition = FlyNative_GetMousePosition;
+    a.SetMouseFree = FlyNative_SetMouseFree;
+    a.MouseOverUI = FlyNative_MouseOverUI;
+    a.NavLineClear = FlyNative_NavLineClear;
+    a.NavMoveAlong = FlyNative_NavMoveAlong;
     return a;
 }
 

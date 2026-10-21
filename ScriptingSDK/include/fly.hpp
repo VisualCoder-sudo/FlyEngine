@@ -291,7 +291,7 @@ inline void DebugText(const std::string& key, const std::string& text) {
     if (detail::HaveDebug()) detail::Api()->DebugText(key.c_str(), text.c_str());
 }
 
-// Keys by name: "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right", "1".."4", "Shift", "Ctrl",
+// Keys by name: "Space", "Enter", "W", "A", "S", "D", "Q", "E", "R", "F", "Up", "Down", "Left", "Right", "1".."4", "Shift", "Ctrl", "Tab", "Escape", "P",
 // and the mouse buttons "Mouse Left", "Mouse Right", "Mouse Middle".
 inline bool KeyDown(const char* key)    { return detail::HaveActions() && detail::Api()->KeyDown(key) != 0; }      // held
 inline bool KeyPressed(const char* key) { return detail::HaveActions() && detail::Api()->KeyPressed(key) != 0; }   // went down this frame
@@ -518,6 +518,7 @@ inline Object Spawn(const std::string& file, Vec3 position) {
 namespace detail {
 inline bool HaveUI() { return Api()->size >= offsetof(FlyApi, UIRemove) + sizeof(void*); }
 inline bool HaveUIFont() { return Api()->size >= offsetof(FlyApi, UISetFont) + sizeof(void*); }
+inline bool HaveInput() { return Api()->size >= offsetof(FlyApi, MouseOverUI) + sizeof(void*); }
 }
 
 // Panels, text, bars and images drawn over the 3D view, made by id. Sizes and offsets are in pixels of a 1280 x 720
@@ -572,6 +573,11 @@ public:
     }
     float Value() const { return detail::HaveQuery() ? fly::detail::Api()->UIGetValue(m_id.c_str()) : 0.0f; }
     bool Visible() const { return detail::HaveQuery() && fly::detail::Api()->UIGetVisible(m_id.c_str()) != 0; }
+    // Mouse state of a button, slider or toggle. Clicked and Changed are true for one frame: poll them once a frame.
+    bool Hovered() const { return State() & 1; }
+    bool Held() const    { return State() & 2; }
+    bool Clicked() const { return State() & 4; }   // a button or toggle was pressed and released on it
+    bool Changed() const { return State() & 8; }   // a slider moved or a toggle flipped
     Layout GetLayout() const { Layout l; float v[6]; Read(v, l); return l; }
     float FontSize() const { Layout l; float v[6] = {}; Read(v, l); return v[5]; }
     ColorRGBA Color() const { ColorRGBA c, b; Colors(c, b); return c; }
@@ -595,6 +601,7 @@ public:
     void Remove() { if (fly::detail::HaveUI()) fly::detail::Api()->UIRemove(m_id.c_str()); }
 
 private:
+    int State() const { return fly::detail::HaveInput() ? fly::detail::Api()->UIGetState(m_id.c_str()) : 0; }
     bool Read(float* v, Layout& l) const {
         if (!detail::HaveQuery() || !fly::detail::Api()->UIGetLayout(m_id.c_str(), v)) return false;
         l = { static_cast<Anchor>(static_cast<int>(v[0])), v[1], v[2], v[3], v[4] };
@@ -644,6 +651,44 @@ inline Widget Image(const std::string& id, const std::string& file, Layout l, Co
     return Widget(id);
 }
 
+// A clickable button. Check `UI::Find(id).Clicked()` each frame. Make the mouse visible first: UI::SetMouseFree(true).
+// `color` is the face (it lightens under the mouse and darkens while pressed), `textColor` the label.
+inline Widget Button(const std::string& id, const std::string& text, Layout l = { Anchor::TopLeft, 0, 0, 160, 40 }, ColorRGBA color = { 60, 90, 150, 255 },
+                     ColorRGBA textColor = { 255, 255, 255, 255 }, float fontSize = 22.0f, const std::string& font = "") {
+    if (!detail::Make(id, 4, l)) return Widget(id);
+    detail::Color(id, color, textColor);
+    fly::detail::Api()->UISetText(id.c_str(), text.c_str(), fontSize);
+    if (!font.empty() && fly::detail::HaveUIFont()) fly::detail::Api()->UISetFont(id.c_str(), font.c_str());
+    return Widget(id);
+}
+// A slider the player drags, 0..1. Read `Value()`; `Changed()` is true on the frames it moved.
+inline Widget Slider(const std::string& id, float value, Layout l = { Anchor::TopLeft, 0, 0, 200, 20 }, ColorRGBA fill = { 80, 200, 90, 255 }, ColorRGBA background = { 0, 0, 0, 160 }) {
+    if (!detail::Make(id, 5, l)) return Widget(id);
+    detail::Color(id, fill, background);
+    fly::detail::Api()->UISetValue(id.c_str(), value);
+    return Widget(id);
+}
+// A check box with a label. `Value() > 0.5f` is on; `Changed()` is true on the frame it flipped.
+inline Widget Toggle(const std::string& id, const std::string& label, bool on, Layout l = { Anchor::TopLeft, 0, 0, 200, 24 }, ColorRGBA mark = { 80, 200, 90, 255 },
+                     float fontSize = 20.0f) {
+    if (!detail::Make(id, 6, l)) return Widget(id);
+    detail::Color(id, mark, { 0, 0, 0, 160 });
+    fly::detail::Api()->UISetText(id.c_str(), label.c_str(), fontSize);
+    fly::detail::Api()->UISetValue(id.c_str(), on ? 1.0f : 0.0f);
+    return Widget(id);
+}
+
+// The cursor. Menus call SetMouseFree(true): the mouse is released and the first-person view stops following it; call it
+// again with false to go back to looking around. MousePosition is in the same 1280 x 720 pixels as layouts.
+inline void SetMouseFree(bool free) { if (fly::detail::HaveInput()) fly::detail::Api()->SetMouseFree(free ? 1 : 0); }
+inline Vec3 MousePosition() {
+    float p[2] = {};
+    if (fly::detail::HaveInput()) fly::detail::Api()->GetMousePosition(p);
+    return { p[0], p[1], 0.0f };
+}
+// True while the pointer is over a button, slider or toggle, so a click there should not also shoot or pick.
+inline bool MouseOverUI() { return fly::detail::HaveInput() && fly::detail::Api()->MouseOverUI() != 0; }
+
 // Shortcuts by id, the same as Find(id).SetX(...). Unknown ids are ignored.
 inline void SetText(const std::string& id, const std::string& text)  { Widget(id).SetText(text); }
 inline void SetFont(const std::string& id, const std::string& font)  { Widget(id).SetFont(font); }
@@ -654,6 +699,269 @@ inline void Show(const std::string& id, bool visible = true)        { Widget(id)
 inline void Hide(const std::string& id)                              { Widget(id).Hide(); }
 inline void Remove(const std::string& id)                            { Widget(id).Remove(); }
 }
+
+// ---- navigation ------------------------------------------------------------
+
+namespace detail {
+inline bool HaveNav() { return Api()->size >= offsetof(FlyApi, NavDebug) + sizeof(void*); }
+inline bool HaveNavMove() { return Api()->size >= offsetof(FlyApi, NavMoveAlong) + sizeof(void*); }
+}
+
+// Finding the way across the level. Bake once the level is in place (usually at the start of the script), then ask for
+// paths. Only ground the agent can stand on is used: floors, ramps and steps under `maxStep`, platforms, with room for
+// `agentHeight` above and `agentRadius` of clearance from walls and ledges. Moving things (the player, crates) are not
+// part of the map.
+//
+//   fly::Nav::Build({ -60, -5, -60 }, { 60, 30, 60 });
+//   fly::Nav::Agent bot(4.0f);                           // 4 m/s
+//   bot.SetTarget(player.Position());
+//   while (true) {
+//       Vec3 feet = self.Position() - fly::Vec3{ 0, 0.9f, 0 };   // a 1.8 m capsule's position is its middle
+//       Vec3 v = bot.Step(feet, fly::DeltaTime());               // where to head, as a velocity
+//       self.SetVelocity({ v.x, self.Velocity().y, v.z });
+//       co_await fly::NextFrame();
+//   }
+namespace Nav {
+
+struct Settings {
+    Vec3 min{ -50, -10, -50 }, max{ 50, 40, 50 };   // the box that is baked; keep it no bigger than the level
+    float cellSize = 0.5f;      // metres per grid square: smaller is more exact and slower to bake
+    float agentRadius = 0.4f;
+    float agentHeight = 1.8f;
+    float maxStep = 0.5f;       // the highest step the agent walks up
+    float maxSlope = 45.0f;     // degrees
+};
+
+// True when this engine can do navigation at all.
+inline bool Available() { return detail::HaveNav(); }
+
+// Bakes the map from what is in the world now (only while the game is playing). Returns false when the settings make no
+// sense, the box has no floor, or it is too big (over 4 million squares). Baking again replaces the map.
+inline bool Build(const Settings& s) {
+    if (!detail::HaveNav()) return false;
+    const float v[13] = { s.min.x, s.min.y, s.min.z, s.max.x, s.max.y, s.max.z, s.cellSize, s.agentRadius, s.agentHeight, s.maxStep, s.maxSlope, 0, 0 };
+    return detail::Api()->NavBuild(v) != 0;
+}
+inline bool Build(Vec3 min, Vec3 max) { Settings s; s.min = min; s.max = max; return Build(s); }
+inline void Clear() { if (detail::HaveNav()) detail::Api()->NavClear(); }
+inline bool Ready() { return detail::HaveNav() && detail::Api()->NavReady() != 0; }
+
+struct Path {
+    std::vector<Vec3> points;   // the corners from start to end, start first
+    bool partial = false;       // the goal could not be reached; the path ends at the nearest point that can
+    bool Valid() const { return !points.empty(); }
+    float Length() const {
+        float len = 0;
+        for (size_t i = 1; i < points.size(); ++i) {
+            const Vec3 d = points[i] - points[i - 1];
+            len += std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        }
+        return len;
+    }
+};
+
+// A path from `from` to `to`. Both are moved onto the nearest walkable ground first. Empty when there is no way (or no
+// map). With `allowPartial` an unreachable goal gives the path to the closest point that can be reached.
+inline Path FindPath(Vec3 from, Vec3 to, bool allowPartial = false, int maxPoints = 256) {
+    Path path;
+    if (!detail::HaveNav() || maxPoints <= 0) return path;
+    const float a[3] = { from.x, from.y, from.z }, b[3] = { to.x, to.y, to.z };
+    std::vector<float> buf(static_cast<size_t>(maxPoints) * 3);
+    const int n = detail::Api()->NavFindPath(a, b, buf.data(), maxPoints, allowPartial ? 1 : 0);
+    path.partial = n < 0;
+    for (int i = 0; i < (n < 0 ? -n : n); ++i) path.points.push_back({ buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2] });
+    return path;
+}
+
+// The walkable point nearest `p`; false if none is near.
+inline bool Nearest(Vec3 p, Vec3& out) {
+    if (!detail::HaveNav()) return false;
+    const float a[3] = { p.x, p.y, p.z };
+    float o[3] = {};
+    if (!detail::Api()->NavNearest(a, o)) return false;
+    out = { o[0], o[1], o[2] };
+    return true;
+}
+// True when `p` is standing on baked ground.
+inline bool IsWalkable(Vec3 p) {
+    if (!detail::HaveNav()) return false;
+    const float a[3] = { p.x, p.y, p.z };
+    return detail::Api()->NavIsWalkable(a) != 0;
+}
+// A random walkable point within `radius` of `center`: a place to patrol to.
+inline bool RandomPoint(Vec3 center, float radius, Vec3& out) {
+    if (!detail::HaveNav()) return false;
+    const float a[3] = { center.x, center.y, center.z };
+    float o[3] = {};
+    if (!detail::Api()->NavRandomPoint(a, radius, o)) return false;
+    out = { o[0], o[1], o[2] };
+    return true;
+}
+// Draws the map (green squares, orange at the edges) and the last path asked for in the 3D view.
+inline void ShowDebug(bool on = true) { if (detail::HaveNav()) detail::Api()->NavDebug(on ? 1 : 0); }
+
+// True when an agent standing at `from` can walk in a straight line to `to` without leaving the map. `from` may be
+// anywhere inside a square, not just its middle. False on an engine without it (check with Nav::CanMove()) or no map.
+inline bool CanMove() { return detail::HaveNav() && detail::HaveNavMove(); }
+inline bool LineClear(Vec3 from, Vec3 to) {
+    if (!CanMove()) return false;
+    const float a[3] = { from.x, from.y, from.z }, b[3] = { to.x, to.y, to.z };
+    return detail::Api()->NavLineClear(a, b) != 0;
+}
+// Moves `from` by `delta` (only its flat part counts) over walkable ground and puts the result in `out`. Where a wall
+// or ledge is in the way it slides along it instead of going through, so `out` is always on the map, and `out.y` is the
+// ground height there. A `from` just off the map is pulled back onto it. Returns false when there is no map, no
+// ground near `from` or the engine is too old; `out` is then simply `from + delta`, so it is safe to use either way.
+inline bool MoveAlong(Vec3 from, Vec3 delta, Vec3& out) {
+    out = from + delta;
+    if (!CanMove()) return false;
+    const float a[3] = { from.x, from.y, from.z }, d[3] = { delta.x, delta.y, delta.z };
+    float o[3] = {};
+    if (!detail::Api()->NavMoveAlong(a, d, o)) return false;
+    out = { o[0], o[1], o[2] };
+    return true;
+}
+
+// Walks a path for you. Give it a target and call Move every frame: it finds the path, moves the agent along it over
+// walkable ground and slides along walls, so the agent cannot leave the map. Or call Step with where the agent is and
+// move it yourself at the velocity it returns (flat: y is 0). It asks for a new path every `repathSeconds` and when the
+// target moves, so it follows a moving target and works round things that changed.
+//
+// Before heading for the next corner it checks that the straight line from where the agent really is (not the middle
+// of its square) is clear; if not it goes back to the corner it came from or asks for a new path (at most every 0.25 s).
+// If it wants to move but has not got anywhere for `SetStuckTime` seconds it asks for a new path; if that does not help
+// either, Stuck() turns true until it moves again. A target that keeps moving does not reset this. It never picks
+// another target by itself: that is up to you.
+// Keep `arriveDistance` no bigger than the map's cell size (0.5 m by default).
+class Agent {
+public:
+    explicit Agent(float speed = 3.0f, float repathSeconds = 0.5f, float arriveDistance = 0.4f)
+        : m_speed(speed), m_repath(repathSeconds), m_arrive(arriveDistance) {}
+
+    // Safe to call every frame with a moving target: a new path is only asked for once it has moved over a metre.
+    void SetTarget(Vec3 target) {
+        const bool far = !m_hasTarget || Flat(target - m_pathTarget) > 1.0f;
+        m_target = target;
+        m_hasTarget = true;
+        // Only the path is redone: a chased target moves all the time, and that must not hide that the agent is stuck.
+        if (far) { m_arrived = false; m_timer = 0.0f; }
+    }
+    void ClearTarget() { m_hasTarget = false; m_path.points.clear(); m_arrived = false; ResetStuck(); }
+    void SetSpeed(float speed) { m_speed = speed; }
+    // How long the agent may want to move without getting anywhere before it asks for a new path (1 s by default;
+    // 0 turns the check off).
+    void SetStuckTime(float seconds) { m_stuckTime = seconds; }
+    bool HasTarget() const { return m_hasTarget; }
+    // True once the agent reached the end of its path (also when the goal was unreachable and it got as near as it could).
+    bool Arrived() const { return m_arrived; }
+    // False when no way was found to (or towards) the target on the last try.
+    bool HasPath() const { return m_path.Valid(); }
+    // True when it has not moved for two stuck times in a row, a new path in between. Pick another target, or wait.
+    bool Stuck() const { return m_stuck; }
+    const Path& CurrentPath() const { return m_path; }
+    // The corner the agent is heading for.
+    Vec3 NextPoint() const { return m_next < m_path.points.size() ? m_path.points[m_next] : m_target; }
+
+    // Where to head right now, as a velocity of `speed` metres a second along the ground. Zero when there is nothing to do.
+    // `position` is where the agent stands (its feet).
+    Vec3 Step(Vec3 position, float dt) {
+        if (!m_hasTarget || m_arrived) { ResetStuck(); return {}; }
+        m_timer -= dt;
+        m_retry -= dt;
+        // A failed search waits for the timer too: with no way to the target it would otherwise search every frame.
+        if (m_timer <= 0.0f) Repath(position);
+        const size_t count = m_path.points.size();
+        bool exact = false;   // the corner has to be reached, not just come near
+        while (m_next < count && Flat(m_path.points[m_next] - position) <= m_arrive) {
+            // The last corner is the end: stop there.
+            if (m_next + 1 == count) { m_arrived = true; ResetStuck(); return {}; }
+            // Cutting the corner is only fine when the leg after it is straight ahead from here; otherwise finish it.
+            if (Flat(m_path.points[m_next] - position) > 0.02f && !Clear(position, m_path.points[m_next + 1])) { exact = true; break; }
+            ++m_next;
+        }
+        if (m_next >= count) return {};
+        Vec3 aim = m_path.points[m_next];
+        if (!Clear(position, aim)) {
+            // Pushed off the line: back to the corner it came from, whose leg is known to be clear, or a new path.
+            if (m_next > 0 && Clear(position, m_path.points[m_next - 1])) { aim = m_path.points[m_next - 1]; exact = true; }
+            else if (m_retry <= 0.0f) { Repath(position); aim = NextPoint(); }
+        }
+        Vec3 d = aim - position;
+        d.y = 0.0f;
+        const float len = std::sqrt(d.x * d.x + d.z * d.z);
+        float speed = m_speed;
+        if (exact && dt > 0.0f && len < speed * dt) speed = len / dt;   // land on it instead of overshooting
+        const Vec3 v = len > 1e-5f ? d * (speed / len) : Vec3{};
+        TrackProgress(position, dt);
+        return v;
+    }
+
+    // Steps and moves `feet` (where the agent stands) along the ground with Nav::MoveAlong, so it slides along walls and
+    // never leaves the map; `feet.y` follows the ground. Returns the flat velocity it really moved at (the distance moved
+    // over `dt`): slower than `speed` while sliding along a wall, zero when it did not move. If `feet` is nowhere near
+    // the map it stays where it is. On an engine without MoveAlong it moves straight, as Step says.
+    Vec3 Move(Vec3& feet, float dt) {
+        const Vec3 v = Step(feet, dt);
+        if ((v.x == 0.0f && v.z == 0.0f) || !(dt > 0.0f)) return {};
+        Vec3 out;
+        if (!MoveAlong(feet, v * dt, out) && CanMove()) return {};
+        const Vec3 moved{ (out.x - feet.x) / dt, 0.0f, (out.z - feet.z) / dt };
+        feet = out;
+        return moved;
+    }
+    // The same for an anchored object that is moved by setting its position. `feetToCentre` is how far its position
+    // sits above its feet: half the height for a cube or capsule whose middle is its position, 0 for a model whose
+    // pivot is at its feet. Not for objects physics moves (use Step and SetVelocity for those).
+    Vec3 Move(Object body, float dt, float feetToCentre = 0.0f) {
+        Vec3 feet = body.Position() - Vec3{ 0.0f, feetToCentre, 0.0f };
+        const Vec3 v = Move(feet, dt);
+        if (v.x != 0.0f || v.z != 0.0f) body.SetPosition(feet + Vec3{ 0.0f, feetToCentre, 0.0f });
+        return v;
+    }
+
+private:
+    static float Flat(Vec3 d) { return std::sqrt(d.x * d.x + d.z * d.z); }
+    // An engine without the line check walks the legs as they come, like before.
+    static bool Clear(Vec3 a, Vec3 b) { return !detail::HaveNavMove() || LineClear(a, b); }
+    void Repath(Vec3 position) {
+        m_timer = m_repath;
+        m_retry = std::min(m_repath, 0.25f);
+        m_path = FindPath(position, m_target, true);
+        m_pathTarget = m_target;
+        m_next = m_path.points.size() > 1 ? 1 : 0;
+    }
+    void ResetStuck() { m_stuckClock = 0.0f; m_stuck = false; m_stuckRepathed = false; m_anchorSet = false; }
+    // Progress is getting a quarter of what it could walk in a stuck time away from where it last made progress, so
+    // shuffling on the spot against a wall still counts as stuck.
+    void TrackProgress(Vec3 position, float dt) {
+        if (m_stuckTime <= 0.0f) return;
+        const float need = std::max(0.1f, 0.25f * m_speed * m_stuckTime);
+        if (!m_anchorSet || Flat(position - m_anchor) >= need) {
+            m_anchor = position;
+            m_anchorSet = true;
+            m_stuckClock = 0.0f;
+            m_stuck = false;
+            m_stuckRepathed = false;
+            return;
+        }
+        m_stuckClock += dt;
+        if (m_stuckClock < m_stuckTime) return;
+        m_stuckClock = 0.0f;
+        if (!m_stuckRepathed) { m_stuckRepathed = true; Repath(position); }
+        else m_stuck = true;
+    }
+
+    float m_speed, m_repath, m_arrive;
+    float m_stuckTime = 1.0f;
+    Vec3 m_target, m_pathTarget, m_anchor;
+    bool m_hasTarget = false, m_arrived = false;
+    bool m_stuck = false, m_stuckRepathed = false, m_anchorSet = false;
+    float m_timer = 0.0f, m_retry = 0.0f, m_stuckClock = 0.0f;
+    Path m_path;
+    size_t m_next = 0;
+};
+
+} // namespace Nav
 
 // ---- tweens and events (scripts only, no engine support needed) ------------
 

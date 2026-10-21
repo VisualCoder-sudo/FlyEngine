@@ -11,7 +11,9 @@
 // layout looks the same at any resolution.
 namespace gameui {
 
-enum class Kind { Panel = 0, Text = 1, Bar = 2, Image = 3 };
+// Button, Slider and Toggle react to the mouse (see UpdateInput): a Button's text is its label, color its face and color2
+// its text; a Slider's value is 0..1 (color fills the track over color2); a Toggle is a box with a label, value 0 or 1.
+enum class Kind { Panel = 0, Text = 1, Bar = 2, Image = 3, Button = 4, Slider = 5, Toggle = 6 };
 
 // Where a widget sits in the screen area. Offset moves it right and down from there (negative x pulls a right-anchored
 // widget in from the edge). Fill stretches over the whole area, offset used as a margin on every side.
@@ -63,7 +65,32 @@ void Clear();
 // Where relative image paths are looked up.
 void SetProjectPath(const std::string& path);
 
-// Draws the widgets over `area`, in the order they were created.
-void Draw(float x, float y, float w, float h);
+// What a widget did with the mouse since the last UpdateInput. `clicked` (a button or toggle released over where it was
+// pressed) and `changed` (a slider moved, a toggle flipped) last for one update, so a script that polls once a frame sees
+// each exactly once.
+enum State { kHovered = 1, kHeld = 2, kClicked = 4, kChanged = 8 };
+int StateOf(const std::string& id);   // 0 for no such widget
+
+struct Pointer {
+    float x = 0, y = 0;                       // window pixels
+    bool down = false, pressed = false, released = false;   // left button: held, went down, went up this frame
+    bool active = true;                       // false while the mouse is locked for looking around or over editor panels
+};
+// Hit-tests the pointer against the visible buttons, sliders and toggles of `area` (topmost wins), updates their state
+// and moves sliders. Draw calls it with the real mouse; tests call it with a made-up one.
+void UpdateInput(Rectangle area, const Pointer& pointer);
+// True while the pointer is over a visible button, slider or toggle (so a click should not also shoot).
+bool PointerOverWidget();
+// The pointer in UI pixels of the last drawn area.
+Vector2 PointerInUiPixels();
+
+// Free cursor: scripts that show a menu turn this on. The cursor is released and the first-person view stops turning
+// with the mouse; turning it off locks the cursor again. Reset by Clear().
+void SetMouseFree(bool free);
+bool MouseFree();
+
+// Draws the widgets over `area`, in the order they were created. `inputEnabled` false (the pointer is over an editor panel)
+// leaves buttons idle.
+void Draw(float x, float y, float w, float h, bool inputEnabled = true);
 
 } // namespace gameui

@@ -1,5 +1,7 @@
 #include "../../../include/Engine/Backend/FbxModel.hpp"
 
+#include <algorithm>
+
 #include "ufbx.h"
 #include "../../../include/Graphics/Vfs.hpp"
 
@@ -164,6 +166,7 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
     }
     if (materialCount == 0) materialCount = 1;
     result.materialColors.assign((size_t)materialCount, WHITE);
+    result.materialPbr.assign((size_t)materialCount, FbxMaterialPbr{});
 
     const std::filesystem::path fbxDir = U8Path(path).parent_path();
     for (size_t i = 0; i < scene->materials.count; ++i) {
@@ -186,6 +189,40 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
         // Remember the base-colour texture's file (first one found) so the
         // caller can bind it through TextureManager like a user-picked one.
         if (tex && result.diffuseFile.empty()) result.diffuseFile = FindFbxTextureFile(tex, fbxDir);
+
+        // Physically based values. Lambert/Phong materials keep the defaults: ufbx derives a roughness from
+        // their specular exponent, which turns most old models into polished plastic.
+        FbxMaterialPbr& pbr = result.materialPbr[(size_t)rlIdx];
+        const bool pbrShader = mat->shader_type != UFBX_SHADER_FBX_LAMBERT && mat->shader_type != UFBX_SHADER_FBX_PHONG &&
+                               mat->shader_type != UFBX_SHADER_UNKNOWN;
+        const bool glossy = mat->features.roughness_as_glossiness.enabled;   // the "roughness" map is a gloss map
+        auto file = [&](const ufbx_material_map& m) { return m.texture ? FindFbxTextureFile(m.texture, fbxDir) : std::string(); };
+        if (pbrShader) {
+            if (mat->pbr.metalness.has_value) pbr.metallic = std::clamp((float)mat->pbr.metalness.value_real, 0.0f, 1.0f);
+            if (mat->pbr.roughness.has_value) pbr.roughness = std::clamp((float)mat->pbr.roughness.value_real, 0.0f, 1.0f);
+            pbr.metalnessFile = file(mat->pbr.metalness);
+            if (!glossy) pbr.roughnessFile = file(mat->pbr.roughness);
+            // A metalness map scales the factor, so a map with no factor beside it means "as the map says".
+            if (!pbr.metalnessFile.empty() && !mat->pbr.metalness.has_value) pbr.metallic = 1.0f;
+            if (!pbr.roughnessFile.empty() && !mat->pbr.roughness.has_value) pbr.roughness = 1.0f;
+        }
+        pbr.normalFile = file(mat->pbr.normal_map);
+        if (pbr.normalFile.empty()) pbr.normalFile = file(mat->fbx.normal_map);
+        pbr.occlusionFile = file(mat->pbr.ambient_occlusion);
+        if (mat->pbr.emission_color.has_value && mat->pbr.emission_color.value_components >= 3) {
+            const ufbx_vec3 e = mat->pbr.emission_color.value_vec3;
+            const float strength = mat->pbr.emission_factor.has_value ? (float)mat->pbr.emission_factor.value_real : 1.0f;
+            const float peak = std::max({ (float)e.x, (float)e.y, (float)e.z, 0.0f });
+            if (peak > 0.0f && strength > 0.0f) {
+                pbr.emissive = { (unsigned char)(e.x / peak * 255.0f), (unsigned char)(e.y / peak * 255.0f), (unsigned char)(e.z / peak * 255.0f), 255 };
+                pbr.emissiveStrength = peak * strength;
+            }
+        }
+        pbr.emissionFile = file(mat->pbr.emission_color);
+        if (!pbr.emissionFile.empty() && pbr.emissiveStrength <= 0.0f) {
+            pbr.emissive = WHITE;
+            pbr.emissiveStrength = 1.0f;
+        }
     }
 
     for (size_t i = 0; i < scene->meshes.count; ++i) {
@@ -327,7 +364,23 @@ bool UploadFBXCpu(FbxCpuData& data, Model& out) {
     out.materials = (Material*)calloc((size_t)out.materialCount, sizeof(Material));
     for (int i = 0; i < out.materialCount; ++i) {
         out.materials[i] = LoadMaterialDefault();
-        if (out.materials[i].maps) out.materials[i].maps[MATERIAL_MAP_DIFFUSE].color = data.materialColors[(size_t)i];
+        if (!out.materials[i].maps) continue;
+        out.materials[i].maps[MATERIAL_MAP_DIFFUSE].color = data.materialColors[(size_t)i];
+        if ((size_t)i >= data.materialPbr.size()) continue;
+        const FbxMaterialPbr& pbr = data.materialPbr[(size_t)i];
+        MaterialMap* maps = out.materials[i].maps;
+        maps[MATERIAL_MAP_METALNESS].value = pbr.metallic;
+        maps[MATERIAL_MAP_ROUGHNESS].value = pbr.roughness;
+        maps[MATERIAL_MAP_EMISSION].color = pbr.emissive;
+        maps[MATERIAL_MAP_EMISSION].value = pbr.emissiveStrength;
+        const std::pair<int, const std::string*> files[] = {
+            { MATERIAL_MAP_NORMAL, &pbr.normalFile }, { MATERIAL_MAP_METALNESS, &pbr.metalnessFile },
+            { MATERIAL_MAP_ROUGHNESS, &pbr.roughnessFile }, { MATERIAL_MAP_OCCLUSION, &pbr.occlusionFile },
+            { MATERIAL_MAP_EMISSION, &pbr.emissionFile },
+        };
+        for (const auto& [slot, f] : files) {
+            if (!f->empty()) maps[slot].texture = LoadTexture(f->c_str());
+        }
     }
 
     out.meshCount = (int)data.meshes.size();

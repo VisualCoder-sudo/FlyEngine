@@ -134,6 +134,7 @@ struct TextureRec {
     int wrap = TEXTURE_WRAP_REPEAT;
     bool depth = false;
     bool volume = false;       // 3D texture (LoadTexture3D)
+    bool cube = false;         // cube map (the baked environment, rl_ibl.cpp)
     bool attachment = false;   // owned by a render target
     // A render target's image cannot be sampled before a pass has drawn into it
     // (the Vulkan backend has no image layout for it yet).
@@ -203,6 +204,7 @@ struct GfxState {
     unsigned int whiteTexture = 0;             // 1x1 white, rlGetTextureIdDefault()
     unsigned int dummyDepthTexture = 0;        // bound to comparison samplers with no texture
     unsigned int dummyVolumeTexture = 0;       // bound to 3D samplers with no texture
+    unsigned int dummyCubeTexture = 0;         // bound to cube samplers with no texture (black)
 
     // Main target: offscreen copy of the window, blitted to the swapchain.
     unsigned int mainTarget = 0;               // index into targets
@@ -354,6 +356,10 @@ struct ShaderUniform {
     bool compare = false;
     bool nonfiltering = false;       // nearest-only sampler: the one way to read a depth texture's values
     bool volume = false;             // texture3D
+    bool cube = false;               // textureCube
+    // A material map slot (metalnessMap, normalMap, ...): reads white when the draw's material has no
+    // texture there, never whatever happens to sit on its emulated texture unit.
+    bool materialMap = false;
     int unit = 0;                    // GL texture unit this sampler reads
     unsigned int explicitTexture = 0;  // SetShaderValueTexture()
 };
@@ -366,6 +372,8 @@ struct ShaderRec {
     uint32_t attrMask = 0;           // bit s set: shader consumes semantic s
     int attrSlot[ATTR_COUNT];        // semantic -> shader attribute slot, -1 if unused
     int locLinearTarget = -1;        // "flyLinearTarget": 1 while drawing into a float (scene-linear) target
+    int locMatPbr = -1;              // "matPbr": metallic, roughness, normal strength, maps bound (shaders/lit.glsl)
+    int locMatEmissive = -1;         // "matEmissive": the material's emitted light
     int* locs = nullptr;
     bool alive = false;
 };
@@ -392,6 +400,11 @@ void ModelsShutdown();
 // so the first draw does not stall on sg_make_pipeline().
 void PrewarmMeshPipelines(const ShaderRec& sh);
 void TrimBufferPool();   // once per frame: age/size limits on the recycled-buffer pool
+
+// ---------------------------------------------------------------------------
+// Image-based lighting (rl_ibl.cpp)
+// ---------------------------------------------------------------------------
+void IblShutdown();
 
 // ---------------------------------------------------------------------------
 // Text (rl_text.cpp)

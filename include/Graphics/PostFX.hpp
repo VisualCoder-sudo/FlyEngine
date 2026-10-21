@@ -31,6 +31,7 @@ struct RenderQuality {
     int antiAliasing = 1;         // 0 = off, 1 = FXAA, 2 = temporal
     bool bloom = true;
     bool ambientOcclusion = true;
+    bool environmentLighting = true;  // ambient light and reflections from the baked sky (off: flat sky/ground ambient)
     int clouds = 2;               // 0 = flat layer, 1 = volumetric (fewer steps), 2 = volumetric, 3 = volumetric (more steps)
     int volumetrics = 2;          // 0 = plain distance fog, 1 = light shafts (fewer steps), 2 = light shafts
     int shadowCascades = 3;       // 1..4

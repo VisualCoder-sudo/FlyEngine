@@ -204,6 +204,7 @@ enum FieldID {
     FIELD_ANG_X, FIELD_ANG_Y, FIELD_ANG_Z,
     FIELD_MASS,
     FIELD_TRANSPARENCY,
+    FIELD_METALLIC, FIELD_ROUGHNESS, FIELD_GLOW,
     FIELD_OCEAN_SPECTRUM_RESOLUTION,
     FIELD_OCEAN_SHALLOW_R, FIELD_OCEAN_SHALLOW_G, FIELD_OCEAN_SHALLOW_B,
     FIELD_OCEAN_DEEP_R, FIELD_OCEAN_DEEP_G, FIELD_OCEAN_DEEP_B,
@@ -246,6 +247,7 @@ extern Rectangle g_collisionPopupAnchor;
 extern bool g_collisionPopupOpen;
 extern double g_collisionPopupOpenTime;
 extern Color* g_color;
+extern Color* g_pickerTarget;   // what the colour picker edits instead of g_color (an object's glow colour); null = g_color
 extern float g_colorPickerAnchorY;
 extern int g_cursorPos;
 extern Texture2D g_deleteIcon;
@@ -284,6 +286,7 @@ extern char g_textBuffer[32];
 extern bool g_waterDetailOpen;
 extern bool g_waterFoamOpen;
 extern bool g_waterInteractOpen;
+extern bool g_materialOpen;
 extern bool g_waterNoiseOpen;
 extern bool g_waterReflectOpen;
 extern bool g_waterWakeOpen;

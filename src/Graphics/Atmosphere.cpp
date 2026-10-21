@@ -447,6 +447,8 @@ void ShutdownAtmosphere() {
 
 bool AtmosphereActive() { return Lighting().hasSky && Lighting().skyMode == 1; }
 
+Texture2D AtmosphereSkyView() { return as.initialized ? as.skyView.texture : Texture2D{}; }
+Vector4 AtmospherePlanet() { return { tb.air.rg, tb.air.rt, frameAltitudeKm, 0.0f }; }
 Vector3 AtmosphereSunLight() { return SunLightNow(); }
 Vector3 AtmosphereMoonLight() { return MoonLightNow(); }
 

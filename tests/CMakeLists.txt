@@ -117,9 +117,11 @@ add_executable(city_district_test city_district_test.cpp)
 target_link_libraries(city_district_test PRIVATE FlyEngineCore FlyRL)
 
 # Player jump regression: one jump press after landing from any height must give a full jump.
-# Opens a window (engine ctor), so built but not registered with ctest: build/tests/character_jump_test
+# Opens a window (engine ctor), so ctest needs a display (label needs_display): build/tests/character_jump_test
 add_executable(character_jump_test character_jump_test.cpp)
 target_link_libraries(character_jump_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME character_jump COMMAND character_jump_test)
+set_tests_properties(character_jump PROPERTIES LABELS needs_display)
 
 # Terrain collision: the height-field collider must line up with the terrain mesh, and the player and
 # dynamic bodies must stand / walk / rest on it. Opens a window, so built but not registered with ctest:
@@ -180,11 +182,15 @@ target_link_libraries(sky_test PRIVATE FlyEngineCore FlyRL)
 # build/tests/new_project_test
 add_executable(new_project_test new_project_test.cpp)
 target_link_libraries(new_project_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME new_project COMMAND new_project_test)
+set_tests_properties(new_project PROPERTIES LABELS needs_display)
 
 # The loading screens (editor and player): settings, progress and pictures. Opens a window:
 # build/tests/loading_test
 add_executable(loading_test loading_test.cpp)
 target_link_libraries(loading_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME loading COMMAND loading_test)
+set_tests_properties(loading PROPERTIES LABELS needs_display)
 
 # Holes in the city surface (ground plane hidden, magenta sky). Opens a window: build/tests/city_hole_audit
 add_executable(city_hole_audit city_hole_audit.cpp)
@@ -240,10 +246,12 @@ target_compile_features(visual_script_test PRIVATE cxx_std_20)
 
 add_test(NAME visual_script COMMAND visual_script_test)
 
-# Play/undo snapshots keep every property the scene file stores, and report what differs. Opens a window, so it is not
-# registered with ctest: build/tests/play_snapshot_test
+# Play/undo snapshots keep every property the scene file stores, and report what differs. Opens a window, so ctest
+# needs a display (label needs_display): build/tests/play_snapshot_test
 add_executable(play_snapshot_test play_snapshot_test.cpp)
 target_link_libraries(play_snapshot_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME play_snapshot COMMAND play_snapshot_test)
+set_tests_properties(play_snapshot PROPERTIES LABELS needs_display)
 
 # A group saved as a prefab spawns again with its nested groups and flags, pivot at the target. Opens a window, so
 # ctest needs a display (label needs_display; skip with `ctest -LE needs_display`): build/tests/prefab_test
@@ -267,6 +275,27 @@ target_link_libraries(object_nodes_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME object_nodes COMMAND object_nodes_test)
 set_tests_properties(object_nodes PROPERTIES LABELS needs_display)
 
+# Collisions with scene objects in play: the player stops at walls of every shape and of an imported model at each
+# collision accuracy, dropped bodies rest on the floor, raycasts hit. Opens a window (label needs_display).
+add_executable(object_collision_test object_collision_test.cpp)
+target_link_libraries(object_collision_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME object_collision COMMAND object_collision_test)
+set_tests_properties(object_collision PROPERTIES LABELS needs_display)
+
+# Physically based shading: the baked sky environment, metallic/roughness/glow change the picture as they should,
+# and an object's material survives save/load and clone. Opens a window (label needs_display): build/tests/pbr_test
+add_executable(pbr_test pbr_test.cpp)
+target_link_libraries(pbr_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME pbr COMMAND pbr_test)
+set_tests_properties(pbr PROPERTIES LABELS needs_display)
+# The same on the fallback graphics API (OpenGL where the primary one is Vulkan), when one is built.
+if(FLY_HAS_FALLBACK)
+    add_executable(pbr_test_fallback pbr_test.cpp)
+    target_link_libraries(pbr_test_fallback PRIVATE FlyEngineCore FlyRL_fallback)
+    add_test(NAME pbr_fallback COMMAND pbr_test_fallback)
+    set_tests_properties(pbr_fallback PROPERTIES LABELS needs_display)
+endif()
+
 # The C++ scripting API (fly.hpp) offers what the Visual Script nodes do. Header-only, runs against a fake engine table.
 add_executable(fly_actions_test fly_actions_test.cpp)
 target_include_directories(fly_actions_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
@@ -276,6 +305,27 @@ add_test(NAME fly_actions COMMAND fly_actions_test)
 add_executable(game_ui_test game_ui_test.cpp)
 target_link_libraries(game_ui_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME game_ui COMMAND game_ui_test)
+
+# Navigation: bakes a walkable grid from a fake world of boxes and finds paths over it (walls, thin walls, steps, ramps,
+# platforms, low ceilings, partial paths). No window needed.
+add_executable(navigation_test navigation_test.cpp)
+target_link_libraries(navigation_test PRIVATE FlyEngineCore FlyRL)
+target_include_directories(navigation_test PRIVATE ${CMAKE_SOURCE_DIR}/ScriptingSDK/include)
+add_test(NAME navigation COMMAND navigation_test)
+
+# The same, against the real engine and physics (a crate is an obstacle, loose things are not part of the map). Opens a
+# window, so ctest needs a display (label needs_display): build/tests/navigation_engine_test
+add_executable(navigation_engine_test navigation_engine_test.cpp)
+target_link_libraries(navigation_engine_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME navigation_engine COMMAND navigation_engine_test)
+set_tests_properties(navigation_engine PROPERTIES LABELS needs_display)
+
+# Draws every in-game UI widget kind and saves game_ui_draw.png. Opens a window, so ctest needs a display (label needs_display):
+# build/tests/game_ui_draw_test
+add_executable(game_ui_draw_test game_ui_draw_test.cpp)
+target_link_libraries(game_ui_draw_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME game_ui_draw COMMAND game_ui_draw_test)
+set_tests_properties(game_ui_draw PROPERTIES LABELS needs_display)
 
 # The scripting API (FlyNative_*) against the real engine: create, clone, rename, destroy, forces, raycast, keys, text.
 # Sound rays against the real engine and physics (a wall muffles a fan, destroying it stops it). Opens a window, so it is not
@@ -294,9 +344,11 @@ add_executable(make_sample_projects make_sample_projects.cpp)
 target_link_libraries(make_sample_projects PRIVATE FlyEngineCore FlyRL)
 target_compile_definitions(make_sample_projects PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/assets/templates")
 
-# Opens a window, so it is not registered with ctest: build/tests/script_actions_engine_test
+# Opens a window, so ctest needs a display (label needs_display): build/tests/script_actions_engine_test
 add_executable(script_actions_engine_test script_actions_engine_test.cpp)
 target_link_libraries(script_actions_engine_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME script_actions_engine COMMAND script_actions_engine_test)
+set_tests_properties(script_actions_engine PROPERTIES LABELS needs_display)
 
 # The terrain panel's tabs, driven with injected mouse input. Opens a window, so it is not registered with ctest:
 # build/tests/terrain_tabs_test
@@ -350,3 +402,13 @@ add_test(NAME windows_cloud COMMAND windows_cloud_test)
 add_executable(snap_settings_test snap_settings_test.cpp)
 target_link_libraries(snap_settings_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME snap_settings COMMAND snap_settings_test)
+
+# Tests that open a window share one display: a tiling window manager resizes windows that open side by side, and
+# the screenshot checks then measure the wrong pixels. Run them one at a time even under ctest -j.
+get_property(_fly_tests DIRECTORY PROPERTY TESTS)
+foreach(_t IN LISTS _fly_tests)
+    get_test_property(${_t} LABELS _labels)
+    if(_labels AND "needs_display" IN_LIST _labels)
+        set_tests_properties(${_t} PROPERTIES RESOURCE_LOCK display)
+    endif()
+endforeach()

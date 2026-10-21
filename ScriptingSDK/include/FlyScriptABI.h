@@ -206,6 +206,27 @@ typedef struct FlyApi {
     /* Reading input and debugging. Added after the UI: fly.hpp checks `size` first. */
     void      (*GetMouseDelta)(float* out2);                        /* pixels moved since the last frame: x y */
     void      (*DebugText)(const char* key, const char* text);      /* a line of text in the top-left corner, one row per key; "" removes the row */
+
+    /* Navigation: bake the walkable surfaces of a box of the world, then ask for paths. Added after debugging: fly.hpp checks
+     * `size` first. Points are x y z floats. */
+    short     (*NavBuild)(const float* in13);                      /* min xyz, max xyz, cellSize, agentRadius, agentHeight, maxStep, maxSlope (degrees); 1 on success. Only while playing */
+    void      (*NavClear)(void);
+    short     (*NavReady)(void);                                   /* 1 once a mesh is baked */
+    int       (*NavFindPath)(const float* from3, const float* to3, float* out, int maxPoints, short allowPartial); /* points stored (3 floats each); negative = only a partial path to the nearest reachable spot; 0 = none */
+    short     (*NavNearest)(const float* in3, float* out3);        /* the walkable point nearest the given one; 1 if there is one */
+    short     (*NavIsWalkable)(const float* in3);
+    short     (*NavRandomPoint)(const float* center3, float radius, float* out3);   /* 1 if a walkable point lies within `radius` */
+    void      (*NavDebug)(short on);                               /* draws the cells and the last path in the 3D view */
+
+    /* Mouse and clickable UI. kind 4 = button, 5 = slider, 6 = toggle for UICreate. Added after navigation. */
+    int       (*UIGetState)(const char* id);                       /* bits: 1 hovered, 2 held, 4 clicked (this frame), 8 changed (slider moved / toggle flipped, this frame) */
+    void      (*GetMousePosition)(float* out2);                    /* in UI pixels of the 1280x720 reference screen */
+    void      (*SetMouseFree)(short free);                         /* 1 frees the cursor and stops the first-person look; 0 locks it again */
+    short     (*MouseOverUI)(void);                                /* 1 while the pointer is over a button, slider or toggle */
+
+    /* Moving on the navigation map. Added after the mouse: fly.hpp checks `size` first. */
+    short     (*NavLineClear)(const float* from3, const float* to3);   /* 1 if an agent at `from` can walk straight to `to` without leaving the map */
+    short     (*NavMoveAlong)(const float* from3, const float* delta3, float* out3);   /* moves over walkable ground, sliding along walls; out is on the map (y = ground). 0 = no ground near `from` (out = from + delta) */
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */
