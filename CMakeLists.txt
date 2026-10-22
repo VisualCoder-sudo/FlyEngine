@@ -260,6 +260,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Frontend/ui_layout.cpp
         src/Engine/Frontend/ui_terrain_panel.cpp
         src/Engine/Frontend/ui_properties.cpp
+        src/Engine/Frontend/ui_script_errors.cpp
         src/Engine/Frontend/ui_explorer.cpp
         src/Engine/Frontend/ui_groups.cpp
         src/Engine/Frontend/PluginHost.cpp

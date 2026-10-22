@@ -163,8 +163,8 @@ DropTarget s_drop = { DockSide::Left, 0 };
 Rectangle TitleHandle(PanelId id, const Rectangle& r) {
     switch (id) {
     case PanelId::Explorer: return { r.x, r.y, std::min(r.width, 96.0f), 26.0f };
-    case PanelId::Properties: return { r.x, r.y, r.width, 36.0f };
-    case PanelId::Terrain: return { r.x, r.y, r.width, 34.0f };
+    case PanelId::Properties: return { r.x, r.y, r.width, kPanelTitleH - 2.0f };
+    case PanelId::Terrain: return { r.x, r.y, r.width, kPanelTitleH - 2.0f };
     default: return { 0, 0, 0, 0 };
     }
 }
@@ -301,8 +301,6 @@ void SetPanelSide(PanelId id, DockSide side) {
     ApplyMove(id, { side, ColumnPanels(side, ids) });
     SaveLayout();
 }
-
-bool IsLayoutInteracting() { return s_drag != Drag::None || s_movePending; }
 
 void UpdatePanelLayout() {
     EnsureLoaded();

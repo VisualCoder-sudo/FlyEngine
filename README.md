@@ -469,8 +469,8 @@ set: render scale, anti-aliasing (off, FXAA, temporal), bloom, ambient
 occlusion, cloud and fog quality, shadow cascades. *Sky reflections* is a
 separate switch there (off: a flat sky and ground colour instead of the baked
 environment). The player takes
-`--quality low|medium|high|ultra`. F2 in the viewport shows what each pass
-costs on the CPU side.
+`--quality low|medium|high|ultra`. Ctrl+Shift+F2 in the editor shows what each
+pass costs on the CPU side.
 
 Cost of a 70 x 70 city (20,000 buildings, with traffic) at 2560 x 1440 on an
 RTX 4060, Release build, in ms per frame (`build/tests/city_lod_test 70 <tier>

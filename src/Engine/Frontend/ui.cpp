@@ -39,7 +39,6 @@ Texture2D g_terrainToolIcons[TTOOLICON_COUNT] = {};
 Vector3* g_pos = nullptr;
 Vector3* g_size = nullptr;
 Color* g_color = nullptr;
-Color* g_pickerTarget = nullptr;
 Vector3* g_rotation = nullptr;
 Vector3* g_origin = nullptr;
 const std::vector<ScatteredObject*>* g_sceneObjects = nullptr;
@@ -59,33 +58,13 @@ ScatteredObject* g_renameObject = nullptr;
 ModelGroup* g_renameModel = nullptr;
 BasicTerrain* g_renameTerrain = nullptr;
 terrain::Terrain* g_renameLegacyTerrain = nullptr;
-ScatteredObject* g_lastExplorerClick = nullptr;
-ModelGroup* g_lastExplorerModelClick = nullptr;
-double g_lastExplorerClickTime = 0.0;
 WaterBody* g_selectedWater = nullptr;
 int g_lightingSel = 0;   // the selected Lighting row of the explorer: 0 none, 1 Time, 2 Sun, 3 Ambient, 4 Sky, 5 Fog, 6 Weather, 7 Clouds, 8 Picture
 ScatteredObject* g_selectedNodeObj = nullptr;
 int g_selectedNodeIdx = -1;
 BasicTerrain* g_selectedTerrain = nullptr;
 char g_nameBuffer[256] = "";
-float g_colorPickerAnchorY = -1.0f;
 
-
-// Preset texture dropdown state
-bool g_presetDropdownOpen = false;
-int g_presetDropdownSelected = -1;  // -1 = none chosen, 0 = "None", 1+ = preset index
-std::vector<std::string> g_presetDropdownItems;  // project-relative paths
-bool g_presetDropdownItemsCached = false;
-std::string g_presetDropdownProjectDir;  // to detect project change
-double g_presetDropdownLastRefresh = 0.0;  // for auto-refresh
-
-// Preset dropdown list rendering state (for drawing after scissor ends)
-bool g_presetDropdownListPending = false;
-Rectangle g_presetDropdownListRect = { 0 };
-Rectangle g_presetDropdownHeaderRect = { 0 };
-std::vector<std::string> g_presetDropdownListItems;
-std::vector<std::string> g_presetDropdownListPresets;
-std::string g_presetDropdownListProjectDir;
 
 // Global click consumption flag - set when a dropdown/popup handles a click
 // to prevent other UI elements from also processing the click
@@ -136,21 +115,16 @@ float MenuAnim(double openTime) {
 }
 
 bool g_cursorHand = false;
-bool g_cursorIbeam = false;
 int g_cursorResize = 0;   // 0 none, 1 left-right, 2 up-down
 
-void BeginCursorPass() { g_cursorHand = false; g_cursorIbeam = false; g_cursorResize = 0; }
+void BeginCursorPass() { g_cursorHand = false; g_cursorResize = 0; }
 } // namespace
 void MarkHand() { g_cursorHand = true; }
-namespace {
-} // namespace
-void MarkIbeam() { g_cursorIbeam = true; }
 void MarkResize(bool vertical) { g_cursorResize = vertical ? 2 : 1; }
 namespace {
 
 void EndCursorPass() {
     SetMouseCursor(g_cursorResize == 1 ? MOUSE_CURSOR_RESIZE_EW : g_cursorResize == 2 ? MOUSE_CURSOR_RESIZE_NS
-        : g_cursorIbeam ? MOUSE_CURSOR_IBEAM
         : g_cursorHand ? MOUSE_CURSOR_POINTING_HAND : MOUSE_CURSOR_DEFAULT);
 }
 
@@ -161,16 +135,7 @@ TransformTool g_activeTool = TransformTool::Select;
 static bool g_transformLocalSpace = true; // true = Local, false = World
 SnapSettings g_snap;
 
-// HSV Color Picker & Popup State
-Vector3 g_hsv = { 0.0f, 0.0f, 1.0f };
-int g_activeSlider = 0; // 0 = None, 1 = Hue, 2 = Saturation, 3 = Brightness
-bool g_showColorPickerWindow = false;
 static Color g_vec3PickColor = BLACK;
-
-// Collision accuracy combo popup state (properties panel)
-bool g_collisionPopupOpen = false;
-double g_collisionPopupOpenTime = 0.0;
-Rectangle g_collisionPopupAnchor = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // Context Menu State
 static bool g_menuOpen = false;
@@ -202,38 +167,9 @@ double g_explorerMenuOpenTime = 0.0;
 // Vertical scroll offset (pixels) for the explorer panel content
 static float g_explorerScrollY = 0.0f;
 
-// Vertical scroll offset (pixels) for the properties panel content
-float g_propertiesScrollY = 0.0f;
-
 // Standalone script rename state
 int g_scriptRenameIndex = -1;
 char g_scriptNameBuffer[64] = "";
-
-FieldID g_activeField = FIELD_NONE;
-char g_textBuffer[32] = "";
-int g_cursorPos = 0;
-int g_selStart = -1;  // selection anchor index, -1 = no selection
-bool g_mouseDrag = false;
-
-// Collapsible property-group state (all open by default).
-bool g_generalOpen = true;
-bool g_waterInteractOpen = true;
-bool g_materialOpen = true;
-bool g_positionOpen = true;
-bool g_sizeOpen = true;
-bool g_rotationOpen = true;
-bool g_originOpen = true;
-bool g_linearVelocityOpen = true;
-bool g_angularVelocityOpen = true;
-bool g_waterNoiseOpen = true;
-bool g_waterFoamOpen = true;
-bool g_waterDetailOpen = true;
-bool g_waterReflectOpen = true;
-bool g_waterWakeOpen = true;
-bool g_waterUnderOpen = true;
-
-// Screen rect of the currently active number field
-Rectangle g_activeFieldRect = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // Loads one of the engine's bundled icons, taking a name relative to
 // assets/EditorIcons/ (or to assets/ when it starts with "../"). The returned
@@ -385,19 +321,8 @@ void SetSelectedObject(Vector3* pos, Vector3* size, Color* color, Vector3* rotat
     g_pos = pos;
     g_size = size;
     g_color = color;
-    g_pickerTarget = nullptr;
     g_rotation = rotation;
     g_origin = origin;
-    g_activeField = FIELD_NONE;
-    g_cursorPos = 0;
-    g_selStart = -1;
-    g_mouseDrag = false;
-    g_activeSlider = 0;
-    g_showColorPickerWindow = false;
-
-    if (g_color != nullptr) {
-        g_hsv = ColorToHSV(*g_color);
-    }
 }
 
 void SetSelectedObject(ScatteredObject* object) {
@@ -573,8 +498,6 @@ void SetSelectedWater(WaterBody* w) {
     SetSelection({}, nullptr);
     g_selectedWater = w;
     if (w) w->isSelected = true;
-    g_activeField = FIELD_NONE;
-    g_showColorPickerWindow = false;
 }
 
 WaterBody* GetSelectedWater() { return g_selectedWater; }
@@ -600,8 +523,6 @@ void SetSelectedTerrain(BasicTerrain* t) {
         BasicTerrain::SetActive(nullptr);
         BasicTerrain::GetBrush().tool = BasicTerrain::Tool::None;
     }
-    g_activeField = FIELD_NONE;
-    g_showColorPickerWindow = false;
 }
 
 BasicTerrain* GetSelectedTerrain() { return g_selectedTerrain; }
@@ -735,11 +656,6 @@ bool IsPlayActive() {
 void SetPlayActive(bool active) {
     g_playActive = active;
     if (!active) g_playEndedAt = GetTime();
-    g_activeField = FIELD_NONE;
-    g_cursorPos = 0;
-    g_selStart = -1;
-    g_mouseDrag = false;
-    g_showColorPickerWindow = false;
     g_fileMenuOpen = false;
     g_explorerMenuOpen = false;
     g_scriptRenameIndex = -1;
@@ -747,17 +663,13 @@ void SetPlayActive(bool active) {
 }
 
 bool IsEditingText() {
-    return g_activeField != FIELD_NONE || g_renameObject != nullptr || g_renameModel != nullptr
+    return g_renameObject != nullptr || g_renameModel != nullptr
         || g_scriptRenameIndex >= 0 || g_renameTerrain != nullptr || g_renameLegacyTerrain != nullptr
         || console::IsActive()
         || ImGui::GetIO().WantTextInput;
 }
 
 void BlurAllInput() {
-    g_activeField = FIELD_NONE;
-    g_cursorPos = 0;
-    g_selStart = -1;
-    g_mouseDrag = false;
     if (g_renameObject != nullptr) {
         g_renameObject->SetName(g_nameBuffer);
         g_renameObject = nullptr;
@@ -796,11 +708,6 @@ Font GetFont() {
     return g_arialFont;
 }
 
-static bool IsOverActiveNumberInput(Vector2 point) {
-    if (g_activeField == FIELD_NONE) return false;
-    return CheckCollisionPointRec(point, g_activeFieldRect);
-}
-
 // Keeps `candidate` as the primary when it is still selected, otherwise falls
 // back to the first remaining selection.
 ScatteredObject* KeepPrimary(const std::vector<ScatteredObject*>& selection, ScatteredObject* candidate) {
@@ -818,11 +725,6 @@ void UpdateInput() {
     Vector2 mouse = GetMousePosition();
     if (console::IsActive() && !console::IsOverBar(mouse)) {
         console::Blur();
-    }
-    if (g_activeField != FIELD_NONE && !IsOverActiveNumberInput(mouse)) {
-        g_activeField = FIELD_NONE;
-        g_selStart = -1;
-        g_mouseDrag = false;
     }
     // Explorer rename (object/model/terrain/script) commit/cancel is handled by
     // the ImGui inline fields in DrawImGuiExplorer() (focus deactivation/ESC).
@@ -851,20 +753,6 @@ Rectangle GetConsoleBarArea() {
 // The bottom panel (Assets, Output and Script tabs): docked directly on the command console bar, flush with it, spanning
 // the same middle strip as the console itself.
 Rectangle GetAssetBrowserPanelBounds() { return GetPanelBounds(PanelId::Bottom); }
-
-void GetColorPickerWindowBounds(Rectangle& popupRec) {
-    Rectangle propRec = GetPropertiesPanelBounds();
-    constexpr float popupW = 280.0f;
-    constexpr float popupH = 210.0f;
-    float popupX = GetPanelSide(PanelId::Properties) == DockSide::Right ? propRec.x - popupW - 10.0f
-                                                                        : propRec.x + propRec.width + 10.0f;
-    float popupY = (g_colorPickerAnchorY >= 0.0f) ? g_colorPickerAnchorY : propRec.y + 120.0f;
-
-    popupRec.x = popupX;
-    popupRec.y = popupY;
-    popupRec.width = popupW;
-    popupRec.height = popupH;
-}
 
 // Shared spawn list for the "Add object" submenu. Keep in sync with
 // DrawContextMenuInternal's item rendering and kSpawnMenuActions.
@@ -966,13 +854,6 @@ bool IsMouseOverUI() {
 
     Rectangle scriptRec = GetScriptPanelBounds();
     if (scriptRec.width > 0.0f && CheckCollisionPointRec(mouse, scriptRec)) return true;
-
-    // g_showColorPickerWindow
-    if (g_showColorPickerWindow) {
-        Rectangle popupRec;
-        GetColorPickerWindowBounds(popupRec);
-        if (CheckCollisionPointRec(mouse, popupRec)) return true;
-    }
 
     // g_menuOpen - context menu
     if (g_menuOpen) {
@@ -1167,10 +1048,9 @@ MenuAction ProcessContextMenu() {
     return MenuAction::None;
 }
 
-// Shared look for every hand-drawn dropdown header/row: dark-teal fill inside a
-// border that is grey at rest and bright cyan when active (hovered, selected, or open).
-
-void DrawDropdownBox(const Rectangle& r, bool active, float alpha) {
+// The look of a hovered row in the hand-drawn context menu: dark-teal fill inside a
+// border that is grey at rest and bright cyan when active.
+static void DrawDropdownBox(const Rectangle& r, bool active, float alpha) {
     const Color rest   = Color{ 58, 58, 58, 255 };
     const Color lit    = theme::ACCENT_HOVER;
     const Color fill   = Mix(Color{ 14, 20, 24, 255 }, theme::ACCENT, 0.27f);
@@ -1346,76 +1226,7 @@ void Draw() {
         float msgWidth = MeasureTextArial(msg, 20.0f);
         DrawTextArial(msg, (static_cast<float>(GetScreenWidth()) - msgWidth) * 0.5f, 15.0f, 20.0f, theme::DANGER);
     }
-    // Top bar + explorer panel now render through Dear ImGui (see
-    // DrawImGuiTopBar/DrawImGuiExplorer called from DrawImGuiFrame()).
-
-    // Handle preset texture dropdown list click BEFORE properties panel
-    // so the click is consumed and doesn't toggle Position/Size/etc. groups
-    if (g_presetDropdownListPending && g_presetDropdownOpen) {
-        float itemHeight = 24.0f;
-        Rectangle listRect = g_presetDropdownListRect;
-        const auto& items = g_presetDropdownListItems;
-        const auto& presets = g_presetDropdownListPresets;
-        const std::string& projectDir = g_presetDropdownListProjectDir;
-
-        Vector2 mousePos = GetMousePosition();
-        int visibleCount = static_cast<int>(items.size());
-        bool clickedItem = false;
-
-        for (int i = 0; i < visibleCount; ++i) {
-            Rectangle itemRect = { listRect.x, listRect.y + static_cast<float>(i) * itemHeight,
-                                 listRect.width, itemHeight };
-            bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
-
-            if (itemHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                g_presetDropdownSelected = i;
-                g_presetDropdownOpen = false;
-                g_presetDropdownListPending = false;
-                clickedItem = true;
-                g_clickConsumedThisFrame = true;
-
-                // Apply texture to all selected objects
-                if (i == 0) { // "None"
-                    const auto& proj = ::project::GetCurrentProject();
-                    for (auto* obj : g_selection) {
-                        if (obj) {
-                            obj->ClearTexture(proj.path);
-                        }
-                    }
-                } else {
-                    std::string presetPath = presets[i - 1];
-                    // Ensure the preset texture is copied to the project's PresetTextures folder
-                    // so the path is portable and saved correctly with the scene
-                    const auto& proj = ::project::GetCurrentProject();
-                    std::string projectRelativePath = textureManager::EnsurePresetTextureInProject(presetPath, proj.path);
-                    for (auto* obj : g_selection) {
-                        if (obj) {
-                            obj->SetTexturePath(projectRelativePath, proj.path);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Close if clicked outside list and dropdown
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-            !CheckCollisionPointRec(mousePos, g_presetDropdownHeaderRect) &&
-            !CheckCollisionPointRec(mousePos, listRect)) {
-            g_presetDropdownOpen = false;
-            g_presetDropdownListPending = false;
-            g_clickConsumedThisFrame = true;
-        }
-
-        if (clickedItem) {
-            // Click was consumed by dropdown list, skip properties panel click handling this frame
-            // by setting a flag that DrawGroupHeader will check
-        }
-    }
-
-    DrawPropertiesPanel();
-
-    // Terrain tool panel (when a BasicTerrain is active)
-    DrawTerrainToolPanel();
+    // The top bar, Explorer, Properties and Terrain panels render through Dear ImGui (see DrawImGuiFrame()).
 
     // Docked console + output panel
     console::Draw();
@@ -1423,85 +1234,6 @@ void Draw() {
 
     // Terrain editor UI
     DrawTerrainEditorUI();
-
-    // Floating popups (topmost within the 2D pass, before the script editor)
-    DrawColorPickerPopupWindow();
-    DrawCollisionPopup();
-
-    // Preset texture dropdown list (drawn after panels so it's on top)
-    if (g_presetDropdownListPending && g_presetDropdownOpen) {
-        // Defensive: make sure nothing upstream (e.g. console::Draw()) left a
-        // scissor rect active, which would silently slice this list at its edge.
-        EndScissorMode();
-
-        float itemHeight = 24.0f;
-        Rectangle listRect = g_presetDropdownListRect;
-        const auto& items = g_presetDropdownListItems;
-        const auto& presets = g_presetDropdownListPresets;
-        const std::string& projectDir = g_presetDropdownListProjectDir;
-
-        // Draw list background
-        DrawRectangleRounded(listRect, 0.2f, 4, theme::BG_PANEL);
-
-        // Draw items
-        Vector2 mousePos = GetMousePosition();
-        int visibleCount = static_cast<int>(items.size());
-        for (int i = 0; i < visibleCount; ++i) {
-            Rectangle itemRect = { listRect.x, listRect.y + static_cast<float>(i) * itemHeight,
-                                 listRect.width, itemHeight };
-            bool itemHovered = CheckCollisionPointRec(mousePos, itemRect);
-
-            const bool itemActive = itemHovered || i == g_presetDropdownSelected;
-            if (itemActive) DrawDropdownBox(itemRect, true);
-
-            float itemTextY = itemRect.y + (itemRect.height - 13.0f) * 0.5f;
-            DrawTextArial(items[i].c_str(), itemRect.x + 8.0f, itemTextY, 13.0f,
-                itemActive ? theme::TEXT : theme::TEXT_MUTED);
-        }
-
-        // Close if clicked outside list and dropdown (handled in early click processing)
-    }
-
-    // Terrain tool dropdown list (drawn after panels so it's on top of everything)
-    if (g_terrainToolDropdownListPending && g_terrainToolDropdownOpen) {
-        // Defensive: make sure nothing upstream left a scissor rect active
-        EndScissorMode();
-
-        constexpr int numTools = 9;
-        const char* toolNames[numTools] = { "Raise", "Lower", "Smooth", "Flatten", "Paint", "Erode", "Noise", "Ramp", "None" };
-        Rectangle listRec = g_terrainToolDropdownListRect;
-        int activeTool = g_terrainToolDropdownActiveTool;
-
-        // Draw list background
-        DrawRectangleRec({ listRec.x + 3.0f, listRec.y + 3.0f, listRec.width, listRec.height }, theme::SHADOW);
-        DrawRectangleRounded(listRec, 0.08f, 4, theme::BG_MENU);
-        DrawRectangleLinesEx(listRec, 1.0f, theme::BORDER_STRONG);
-
-        Vector2 mouse = GetMousePosition();
-        for (int i = 0; i < numTools; ++i) {
-            Rectangle itemRec = { listRec.x + 4.0f, listRec.y + 4.0f + static_cast<float>(i) * 26.0f, listRec.width - 8.0f, 22.0f };
-            bool hovered = CheckCollisionPointRec(mouse, itemRec);
-            bool selected = (i == activeTool);
-            if (hovered || selected) {
-                DrawRectangleRounded(itemRec, 0.15f, 4, hovered ? theme::ACCENT_HOVER : theme::ACCENT_SOFT);
-            }
-            Rectangle iconRec = { itemRec.x + 6.0f, itemRec.y + 3.0f, 16.0f, 16.0f };
-            DrawTerrainToolIcon(i, iconRec, selected ? theme::ACCENT : theme::TEXT_MUTED);
-            DrawTextArial(toolNames[i], itemRec.x + 28.0f, itemRec.y + 4.0f, 12.0f,
-                          selected ? theme::TEXT : theme::TEXT_MUTED);
-            if (hovered) MarkHand();
-            if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !g_clickConsumedThisFrame) {
-                auto newTool = static_cast<BasicTerrain::Tool>(i);
-                if (newTool == BasicTerrain::Tool::Paint) {
-                    // Note: layer count logic would need the terrain reference here
-                    // For now, just set the tool; the panel will update on next frame
-                }
-                // The actual tool change is handled in the panel's finishPanel lambda
-                // This deferred rendering is purely for visual display
-                // The click will be processed in the panel next frame
-            }
-        }
-    }
 
     EndCursorPass();
 }
@@ -1554,11 +1286,16 @@ int BottomTabShown() { return g_bottomTabActive; }
 bool OutputHasUnread() { return g_logTotal != g_logSeenTotal; }
 
 void DrawImGuiFrame(const Camera3D& camera) {
-    if (IsKeyPressed(KEY_F1)) g_showDemoWindow = !g_showDemoWindow;
-    if (IsKeyPressed(KEY_F2)) g_showDebugStats = !g_showDebugStats;
+    // Ctrl+Shift so they never collide with F1 (help) or F2 (rename in the Explorer).
+    const bool debugChord = (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) &&
+                            (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+    if (debugChord && IsKeyPressed(KEY_F1)) g_showDemoWindow = !g_showDemoWindow;
+    if (debugChord && IsKeyPressed(KEY_F2)) g_showDebugStats = !g_showDebugStats;
 
     DrawImGuiTopBar();
     DrawImGuiExplorer();
+    DrawImGuiPropertiesPanel();
+    DrawImGuiTerrainPanel();
     DrawImGuiLightingPanel();
     DrawImGuiNodePanel();
     DrawImGuiExplorerMenu();

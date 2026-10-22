@@ -114,6 +114,7 @@ struct MenuItem {
     std::function<void()> action;
     std::vector<MenuItem> sub;   // non-empty: this entry opens a submenu
     bool undo = true;            // false when the action does not change the scene, or records its own undo step
+    const char* shortcut = nullptr;  // key hint shown on the right, for actions that also have a shortcut
 };
 std::vector<MenuItem> s_menuItems;
 
@@ -547,7 +548,9 @@ bool DrawCategory(const char* label, const char* key, bool* rightClicked = nullp
 }
 
 // --- Context menu builders ---------------------------------------------------
-void AddMenu(const char* label, std::function<void()> fn, bool undo = true) { s_menuItems.push_back({ label, std::move(fn), {}, undo }); }
+void AddMenu(const char* label, std::function<void()> fn, bool undo = true, const char* shortcut = nullptr) {
+    s_menuItems.push_back({ label, std::move(fn), {}, undo, shortcut });
+}
 
 template <class F> void ForEachSelected(F&& f) {
     for (auto* o : std::vector<ScatteredObject*>(g_selection)) if (o) f(o);
@@ -562,9 +565,9 @@ void BuildObjectMenu(ScatteredObject* obj) {
         std::find(g_selection.begin(), g_selection.end(), obj) != g_selection.end();
     // Insert > Script attaches another script to the object right-clicked on.
     s_menuItems.push_back(MakeInsertMenu(singleSel ? obj : nullptr));
-    if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); });
-    AddMenu("Duplicate", [] { RequestDuplicate(); }, false);
-    if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); });
+    if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); }, true, "Ctrl+G");
+    AddMenu("Duplicate", [] { RequestDuplicate(); }, false, "Ctrl+D");
+    if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); }, true, "Ctrl+U");
     const bool hide = !obj->hidden;
     AddMenu(hide ? "Hide" : "Show", [hide] { ForEachSelected([hide](ScatteredObject* o) { o->hidden = hide; }); });
     const bool lock = !obj->locked;
@@ -606,8 +609,8 @@ static void SaveGroupAsPrefab(const ModelGroup* model) {
 }
 
 void BuildModelMenu(ModelGroup* model) {
-    AddMenu("Rename", [model] { BeginRename(model); }, false);
-    AddMenu("Duplicate", [] { RequestDuplicate(); }, false);
+    AddMenu("Rename", [model] { BeginRename(model); }, false, "F2");
+    AddMenu("Duplicate", [] { RequestDuplicate(); }, false, "Ctrl+D");
     // A plugin-owned group: the plugin's items, and no way to take it apart or unlock it from here.
     if (const pluginhost::GroupKind* kind = pluginhost::FindGroupKind(model->pluginTag)) {
         for (const auto& item : kind->items) AddMenu(item.label.c_str(), [run = item.run, model] { run(model); }, false);
@@ -627,7 +630,7 @@ void BuildModelMenu(ModelGroup* model) {
         BeginRename(g);
     });
     AddMenu("Save as Prefab", [model] { SaveGroupAsPrefab(model); }, false);
-    AddMenu("Ungroup", [model] { UngroupModel(model); if (s_selGroup == model) s_selGroup = nullptr; });
+    AddMenu("Ungroup", [model] { UngroupModel(model); if (s_selGroup == model) s_selGroup = nullptr; }, true, "Ctrl+U");
     AddMenu(model->hidden ? "Show" : "Hide", [model] { model->hidden = !model->hidden; });
     AddMenu(model->locked ? "Unlock" : "Lock", [model] { model->locked = !model->locked; });
     AddMenu("Delete", [model] {
@@ -744,8 +747,6 @@ void BuildScriptMenu(int scriptIndex) {
         g_scriptRenameIndex = scriptIndex;
         snprintf(g_scriptNameBuffer, sizeof(g_scriptNameBuffer), "%s", r->StandaloneScripts()[scriptIndex].name.c_str());
         g_scriptNameBuffer[sizeof(g_scriptNameBuffer) - 1] = '\0';
-        g_cursorPos = static_cast<int>(strlen(g_scriptNameBuffer));
-        g_selStart = -1;
     }, false);
     AddMenu("Delete", [scriptIndex] {
         ScriptRuntime* r = GetActiveRuntime();
@@ -815,7 +816,7 @@ void DrawImGuiExplorerMenu() {
                         if (ImGui::MenuItem(sub.label.c_str())) { chosen = sub.action; chosenUndo = sub.undo; }
                     ImGui::EndMenu();
                 }
-            } else if (ImGui::MenuItem(item.label.c_str())) {
+            } else if (ImGui::MenuItem(item.label.c_str(), item.shortcut)) {
                 chosen = item.action;
                 chosenUndo = item.undo;
             }

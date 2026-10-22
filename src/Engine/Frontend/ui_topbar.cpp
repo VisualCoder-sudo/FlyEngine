@@ -103,7 +103,7 @@ void DrawImGuiTopBar() {
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings;
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(25 / 255.0f, 27 / 255.0f, 32 / 255.0f, 1.0f)); // theme::BG_TOP_BAR
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::Vec(theme::BG_TOP_BAR));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
     ImGui::Begin("##TopBar", nullptr, flags);
@@ -203,7 +203,7 @@ void DrawImGuiTopBar() {
     // File menu popup, anchored under the File button
     ImGui::SetNextWindowPos(ImVec2(barRec.x + 4.0f, barRec.y + 38.0f));
     if (ImGui::BeginPopup("##FileMenu")) {
-        if (ImGui::MenuItem("Save")) { g_pendingFileAction = MenuAction::Save; ImGui::CloseCurrentPopup(); }
+        if (ImGui::MenuItem("Save", "Ctrl+S")) { g_pendingFileAction = MenuAction::Save; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Save as")) { g_pendingFileAction = MenuAction::SaveAs; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Open scene")) { g_pendingFileAction = MenuAction::OpenScene; ImGui::CloseCurrentPopup(); }
         ImGui::Separator();
@@ -329,9 +329,7 @@ void DrawImGuiTopBar() {
     // Play/Stop button, right-aligned
     {
         const char* playLabel = g_playActive ? "Stop" : "Play";
-        ImVec4 playCol = g_playActive
-            ? ImVec4(200 / 255.0f, 40 / 255.0f, 40 / 255.0f, 1.0f)   // theme::DANGER (approx)
-            : ImVec4(0 / 255.0f, 170 / 255.0f, 90 / 255.0f, 1.0f);   // theme::SUCCESS (approx)
+        ImVec4 playCol = theme::Vec(g_playActive ? theme::DANGER : theme::SUCCESS);
         ImGui::PushStyleColor(ImGuiCol_Button, playCol);
         ImGui::SetCursorPos(ImVec2(barRec.width - 85.0f, 15.0f));
         if (ImGui::Button(playLabel, ImVec2(70.0f, 30.0f))) {
