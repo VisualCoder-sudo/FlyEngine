@@ -212,6 +212,7 @@ add_library(FlyEngineCore STATIC
         src/Engine/Engine.cpp
         src/Engine/CameraController.cpp
         src/Engine/Backend/ScatteredObject.cpp
+        src/Engine/Backend/Csg.cpp
         src/Engine/Backend/Automation.cpp
         src/Engine/Frontend/ObjectInteractionManager.cpp
         src/Engine/Frontend/ScenePersistence.cpp

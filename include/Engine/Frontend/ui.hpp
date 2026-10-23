@@ -105,6 +105,15 @@ void SuppressExplorerReveal();
 bool ConsumeDuplicateRequest();
 
 // Transform tools getter
+// Solid modelling on the current selection (see ScatteredObject::MakeUnion). The explorer menu and shortcuts only
+// request it; the interaction manager, which owns the engine and the object list, does the work.
+enum class UnionRequest { None, Union, Intersect, Separate };
+void RequestUnion(UnionRequest request);
+UnionRequest ConsumeUnionRequest();
+// Union/Intersect: two or more plain primitives are selected. Separate: a union is selected.
+bool CanUnionSelection();
+bool CanSeparateSelection();
+
 TransformTool GetActiveTool();
 
 // Transform space: true = Local, false = World

@@ -39,7 +39,7 @@ void BeginChooseSceneOpenPath(const std::string& startDir = std::string());
 
 // The scene format this build writes, and the newest it reads ("SIMPLE_ENGINE_BUILD <n>"). The project
 // loader checks it too, so bump it here only.
-constexpr int kSceneFormatVersion = 33;
+constexpr int kSceneFormatVersion = 34;
 
 // Stream variants so a scene can be embedded inside another file (a .flyproj
 // project). The stream is positioned exactly at the "SIMPLE_ENGINE_BUILD"

@@ -566,6 +566,18 @@ void BuildObjectMenu(ScatteredObject* obj) {
     // Insert > Script attaches another script to the object right-clicked on.
     s_menuItems.push_back(MakeInsertMenu(singleSel ? obj : nullptr));
     if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); }, true, "Ctrl+G");
+    // Solid modelling: Union merges the parts (Negate parts are carved out), Intersect keeps the shared volume.
+    if (CanUnionSelection()) {
+        AddMenu("Union", [] { RequestUnion(UnionRequest::Union); }, false, "Ctrl+Shift+G");
+        AddMenu("Intersect", [] { RequestUnion(UnionRequest::Intersect); }, false);
+    }
+    if (CanSeparateSelection()) AddMenu("Separate", [] { RequestUnion(UnionRequest::Separate); }, false, "Ctrl+Shift+U");
+    if (obj && !obj->IsUnion() && !obj->HasModel()) {
+        const bool cut = !obj->negate;
+        AddMenu(cut ? "Negate" : "Un-negate", [cut] {
+            ForEachSelected([cut](ScatteredObject* o) { if (!o->HasModel()) { o->negate = cut; o->canCollide = !cut; } });
+        });
+    }
     AddMenu("Duplicate", [] { RequestDuplicate(); }, false, "Ctrl+D");
     if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); }, true, "Ctrl+U");
     const bool hide = !obj->hidden;

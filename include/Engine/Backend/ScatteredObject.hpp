@@ -24,6 +24,21 @@ enum class ShapeType {
 // editor-level grouping + persistence layer.
 class ScatteredObject;
 
+// How a part takes part in a Union: Add merges it in, Negate carves it out of the result, Intersect keeps only
+// the volume it shares with the result.
+enum class UnionMode {
+    Add,
+    Negate,
+    Intersect
+};
+
+// One source part of a Union. Its position is relative to the union's centre (axis-aligned with the union
+// at the time it was made), so the union can be moved and scaled and the parts still follow.
+struct UnionPart {
+    std::unique_ptr<ScatteredObject> obj;
+    UnionMode mode = UnionMode::Add;
+};
+
 class ModelGroup {
 public:
     std::string name = "Model";
@@ -237,6 +252,35 @@ public:
     // (cached; invalidated when the accuracy or the mesh geometry changes).
     const pcoll::Collider& GetCollider() const;
 
+    // ---- Unions (solid modelling) -------------------------------------------------------------------------------
+    // A union is one object whose mesh is the CSG result of its source parts. Faces keep the colour of the part
+    // they came from, unless useGlobalColor is on: then the whole union is drawn in `color`. The parts are kept
+    // so Separate can hand them back. Only primitive parts (no imported meshes) can be unioned.
+    //
+    // Builds a union from `parts` placed in the world (positions/sizes/rotations as in the scene) and the mode of
+    // each. The union is centred on the result and the parts are re-expressed relative to it. Null when the
+    // result is empty (e.g. nothing is left after subtracting) or fewer than one positive part is given.
+    static std::unique_ptr<ScatteredObject> MakeUnion(std::vector<std::unique_ptr<ScatteredObject>> parts,
+                                                      const std::vector<UnionMode>& modes);
+    bool IsUnion() const { return !unionParts.empty(); }
+    // The union's parts, positions relative to its centre. Empty for an ordinary object.
+    std::vector<UnionPart>& UnionParts() { return unionParts; }
+    const std::vector<UnionPart>& UnionParts() const { return unionParts; }
+    // Size of the union as built: the object's size divided by this is the scale the user applied since.
+    Vector3 unionBaseSize{ 1.0f, 1.0f, 1.0f };
+    // Off: every face keeps its source part's colour. On: the whole union is `color`.
+    bool useGlobalColor = false;
+    void SetUseGlobalColor(bool on);
+    // Re-runs the CSG from the parts and replaces the mesh. Called after load and whenever the parts change.
+    bool RebuildUnionMesh(Vector3* outCenter = nullptr);
+    // Hands the parts back as free-standing objects, placed where the union (with its move/rotate/scale) puts
+    // them. The union is left empty.
+    std::vector<std::unique_ptr<ScatteredObject>> TakeUnionParts();
+
+    // A part marked Negate is a cutter: shown as a translucent red ghost in the editor, never collides, and
+    // is carved out of a Union it is made part of.
+    bool negate = false;
+
     // Frustum culling support
     bool IsVisible(const Frustum& frustum) const override;
     BoundingBox GetCullBounds() const override { return GetBoundingBox(); }
@@ -282,6 +326,12 @@ private:
     Vector3 modelExtent{ 1.0f, 1.0f, 1.0f };
     std::string modelDiffuseFile;   // base-colour texture shipped with the model (abs path)
     void ReleaseModel();
+
+    // Union state (see IsUnion). The mesh is built here, not loaded from a file, so it is owned by this object.
+    std::vector<UnionPart> unionParts;
+    bool ownsProceduralMesh = false;
+    std::vector<std::vector<unsigned char>> unionVertexColors;   // per mesh: each face's source-part colour
+    void ApplyUnionColors();
 
     pcoll::CollisionAccuracy collisionAccuracy = pcoll::CollisionAccuracy::Default;
     // Colliders live in unit space, so every object using the same mesh (or

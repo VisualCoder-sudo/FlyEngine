@@ -275,6 +275,13 @@ target_link_libraries(object_nodes_test PRIVATE FlyEngineCore FlyRL)
 add_test(NAME object_nodes COMMAND object_nodes_test)
 set_tests_properties(object_nodes PROPERTIES LABELS needs_display)
 
+# Unions (CSG): volumes of union/subtract/intersect, per-face colours, global colour, save/load, clone, separate.
+# Opens a window (label needs_display): build/tests/union_test
+add_executable(union_test union_test.cpp)
+target_link_libraries(union_test PRIVATE FlyEngineCore FlyRL)
+add_test(NAME union COMMAND union_test)
+set_tests_properties(union PROPERTIES LABELS needs_display)
+
 # Collisions with scene objects in play: the player stops at walls of every shape and of an imported model at each
 # collision accuracy, dropped bodies rest on the floor, raycasts hit. Opens a window (label needs_display).
 add_executable(object_collision_test object_collision_test.cpp)

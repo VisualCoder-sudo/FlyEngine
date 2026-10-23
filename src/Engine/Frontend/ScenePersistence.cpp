@@ -123,7 +123,14 @@ void WriteObjectRecord(std::ostream& file, ScatteredObject* object, const std::s
         file << ' ' << fin1(m.metallic, 0.0f) << ' ' << fin1(m.roughness, 0.6f) << ' ' << (int)m.emissive.r << ' ' << (int)m.emissive.g
              << ' ' << (int)m.emissive.b << ' ' << fin1(m.emissiveStrength, 0.0f) << ' ' << (int)object->useModelMaterial;
     }
+    // v34: cutter flag, and for a union its settings; the source parts follow as records of their own.
+    file << ' ' << (int)object->negate << ' ' << (int)object->IsUnion();
+    if (object->IsUnion()) file << ' ' << (int)object->useGlobalColor << ' ' << object->UnionParts().size();
     file << '\n';
+    for (const UnionPart& p : object->UnionParts()) {
+        file << (int)p.mode << '\n';
+        WriteObjectRecord(file, p.obj.get(), baseDir);
+    }
 }
 } // namespace
 
@@ -582,6 +589,25 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
         m.emissiveStrength = std::clamp(m.emissiveStrength, 0.0f, 1000.0f);
         m.emissive = { (unsigned char)std::clamp(r, 0, 255), (unsigned char)std::clamp(g, 0, 255), (unsigned char)std::clamp(b, 0, 255), 255 };
         object->useModelMaterial = useModel != 0;
+    }
+    if (version >= 34) {
+        int negate = 0, isUnion = 0;
+        if (!(file >> negate >> isUnion)) return false;
+        object->negate = negate != 0;
+        if (isUnion) {
+            int globalColor = 0;
+            size_t partCount = 0;
+            if (!(file >> globalColor >> partCount) || partCount == 0 || partCount > 4096) return false;
+            object->useGlobalColor = globalColor != 0;
+            for (size_t i = 0; i < partCount; ++i) {
+                int mode = 0;
+                std::unique_ptr<ScatteredObject> part;
+                if (!(file >> mode) || mode < (int)UnionMode::Add || mode > (int)UnionMode::Intersect) return false;
+                if (!ReadObjectRecord(file, version, baseDir, part, deferredModels)) return false;
+                object->UnionParts().push_back({ std::move(part), (UnionMode)mode });
+            }
+            if (!object->RebuildUnionMesh()) return false;
+        }
     }
 
     out = std::move(object);

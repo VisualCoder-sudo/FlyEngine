@@ -366,13 +366,35 @@ void DrawTextureRows(ScatteredObject* obj) {
 }
 
 void DrawObjectGeneral(ScatteredObject* obj) {
-    if (g_color) {
+    // A union keeps each part's colour until it is told to use one colour for the whole solid.
+    const bool isUnion = obj && obj->IsUnion();
+    if (isUnion) {
         ImGui::BeginDisabled(g_playActive);
-        if (ColorField("Colour", *g_color) && g_selection.size() > 1)
+        bool global = obj->useGlobalColor;
+        if (Check("Use global colour", global)) {
+            obj->SetUseGlobalColor(global);
+            ForOthers([&](ScatteredObject& o) { if (o.IsUnion()) o.SetUseGlobalColor(global); });
+        }
+        ImGui::EndDisabled();
+    }
+    if (g_color) {
+        ImGui::BeginDisabled(g_playActive || (isUnion && !obj->useGlobalColor));
+        if (ColorField(isUnion ? "Global colour" : "Colour", *g_color) && g_selection.size() > 1)
             ForOthers([](ScatteredObject& o) { *o.GetColorPtr() = *g_color; });
         ImGui::EndDisabled();
     }
     if (!obj) return;
+
+    if (!obj->HasModel()) {
+        // A cutter is carved out of a union and takes no part in the game.
+        bool cutter = obj->negate;
+        if (Check("Negate (cutter)", cutter)) {
+            auto setCutter = [&](ScatteredObject& o) { if (o.HasModel()) return; o.negate = cutter; o.canCollide = !cutter; };
+            setCutter(*obj);
+            ForOthers(setCutter);
+            Log("'%s' negate = %s", obj->GetName().c_str(), cutter ? "true" : "false");
+        }
+    }
 
     bool anchored = obj->anchored;
     if (Check("Anchored", anchored)) {
@@ -434,7 +456,11 @@ void DrawObjectGeneral(ScatteredObject* obj) {
         }
     }
 
-    if (obj->HasModel()) {
+    if (obj->IsUnion()) {
+        PropertyRow("Union");
+        ImGui::Text("%zu parts", obj->UnionParts().size());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click > Separate in the explorer to get the parts back.");
+    } else if (obj->HasModel()) {
         PropertyRow("Mesh");
         ImGui::TextUnformatted(FileName(obj->GetModelPath()).c_str());
     }

@@ -932,6 +932,54 @@ void ObjectInteractionManager::DeleteObject(ScatteredObject* target) {
     ui::SetSelection(next, primary);
 }
 
+// Union / Intersect / Separate on the selection. Sources are cloned into the union (so a failed CSG leaves the scene
+// untouched) and then removed; Separate puts the stored parts back where the union stands.
+void ObjectInteractionManager::ApplyUnionRequest(ui::UnionRequest request) {
+    const std::vector<ScatteredObject*> sel = ui::GetSelection();
+    auto addToScene = [&](std::unique_ptr<ScatteredObject> o, ModelGroup* group) {
+        ScatteredObject* raw = o.get();
+        if (group) { group->members.push_back(raw); raw->parentModel = group; }
+        objects.push_back(raw);
+        engine.AddEntity(std::move(o));
+        return raw;
+    };
+    ModelGroup* common = sel.empty() || !sel.front() ? nullptr : sel.front()->parentModel;
+    for (auto* o : sel) if (o && o->parentModel != common) { common = nullptr; break; }
+
+    if (request == ui::UnionRequest::Separate) {
+        if (!ui::CanSeparateSelection()) return;
+        PushUndoNow();
+        std::vector<ScatteredObject*> made;
+        for (auto* u : sel) {
+            if (!u || !u->IsUnion()) { made.push_back(u); continue; }
+            for (auto& part : u->TakeUnionParts()) made.push_back(addToScene(std::move(part), u->parentModel));
+            RemoveObjectFromScene(u);
+        }
+        made.erase(std::remove(made.begin(), made.end(), nullptr), made.end());
+        ui::SuppressExplorerReveal();
+        ui::SetSelection(made, made.empty() ? nullptr : made.front());
+        return;
+    }
+
+    if (!ui::CanUnionSelection()) return;
+    std::vector<std::unique_ptr<ScatteredObject>> parts;
+    std::vector<UnionMode> modes;
+    for (auto* o : sel) {
+        parts.push_back(o->Clone());
+        modes.push_back(request == ui::UnionRequest::Intersect ? UnionMode::Intersect : (o->negate ? UnionMode::Negate : UnionMode::Add));
+    }
+    std::unique_ptr<ScatteredObject> u = ScatteredObject::MakeUnion(std::move(parts), modes);
+    if (!u) {
+        ui::LogAlways("[union] nothing is left of the selection (all cutters, or the parts do not overlap enough).");
+        return;
+    }
+    PushUndoNow();
+    ScatteredObject* raw = addToScene(std::move(u), common);
+    for (auto* o : sel) RemoveObjectFromScene(o);
+    ui::SuppressExplorerReveal();
+    ui::SetSelection({ raw }, raw);
+}
+
 void ObjectInteractionManager::DeleteSelection() {
     std::vector<ScatteredObject*> targets = ui::GetSelection();
     for (auto* target : targets) RemoveObjectFromScene(target);
@@ -1389,9 +1437,23 @@ void ObjectInteractionManager::Update(float dt) {
         return;
     }
 
+    // Solid modelling: Ctrl+Shift+G unions the selection, Ctrl+Shift+U separates a union (also the explorer menu).
+    {
+        ui::UnionRequest request = ui::ConsumeUnionRequest();
+        const bool ctrlShift = (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+        if (request == ui::UnionRequest::None && ctrlShift && !ui::IsEditingText() && !ui::IsContextMenuOpen()) {
+            if (IsKeyPressed(KEY_G)) request = ui::UnionRequest::Union;
+            else if (IsKeyPressed(KEY_U)) request = ui::UnionRequest::Separate;
+        }
+        if (request != ui::UnionRequest::None) {
+            ApplyUnionRequest(request);
+            return;
+        }
+    }
+
     // Ctrl+G groups the selection, Ctrl+U ungroups it.
     if (!ui::IsEditingText() && !ui::IsContextMenuOpen() &&
-        (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && !(IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))) {
         if (IsKeyPressed(KEY_G) && ui::CanGroupSelection()) {
             PushUndoNow();
             ui::GroupSelectedObjects();

@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <cstring>
 #include "../../../include/Engine/Backend/ScatteredObject.hpp"
+#include "../../../include/Engine/Backend/Csg.hpp"
 #include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Graphics/PostFX.hpp"
 #include "../../../include/Engine/Frontend/ui.hpp"
@@ -215,6 +216,69 @@ void ExtractMeshTriangles(const Mesh& mesh, std::vector<pcoll::Triangle>& out) {
     }
 }
 
+
+// The primitive part as CSG polygons: its shape mesh carried through `xf` (size, rotation, position) into the
+// union's frame. Winding is made to agree with the mesh's own normals so a mesh with flipped triangles still
+// yields a consistently wound solid.
+csg::Polys PartPolygons(ScatteredObject& part) {
+    csg::Polys out;
+    const Model& shape = gfx::GetShapeModel(part.GetShapeType());
+    const Vector3 size = *part.GetSizePtr();
+    const Matrix rot = part.GetRotationMatrix();
+    const Matrix xf = gfx::ComposeTRS(size, rot, *part.GetPosPtr());
+    const Vector3 invSize = { size.x != 0.0f ? 1.0f / size.x : 0.0f, size.y != 0.0f ? 1.0f / size.y : 0.0f, size.z != 0.0f ? 1.0f / size.z : 0.0f };
+    const Color c = *part.GetColorPtr();
+    const uint32_t packed = (uint32_t)c.r | ((uint32_t)c.g << 8) | ((uint32_t)c.b << 16) | (255u << 24);
+    for (int m = 0; m < shape.meshCount; ++m) {
+        const Mesh& mesh = shape.meshes[m];
+        if (!mesh.vertices) continue;
+        const int triCount = mesh.indices ? mesh.triangleCount : mesh.vertexCount / 3;
+        for (int t = 0; t < triCount; ++t) {
+            int idx[3];
+            for (int k = 0; k < 3; ++k) idx[k] = mesh.indices ? (int)mesh.indices[t * 3 + k] : t * 3 + k;
+            if (idx[0] >= mesh.vertexCount || idx[1] >= mesh.vertexCount || idx[2] >= mesh.vertexCount) continue;
+            csg::Vertex v[3];
+            Vector3 wp[3];
+            for (int k = 0; k < 3; ++k) {
+                const float* p = &mesh.vertices[idx[k] * 3];
+                wp[k] = Vector3Transform({ p[0], p[1], p[2] }, xf);
+                v[k].pos = { wp[k].x, wp[k].y, wp[k].z };
+                if (mesh.normals) {
+                    const float* n = &mesh.normals[idx[k] * 3];
+                    Vector3 wn = Vector3Normalize(Vector3Transform({ n[0] * invSize.x, n[1] * invSize.y, n[2] * invSize.z }, rot));
+                    v[k].normal = { wn.x, wn.y, wn.z };
+                }
+            }
+            const Vector3 geo = Vector3CrossProduct(Vector3Subtract(wp[1], wp[0]), Vector3Subtract(wp[2], wp[0]));
+            if (Vector3Length(geo) < 1e-9f) continue;
+            if (mesh.normals) {
+                const csg::V3 an = { v[0].normal.x + v[1].normal.x + v[2].normal.x, v[0].normal.y + v[1].normal.y + v[2].normal.y,
+                                     v[0].normal.z + v[1].normal.z + v[2].normal.z };
+                if (an.x * geo.x + an.y * geo.y + an.z * geo.z < 0.0) std::swap(v[1], v[2]);
+            }
+            csg::Polygon poly;
+            poly.verts = { v[0], v[1], v[2] };
+            poly.color = packed;
+            out.push_back(std::move(poly));
+        }
+    }
+    return out;
+}
+
+// Euler angles (degrees) that MatrixRotateXYZ turns into `m`.
+Vector3 EulerFromRotation(const Matrix& m) {
+    const float sy = std::clamp(-m.m2, -1.0f, 1.0f);
+    float x, y = asinf(sy), z;
+    if (fabsf(sy) < 0.99999f) {
+        x = atan2f(m.m6, m.m10);
+        z = atan2f(m.m1, m.m0);
+    } else {   // looking straight along an axis: x and z are one rotation, put it all on x
+        x = atan2f(-m.m9, m.m5);
+        z = 0.0f;
+    }
+    return { x * RAD2DEG, y * RAD2DEG, z * RAD2DEG };
+}
+
 } // namespace
 
 static Vector3 s_lodCameraPos = {0.0f, 0.0f, 0.0f};
@@ -318,6 +382,20 @@ Texture2D ScatteredObject::GetTexture() const {
 
 void ScatteredObject::ReleaseModel() {
     if (!hasOwnModel) return;
+    if (ownsProceduralMesh) {   // a union's mesh: private meshes and materials, nothing shared
+        if (model.materials != nullptr) {
+            for (int i = 0; i < model.materialCount; ++i) MemFree(model.materials[i].maps);
+            MemFree(model.materials);
+        }
+        for (int i = 0; i < model.meshCount; ++i) UnloadMesh(model.meshes[i]);
+        MemFree(model.meshes);
+        MemFree(model.meshMaterial);
+        model = Model{};
+        unionVertexColors.clear();
+        ownsProceduralMesh = false;
+        hasOwnModel = false;
+        return;
+    }
     animator.reset();   // frees its private meshes; the clips below may go with the shared entry
     // Private materials array only; meshes belong to the shared entry.
     if (model.materials != nullptr) {
@@ -552,12 +630,177 @@ std::unique_ptr<ScatteredObject> ScatteredObject::Clone() const {
         copy->SetModel(modelPath);
         *copy->GetSizePtr() = size;
     }
+    copy->negate = negate;
+    if (IsUnion()) {
+        for (const UnionPart& p : unionParts) copy->unionParts.push_back({ p.obj->Clone(), p.mode });
+        copy->useGlobalColor = useGlobalColor;
+        copy->RebuildUnionMesh();
+        copy->unionBaseSize = unionBaseSize;
+    }
     copy->collisionAccuracy = collisionAccuracy;
     copy->canCollide = canCollide;
     copy->transparency = transparency;
     copy->surface = surface;
     copy->useModelMaterial = useModelMaterial;
     return copy;
+}
+
+std::unique_ptr<ScatteredObject> ScatteredObject::MakeUnion(std::vector<std::unique_ptr<ScatteredObject>> parts,
+                                                             const std::vector<UnionMode>& modes) {
+    if (parts.empty() || parts.size() != modes.size()) return nullptr;
+    size_t first = parts.size();
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (!parts[i] || parts[i]->HasModel()) return nullptr;   // imported meshes are not supported
+        if (first == parts.size() && modes[i] != UnionMode::Negate) first = i;
+    }
+    if (first == parts.size()) return nullptr;   // nothing but cutters
+
+    auto u = std::make_unique<ScatteredObject>(Vector3Zero(), Vector3One(), *parts[first]->GetColorPtr(), ShapeType::Cube);
+    u->SetName("Union");
+    u->anchored = parts[first]->anchored;
+    u->canCollide = parts[first]->canCollide;
+    u->surface = parts[first]->surface;
+    u->useModelMaterial = false;   // a primitive's material, not a file's
+    for (size_t i = 0; i < parts.size(); ++i) {
+        parts[i]->parentModel = nullptr;
+        u->unionParts.push_back({ std::move(parts[i]), modes[i] });
+    }
+    Vector3 center;
+    if (!u->RebuildUnionMesh(&center)) return nullptr;
+    // The parts were in world space: re-express them relative to the union's centre.
+    for (UnionPart& p : u->unionParts) *p.obj->GetPosPtr() = Vector3Subtract(*p.obj->GetPosPtr(), center);
+    u->pos = center;
+    u->size = u->unionBaseSize;
+    return u;
+}
+
+bool ScatteredObject::RebuildUnionMesh(Vector3* outCenter) {
+    if (unionParts.empty()) return false;
+    csg::Polys result;
+    bool started = false;
+    for (UnionPart& p : unionParts) {
+        if (p.mode != UnionMode::Add) continue;
+        csg::Polys polys = PartPolygons(*p.obj);
+        result = started ? csg::Union(result, polys) : std::move(polys);
+        started = true;
+    }
+    for (UnionPart& p : unionParts) {
+        if (p.mode != UnionMode::Negate || !started) continue;
+        result = csg::Subtract(result, PartPolygons(*p.obj));
+    }
+    for (UnionPart& p : unionParts) {
+        if (p.mode != UnionMode::Intersect) continue;
+        csg::Polys polys = PartPolygons(*p.obj);
+        result = started ? csg::Intersect(result, polys) : std::move(polys);
+        started = true;
+    }
+    const csg::Bounds bounds = csg::BoundsOf(result);
+    const csg::TriSoup soup = csg::Triangulate(result);
+    if (!bounds.valid || soup.TriangleCount() == 0) return false;
+
+    const csg::V3 ext = { std::max(bounds.max.x - bounds.min.x, 1e-3), std::max(bounds.max.y - bounds.min.y, 1e-3),
+                          std::max(bounds.max.z - bounds.min.z, 1e-3) };
+    const csg::V3 mid = { (bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5, (bounds.min.z + bounds.max.z) * 0.5 };
+
+    ReleaseModel();   // the old mesh; ReleaseModel clears unionVertexColors too
+
+    // raylib meshes index with 16 bits: split into pieces that fit.
+    constexpr size_t kChunkVerts = 65535;   // a multiple of 3
+    const size_t totalVerts = soup.color.size();
+    const int meshCount = (int)((totalVerts + kChunkVerts - 1) / kChunkVerts);
+    model = Model{};
+    model.transform = MatrixIdentity();
+    model.meshCount = meshCount;
+    model.meshes = (Mesh*)MemAlloc((unsigned int)meshCount * sizeof(Mesh));
+    model.meshMaterial = (int*)MemAlloc((unsigned int)meshCount * sizeof(int));
+    unionVertexColors.assign((size_t)meshCount, {});
+    for (int mi = 0; mi < meshCount; ++mi) {
+        const size_t begin = (size_t)mi * kChunkVerts;
+        const size_t count = std::min(kChunkVerts, totalVerts - begin);
+        Mesh mesh = { 0 };
+        mesh.vertexCount = (int)count;
+        mesh.triangleCount = (int)(count / 3);
+        mesh.vertices = (float*)MemAlloc((unsigned int)(count * 3 * sizeof(float)));
+        mesh.normals = (float*)MemAlloc((unsigned int)(count * 3 * sizeof(float)));
+        mesh.texcoords = (float*)MemAlloc((unsigned int)(count * 2 * sizeof(float)));
+        mesh.colors = (unsigned char*)MemAlloc((unsigned int)(count * 4));
+        mesh.indices = (unsigned short*)MemAlloc((unsigned int)(count * sizeof(unsigned short)));
+        for (size_t i = 0; i < count; ++i) {
+            const size_t s = begin + i;
+            mesh.vertices[i * 3 + 0] = (float)((soup.pos[s * 3 + 0] - mid.x) / ext.x);
+            mesh.vertices[i * 3 + 1] = (float)((soup.pos[s * 3 + 1] - mid.y) / ext.y);
+            mesh.vertices[i * 3 + 2] = (float)((soup.pos[s * 3 + 2] - mid.z) / ext.z);
+            // Unit-space normal of a surface that gets stretched by `ext`: n * ext.
+            Vector3 n = Vector3Normalize({ (float)(soup.nrm[s * 3 + 0] * ext.x), (float)(soup.nrm[s * 3 + 1] * ext.y), (float)(soup.nrm[s * 3 + 2] * ext.z) });
+            mesh.normals[i * 3 + 0] = n.x; mesh.normals[i * 3 + 1] = n.y; mesh.normals[i * 3 + 2] = n.z;
+            mesh.texcoords[i * 2 + 0] = (float)(soup.pos[s * 3 + 0] - mid.x); mesh.texcoords[i * 2 + 1] = (float)(soup.pos[s * 3 + 2] - mid.z);
+            const uint32_t col = soup.color[s];
+            mesh.colors[i * 4 + 0] = (unsigned char)(col & 0xFF); mesh.colors[i * 4 + 1] = (unsigned char)((col >> 8) & 0xFF);
+            mesh.colors[i * 4 + 2] = (unsigned char)((col >> 16) & 0xFF); mesh.colors[i * 4 + 3] = 255;
+            mesh.indices[i] = (unsigned short)i;
+        }
+        unionVertexColors[(size_t)mi].assign(mesh.colors, mesh.colors + count * 4);
+        if (useGlobalColor) memset(mesh.colors, 255, count * 4);
+        UploadMesh(&mesh, false);
+        model.meshes[mi] = mesh;
+        model.meshMaterial[mi] = 0;
+    }
+    // One material, the primitives' lit one.
+    const Material& cubeMat = gfx::GetShapeModel(ShapeType::Cube).materials[0];
+    model.materialCount = 1;
+    model.materials = (Material*)MemAlloc(sizeof(Material));
+    model.materials[0] = cubeMat;
+    model.materials[0].maps = (MaterialMap*)MemAlloc(kMaxMaterialMaps * sizeof(MaterialMap));
+    memcpy(model.materials[0].maps, cubeMat.maps, kMaxMaterialMaps * sizeof(MaterialMap));
+    model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = gfx::GetDefaultTexture();
+
+    hasOwnModel = true;
+    ownsProceduralMesh = true;
+    modelExtent = { (float)ext.x, (float)ext.y, (float)ext.z };
+    unionBaseSize = modelExtent;
+    geometryVersion++;
+    if (!texturePath.empty()) textureNeedsBind = true;
+    if (outCenter) *outCenter = { (float)mid.x, (float)mid.y, (float)mid.z };
+    return true;
+}
+
+void ScatteredObject::ApplyUnionColors() {
+    if (!ownsProceduralMesh) return;
+    for (int mi = 0; mi < model.meshCount && mi < (int)unionVertexColors.size(); ++mi) {
+        Mesh& mesh = model.meshes[mi];
+        const std::vector<unsigned char>& src = unionVertexColors[(size_t)mi];
+        if (useGlobalColor) memset(mesh.colors, 255, src.size());
+        else memcpy(mesh.colors, src.data(), src.size());
+        UpdateMeshBuffer(mesh, 3, mesh.colors, (int)src.size(), 0);
+    }
+}
+
+void ScatteredObject::SetUseGlobalColor(bool on) {
+    if (useGlobalColor == on) return;
+    useGlobalColor = on;
+    ApplyUnionColors();
+}
+
+std::vector<std::unique_ptr<ScatteredObject>> ScatteredObject::TakeUnionParts() {
+    std::vector<std::unique_ptr<ScatteredObject>> out;
+    const Vector3 scale = { unionBaseSize.x != 0.0f ? size.x / unionBaseSize.x : 1.0f, unionBaseSize.y != 0.0f ? size.y / unionBaseSize.y : 1.0f,
+                            unionBaseSize.z != 0.0f ? size.z / unionBaseSize.z : 1.0f };
+    const Matrix rot = GetRotationMatrix();
+    for (UnionPart& p : unionParts) {
+        ScatteredObject& o = *p.obj;
+        Vector3 local = *o.GetPosPtr();
+        local = { local.x * scale.x, local.y * scale.y, local.z * scale.z };
+        *o.GetPosPtr() = Vector3Add(pos, Vector3Transform(local, rot));
+        *o.GetSizePtr() = { o.size.x * scale.x, o.size.y * scale.y, o.size.z * scale.z };
+        *o.GetRotationPtr() = EulerFromRotation(MatrixMultiply(o.GetRotationMatrix(), rot));
+        o.negate = p.mode == UnionMode::Negate;
+        o.canCollide = o.negate ? false : canCollide;
+        o.anchored = anchored;
+        out.push_back(std::move(p.obj));
+    }
+    unionParts.clear();
+    ReleaseModel();
+    return out;
 }
 
 void ScatteredObject::UpdateLOD() {
@@ -589,6 +832,8 @@ void ScatteredObject::UpdateLOD() {
 
 void ScatteredObject::Draw() {
     if (IsHiddenEffective()) return;
+    // A cutter is an editor aid: it never shows in play and casts no shadow.
+    if (negate && (ui::IsPlayActive() || gfx::IsInShadowPass())) return;
     // When the shadow map is being reused, the pass is still entered and every
     // entity is still called -- Graphics.cpp sets a 0x0 scissor so the
     // fragments are all discarded. Everything below (LOD, frustum extraction,
@@ -651,6 +896,9 @@ void ScatteredObject::Draw() {
     // Apply transparency to alpha channel (0 = visible, 1 = invisible)
     Color drawColor = color;
     drawColor.a = (unsigned char)(color.a * (1.0f - transparency));
+    // A union keeps its parts' colours in the mesh (vertex colours multiply the tint), unless it uses one global colour.
+    if (ownsProceduralMesh && !useGlobalColor) drawColor = { 255, 255, 255, drawColor.a };
+    if (negate) drawColor = { 255, 70, 70, 110 };
 
     if (hasOwnModel) {
         if (animator) {

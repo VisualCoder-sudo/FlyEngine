@@ -543,6 +543,10 @@ which then wins over the machine's for that project's player. Player flags: `--n
 ## Editor bottom panel
 
 The bottom of the editor is one panel, docked flush between the explorer and the properties
+## Unions
+
+Select two or more primitive parts (not imported meshes), then right-click > **Union** (Ctrl+Shift+G) to merge them into one solid. Every face keeps the colour of the part it came from; tick **Use global colour** in the Properties panel to paint the whole union in one colour instead. Mark a part **Negate** first and it is carved out of the union (it shows as a red ghost in the editor and never collides). **Intersect** keeps only the volume the selected parts share. **Separate** (Ctrl+Shift+U) gives the original parts back, scripts and nodes included. Unions are saved with the scene (scene format 34).
+
 panel and above the command console, with two tabs:
 
 - **Assets** - the asset browser.

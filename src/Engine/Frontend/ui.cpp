@@ -552,6 +552,24 @@ static bool g_duplicateRequested = false;
 void RequestDuplicate() { g_duplicateRequested = true; }
 bool ConsumeDuplicateRequest() { bool r = g_duplicateRequested; g_duplicateRequested = false; return r; }
 
+static UnionRequest g_unionRequest = UnionRequest::None;
+void RequestUnion(UnionRequest request) { g_unionRequest = request; }
+UnionRequest ConsumeUnionRequest() { UnionRequest r = g_unionRequest; g_unionRequest = UnionRequest::None; return r; }
+bool CanUnionSelection() {
+    if (g_playActive || g_selection.size() < 2) return false;
+    for (auto* o : g_selection) {
+        if (!o || o->IsUnion() || o->HasModel()) return false;
+    }
+    return true;
+}
+bool CanSeparateSelection() {
+    if (g_playActive) return false;
+    for (auto* o : g_selection) {
+        if (o && o->IsUnion()) return true;
+    }
+    return false;
+}
+
 TransformTool GetActiveTool() {
     return g_activeTool;
 }

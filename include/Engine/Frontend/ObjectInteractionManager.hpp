@@ -87,6 +87,7 @@ private:
     // Deletes whatever is selected (water, terrain, or objects). False if nothing was.
     bool DeleteSelectedAnything();
     void DeleteWaterBody(WaterBody* target);
+    void ApplyUnionRequest(ui::UnionRequest request);
     void RemoveObjectFromScene(ScatteredObject* target);
     void RemoveEmptyModels();
 
