@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -287,10 +288,10 @@ bool LaunchDetached(const std::string& exe, const std::vector<std::string>& args
 
     if (rc != 0) return false;
 
-    // Reap the intermediate child; posix_spawn already forked and exec'd, so
-    // this returns immediately and cannot block on the editor itself.
-    int status = 0;
-    ::waitpid(pid, &status, 0);
+    // posix_spawn starts the program itself (no intermediate process), so waiting here would block until it exits:
+    // the editor would hang while the player or a new Project Manager runs. A detached thread reaps it instead, so
+    // it never lingers as a zombie.
+    std::thread([pid] { int status = 0; ::waitpid(pid, &status, 0); }).detach();
     return true;
 #endif
 }

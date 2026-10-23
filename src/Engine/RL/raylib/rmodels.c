@@ -5487,7 +5487,14 @@ static Model LoadGLTF(const char *fileName)
         // Force reading data buffers (fills buffer_view->buffer->data)
         // NOTE: If an uri is defined to base64 data or external path, it's automatically loaded
         result = cgltf_load_buffers(&options, data, fileName);
-        if (result != cgltf_result_success) TRACELOG(LOG_INFO, "MODEL: [%s] Failed to load mesh/material buffers", fileName);
+        if (result != cgltf_result_success)
+        {
+            // FlyEngine: a missing .bin left buffer->data NULL and the attribute copies below crashed on it.
+            TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to load mesh/material buffers", fileName);
+            cgltf_free(data);
+            UnloadFileData(fileData);
+            return model;
+        }
 
         int primitivesCount = 0;
         bool dracoCompression = false;

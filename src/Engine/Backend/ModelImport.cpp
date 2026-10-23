@@ -209,17 +209,28 @@ void CopyGltfWithDeps(const fs::path& src, const fs::path& targetDir,
         if (StartsWith(uri, "data:")) {
             out.append(uri);
         } else {
-            std::string base = fs::path(uri).filename().string();
-            if (base.empty() || base == uri) {
+            // URIs are percent-encoded ("my%20tex.png"): decode for the filesystem, keep the encoded name in the JSON.
+            std::string decoded;
+            for (size_t i = 0; i < uri.size(); ++i) {
+                if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit((unsigned char)uri[i + 1]) && std::isxdigit((unsigned char)uri[i + 2])) {
+                    decoded.push_back((char)std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+                    i += 2;
+                } else decoded.push_back(uri[i]);
+            }
+            std::string base = fs::path(decoded).filename().string();
+            std::string baseEnc = fs::path(uri).filename().string();
+            if (base.empty() || base == "." || base == ".." || baseEnc.empty()) {
                 out.append(uri);
             } else {
-                fs::path srcFile = srcDir / uri;
-                if (fs::exists(srcFile)) {
+                // Files beside the .gltf (the .bin buffer, flat textures) need copying too, not only subfolder ones.
+                fs::path srcFile = srcDir / decoded;
+                std::error_code ec;
+                if (fs::exists(srcFile, ec) && fs::is_regular_file(srcFile, ec)) {
                     CopyFile(srcFile, targetDir / base);
                 } else {
                     missing.push_back(uri);
                 }
-                out.append(base);
+                out.append(baseEnc);
             }
         }
         pos = q2 + 1; // closing quote handled next iteration

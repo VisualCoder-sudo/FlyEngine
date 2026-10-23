@@ -31,6 +31,9 @@ public:
 
     void SetPhysicsSimulation(phys::Simulation* ps) { physicsSim = ps; }
 
+    // Pushes one undo step of the current scene; the AI assistant calls it before applying a reply's commands.
+    void PushUndoSnapshot() { PushUndoNow(); }
+
 private:
     struct DragStartState {
         Vector3 pos = { 0.0f, 0.0f, 0.0f };

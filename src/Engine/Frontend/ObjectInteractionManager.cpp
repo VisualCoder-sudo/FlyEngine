@@ -1616,7 +1616,8 @@ void ObjectInteractionManager::Update(float dt) {
         if (action == ui::MenuAction::SpawnCylinder) type = ShapeType::Cylinder;
         if (action == ui::MenuAction::SpawnWedge)    type = ShapeType::Wedge;
 
-        auto newObj = std::make_unique<ScatteredObject>(spawnPos, Vector3{ 1.5f, 1.5f, 1.5f }, SKYBLUE, type);
+        auto newObj = std::make_unique<ScatteredObject>(spawnPos, Vector3{ 1.5f, 1.5f, 1.5f }, WHITE, type);
+        newObj->SetTexturePath(textureManager::DefaultPartTexture(project::GetCurrentProject().path), project::GetCurrentProject().path);
         objects.push_back(newObj.get());
         engine.AddEntity(std::move(newObj));
         BasicTerrain::SetActive(nullptr);   // inserting props closes terrain tools

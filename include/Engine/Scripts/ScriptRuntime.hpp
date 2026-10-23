@@ -118,6 +118,26 @@ public:
     // prefab's first object (null if the file is missing or not a prefab); `outObjects` gets all of them.
     ScatteredObject* SpawnPrefab(const std::string& file, Vector3 at, std::vector<ScatteredObject*>* outObjects = nullptr);
     bool AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError);
+    // ---- water and terrain (console `water` / `terrain`) ----
+    // `props` are Key/value pairs in console syntax. Water: Position, Size (x, y, z; x and z are the extent), Height, Color
+    // "(r, g, b[, a])", Transparency, PlayerCollision. Terrain: Position, Size "(width, depth)", Height (flat level),
+    // Hills (noise amplitude in metres, 0 = flat), Seed. Nothing is created when a property is wrong; returns "" on success,
+    // else the error.
+    using PropList = std::vector<std::pair<std::string, std::string>>;
+    std::string CreateWater(const std::string& name, const PropList& props);
+    std::string CreateTerrain(const std::string& name, const PropList& props);
+    // Removes the water body or terrain called `name`. Returns "water", "terrain" or "" when there is none.
+    std::string DeleteEnvironment(const std::string& name);
+    // Renames a water body or terrain; false when there is none.
+    bool RenameEnvironment(const std::string& from, const std::string& to);
+    bool EnvironmentNameTaken(const std::string& name) const;
+    // City generator (console `city`): Position "(x, z)", Organic, Seed, Grid "(x, z)" blocks (2..64), CellSize.
+    std::string CreateCity(const std::string& name, const PropList& props);
+    // Child node of an object (console `node`): type SpotLight, PointLight, SurfaceLight, Decal or Texture. Props: Name, Enabled,
+    // Face, Color "(r, g, b)", Brightness, Range, Angle, Falloff, Shadows, Texture, Tint, Transparency, Tile "(x, y)", Offset "(x, y)".
+    std::string AddNode(ScatteredObject* obj, const std::string& type, const PropList& props);
+    std::string RemoveNode(ScatteredObject* obj, const std::string& nodeName);
+
     // Name of the first object a ray hits ("" for none). Needs the simulation.
     std::string RayCastName(const std::string& origin, const std::string& dir, float maxDistance, std::string& outError);
 

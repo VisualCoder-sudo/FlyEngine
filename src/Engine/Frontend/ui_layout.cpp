@@ -3,6 +3,7 @@
 // Everything is user-adjustable: drag a panel's title to move it to the other side or reorder it, drag the edges
 // to resize, right-click the title to close it, or use Preferences > Layout. Saved to <config dir>/layout.cfg.
 #include "ui_internal.hpp"
+#include "../../../include/Engine/AI/AI.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
 #include <algorithm>
@@ -26,7 +27,7 @@ constexpr float kDragStart = 5.0f;    // pixels the mouse must travel before a t
 
 ImU32 AccentU32(float a) { return ImGui::ColorConvertFloat4ToU32(theme::AccentVec(a)); }
 
-const char* const kPanelNames[kPanelCount] = { "Explorer", "Properties", "Terrain", "Assets / Output" };
+const char* const kPanelNames[kPanelCount] = { "Explorer", "Properties", "Terrain", "Assets / Output", "AI Assistant" };
 
 LayoutState s_layout;
 bool s_loaded = false;
@@ -37,6 +38,7 @@ void ResetDefaults(LayoutState& l) {
     l.panel[(int)PanelId::Properties] = { true, DockSide::Right, 0, 1.0f };
     l.panel[(int)PanelId::Terrain]    = { true, DockSide::Right, 1, 1.0f };
     l.panel[(int)PanelId::Bottom]     = { true, DockSide::Left,  0, 1.0f };
+    l.panel[(int)PanelId::AI]         = { true, DockSide::Left,  1, 1.0f };   // under the Explorer
 }
 
 std::string LayoutPath() {
@@ -81,12 +83,18 @@ void EnsureLoaded() {
     }
 }
 
-// Visible panels docked to `side`, top to bottom.
-int ColumnPanels(DockSide side, PanelId out[kPanelCount - 1]) {
+// Shown right now. The AI panel also needs the feature switched on in Preferences > AI, so it takes no room while off.
+bool PanelShown(int i) {
+    if (!s_layout.panel[i].visible) return false;
+    return i != (int)PanelId::AI || (ai::GetSettings().enabled && ai::Available());
+}
+
+// Visible panels docked to `side`, top to bottom (the bottom panel is not in a column).
+int ColumnPanels(DockSide side, PanelId out[kPanelCount]) {
     int n = 0;
-    for (int i = 0; i < kPanelCount - 1; ++i) {
-        const PanelState& p = s_layout.panel[i];
-        if (p.visible && p.side == side) out[n++] = static_cast<PanelId>(i);
+    for (int i = 0; i < kPanelCount; ++i) {
+        if (i == (int)PanelId::Bottom) continue;
+        if (PanelShown(i) && s_layout.panel[i].side == side) out[n++] = static_cast<PanelId>(i);
     }
     std::stable_sort(out, out + n, [](PanelId a, PanelId b) {
         return s_layout.panel[(int)a].order < s_layout.panel[(int)b].order;
@@ -165,6 +173,7 @@ Rectangle TitleHandle(PanelId id, const Rectangle& r) {
     case PanelId::Explorer: return { r.x, r.y, std::min(r.width, 96.0f), 26.0f };
     case PanelId::Properties: return { r.x, r.y, r.width, kPanelTitleH - 2.0f };
     case PanelId::Terrain: return { r.x, r.y, r.width, kPanelTitleH - 2.0f };
+    case PanelId::AI: return { r.x, r.y, r.width, kPanelTitleH - 2.0f };
     default: return { 0, 0, 0, 0 };
     }
 }
@@ -277,7 +286,7 @@ void SaveLayout() {
 
 Rectangle GetPanelBounds(PanelId id) {
     EnsureLoaded();
-    if (!s_layout.panel[(int)id].visible) return Rectangle{ 0, 0, 0, 0 };
+    if (!PanelShown((int)id)) return Rectangle{ 0, 0, 0, 0 };
     return Compute().rect[(int)id];
 }
 
@@ -354,9 +363,9 @@ void UpdatePanelLayout() {
         }
     }
 
-    for (int i = 0; i < kPanelCount - 1; ++i) {
+    for (int i = 0; i < kPanelCount; ++i) {
         const PanelId id = static_cast<PanelId>(i);
-        if (!s_layout.panel[i].visible) continue;
+        if (i == (int)PanelId::Bottom || !PanelShown(i)) continue;
         if (!CheckCollisionPointRec(mouse, TitleHandle(id, c.rect[i]))) continue;
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
             s_openMenu = true;

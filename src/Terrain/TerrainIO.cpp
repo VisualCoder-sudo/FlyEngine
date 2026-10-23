@@ -293,9 +293,10 @@ bool SaveHeightmap(const Terrain& terrain, const std::string& path) {
 
 static float Noise2D(float x, float z, int seed) {
     // Simple hash-based noise
-    int n = (int)(x * 123.456f) + (int)(z * 789.123f) + seed * 4567;
+    // Unsigned so the hash wraps instead of overflowing (same bits as the old int maths).
+    uint32_t n = (uint32_t)(int)(x * 123.456f) + (uint32_t)(int)(z * 789.123f) + (uint32_t)seed * 4567u;
     n = (n << 13) ^ n;
-    return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
+    return (1.0f - (float)((n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.0f);
 }
 
 static float FractalNoise(float x, float z, const NoiseParams& params) {

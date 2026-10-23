@@ -1,5 +1,6 @@
 // ProjectManager.cpp - the "Projects" hub window.
 #include "../../../include/Engine/Scripts/ScriptLauncher.hpp"
+#include "../../../include/Engine/AI/AI.hpp"
 #include "../../../include/Engine/Platform/WinBegin.h"
 
 #ifdef _WIN32
@@ -18,6 +19,7 @@
 #include "../../../include/Engine/Backend/ScenePersistence.hpp"
 #include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
+#include "../../../include/Engine/Frontend/PluginStore.hpp"
 #include "../../../include/Engine.hpp"
 #include "raylib.h"
 #include "cJSON.h"
@@ -1063,6 +1065,7 @@ bool SaveProjectFile(const std::string& projectFolder, const std::vector<Scatter
         // The scene is on disk, so what it refers to is settled: imported sounds are permanent now, and the ones
         // nothing mentions any more go.
         for (const std::string& gone : audioassets::Commit(projectFolder)) ui::LogAlways("[audio] removed unused %s", gone.c_str());
+        ai::CommitPendingScripts(projectFolder);   // scripts the AI wrote are part of the project from now on
     }
     return saved;
 }
@@ -1171,7 +1174,7 @@ Info ShowProjectManager() {
     std::vector<Entry> recent = refreshRecent();
 
     int selected = -1;
-    int scroll = 0;
+    float scrollY = 0.0f, scrollTarget = 0.0f;   // Recent list scroll in pixels: the wheel moves the target, the view eases to it
     std::string lastClickPath;
     double lastClickTime = 0.0;
 
@@ -1189,6 +1192,20 @@ Info ShowProjectManager() {
     bool confirmDelete = false;
     std::string deletePath;
     std::string deleteName;
+
+    // File menu > Manage Plugins. No project (and no plugin host) is open here, so this works on the plugin folders
+    // directly: the global ones, and the local ones of one of the recent projects.
+    bool fileMenuOpen = false;
+    bool pluginsOpen = false;
+    bool plugGlobalTab = true;
+    int plugProject = -1;                       // index into `recent` whose local plugins the Local tab shows
+    bool plugPicking = false;                   // Local tab: choosing the project (otherwise showing the chosen one)
+    std::vector<pluginstore::Entry> plugList;
+    int plugScroll = 0;
+    std::string plugMsg;
+    bool plugMsgErr = false;
+    std::string plugImportRoot;                 // where the file dialog in flight will install to
+    std::string plugConfirmRemove;              // plugin whose Delete is waiting for a second click
 
     Info result;
     bool done = false;
@@ -1210,10 +1227,29 @@ Info ShowProjectManager() {
         return true;
     };
 
+    const auto plugRoot = [&](bool global) -> std::string {
+        if (global) return pluginstore::GlobalRoot();
+        if (plugProject < 0 || plugProject >= static_cast<int>(recent.size()) || recent[plugProject].missing) return std::string();
+        return pluginstore::LocalRoot(recent[plugProject].path);
+    };
+    const auto plugRefresh = [&]() {
+        plugList = pluginstore::List(plugRoot(plugGlobalTab), plugGlobalTab);
+        const int most = std::max(0, static_cast<int>(plugList.size()) - 1);
+        plugScroll = std::min(plugScroll, most);
+        plugConfirmRemove.clear();
+    };
+    const auto plugSay = [&](const std::string& msg, bool err) { plugMsg = msg; plugMsgErr = err; };
+
     while (!done && !WindowShouldClose()) {
         if (GetTime() > errorUntil) errorMsg.clear();
-        SetExitKey(pickerOpen ? KEY_NULL : KEY_ESCAPE);   // Esc closes the template picker instead of the window
-        const bool modal = confirmDelete || pickerOpen;
+        // Esc closes the open popup (template picker, plugin window, File menu) instead of the window.
+        SetExitKey(pickerOpen || pluginsOpen || fileMenuOpen ? KEY_NULL : KEY_ESCAPE);
+        const bool promptUp = platform::GetPathPrompt().active;
+        if (!promptUp && IsKeyPressed(KEY_ESCAPE)) {
+            if (pluginsOpen) pluginsOpen = false;
+            else if (fileMenuOpen) fileMenuOpen = false;
+        }
+        const bool modal = confirmDelete || pickerOpen || pluginsOpen;
         pickerJustOpened = false;
 
         Vector2 mouse = GetMousePosition();
@@ -1231,8 +1267,15 @@ Info ShowProjectManager() {
 
         constexpr float rowH = 40.0f;
         const int visible = std::max(1, static_cast<int>((btnY1 - 12.0f - 132.0f) / rowH));
-        const int maxScroll = std::max(0, static_cast<int>(recent.size()) - visible);
-        if (scroll > maxScroll) scroll = maxScroll;
+        const float viewH = static_cast<float>(visible) * rowH;
+        const float maxScroll = std::max(0.0f, static_cast<float>(recent.size()) * rowH - viewH);
+        scrollTarget = std::min(std::max(scrollTarget, 0.0f), maxScroll);
+        {   // exponential ease, independent of the frame rate; snaps when close so it comes to rest
+            const float k = 1.0f - std::exp(-GetFrameTime() * 16.0f);
+            scrollY += (scrollTarget - scrollY) * k;
+            if (std::fabs(scrollTarget - scrollY) < 0.4f) scrollY = scrollTarget;
+            scrollY = std::min(std::max(scrollY, 0.0f), maxScroll);
+        }
 
         // The folder picker is asynchronous (native dialog on another thread, or the
         // editor's text prompt), so its result only shows up here on a later frame.
@@ -1248,7 +1291,7 @@ Info ShowProjectManager() {
         if (!modal) {
             const Rectangle listRec = { 36.0f, 132.0f, lw - 32.0f, static_cast<float>(visible) * rowH };
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mouse, listRec)) {
-                const int row = static_cast<int>((mouse.y - listRec.y) / rowH) + scroll;
+                const int row = static_cast<int>(std::floor((mouse.y - listRec.y + scrollY) / rowH));
                 if (row >= 0 && row < static_cast<int>(recent.size())) {
                     selected = row;
                     // Double-click (two clicks on the same row within 350 ms) opens it.
@@ -1262,10 +1305,9 @@ Info ShowProjectManager() {
                     selected = -1;
                 }
             }
-            const int wheel = static_cast<int>(GetMouseWheelMove());
-            if (wheel != 0 && CheckCollisionPointRec(mouse, listRec)) {
-                scroll -= wheel;
-                scroll = std::max(0, std::min(scroll, maxScroll));
+            const float wheel = GetMouseWheelMove();
+            if (wheel != 0.0f && CheckCollisionPointRec(mouse, listRec)) {
+                scrollTarget = std::min(std::max(scrollTarget - wheel * rowH * 1.5f, 0.0f), maxScroll);
             }
         }
 
@@ -1275,17 +1317,34 @@ Info ShowProjectManager() {
 
         // Header bar
         DrawRectangleRec({ 0, 0, W, 64 }, theme::TITLE);
+        DrawRectangleRec({ 0, 0, W, 25 }, theme::BG);   // menu bar strip, apart from the title block
+        DrawLine(0, 25, static_cast<int>(W), 25, theme::DIVIDER);
         DrawLine(0, 64, static_cast<int>(W), 64, theme::ACCENT);
 
         // =========================================================================
         // 2. DRAW TEXTURE IN THE FRAME LOOP
         // =========================================================================
         if (folderTex.id > 0) {
-            DrawTextureEx(folderTex, Vector2{ 20.0f, 10.0f }, 0.0f, folderScale, WHITE);
+            DrawTextureEx(folderTex, Vector2{ 20.0f, 30.0f }, 0.0f, folderScale * (30.0f / 44.0f), WHITE);
         }
 
-        DrawTextU("Flyengine", 80, 10, 26, theme::TEXT);
-        DrawTextU("Project Manager", 80, 40, 14, theme::TEXT_MUTED);
+        DrawTextU("Flyengine", 64, 28, 22, theme::TEXT);
+        DrawTextU("Project Manager", 64, 49, 12, theme::TEXT_MUTED);
+
+        // Menu bar along the top edge, text only like a desktop app's: File is the only menu for now. The dropdown is
+        // drawn with the other overlays at the end of the frame.
+        const Rectangle fileBtn = { 6.0f, 2.0f, MeasureTextU("File", 14) + 20.0f, 22.0f };
+        const Rectangle fileDrop = { fileBtn.x, fileBtn.y + fileBtn.height + 1.0f, 190.0f, 34.0f };
+        {
+            const bool overBtn = Hovered(fileBtn) && !modal;
+            if (overBtn || fileMenuOpen) DrawRectangleRounded(fileBtn, 0.2f, 4, theme::WIDGET_HOVER);
+            DrawTextU("File", fileBtn.x + 10, fileBtn.y + 3, 14, overBtn || fileMenuOpen ? theme::TEXT : theme::TEXT_MUTED);
+            if (overBtn) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+            if (!modal) {
+                if (overBtn && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) fileMenuOpen = !fileMenuOpen;
+                else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !overBtn && !Hovered(fileDrop)) fileMenuOpen = false;
+            }
+        }
 
         // Left panel
         DrawRectangleRec({ 20, 84, lw, bottom - 84.0f }, theme::PANEL);
@@ -1298,11 +1357,12 @@ Info ShowProjectManager() {
             DrawTextU("Create one on the right, or open an", 36, 172, 12, theme::TEXT_DIM);
             DrawTextU("existing .flyproj file.", 36, 188, 12, theme::TEXT_DIM);
         } else {
-            for (int i = 0; i < visible; ++i) {
-                const int idx = i + scroll;
-                if (idx >= static_cast<int>(recent.size())) break;
-                const Rectangle row = { 36, 132 + static_cast<float>(i) * rowH, lw - 32.0f, rowH - 4 };
-                const bool hovered = CheckCollisionPointRec(mouse, row);
+            const Rectangle listClip = { 36.0f, 132.0f, lw - 32.0f, viewH };
+            BeginScissorMode(static_cast<int>(listClip.x), static_cast<int>(listClip.y), static_cast<int>(listClip.width), static_cast<int>(listClip.height));
+            const int first = static_cast<int>(std::floor(scrollY / rowH));
+            for (int idx = first; idx < static_cast<int>(recent.size()) && idx <= first + visible + 1; ++idx) {
+                const Rectangle row = { 36, 132.0f + static_cast<float>(idx) * rowH - scrollY, lw - 32.0f, rowH - 4 };
+                const bool hovered = CheckCollisionPointRec(mouse, row) && CheckCollisionPointRec(mouse, listClip) && !modal;
                 if (idx == selected) {
                     DrawRectangleRec(row, theme::ACCENT_SOFT);
                     DrawRectangleRec({ row.x - 3, row.y, 3, row.height }, theme::ACCENT);
@@ -1324,6 +1384,12 @@ Info ShowProjectManager() {
                     e.missing ? theme::DANGER : theme::TEXT_MUTED);
 
                 if (hovered) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+            }
+            EndScissorMode();
+            if (maxScroll > 0.0f) {   // thumb: fades in only when the list overflows
+                const float th = std::max(24.0f, viewH * viewH / (viewH + maxScroll));
+                const float ty = listClip.y + (viewH - th) * (scrollY / maxScroll);
+                DrawRectangleRounded({ listClip.x + listClip.width - 5.0f, ty, 4.0f, th }, 1.0f, 4, theme::BORDER_STRONG);
             }
         }
 
@@ -1485,9 +1551,199 @@ Info ShowProjectManager() {
             }
         }
 
+        if (fileMenuOpen && !modal) {
+            DrawRectangleRec(fileDrop, theme::PANEL);
+            DrawRectangleLinesEx(fileDrop, 1.0f, theme::BORDER_STRONG);
+            const Rectangle item = { fileDrop.x + 3, fileDrop.y + 3, fileDrop.width - 6, fileDrop.height - 6 };
+            if (Hovered(item)) DrawRectangleRec(item, ROWHoverColor());
+            DrawTextU("Manage Plugins...", item.x + 10, item.y + 7, 14, theme::TEXT);
+            if (Hovered(item)) SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+            if (Hovered(item) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                fileMenuOpen = false;
+                pluginsOpen = true;
+                plugGlobalTab = true;
+                plugScroll = 0;
+                plugMsg.clear();
+                plugProject = -1;
+                plugPicking = true;
+                if (selected >= 0 && selected < static_cast<int>(recent.size()) && !recent[selected].missing) plugProject = selected;
+                plugRefresh();
+            }
+        }
+
+        if (pluginsOpen) {
+            // A file dialog started below answers here, on a later frame.
+            std::string picked;
+            if (platform::PollDialogResult({ platform::DialogPurpose::ImportPluginFolder, platform::DialogPurpose::ImportPluginFile }, picked)
+                && !picked.empty()) {
+                const auto res = pluginstore::Import(plugImportRoot, picked);
+                plugSay(res.message, !res.ok);
+                plugRefresh();
+            }
+
+            DrawRectangle(0, 0, static_cast<int>(W), static_cast<int>(H), Color{ 0, 0, 0, 150 });
+            const float pw = std::min(780.0f, W - 40.0f), ph = std::min(500.0f, H - 40.0f);
+            const Rectangle panel = { (W - pw) * 0.5f, (H - ph) * 0.5f, pw, ph };
+            DrawRectangleRounded(panel, 0.02f, 4, theme::PANEL);
+            DrawRectangleLinesEx(panel, 1.0f, theme::BORDER_STRONG);
+            const float px = panel.x + 20.0f, pcw = panel.width - 40.0f;
+            DrawTextU("Manage Plugins", px, panel.y + 14, 20, theme::TEXT);
+            if (Button({ panel.x + panel.width - 44, panel.y + 12, 28, 28 }, "x") && !promptUp) pluginsOpen = false;
+
+            // Scope tabs: Global plugins load in every project; Local ones only in their own project.
+            const float tabY = panel.y + 52.0f;
+            const std::string localLabel = "Local (per project)";
+            const bool toGlobal = Button({ px, tabY, 220, 30 }, "Global (every project)") && !promptUp;
+            const bool toLocal = Button({ px + 228, tabY, 220, 30 }, localLabel.c_str()) && !promptUp;
+            DrawRectangleRec({ plugGlobalTab ? px : px + 228, tabY + 30, 220, 3 }, theme::ACCENT);
+            if (toGlobal && !plugGlobalTab) { plugGlobalTab = true; plugScroll = 0; plugMsg.clear(); plugRefresh(); }
+            if (toLocal && plugGlobalTab) { plugGlobalTab = false; plugPicking = true; plugScroll = 0; plugMsg.clear(); plugRefresh(); }
+            DrawLine(static_cast<int>(px), static_cast<int>(tabY + 33), static_cast<int>(px + pcw), static_cast<int>(tabY + 33), theme::DIVIDER);
+
+            // Local tab: either picking a project, or showing the picked one with a way back to the picker.
+            float listTop = tabY + 44.0f;
+            const bool picking = !plugGlobalTab && plugPicking;
+            if (plugGlobalTab) {
+                DrawTextU("Installed for you: every project loads these. A project's own plugin of the same name wins.",
+                    px, listTop, 12, theme::TEXT_MUTED);
+            } else if (picking) {
+                DrawTextU("Pick a project to manage the plugins that only it loads.", px, listTop + 4, 12, theme::TEXT_MUTED);
+            } else {
+                if (Button({ px, listTop, 100, 24 }, "< Projects") && !promptUp) { plugPicking = true; plugScroll = 0; plugMsg.clear(); plugConfirmRemove.clear(); }
+                const bool have = plugProject >= 0 && plugProject < static_cast<int>(recent.size()) && !recent[plugProject].missing;
+                const std::string shown = have ? EllipsizeU(recent[plugProject].name, 14, pcw - 120.0f) : std::string("(project not found)");
+                DrawTextU(shown.c_str(), px + 112, listTop + 4, 14, have ? theme::TEXT : theme::DANGER);
+            }
+            listTop += 32.0f;
+
+            // The list.
+            const float footerH = 96.0f;
+            const Rectangle listRec = { px, listTop, pcw, panel.y + panel.height - footerH - listTop };
+            DrawRectangleRec(listRec, theme::INPUT);
+            DrawRectangleLinesEx(listRec, 1.0f, theme::BORDER);
+            constexpr float prow = 56.0f;
+            const int pvisible = std::max(1, static_cast<int>(listRec.height / prow));
+            const int pmaxScroll = std::max(0, static_cast<int>(plugList.size()) - pvisible);
+            if (Hovered(listRec)) plugScroll -= static_cast<int>(GetMouseWheelMove());
+            plugScroll = std::max(0, std::min(plugScroll, pmaxScroll));
+
+            const bool listHasRoot = !plugRoot(plugGlobalTab).empty() && !picking;
+            if (picking) {
+                if (recent.empty()) DrawTextU("No projects yet. Open or create one first.", listRec.x + 14, listRec.y + 16, 13, theme::TEXT_DIM);
+                const int pcount = static_cast<int>(recent.size());
+                const int pickMax = std::max(0, pcount - pvisible);
+                if (Hovered(listRec)) plugScroll -= static_cast<int>(GetMouseWheelMove());
+                plugScroll = std::max(0, std::min(plugScroll, pickMax));
+                for (int i = 0; i < pvisible; ++i) {
+                    const int idx = i + plugScroll;
+                    if (idx >= pcount) break;
+                    const Rectangle row = { listRec.x + 1, listRec.y + i * prow, listRec.width - 2, prow };
+                    const bool hov = Hovered(row) && !promptUp && !recent[idx].missing;
+                    if (hov) { DrawRectangleRec(row, ROWHoverColor()); SetMouseCursor(MOUSE_CURSOR_POINTING_HAND); }
+                    if (i > 0) DrawLine(static_cast<int>(row.x), static_cast<int>(row.y), static_cast<int>(row.x + row.width), static_cast<int>(row.y), theme::DIVIDER);
+                    const Color nameCol = recent[idx].missing ? theme::DANGER : theme::TEXT;
+                    DrawTextU(EllipsizeU(recent[idx].name, 14, row.width - 120.0f).c_str(), row.x + 14, row.y + 9, 14, nameCol);
+                    DrawTextU(EllipsizeU(recent[idx].path, 11, row.width - 120.0f).c_str(), row.x + 14, row.y + 32, 11, theme::TEXT_DIM);
+                    const std::string n = recent[idx].missing ? "missing" : std::to_string(pluginstore::List(pluginstore::LocalRoot(recent[idx].path), false).size()) + " plugins";
+                    DrawTextU(n.c_str(), row.x + row.width - MeasureTextU(n.c_str(), 12) - 14, row.y + 20, 12, theme::TEXT_MUTED);
+                    if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && Hovered(listRec)) {
+                        plugProject = idx; plugPicking = false; plugScroll = 0; plugMsg.clear(); plugRefresh();
+                        break;
+                    }
+                }
+            } else if (plugList.empty()) {
+                DrawTextU(listHasRoot ? "No plugins here yet. Use Import below, or build one into the plugins folder."
+                                      : "Pick a project above to manage its plugins.",
+                    listRec.x + 14, listRec.y + 16, 13, theme::TEXT_DIM);
+            }
+
+            std::string actName, actKind;   // applied after the loop: a click changes the list being drawn
+            for (int i = 0; i < pvisible && !picking; ++i) {
+                const int idx = i + plugScroll;
+                if (idx >= static_cast<int>(plugList.size())) break;
+                const pluginstore::Entry& e = plugList[idx];
+                const Rectangle row = { listRec.x + 1, listRec.y + i * prow, listRec.width - 2, prow };
+                if (i > 0) DrawLine(static_cast<int>(row.x), static_cast<int>(row.y), static_cast<int>(row.x + row.width), static_cast<int>(row.y), theme::DIVIDER);
+
+                DrawCircle(static_cast<int>(row.x + 16), static_cast<int>(row.y + 20), 5.0f, e.enabled ? Color{ 90, 205, 115, 255 } : Color{ 128, 128, 138, 255 });
+                const bool confirming = plugConfirmRemove == e.name;
+                const float btnBlock = confirming ? 200.0f : 276.0f;
+                const float textW = row.width - btnBlock - 40.0f;
+                std::string title = e.displayName;
+                if (!e.version.empty()) title += "  v" + e.version;
+                if (!e.publisher.empty()) title += "  by " + e.publisher;
+                DrawTextU(EllipsizeU(title, 14, textW).c_str(), row.x + 30, row.y + 9, 14, e.enabled ? theme::TEXT : theme::TEXT_MUTED);
+                std::string sub = e.description.empty() ? e.type : e.description;
+                if (!e.enabled) sub = "Disabled - " + sub;
+                DrawTextU(EllipsizeU(sub, 11, textW).c_str(), row.x + 30, row.y + 32, 11, theme::TEXT_DIM);
+
+                float bx = row.x + row.width - btnBlock - 8.0f;
+                const float by = row.y + 14.0f;
+                if (confirming) {
+                    DrawTextU("Delete folder?", bx, by + 6, 12, theme::DANGER);
+                    if (DangerButton({ bx + 100, by, 46, 28 }, "Yes") && !promptUp && Hovered(listRec)) { actName = e.name; actKind = "remove"; }
+                    if (Button({ bx + 150, by, 46, 28 }, "No") && !promptUp && Hovered(listRec)) plugConfirmRemove.clear();
+                } else {
+                    if (Button({ bx, by, 74, 28 }, e.enabled ? "Disable" : "Enable") && !promptUp && Hovered(listRec)) { actName = e.name; actKind = "toggle"; }
+                    if (Button({ bx + 82, by, 112, 28 }, plugGlobalTab ? "Make Local" : "Make Global") && !promptUp && Hovered(listRec)) { actName = e.name; actKind = "move"; }
+                    if (DangerButton({ bx + 202, by, 74, 28 }, "Remove") && !promptUp && Hovered(listRec)) plugConfirmRemove = e.name;
+                }
+            }
+            if (!picking && static_cast<int>(plugList.size()) > pvisible) {
+                const float th = listRec.height * pvisible / plugList.size();
+                const float ty = listRec.y + (listRec.height - th) * (pmaxScroll ? static_cast<float>(plugScroll) / pmaxScroll : 0.0f);
+                DrawRectangleRec({ listRec.x + listRec.width - 5, ty, 4, th }, theme::BORDER_STRONG);
+            }
+
+            if (!actName.empty()) {
+                const std::string root = plugRoot(plugGlobalTab);
+                if (actKind == "toggle") {
+                    for (const auto& e : plugList) if (e.name == actName) {
+                        pluginstore::SetEnabled(root, actName, !e.enabled);
+                        plugSay(std::string(e.enabled ? "Disabled" : "Enabled") + " \"" + e.displayName + "\". Takes effect the next time a project opens.", false);
+                        break;
+                    }
+                } else if (actKind == "remove") {
+                    const auto res = pluginstore::Remove(root, actName);
+                    plugSay(res.message, !res.ok);
+                } else if (actKind == "move") {
+                    const std::string other = plugRoot(!plugGlobalTab);
+                    if (other.empty()) plugSay("Pick a project on the Local tab first: that is where it would go.", true);
+                    else {
+                        const auto res = pluginstore::Move(root, other, actName);
+                        plugSay(plugGlobalTab ? (res.ok ? res.message + " It is now local to " + recent[plugProject].name + "." : res.message)
+                                              : (res.ok ? res.message + " It now loads in every project." : res.message), !res.ok);
+                    }
+                }
+                plugRefresh();
+            }
+
+            // Footer: message, then the buttons.
+            const float fy = panel.y + panel.height - footerH + 8.0f;
+            if (!plugMsg.empty()) DrawTextU(EllipsizeU(plugMsg, 12, pcw).c_str(), px, fy, 12, plugMsgErr ? theme::DANGER : theme::TEXT_MUTED);
+            const bool canImport = listHasRoot;
+            const float by2 = fy + 26.0f;
+            if (Button({ px, by2, 170, 30 }, "Import plugin folder...") && !promptUp && canImport) {
+                plugImportRoot = plugRoot(plugGlobalTab);
+                platform::BeginChooseFolderDialog(platform::DialogPurpose::ImportPluginFolder, "Choose a plugin folder", "");
+            }
+            if (Button({ px + 178, by2, 150, 30 }, "Import library...") && !promptUp && canImport) {
+                plugImportRoot = plugRoot(plugGlobalTab);
+                platform::BeginOpenFileDialog(platform::DialogPurpose::ImportPluginFile, "Choose a plugin library", "",
+                                              { { "Plugin library", "*.so;*.dll" } });
+            }
+            if (Button({ px + 336, by2, 120, 30 }, "Open folder") && !promptUp && canImport) {
+                std::error_code ec;
+                fs::create_directories(U8Path(plugRoot(plugGlobalTab)), ec);
+                platform::OpenWithDefaultApp(plugRoot(plugGlobalTab));
+            }
+            if (PrimaryButton({ px + pcw - 100, by2, 100, 30 }, "Done") && !promptUp) pluginsOpen = false;
+            if (!pluginsOpen) { plugMsg.clear(); plugConfirmRemove.clear(); }
+        }
+
         // No native picker on this host: collect the path by hand. Drawn last so
-        // it sits on top of everything else.
-        if (!modal) DrawFolderPromptFallback(promptField);
+        // it sits on top of everything else (including the plugin window that asked for it).
+        if (!confirmDelete && !pickerOpen) DrawFolderPromptFallback(promptField);
 
         if (pickerOpen) {
             BakeTemplateThumbnails(templates);

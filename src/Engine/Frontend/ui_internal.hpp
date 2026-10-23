@@ -116,8 +116,9 @@ void DeleteScriptEverywhere(const std::string& key, int index = -1);
 Rectangle GetAssetBrowserPanelBounds();
 
 // ui_layout.cpp: where the panels sit (docking side, size, visibility), editable by dragging or in Preferences > Layout.
-enum class PanelId : int { Explorer = 0, Properties, Terrain, Bottom };
-constexpr int kPanelCount = 4;
+// AI comes after Bottom so the indexes in an existing layout.cfg keep their meaning.
+enum class PanelId : int { Explorer = 0, Properties, Terrain, Bottom, AI };
+constexpr int kPanelCount = 5;
 enum class DockSide : int { Left = 0, Right = 1 };
 struct PanelState {
     bool visible = true;
@@ -155,6 +156,13 @@ void DrawPathPromptModal();
 extern bool g_showPreferences;
 extern int g_prefsCategory;
 void DrawImGuiPreferencesWindow();
+
+// ui_ai.cpp: the AI assistant, a dockable panel (under the Explorer by default) that appears while the AI is enabled in Preferences > AI.
+ImTextureID AIPanelIcon(int phase);      // 0 thinking, 1 reading, 2 writing, 3 testing, 4 chats (AI/panelicons); 0 when missing
+ImTextureID AIProviderIcon(int index);   // 0 = Claude, 1 = Gemini, 2 = ChatGPT (assets/EditorIcons/AI); 0 when missing
+void DrawImGuiAIPanel();
+bool DrawAIModelCombo(const char* id, float width);   // the provider's model list with search + refresh; true when the choice changed
+Rectangle GetAIPanelBounds();   // zero-size unless the AI is enabled and the panel is shown
 
 // ui_topbar.cpp: the top bar. Its state lives in ui.cpp, next to the accessors that read it.
 extern Texture2D g_toolIcons[5];

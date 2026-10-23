@@ -935,7 +935,8 @@ std::vector<std::string> GetPresetTextures(const std::string& projectDir) {
     static std::string s_cachedProjectDir;
     static double s_cacheTimestamp = 0.0;
     double now = GetTime();
-    if (!s_presetCache.empty() && s_cachedProjectDir == projectDir && (now - s_cacheTimestamp) < 5.0) {
+    static bool s_cacheValid = false;
+    if (s_cacheValid && s_cachedProjectDir == projectDir && (now - s_cacheTimestamp) < 5.0) {
         return s_presetCache;
     }
 
@@ -949,15 +950,26 @@ std::vector<std::string> GetPresetTextures(const std::string& projectDir) {
         if (!fs::exists(presetDir, ec) || !fs::is_directory(presetDir, ec)) {
             return;
         }
-        for (const auto& entry : fs::directory_iterator(presetDir, ec)) {
-            if (ec) continue;
+        // Recursive, so a texture set in a subfolder shows up; only its diffuse map is listed (parts take diffuse only).
+        static const char* const pbrSuffixes[] = { "_ao", "_arm", "_disp", "_nor", "_nor_gl", "_nor_dx", "_rough",
+                                                   "_metal", "_normal", "_orm", "_height" };
+        for (const auto& entry : fs::recursive_directory_iterator(presetDir, fs::directory_options::skip_permission_denied, ec)) {
+            if (ec) break;
             if (!entry.is_regular_file(ec)) continue;
             std::string ext = entry.path().extension().string();
-            if (validExts.count(ext)) {
-                std::string rel = fs::relative(entry.path(), baseDir, ec).generic_string();
-                std::replace(rel.begin(), rel.end(), '\\', '/');
-                result.push_back(rel);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if (!validExts.count(ext)) continue;
+            std::string stem = NormalizeKey(entry.path().stem());
+            bool pbr = false;
+            for (const char* suf : pbrSuffixes) {
+                const std::string sf = suf;
+                const size_t at = stem.find(sf + "_");
+                if ((at != std::string::npos && at > 0) || (stem.size() > sf.size() && stem.compare(stem.size() - sf.size(), sf.size(), sf) == 0)) { pbr = true; break; }
             }
+            if (pbr) continue;
+            std::string rel = fs::relative(entry.path(), baseDir, ec).generic_string();
+            std::replace(rel.begin(), rel.end(), '\\', '/');
+            result.push_back(rel);
         }
     };
 
@@ -973,10 +985,58 @@ std::vector<std::string> GetPresetTextures(const std::string& projectDir) {
         scanDir(cwdParent / "assets" / "PresetTextures", projectDir);
     }
 
+    // The same file can be reached from several scan roots (project, cwd, cwd parent).
+    {
+        std::unordered_set<std::string> seen;
+        std::vector<std::string> unique;
+        for (auto& r : result) if (seen.insert(NormalizeKey(fs::path(r))).second) unique.push_back(std::move(r));
+        result.swap(unique);
+    }
+    s_cacheValid = true;   // also when empty: an empty list must not rescan the disk every frame
     s_presetCache = result;
     s_cachedProjectDir = projectDir;
     s_cacheTimestamp = GetTime();
     return result;
+}
+
+std::string DefaultPartTexture(const std::string& projectDir) {
+    if (projectDir.empty()) return "";
+    const std::string rel = "assets/PresetTextures/Preset/textures/white_stucco_02_diff_4k.jpg";
+    std::error_code ec;
+    const fs::path dst = fs::path(projectDir) / rel;
+    if (fs::exists(dst, ec)) return rel;
+    // The editor may be started from the repo root, build/release or export/linux: look upward from the working
+    // directory and from the executable until the preset folder turns up.
+    std::vector<fs::path> starts = { fs::current_path(ec), fs::read_symlink("/proc/self/exe", ec).parent_path() };
+    for (fs::path base : starts) {
+        for (int up = 0; up < 5 && !base.empty(); ++up, base = base.parent_path()) {
+            const fs::path src = base / rel;
+            if (!fs::exists(src, ec)) continue;
+            if (fs::equivalent(src, dst, ec)) return rel;
+            if (CopyFileTo(src.generic_string(), dst.generic_string())) return rel;
+            TraceLog(LOG_WARNING, "TEXTURE: could not copy default part texture to %s", dst.generic_string().c_str());
+            return "";
+        }
+    }
+    TraceLog(LOG_WARNING, "TEXTURE: default part texture %s not found near the working directory", rel.c_str());
+    return "";
+}
+
+std::string ImportPartTexture(const std::string& sourcePath, const std::string& projectDir) {
+    if (sourcePath.empty() || projectDir.empty()) return "";
+    const std::string inProject = GetRelativePath(sourcePath, projectDir);
+    if (!inProject.empty() && inProject.rfind("..", 0) != 0 && !fs::path(inProject).is_absolute()) return inProject;
+    fs::path dst = fs::path(projectDir) / "assets" / "Textures" / fs::path(sourcePath).filename();
+    // A different file with the same name must not silently overwrite a texture other parts use.
+    std::error_code ec;
+    if (fs::exists(dst, ec) && fs::file_size(dst, ec) != fs::file_size(sourcePath, ec)) {
+        for (int n = 1; n < 1000; ++n) {
+            fs::path alt = dst.parent_path() / (dst.stem().string() + "_" + std::to_string(n) + dst.extension().string());
+            if (!fs::exists(alt, ec)) { dst = alt; break; }
+        }
+    }
+    if (!CopyFileTo(sourcePath, dst.generic_string())) return "";
+    return GetRelativePath(dst.generic_string(), projectDir);
 }
 
 std::string EnsurePresetTextureInProject(const std::string& presetPath, const std::string& projectDir) {
@@ -992,7 +1052,9 @@ std::string EnsurePresetTextureInProject(const std::string& presetPath, const st
 
     fs::path presetFsPath(presetPath);
     if (presetFsPath.is_relative()) {
-        srcAbs = fs::current_path() / presetPath;
+        // Preset paths are listed relative to the project; scans of the working directory give "../" paths too.
+        srcAbs = fs::path(projectDir) / presetPath;
+        if (!fs::exists(srcAbs, ec)) srcAbs = fs::current_path() / presetPath;
     } else {
         srcAbs = presetFsPath;
     }

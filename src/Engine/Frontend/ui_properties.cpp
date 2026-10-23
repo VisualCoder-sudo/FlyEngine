@@ -296,8 +296,8 @@ void DrawTextureRows(ScatteredObject* obj) {
     if (tex.empty()) ImGui::TextDisabled("None");
     else ImGui::TextUnformatted(tex.c_str());
 
-    // Browse and clear, for imported meshes.
-    if (hasMesh && !g_playActive) {
+    // Browse and clear, for meshes and parts alike (a part only takes the diffuse map).
+    if (!g_selection.empty() && !g_playActive) {
         ImGui::Dummy(ImVec2(PropertyLabelWidth() - ImGui::GetStyle().ItemSpacing.x, 0.0f));
         ImGui::SameLine(PropertyLabelWidth());
         const float clearW = ImGui::GetFrameHeight();
@@ -321,7 +321,7 @@ void DrawTextureRows(ScatteredObject* obj) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Remove the texture");
         if (clear) {
             ui::PushUndo();
-            for (auto* o : g_selection) if (o && o->HasModel()) o->ClearTexture(project.path);
+            for (auto* o : g_selection) if (o) o->ClearTexture(project.path);
         }
     }
 

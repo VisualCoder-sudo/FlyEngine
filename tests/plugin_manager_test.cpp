@@ -2,6 +2,7 @@
 // restart, hot reload, import, remove, rescan, and a seeded random sequence of all of them. No window.
 #include "test_unique.hpp"
 #include "Engine/Scripts/NativeScriptHost.hpp"
+#include "Engine/Frontend/PluginStore.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -225,6 +226,93 @@ static void TestRemoveAndRescan() {
     CHECK(h.ImportPlugin((g_root / "again_src/plugins/nat/zeta2").string()).ok);
 }
 
+
+// Global plugins: <global root>/{nat,lib}/<name>, loaded by every project. A project's own plugin of the same name wins,
+// the enabled state of a global plugin is shared by all projects, and plugins can move between the two sides.
+static void TestGlobalPlugins() {
+    const fs::path home = g_root / "global_home";            // MakePlugin puts things under <home>/plugins/...
+    const fs::path groot = home / "plugins";
+    const fs::path projA = g_root / "gA", projB = g_root / "gB";
+    fs::remove_all(home);
+    fs::create_directories(projA);
+    fs::create_directories(projB);
+    // Folders without a built library sort before the real plugins and must not hide them (source-only plugins are common).
+    fs::create_directories(groot / "nat" / "0_source_only" / "src");
+    fs::create_directories(groot / "nat" / "0_empty_build" / "build");
+    fs::create_directories(groot / "lib" / "0_empty");
+    fs::create_directories(projA / "plugins" / "nat" / "0_source_only");
+    MakePlugin(home, "shared", GOOD_PLUGIN);
+    MakePlugin(home, "dup", GOOD_PLUGIN);
+    MakePlugin(projA, "dup", GOOD_PLUGIN);                   // shadows the global one in projA only
+    MakePlugin(projA, "onlyA", GOOD_PLUGIN);
+    ClearLog();
+    {
+        NativeScriptHost a, b;
+        CHECK(a.Initialize(projA.string()) && b.Initialize(projB.string()));
+        const auto* sa = Find(a, "shared");
+        const auto* sb = Find(b, "shared");
+        CHECK(sa && sa->global && sa->loaded && sb && sb->global && sb->loaded);        // one global plugin, every project
+        CHECK(Find(a, "onlyA") && !Find(a, "onlyA")->global && !Find(b, "onlyA"));       // a local one stays in its project
+        CHECK(Find(a, "dup") && !Find(a, "dup")->global);                                // local wins in A ...
+        CHECK(Find(b, "dup") && Find(b, "dup")->global);                                 // ... global shows up in B
+        CHECK(std::count_if(a.GetPlugins().begin(), a.GetPlugins().end(), [](const auto& p) { return p->name == "dup"; }) == 1);
+
+        // The enabled state of a global plugin is its own, shared list; the project's list is untouched.
+        CHECK(a.SetPluginEnabled("shared", false));
+        CHECK(Slurp(groot / "disabled.txt").find("shared") != std::string::npos);
+        CHECK(!fs::exists(projA / "plugins" / "disabled.txt"));
+        CHECK(Find(b, "shared")->loaded);                                                 // B has not been told: next open
+        CHECK(a.SetPluginEnabled("shared", true) && Find(a, "shared")->loaded);
+        CHECK(!fs::exists(groot / "disabled.txt"));
+
+        // Import as global lands in the global root, not the project.
+        MakePlugin(g_root / "g_src", "fresh", GOOD_PLUGIN);
+        auto r = a.ImportPlugin((g_root / "g_src/plugins/nat/fresh").string(), true);
+        CHECK(r.ok && fs::exists(groot / "nat/fresh/build/fresh.so") && !fs::exists(projA / "plugins/nat/fresh"));
+        CHECK(Find(a, "fresh") && Find(a, "fresh")->global && Find(a, "fresh")->loaded);
+        CHECK(!a.ImportPlugin((g_root / "g_src/plugins/nat/fresh").string(), true).ok);   // never overwrites
+
+        // Move global -> local keeps it loaded; the other project no longer sees it.
+        r = a.MovePlugin("fresh", false);
+        CHECK(r.ok && !fs::exists(groot / "nat/fresh") && fs::exists(projA / "plugins/nat/fresh/build/fresh.so"));
+        CHECK(Find(a, "fresh") && !Find(a, "fresh")->global && Find(a, "fresh")->loaded);
+        CHECK(b.RescanPlugins() == 0 && !Find(b, "fresh"));
+        CHECK(!a.MovePlugin("fresh", false).ok);                                          // already local
+        r = a.MovePlugin("fresh", true);
+        CHECK(r.ok && fs::exists(groot / "nat/fresh") && Find(a, "fresh") && Find(a, "fresh")->global);
+        CHECK(b.RescanPlugins() == 1 && Find(b, "fresh") && Find(b, "fresh")->loaded);    // picked up by a rescan
+        CHECK(!a.MovePlugin("dup", true).ok);                                             // global "dup" exists: refused, not overwritten
+        CHECK(Find(a, "dup") && Find(a, "dup")->loaded && fs::exists(projA / "plugins/nat/dup"));
+
+        // Disabled state travels with the move.
+        a.SetPluginEnabled("onlyA", false);
+        CHECK(a.MovePlugin("onlyA", true).ok && !Find(a, "onlyA")->enabled);
+        CHECK(Slurp(groot / "disabled.txt").find("onlyA") != std::string::npos && !fs::exists(projA / "plugins" / "disabled.txt"));
+
+        // Remove deletes a global folder, and only that.
+        CHECK(a.RemovePlugin("fresh").ok && !fs::exists(groot / "nat/fresh") && !Find(a, "fresh"));
+        CHECK(fs::exists(groot / "nat/shared"));
+    }
+    CHECK(Count("load") == Count("unload"));
+
+    // The store works without any host (this is what the project manager window uses).
+    const auto g = pluginstore::List(pluginstore::GlobalRoot(), true);
+    CHECK(g.size() == 3 && g[0].name == "dup" && g[1].name == "onlyA" && g[2].name == "shared" && !g[1].enabled && g[2].global);
+    CHECK(pluginstore::SetEnabled(pluginstore::GlobalRoot(), "shared", false));
+    CHECK(!pluginstore::List(pluginstore::GlobalRoot(), true)[2].enabled);
+    CHECK(pluginstore::Move(pluginstore::GlobalRoot(), pluginstore::LocalRoot(projB.string()), "shared").ok);
+    CHECK(pluginstore::List(pluginstore::LocalRoot(projB.string()), false).size() == 1 && !pluginstore::List(pluginstore::LocalRoot(projB.string()), false)[0].enabled);
+    CHECK(!pluginstore::Remove(pluginstore::GlobalRoot(), "nope").ok);
+    {   // a fresh host honours the global disabled list
+        MakePlugin(home, "off", GOOD_PLUGIN);
+        pluginstore::SetEnabled(pluginstore::GlobalRoot(), "off", false);
+        NativeScriptHost c;
+        c.Initialize(projA.string());
+        CHECK(Find(c, "off") && !Find(c, "off")->enabled && !Find(c, "off")->loaded);
+    }
+    fs::remove_all(home);   // later tests expect an empty global root
+}
+
 // Random operations; after every step the number of loaded libraries must equal loads - unloads in the log, no plugin
 // may be both loaded and disabled, and the disabled file must match the in-memory state.
 static void TestRandomSequence(unsigned seed) {
@@ -279,6 +367,7 @@ int main() {
     fs::remove_all(g_root);
     fs::create_directories(g_root);
     g_log = g_root / "events.log";
+    pluginstore::SetGlobalRootOverride((g_root / "global_home" / "plugins").string());   // never the real ~/.config
     setenv("FLY_TEST_PLUGIN_LOG", g_log.string().c_str(), 1);
 
     TestDiscoveryAndFailures();
@@ -286,6 +375,7 @@ int main() {
     TestHotReloadAndRecovery();
     TestImport();
     TestRemoveAndRescan();
+    TestGlobalPlugins();
     for (unsigned seed = 1; seed <= 20 && !g_fail; ++seed) TestRandomSequence(seed);
 
     fs::remove_all(g_root);

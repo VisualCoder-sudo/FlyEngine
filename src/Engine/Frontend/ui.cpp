@@ -897,6 +897,7 @@ bool IsMouseOverUI() {
     if (CheckCollisionPointRec(mouse, GetTopBarBounds())) return true;
     if (CheckCollisionPointRec(mouse, GetExplorerPanelBounds())) return true;
     if (CheckCollisionPointRec(mouse, GetPropertiesPanelBounds())) return true;
+    if (CheckCollisionPointRec(mouse, GetAIPanelBounds())) return true;
     if (CheckCollisionPointRec(mouse, GetAssetBrowserPanelBounds())) return true;
 
     Rectangle terrRec = GetTerrainPanelBounds();
@@ -1394,6 +1395,7 @@ void DrawImGuiFrame(const Camera3D& camera) {
     DrawImGuiAssetBrowserPopups();
     scriptLauncher::DrawImGuiModal();
     DrawImGuiPreferencesWindow();
+    DrawImGuiAIPanel();
     DrawExportDialog();
     city::DrawCityEditorPanel();
     PumpAssetBrowserDialogs();

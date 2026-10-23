@@ -163,9 +163,9 @@ void Init() {
 
     // Load the shared default texture BEFORE any material grabs it, otherwise
     // materials keep texture id 0 and the shaders sample an unbound unit (black).
-    Image checker = GenImageChecked(64, 64, 8, 8, LIGHTGRAY, GRAY);
-    defaultTexture = LoadTextureFromImage(checker);
-    UnloadImage(checker);
+    Image plain = GenImageColor(4, 4, WHITE);   // untextured: the object's own tint shows as a flat colour
+    defaultTexture = LoadTextureFromImage(plain);
+    UnloadImage(plain);
 
     decalShader = LoadShaderProgram("lit_decal");
     if (decalShader.id != 0) {

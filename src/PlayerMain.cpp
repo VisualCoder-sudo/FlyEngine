@@ -1,6 +1,7 @@
 // PlayerMain.cpp - Standalone game player entry point.
 // Loads a project and runs it without editor UI.
 
+#include "Engine/Platform/EmergencyMode.hpp"
 #include "Engine.hpp"
 #include "Engine/Scripts/NativeScriptHost.hpp"
 #include "Engine/TechnicalTools.hpp"
@@ -832,6 +833,7 @@ static bool ConfirmMissingContent(const vfs::ExternalReport& report, const std::
 }
 
 int main(int argc, char* argv[]) {
+    platform::RunEmergencyModeIfNoDisplay(argc, argv);
 #if defined(_WIN32)
     AttachParentConsole();
 #endif

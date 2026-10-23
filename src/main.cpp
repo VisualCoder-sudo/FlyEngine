@@ -16,6 +16,8 @@
 #include "../include/Terrain/Water/WaterStressTest.hpp"
 #include "raylib.h"
 #include "Engine/Platform/Platform.hpp"
+#include "Engine/AI/AI.hpp"
+#include "Engine/Platform/EmergencyMode.hpp"
 
 #include "../include/Engine/Scripts/NativeScriptHost.hpp"
 
@@ -119,6 +121,7 @@ void RunEditor(const project::Info& info) {
 
     // The loading screen (Preferences > Loading): a percentage, what is being done, and the log lines.
     loading::Load();
+    ai::Load();
     loading::Begin(loading::Target::Editor, info.name);
     loading::Log("Opening project '%s'", info.name.c_str());
     loading::Progress(0.02f, "Starting the editor");
@@ -143,6 +146,7 @@ void RunEditor(const project::Info& info) {
 
     auto interactionMgr = std::make_unique<ObjectInteractionManager>(engine, engine.GetCamera(), cameraControllerPtr, rawObjectPtrs, sceneModels, &simRef);
     ObjectInteractionManager* interactionMgrPtr = interactionMgr.get();
+    ui::SetAIBeforeApplyHook([interactionMgrPtr] { interactionMgrPtr->PushUndoSnapshot(); });
     engine.AddEntity(std::move(interactionMgr));
 
     // Native script host: compiles the project's Scripts/*.cpp into a shared
@@ -165,6 +169,7 @@ void RunEditor(const project::Info& info) {
     textureManager::Init(info.path);
     textureManager::DiscardPendingImports();   // imports left over from a session that never saved
     scriptLauncher::DiscardPendingScripts();   // so are new script files
+    ai::RevertAllPendingScripts(info.path);    // ...and scripts the AI wrote
     audioassets::DiscardPending(info.path);    // ...and sounds imported into the project
 
     loading::Range(0.42f, 0.92f);
@@ -216,6 +221,8 @@ void RunEditor(const project::Info& info) {
     // project directory is still known (Shutdown forgets it).
     textureManager::DiscardPendingImports();
     scriptLauncher::DiscardPendingScripts();
+    ai::Stop();                                 // a reply still downloading is cancelled
+    ai::RevertAllPendingScripts(info.path);
     audioassets::DiscardPending(info.path);
     textureManager::Shutdown();
 }
@@ -223,6 +230,7 @@ void RunEditor(const project::Info& info) {
 }
 
 int main(int argc, char* argv[]) {
+    platform::RunEmergencyModeIfNoDisplay(argc, argv);
     if (!benchmark::RunStartupBenchmark()) return 0;
 
     crashreporter::Install();

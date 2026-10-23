@@ -1,4 +1,5 @@
 #include "../../../include/Engine/Scripts/CommandConsole.hpp"
+#include "../../../include/Engine/AI/AI.hpp"
 #include "../../../include/Graphics/Graphics.hpp"
 #include "../../../include/Engine/Scripts/ScriptRuntime.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
@@ -168,6 +169,7 @@ float ComputeScrollOffset(const std::string& s, int cursor, Font font, float vis
 //   <Object>.<Prop>              show a property ("Model.Part.Prop" for parts)
 //   <Object>.<Prop> = <value>    set it, e.g. Cube.Position = (0, 5, 0)
 //   Lighting|Environment|Rendering|Camera|Physics.<Prop> [= <value>]   world settings
+//   water / terrain [Name] [Prop=value ...]   add a water body or terrain; spawn <Shape> [Name] [Prop=value ...]   create an object; delete <Name>, clone <Name> [New], rename <Old> <New>
 //   scripts                      list compiled script classes
 //   run <Class> / stop <Class>   start/stop a standalone script
 //   rebuild                      recompile Scripts/*.cpp
@@ -176,7 +178,8 @@ float ComputeScrollOffset(const std::string& s, int cursor, Font font, float vis
 // An optional "game." / "game.Workspace." prefix is accepted, as in Flyscript.
 
 constexpr const char* kHelpText =
-    "Commands: help, print <text>, <Object>.<Prop> [= value], "
+    "Commands: help, print <text>, spawn <Shape> [Name] [Prop=value ...], water [Name] [Prop=value ...], terrain [Name] [Prop=value ...], city [Name] [Prop=value ...], node <Object> <Type> [Prop=value ...], delnode <Object> <Node>, union <New> <Part> <Part>..., separate <Union>, prefab <file> [Position=(x,y,z)], delete <Name>, clone <Name> [New], rename <Old> <New>, "
+    "<Object>.<Prop> [= value], "
     "Lighting|Environment|Rendering|Camera|Physics.<Prop> [= value], scripts, run <Class>, "
     "stop <Class>, rebuild, fcloud --help";
 
@@ -312,7 +315,7 @@ CommandResult ObjectProperty(ScriptRuntime& rt, const std::string& objectName,
 
     const std::string prop = Canonical(propName, {
         "Position", "Size", "Rotation", "Origin", "Velocity", "AngularVelocity", "Color",
-        "Anchored", "CanCollide", "Mass", "Transparency", "CollisionAccuracy" });
+        "Anchored", "CanCollide", "Mass", "Transparency", "CollisionAccuracy", "Negate", "UseGlobalColor" });
     if (prop.empty()) return { "Unknown property '" + propName + "'", true };
 
     if (rhs) {
@@ -339,9 +342,260 @@ CommandResult ObjectProperty(ScriptRuntime& rt, const std::string& objectName,
     if (prop == "CanCollide")   return { FlyNative_GetCanCollide(h) ? "true" : "false" };
     if (prop == "Mass")         return { FormatFloat(FlyNative_GetMass(h)) };
     if (prop == "Transparency") return { FormatFloat(FlyNative_GetTransparency(h)) };
+    if (prop == "Negate" || prop == "UseGlobalColor") {
+        std::string value;
+        rt.GetObjectProperty(reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h)), prop, value);
+        return { value };
+    }
     static const char* kAccuracy[] = { "Box", "Hull", "Default", "Precise" };
     const int acc = FlyNative_GetCollisionAccuracy(h);
     return { acc >= 0 && acc < 4 ? kAccuracy[acc] : "?" };
+}
+
+// ---- building: spawn / delete / clone / rename --------------------------------------------------------------
+//   spawn <Cube|Sphere|Cylinder|Wedge> [Name] [Prop=value ...]   e.g. spawn Cube Wall Position=(0,1,0) Size=(10,2,1) Color=(200,60,60)
+//   delete <Name>        clone <Name> [NewName]        rename <Old> <New>
+// A spawned object starts anchored (a static piece of scenery) unless Anchored=false is given. Names are unique: a name that is
+// taken is an error, so a later line can rely on it. Nothing is created if any property in the line is wrong.
+
+// Splits on spaces outside (...) and "...", and keeps "Key = value" together as one token.
+std::vector<std::string> SplitArgs(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    bool quoted = false;
+    auto nextNonSpace = [&](size_t i) { while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i; return i < s.size() ? s[i] : '\0'; };
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '"') { quoted = !quoted; continue; }
+        if (!quoted && c == '(') ++depth;
+        if (!quoted && c == ')' && depth > 0) --depth;
+        if (!quoted && depth == 0 && (c == ' ' || c == '\t')) {
+            const bool joinsEquals = (!cur.empty() && cur.back() == '=') || nextNonSpace(i) == '=';   // "Size = (1,2,3)"
+            if (joinsEquals) continue;
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            continue;
+        }
+        cur += c;
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+// What the editor does when it deletes a selected object: nothing may keep pointing at it.
+void ForgetSelection(ScatteredObject* doomed) {
+    for (ScatteredObject* o : ui::GetSelection())
+        if (o == doomed) { ui::SetSelection({}, nullptr); return; }
+}
+
+bool NameTaken(const std::string& name) {
+    if (FlyNative_FindObject(name.c_str()) != 0) return true;
+    ScriptRuntime* rt = GetActiveRuntime();
+    return rt && rt->EnvironmentNameTaken(name);
+}
+
+std::string UniqueName(const std::string& base) {
+    if (!NameTaken(base)) return base;
+    for (int i = 2; i < 100000; ++i) {
+        const std::string n = base + std::to_string(i);
+        if (!NameTaken(n)) return n;
+    }
+    return base;
+}
+
+bool ValidObjectName(const std::string& n) {
+    if (n.empty() || n.size() > 64) return false;
+    for (char c : n) if (c == '.' || c == '=' || c == '(' || c == ')' || c == '"' || static_cast<unsigned char>(c) < 32) return false;
+    return true;
+}
+
+// Applies "Key=value" tokens to `obj`. Returns an error text, or "" when everything was applied.
+std::string ApplyProps(ScriptRuntime& rt, ScatteredObject* obj, const std::vector<std::string>& tokens, size_t from) {
+    for (size_t i = from; i < tokens.size(); ++i) {
+        const size_t eq = tokens[i].find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= tokens[i].size()) return "Expected Prop=value, got '" + tokens[i] + "'";
+        const std::string prop = Canonical(Trim(tokens[i].substr(0, eq)), {
+            "Position", "Size", "Rotation", "Origin", "Velocity", "AngularVelocity", "Color",
+            "Anchored", "CanCollide", "Mass", "Transparency", "CollisionAccuracy", "Negate", "UseGlobalColor" });
+        if (prop.empty()) return "Unknown property '" + tokens[i].substr(0, eq) + "'";
+        std::string error;
+        if (!rt.SetObjectProperty(obj, prop, Trim(tokens[i].substr(eq + 1)), error)) return prop + ": " + error;
+    }
+    return {};
+}
+
+CommandResult Spawn(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.empty()) return { "Usage: spawn <Cube|Sphere|Cylinder|Wedge> [Name] [Prop=value ...]", true };
+    const std::string shape = Canonical(tokens[0], { "Cube", "Sphere", "Cylinder", "Wedge" });
+    if (shape.empty()) return { "Unknown shape '" + tokens[0] + "' (Cube, Sphere, Cylinder or Wedge)", true };
+
+    size_t next = 1;
+    std::string name;
+    if (tokens.size() > 1 && tokens[1].find('=') == std::string::npos) { name = tokens[1]; next = 2; }
+    if (!name.empty()) {
+        if (!ValidObjectName(name)) return { "'" + name + "' is not a usable object name", true };
+        if (NameTaken(name)) return { "An object named '" + name + "' already exists", true };
+    } else {
+        name = UniqueName(shape);
+    }
+
+    const unsigned long long h = FlyNative_CreateObject(shape.c_str());
+    if (!h) return { "Could not create a " + shape, true };
+    auto* obj = reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h));
+    FlyNative_SetName(h, name.c_str());
+    FlyNative_SetAnchored(h, 1);                   // scenery by default
+    const std::string error = ApplyProps(rt, obj, tokens, next);
+    if (!error.empty()) {                          // all or nothing
+        FlyNative_DestroyObject(h);
+        return { error, true };
+    }
+    return { "Created " + shape + " '" + name + "'" };
+}
+
+// water / terrain: `water [Name] [Prop=value ...]`, `terrain [Name] [Prop=value ...]`. The properties are checked by the runtime.
+CommandResult SpawnEnvironment(ScriptRuntime& rt, const char* kind, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    const bool water = kind[0] == 'w';
+    const bool city = kind[0] == 'c';
+    size_t next = 0;
+    std::string name;
+    if (!tokens.empty() && tokens[0].find('=') == std::string::npos) { name = tokens[0]; next = 1; }
+    if (!name.empty()) {
+        if (!ValidObjectName(name)) return { "'" + name + "' is not a usable object name", true };
+        if (NameTaken(name)) return { "An object named '" + name + "' already exists", true };
+    } else {
+        name = UniqueName(water ? "Water" : city ? "City" : "Terrain");
+    }
+    ScriptRuntime::PropList props;
+    for (size_t i = next; i < tokens.size(); ++i) {
+        const size_t eq = tokens[i].find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= tokens[i].size()) return { "Expected Prop=value, got '" + tokens[i] + "'", true };
+        props.emplace_back(Trim(tokens[i].substr(0, eq)), Trim(tokens[i].substr(eq + 1)));
+    }
+    const std::string error = water ? rt.CreateWater(name, props) : city ? rt.CreateCity(name, props) : rt.CreateTerrain(name, props);
+    if (!error.empty()) return { error, true };
+    return { std::string("Created ") + (water ? "water body" : city ? "city" : "terrain") + " '" + name + "'" };
+}
+
+// node <Object> <Type> [Prop=value ...]     delnode <Object> <NodeName>
+CommandResult NodeCommand(ScriptRuntime& rt, const std::string& args, bool remove) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.size() < 2) return { remove ? "Usage: delnode <Object> <NodeName>" : "Usage: node <Object> <PointLight|SpotLight|SurfaceLight|Decal|Texture> [Prop=value ...]", true };
+    const unsigned long long h = FlyNative_FindObject(tokens[0].c_str());
+    if (!h) return { "No object named '" + tokens[0] + "'", true };
+    auto* obj = reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h));
+    if (remove) {
+        const std::string e = rt.RemoveNode(obj, tokens[1]);
+        return e.empty() ? CommandResult{ "Removed node '" + tokens[1] + "' from '" + tokens[0] + "'" } : CommandResult{ e, true };
+    }
+    ScriptRuntime::PropList props;
+    for (size_t i = 2; i < tokens.size(); ++i) {
+        const size_t eq = tokens[i].find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= tokens[i].size()) return { "Expected Prop=value, got '" + tokens[i] + "'", true };
+        props.emplace_back(Trim(tokens[i].substr(0, eq)), Trim(tokens[i].substr(eq + 1)));
+    }
+    const std::string e = rt.AddNode(obj, tokens[1], props);
+    return e.empty() ? CommandResult{ "Added " + tokens[1] + " to '" + tokens[0] + "'" } : CommandResult{ e, true };
+}
+
+// union <NewName> <Part> <Part> ... [intersect]     separate <Union>     prefab <file> [Position=(x,y,z)]
+CommandResult UnionCommand(ScriptRuntime& rt, const std::string& args) {
+    std::vector<std::string> tokens = SplitArgs(args);
+    bool intersect = false;
+    if (!tokens.empty() && tokens.back() == "intersect") { intersect = true; tokens.pop_back(); }
+    if (tokens.size() < 3) return { "Usage: union <NewName> <Part1> <Part2> ... [intersect]", true };
+    const std::string name = tokens[0];
+    if (!ValidObjectName(name)) return { "'" + name + "' is not a usable object name", true };
+    std::vector<ScatteredObject*> parts;
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        const unsigned long long h = FlyNative_FindObject(tokens[i].c_str());
+        if (!h) return { "No object named '" + tokens[i] + "'", true };
+        parts.push_back(reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h)));
+    }
+    for (size_t i = 0; i < parts.size(); ++i)
+        for (size_t j = i + 1; j < parts.size(); ++j)
+            if (parts[i] == parts[j]) return { "'" + tokens[j + 1] + "' is listed more than once", true };
+    for (ScatteredObject* p : parts) ForgetSelection(p);
+    // The parts are removed, so their names (including the new one if it matches a part) are free again afterwards.
+    bool reuse = false;
+    for (size_t i = 1; i < tokens.size(); ++i) if (tokens[i] == name) reuse = true;
+    if (!reuse && NameTaken(name)) return { "An object named '" + name + "' already exists", true };
+    ScatteredObject* u = rt.UnionObjects(parts, intersect);
+    if (!u) return { "Could not combine them (only plain Cube/Sphere/Cylinder/Wedge parts that are not already unions)", true };
+    u->SetName(name);
+    return { "Created union '" + name + "'" };
+}
+
+CommandResult Separate(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.size() != 1) return { "Usage: separate <Union>", true };
+    const unsigned long long h = FlyNative_FindObject(tokens[0].c_str());
+    if (!h) return { "No object named '" + tokens[0] + "'", true };
+    auto* obj = reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h));
+    ForgetSelection(obj);
+    std::vector<ScatteredObject*> out;
+    if (!rt.SeparateUnion(obj, out)) return { "'" + tokens[0] + "' is not a union", true };
+    return { "Separated '" + tokens[0] + "' into " + std::to_string(out.size()) + " parts" };
+}
+
+CommandResult Prefab(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.empty()) return { "Usage: prefab <file.flyprefab> [Position=(x,y,z)]", true };
+    const std::string& file = tokens[0];
+    if (file.find("..") != std::string::npos || file[0] == '/' || file[0] == '\\' || file.find(':') != std::string::npos)
+        return { "Use a prefab path inside the project", true };
+    std::string pos = "(0,0,0)";
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        if (tokens[i].rfind("Position=", 0) == 0 || tokens[i].rfind("position=", 0) == 0) pos = tokens[i].substr(9);
+        else return { "Expected Position=(x,y,z), got '" + tokens[i] + "'", true };
+    }
+    float x = 0, y = 0, z = 0;
+    if (std::sscanf(pos.c_str(), " ( %f , %f , %f )", &x, &y, &z) != 3) return { "Position: expected (x, y, z)", true };
+    if (!rt.SpawnPrefab(tokens[0], Vector3{ x, y, z })) return { "Could not add prefab '" + tokens[0] + "' (missing file?)", true };
+    return { "Added prefab '" + tokens[0] + "'" };
+}
+
+CommandResult Delete(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.size() != 1) return { "Usage: delete <Name>", true };
+    const unsigned long long h = FlyNative_FindObject(tokens[0].c_str());
+    if (!h) {
+        if (rt.IsSimPlaying() && rt.EnvironmentNameTaken(tokens[0])) return { "Stop the game first: water, terrain and cities are changed in edit mode", true };
+        const std::string kind = rt.DeleteEnvironment(tokens[0]);
+        if (!kind.empty()) return { "Deleted " + kind + " '" + tokens[0] + "'" };
+        return { "No object named '" + tokens[0] + "'", true };
+    }
+    ForgetSelection(reinterpret_cast<ScatteredObject*>(static_cast<uintptr_t>(h)));
+    FlyNative_DestroyObject(h);
+    return { "Deleted '" + tokens[0] + "'" };
+}
+
+CommandResult Clone(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.empty() || tokens.size() > 2) return { "Usage: clone <Name> [NewName]", true };
+    const unsigned long long src = FlyNative_FindObject(tokens[0].c_str());
+    if (!src) return { "No object named '" + tokens[0] + "'", true };
+    std::string name = tokens.size() == 2 ? tokens[1] : UniqueName(tokens[0]);
+    if (!ValidObjectName(name)) return { "'" + name + "' is not a usable object name", true };
+    if (NameTaken(name)) return { "An object named '" + name + "' already exists", true };
+    const unsigned long long h = FlyNative_CloneObject(src);
+    if (!h) return { "Could not clone '" + tokens[0] + "'", true };
+    FlyNative_SetName(h, name.c_str());
+    (void)rt;
+    return { "Cloned '" + tokens[0] + "' as '" + name + "'" };
+}
+
+CommandResult Rename(ScriptRuntime& rt, const std::string& args) {
+    const std::vector<std::string> tokens = SplitArgs(args);
+    if (tokens.size() != 2) return { "Usage: rename <Old> <New>", true };
+    const unsigned long long h = FlyNative_FindObject(tokens[0].c_str());
+    if (!h && !rt.EnvironmentNameTaken(tokens[0])) return { "No object named '" + tokens[0] + "'", true };
+    if (!ValidObjectName(tokens[1])) return { "'" + tokens[1] + "' is not a usable object name", true };
+    if (NameTaken(tokens[1])) return { "An object named '" + tokens[1] + "' already exists", true };
+    if (!h) { rt.RenameEnvironment(tokens[0], tokens[1]); return { "Renamed '" + tokens[0] + "' to '" + tokens[1] + "'" }; }
+    FlyNative_SetName(h, tokens[1].c_str());
+    return { "Renamed '" + tokens[0] + "' to '" + tokens[1] + "'" };
 }
 
 // Finds the standalone entry running `className`, adding one if needed.
@@ -392,6 +646,20 @@ CommandResult Evaluate(const std::string& line) {
         return host->StartStandaloneScriptAt(idx) ? CommandResult{ "OK" }
                                                   : CommandResult{ "Could not start '" + cls + "' (see the log)", true };
     }
+
+    // Building: create, remove, copy and rename scene objects.
+    if (line.rfind("spawn ", 0) == 0 || line == "spawn") return Spawn(*rt, Trim(line.substr(std::min<size_t>(5, line.size()))));
+    if (line.rfind("water", 0) == 0 && (line.size() == 5 || line[5] == ' ')) return SpawnEnvironment(*rt, "water", Trim(line.substr(5)));
+    if (line.rfind("terrain", 0) == 0 && (line.size() == 7 || line[7] == ' ')) return SpawnEnvironment(*rt, "terrain", Trim(line.substr(7)));
+    if (line.rfind("city", 0) == 0 && (line.size() == 4 || line[4] == ' ')) return SpawnEnvironment(*rt, "city", Trim(line.substr(4)));
+    if (line.rfind("node ", 0) == 0) return NodeCommand(*rt, Trim(line.substr(5)), false);
+    if (line.rfind("delnode ", 0) == 0) return NodeCommand(*rt, Trim(line.substr(8)), true);
+    if (line.rfind("union ", 0) == 0) return UnionCommand(*rt, Trim(line.substr(6)));
+    if (line.rfind("separate ", 0) == 0) return Separate(*rt, Trim(line.substr(9)));
+    if (line.rfind("prefab ", 0) == 0) return Prefab(*rt, Trim(line.substr(7)));
+    if (line.rfind("delete ", 0) == 0) return Delete(*rt, Trim(line.substr(7)));
+    if (line.rfind("clone ", 0) == 0) return Clone(*rt, Trim(line.substr(6)));
+    if (line.rfind("rename ", 0) == 0) return Rename(*rt, Trim(line.substr(7)));
 
     // Property get/set.
     std::string lhs = line;
@@ -493,6 +761,7 @@ void AttachCamera(Camera3D&) {
 
 void Update() {
     fcloud::Update();
+    ai::Update();
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && BarHitTest(GetMousePosition())) {
         FocusBar();

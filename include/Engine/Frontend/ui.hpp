@@ -2,6 +2,7 @@
 
 #include "raylib.h"
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -104,7 +105,6 @@ void RequestDuplicate();
 void SuppressExplorerReveal();
 bool ConsumeDuplicateRequest();
 
-// Transform tools getter
 // Solid modelling on the current selection (see ScatteredObject::MakeUnion). The explorer menu and shortcuts only
 // request it; the interaction manager, which owns the engine and the object list, does the work.
 enum class UnionRequest { None, Union, Intersect, Separate };
@@ -114,6 +114,7 @@ UnionRequest ConsumeUnionRequest();
 bool CanUnionSelection();
 bool CanSeparateSelection();
 
+// Transform tools getter
 TransformTool GetActiveTool();
 
 // Transform space: true = Local, false = World
@@ -149,6 +150,8 @@ void SelectBottomTab(int tab);
 int BottomTabShown();
 bool OutputHasUnread();     // lines were written that the Output tab has not shown (the red dot)
 void ShowPreferences(bool show, int category);
+// Called once before an AI reply's code block changes the scene, so the whole block is one undo step.
+void SetAIBeforeApplyHook(std::function<void()> hook);
 
 // The top-bar Import button requests a mesh import; the interaction manager
 // consumes the request once per frame it was set (never while play is active).

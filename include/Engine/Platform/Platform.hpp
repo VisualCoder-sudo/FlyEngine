@@ -75,6 +75,7 @@ enum class DialogPurpose {
     PickNodeTexture,    // the image of a Decal / Texture child node
     ImportPluginFolder, // Preferences > Plugins: a plugin folder to copy into the project
     ImportPluginFile,   // Preferences > Plugins: a bare plugin library (.so / .dll)
+    AIAttach,           // the AI panel's + menu: a file or an image to send with a message
 };
 
 // Only one dialog can be in flight at a time; the editor UI is modal anyway.

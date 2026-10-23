@@ -61,6 +61,7 @@ struct PluginModule {
     std::string type;          // "nat" or "lib"
     std::string displayName, version, publisher, description, category, declaredApi;
     bool hasIdentity = false;
+    bool global = false;       // lives in the user's global plugins folder (every project) rather than <project>/plugins
 };
 
 // Host manages all loaded plugins and the project's game scripts.
@@ -90,7 +91,7 @@ public:
     // Shutdown all plugins and scripts
     void Shutdown();
 
-    bool LoadPlugin(const std::string& pluginPath);
+    bool LoadPlugin(const std::string& pluginPath, bool global = false);
     void UnloadPlugin(const std::string& pluginName);
     bool ReloadPlugin(const std::string& pluginName);
     void CheckHotReload();
@@ -98,12 +99,16 @@ public:
     // Plugin Manager: turn a plugin off/on without deleting it (remembered in <project>/plugins/disabled.txt), and
     // pick up plugin folders added since startup. Both are no-ops for an exported game's built-in plugins.
     bool SetPluginEnabled(const std::string& pluginName, bool enabled);
-    // Copies a plugin into <project>/plugins/<type>/<name>/ and loads it. `source` is a plugin folder (the one holding
-    // id.json and build/) or a bare library file. Never overwrites an installed plugin.
+    // Copies a plugin into <project>/plugins/<type>/<name>/ (or, with `global`, into the user's global plugins folder, so
+    // every project loads it) and loads it. `source` is a plugin folder (the one holding id.json and build/) or a bare
+    // library file. Never overwrites an installed plugin.
     struct ImportResult { bool ok = false; std::string message; };
-    ImportResult ImportPlugin(const std::string& source);
-    // Unloads a plugin and deletes its folder from <project>/plugins/. Refuses anything outside that folder.
+    ImportResult ImportPlugin(const std::string& source, bool global = false);
+    // Unloads a plugin and deletes its folder (local or global). Refuses anything outside the plugins folders.
     ImportResult RemovePlugin(const std::string& pluginName);
+    // Moves a plugin between this project's plugins and the global ones. A plugin of that name must not exist on the
+    // other side.
+    ImportResult MovePlugin(const std::string& pluginName, bool toGlobal);
     int  RescanPlugins();   // returns how many new plugins were found
     const std::string& GetProjectPath() const { return m_projectPath; }
 
@@ -202,9 +207,12 @@ private:
     std::future<scriptCompiler::Result> m_build;
     bool m_rebuildQueued = false;
 
-    std::set<std::string> m_disabledPlugins;
+    bool m_builtIn = false;   // an exported game: plugins are linked in, nothing on disk to scan
+    std::set<std::string> m_disabledPlugins;   // local; the global list lives in <global root>/disabled.txt
+    std::set<std::string> m_disabledGlobal;
     void LoadDisabledList();
-    void SaveDisabledList() const;
+    void SaveDisabledList(bool global) const;
+    std::string RootFor(bool global) const;
     int  ScanPluginDirs();
     void ReadPluginIdentity(PluginModule& plugin) const;
     void UnloadModule(PluginModule& plugin);

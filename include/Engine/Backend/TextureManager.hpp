@@ -61,6 +61,11 @@ std::vector<std::string> GetPresetTextures(const std::string& projectDir);
 // Returns the project-relative path (e.g., "assets/PresetTextures/wood.png").
 // If the texture is already in the project's PresetTextures folder, returns the existing path.
 std::string EnsurePresetTextureInProject(const std::string& presetPath, const std::string& projectDir);
+// Diffuse texture a newly placed part starts with (assets/PresetTextures/Preset), copied into the project.
+// Empty when the project has no folder or the file is missing.
+std::string DefaultPartTexture(const std::string& projectDir);
+// Copies a texture picked for a part (no model to own it) into <project>/assets/Textures; returns its project-relative path.
+std::string ImportPartTexture(const std::string& sourcePath, const std::string& projectDir);
 
 // Get GPU texture handle for a registered texture path.
 // Returns invalid texture (id=0) if not found.

@@ -1,5 +1,6 @@
 // ui_preferences.cpp: the Preferences window, split out of ui.cpp.
 #include "ui_internal.hpp"
+#include "../../../include/Engine/AI/AI.hpp"
 #include <map>
 #include <set>
 #include "../../../include/Engine/ExportManager.hpp"
@@ -16,6 +17,7 @@
 #include "../include/Engine/Scripts/ScriptLauncher.hpp"
 #include "../../../include/Engine/Scripts/NativeScriptHost.hpp"
 #include "../../../include/Engine/Frontend/PluginHost.hpp"
+#include "../../../include/Engine/Frontend/PluginStore.hpp"
 #include "../include/Engine/Backend/PhysicsSimulation.hpp"
 #include "../../../include/Engine/Backend/TextureManager.hpp"
 #include "../include/Engine/Frontend/ProjectManager.hpp"
@@ -38,7 +40,7 @@
 namespace ui {
 
 bool g_showPreferences = false;
-int  g_prefsCategory = 0; // 0=General 1=API Keys 2=Scripting 3=Plugins 4=Rendering 5=Appearance 6=Loading 7=Layout
+int  g_prefsCategory = 0; // 0=General 1=AI 2=Scripting 3=Plugins 4=Rendering 5=Appearance 6=Loading 7=Layout
 
 // ---- Preferences panel ----
 // Editor/workflow settings only (font, autosave cadence, external tools,
@@ -98,8 +100,9 @@ static void DrawPreferencesGeneralTab() {
     }
 }
 
-// Plugin Manager: every plugin found under <project>/plugins, whether or not it loaded. Turning one off unloads it (and
-// drops its modes and menu items) without deleting anything; the choice is kept in plugins/disabled.txt.
+// Plugin Manager: every plugin found under <project>/plugins (local) and the user's global plugins folder (every project),
+// whether or not it loaded. Turning one off unloads it (and drops its modes and menu items) without deleting anything; the
+// choice is kept in that folder's disabled.txt. The project manager's File > Manage Plugins edits the same folders.
 static void DrawPreferencesPluginsTab() {
     ScriptRuntime* rt = GetActiveRuntime();
     NativeScript::NativeScriptHost* host = rt ? rt->GetHost() : nullptr;
@@ -114,9 +117,10 @@ static void DrawPreferencesPluginsTab() {
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 480.0f);
     static std::string lastRescan;
     static bool lastFailed = false;
+    static bool installGlobal = false;   // where Import puts a plugin: every project, or only this one
     if (ImGui::Button("Import plugin...", ImVec2(130.0f, 24.0f)))
         platform::BeginChooseFolderDialog(platform::DialogPurpose::ImportPluginFolder, "Choose a plugin folder", "");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy a plugin folder (the one with id.json and build/) into this project");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy a plugin folder (the one with id.json and build/) into this project (or into the global plugins when Install for all projects is on)");
     ImGui::SameLine();
     if (ImGui::Button("Import library...", ImVec2(130.0f, 24.0f)))
         platform::BeginOpenFileDialog(platform::DialogPurpose::ImportPluginFile, "Choose a plugin library", "",
@@ -127,10 +131,12 @@ static void DrawPreferencesPluginsTab() {
     ImGui::SameLine();
     if (ImGui::Button("Open folder", ImVec2(110.0f, 24.0f))) {
         std::error_code ec;
-        const std::filesystem::path dir = std::filesystem::path(host->GetProjectPath()) / "plugins";
+        const std::filesystem::path dir = std::filesystem::path(installGlobal ? pluginstore::GlobalRoot() : pluginstore::LocalRoot(host->GetProjectPath()));
         std::filesystem::create_directories(dir, ec);
         platform::OpenWithDefaultApp(dir.string());
     }
+    ImGui::Checkbox("Install for all projects", &installGlobal);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Import and Open folder use the global plugins folder, so every project loads the plugin.\nOff: only this project.");
     ImGui::Unindent(8.0f);
     ImGui::Spacing();
 
@@ -138,7 +144,7 @@ static void DrawPreferencesPluginsTab() {
     if (platform::PollDialogResult({ platform::DialogPurpose::ImportPluginFolder, platform::DialogPurpose::ImportPluginFile }, picked) &&
         !picked.empty())
     {
-        const auto res = host->ImportPlugin(picked);
+        const auto res = host->ImportPlugin(picked, installGlobal);
         lastRescan = res.message;
         lastFailed = !res.ok;
     }
@@ -156,14 +162,14 @@ static void DrawPreferencesPluginsTab() {
 
     if (plugins.empty()) {
         ImGui::Indent(8.0f);
-        ImGui::TextWrapped("No plugins yet. Build one into <project>/plugins/nat/<name>/build/ and press Rescan. "
+        ImGui::TextWrapped("No plugins yet. Build one into <project>/plugins/nat/<name>/build/ (or the global plugins folder) and press Rescan. "
                            "See the Native plugins section of the README.");
         ImGui::Unindent(8.0f);
         return;
     }
 
     // Toggling or reloading never adds or removes records, but Rescan does: it ran above, before the loop.
-    std::string toggleName, reloadName, removeName;
+    std::string toggleName, reloadName, removeName, moveName;
     bool toggleTo = false;
     for (const auto& p : plugins) {
         ImGui::PushID(p->name.c_str());
@@ -181,14 +187,19 @@ static void DrawPreferencesPluginsTab() {
         ImGui::TextUnformatted(p->displayName.c_str());
         if (!p->version.empty()) { ImGui::SameLine(); ImGui::TextDisabled("v%s", p->version.c_str()); }
         if (!p->publisher.empty()) { ImGui::SameLine(); ImGui::TextDisabled("by %s", p->publisher.c_str()); }
+        ImGui::SameLine();
+        ImGui::TextColored(p->global ? ImVec4(0.35f, 0.75f, 0.85f, 1.0f) : ImVec4(0.6f, 0.62f, 0.68f, 1.0f), "[%s]", p->global ? "Global" : "Local");
 
         bool on = p->enabled;
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 330.0f);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 450.0f);
         if (ImGui::Checkbox("Enabled", &on)) { toggleName = p->name; toggleTo = on; }
         ImGui::SameLine();
         ImGui::BeginDisabled(!p->enabled);
         if (ImGui::Button("Reload", ImVec2(70.0f, 22.0f))) reloadName = p->name;
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button(p->global ? "Make Local" : "Make Global", ImVec2(110.0f, 22.0f))) moveName = p->name;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(p->global ? "Keep it only in this project" : "Load it in every project");
         ImGui::SameLine();
         if (ImGui::Button("Show", ImVec2(60.0f, 22.0f))) platform::RevealInFileManager(p->path);
         ImGui::SameLine();
@@ -196,7 +207,7 @@ static void DrawPreferencesPluginsTab() {
         if (ImGui::Button("Remove", ImVec2(70.0f, 22.0f))) ImGui::OpenPopup("Remove plugin?");
         ImGui::EndDisabled();
         if (ImGui::BeginPopupModal("Remove plugin?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Delete \"%s\" and its folder from this project?", p->displayName.c_str());
+            ImGui::Text(p->global ? "Delete \"%s\" and its folder from your global plugins (every project loses it)?" : "Delete \"%s\" and its folder from this project?", p->displayName.c_str());
             ImGui::TextDisabled("%s", p->dir.c_str());
             ImGui::TextDisabled("This cannot be undone.");
             if (ImGui::Button("Delete", ImVec2(100.0f, 24.0f))) { removeName = p->name; ImGui::CloseCurrentPopup(); }
@@ -236,6 +247,14 @@ static void DrawPreferencesPluginsTab() {
 
     if (!toggleName.empty()) host->SetPluginEnabled(toggleName, toggleTo);
     if (!reloadName.empty()) host->ReloadPlugin(reloadName);
+    if (!moveName.empty()) {
+        bool toGlobal = true;
+        for (const auto& p : plugins) if (p->name == moveName) toGlobal = !p->global;
+        const auto res = host->MovePlugin(moveName, toGlobal);
+        lastRescan = res.ok ? res.message + (toGlobal ? " It now loads in every project." : " It now loads in this project only.") : res.message;
+        lastFailed = !res.ok;
+        return;   // the list changed under the loop above
+    }
     if (!removeName.empty()) {
         const auto res = host->RemovePlugin(removeName);
         lastRescan = res.message;
@@ -454,6 +473,115 @@ static void DrawLoadingLookEditor(const char* id, loading::Look& l, bool& change
     ImGui::PopID();
 }
 
+// AI: off by default. Nothing is sent anywhere until this is enabled and a key is entered. The key lives in ai.cfg in the
+// machine config folder (owner-only), never in a project, so it is not exported or committed.
+static void DrawPreferencesAITab() {
+    g_prefsFirstRow = true;
+    ai::Settings& s = ai::GetSettings();
+    if (!ai::Available()) { ImGui::TextDisabled("AI is not available in this build (built without libcurl)."); return; }
+    bool changed = false;
+
+    DrawPrefsSettingRowBegin("Enable AI assistant");
+    if (ImGui::Checkbox("##aienable", &s.enabled)) {
+        changed = true;
+        if (!s.enabled) ai::ClearHistory();
+        else SetPanelVisible(PanelId::AI, true);   // the panel appears under the Explorer
+    }
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::Indent(8.0f);
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - 8.0f);
+    ImGui::TextDisabled("Off by default. When on, the messages you send and the Flyengine documentation are sent to the "
+                        "provider you choose. Nothing is sent until you press Send in the AI Assistant window; testing the connection and "
+                        "refreshing the model list send only your key.");
+    ImGui::PopTextWrapPos();
+    ImGui::Unindent(8.0f);
+
+    ImGui::BeginDisabled(!s.enabled);
+    DrawPrefsSettingRowBegin("Provider");
+    if (ImTextureID icon = AIProviderIcon(ai::ProviderIconIndex(s.provider))) {
+        ImGui::Image(icon, ImVec2(20.0f, 20.0f));
+        ImGui::SameLine();
+    }
+    ImGui::SetNextItemWidth(116.0f);
+    if (ImGui::BeginCombo("##aiprovider", ai::ProviderShortName(s.provider))) {
+        for (int i = 0; i < ai::kProviderCount; ++i) {
+            const ai::ProviderId id = static_cast<ai::ProviderId>(i);
+            if (ImTextureID icon = AIProviderIcon(ai::ProviderIconIndex(id))) { ImGui::Image(icon, ImVec2(16.0f, 16.0f)); ImGui::SameLine(); }
+            if (ImGui::Selectable(ai::ProviderName(id), id == s.provider) && id != s.provider) {
+                s.provider = id;
+                ai::ResetTestStatus();
+                ai::MaybeRefreshModels();
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Each provider keeps its own key and model, so switching back and forth loses nothing.
+    DrawPrefsSettingRowBegin("API key");
+    static char keyBuf[256] = "";
+    static int keyBufProvider = -1;
+    static bool showKey = false;
+    if (keyBufProvider != ai::Index(s.provider)) {
+        std::snprintf(keyBuf, sizeof keyBuf, "%s", ai::SelectedKey().c_str());
+        keyBufProvider = ai::Index(s.provider);
+    }
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputText("##aikey", keyBuf, sizeof keyBuf, showKey ? 0 : ImGuiInputTextFlags_Password);
+    if (ImGui::IsItemDeactivatedAfterEdit()) { ai::SelectedKey() = keyBuf; changed = true; ai::TestConnection(); ai::RefreshModels(); }
+    ImGui::Indent(8.0f);
+    if (ImGui::SmallButton(showKey ? "Hide" : "Show")) showKey = !showKey;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear key")) { keyBuf[0] = 0; ai::SelectedKey().clear(); changed = true; }
+    if (ai::KeyFromEnvironment()) ImGui::TextDisabled("%s is set and is used instead of this field.", ai::ProviderEnvVar(s.provider));
+    ImGui::Unindent(8.0f);
+
+    DrawPrefsSettingRowBegin("Model");
+    if (DrawAIModelCombo("##aimodel", 140.0f)) changed = true;
+    DrawPrefsSettingRowBegin("Model list");
+    ImGui::BeginDisabled(ai::EffectiveKey().empty() || ai::ModelsLoading());
+    if (ImGui::Button("Refresh from provider", ImVec2(140.0f, 24.0f))) ai::RefreshModels();
+    ImGui::EndDisabled();
+    ImGui::Indent(8.0f);
+    {
+        std::string status = ai::ModelsStatus(s.provider);
+        if (ai::ModelsLoading()) status = "Loading models...";
+        else if (status.empty()) status = ai::Models(s.provider).empty() ? "Not fetched yet." : std::to_string(ai::Models(s.provider).size()) + " models (cached)";
+        ImGui::TextDisabled("%s", status.c_str());
+    }
+    ImGui::Unindent(8.0f);
+    DrawPrefsSettingRowBegin("Show non-chat models");
+    if (ImGui::Checkbox("##aishowall", &s.showAllModels)) changed = true;
+    // Any other model id the API accepts (a newer release, a dated snapshot) can be typed here.
+    DrawPrefsSettingRowBegin("Custom model ID");
+    static char modelBuf[128] = "";
+    if (!ImGui::IsAnyItemActive() && ai::SelectedModel() != modelBuf) std::snprintf(modelBuf, sizeof modelBuf, "%s", ai::SelectedModel().c_str());
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputText("##aimodelid", modelBuf, sizeof modelBuf);
+    if (ImGui::IsItemDeactivatedAfterEdit() && modelBuf[0]) { ai::SelectedModel() = modelBuf; changed = true; }
+
+    DrawPrefsSettingRowBegin("Connection");
+    ImGui::BeginDisabled(ai::EffectiveKey().empty() || ai::Busy());
+    if (ImGui::Button("Test connection", ImVec2(140.0f, 24.0f))) ai::TestConnection();
+    ImGui::EndDisabled();
+    if (!ai::TestStatus().empty()) {
+        ImGui::Indent(8.0f);
+        const bool ok = ai::TestStatus() == "OK";
+        if (ImTextureID icon = AIPanelIcon(3)) {
+            ImVec4 tint = ai::TestStatus() == "Testing..." ? ImVec4(1, 1, 1, 0.5f + 0.5f * std::sin((float)ImGui::GetTime() * 6.0f)) : ImVec4(1, 1, 1, 1);
+            ImGui::ImageWithBg(icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tint);
+            ImGui::SameLine();
+        }
+        ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - 8.0f);
+        ImGui::TextColored(ok ? ImVec4(0.4f, 0.9f, 0.5f, 1.0f) : ImVec4(1.0f, 0.55f, 0.45f, 1.0f), "%s", ai::TestStatus().c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Unindent(8.0f);
+    }
+    ImGui::EndDisabled();
+
+    if (changed) ai::Save();
+}
+
 static void DrawPreferencesLoadingTab() {
     g_prefsFirstRow = true;
     loading::Settings& s = loading::GetSettings();
@@ -549,7 +677,7 @@ void DrawImGuiPreferencesWindow() {
     ImGui::Indent(10.0f);
 
     DrawPrefsSidebarButton("General", 0);
-    DrawPrefsSidebarButton("API Keys (Coming Soon)", 1, /*enabled=*/false);
+    DrawPrefsSidebarButton("AI", 1);
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
     DrawPrefsSidebarButton("Scripting", 2);
     DrawPrefsSidebarButton("Plugins", 3);
@@ -579,6 +707,7 @@ void DrawImGuiPreferencesWindow() {
     ImGui::Dummy(ImVec2(0.0f, 16.0f));
     switch (g_prefsCategory) {
         case 0: DrawPreferencesGeneralTab(); break;
+        case 1: DrawPreferencesAITab(); break;
         case 3: DrawPreferencesPluginsTab(); break;
         case 4: DrawPreferencesRenderingTab(); break;
         case 6: DrawPreferencesLoadingTab(); break;

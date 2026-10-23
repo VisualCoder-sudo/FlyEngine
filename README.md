@@ -315,8 +315,84 @@ Show and Remove (deletes its folder, after a confirmation). *Import plugin...* c
 (the one holding `id.json` and `build/`) into the project, *Import library...* installs a single
 `.so`/`.dll`, and *Rescan* picks up folders added by hand. An import never overwrites an installed plugin.
 
+**Local and global plugins.** A plugin in `<project>/plugins/` is *local*: only that project loads it
+(an Optimizer, say). One in the user's global folder (`~/.config/flyengine/plugins/` on Linux,
+`%APPDATA%\Flyengine\plugins\` on Windows; same `nat/<name>/build/` layout) is *global*: every project
+loads it (a Build tool). If both have a plugin of the same name, the project's wins. Enabled/disabled is kept per
+side (`plugins/disabled.txt` in each folder). Manage both from **File > Manage Plugins...** in the Project Manager
+(Global tab, and a Local tab for any recent project: import, enable/disable, *Make Global* / *Make Local*, remove),
+or from Preferences > Plugins in the editor (*Install for all projects* sends an import to the global folder;
+each row has *Make Global* / *Make Local*). Set `FLYENGINE_GLOBAL_PLUGINS` to use another global folder.
+
 API 1.1 added `ui_set_accent_color`, which re-skins the editor's accent colour
 (editor only). A plugin built against a newer API than the engine is refused.
+
+## AI assistant (optional)
+
+Off by default. **Preferences > AI** has an *Enable AI assistant* switch; until it is on and a key is entered, nothing
+is sent anywhere and the editor shows no AI entry. Providers: **Claude** (Anthropic), **ChatGPT** (OpenAI) and **Gemini**
+(Google). Each keeps its own API key and model, so you can switch between them; pick one under *Provider*. A key can also come
+from the environment, which then wins over the saved one: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (or
+`GOOGLE_API_KEY`). The model list is the provider's own: the dropdown (in the panel and in Preferences) is fetched from its API with your
+key, cached in `ai_models.json` next to `ai.cfg`, refreshed when it is a day old or on *Refresh*, and searchable. OpenAI's
+list also holds embeddings, speech and image models, so those are hidden unless *Show non-chat models* is on. Any model ID
+not in the list can be typed under *Custom model ID*. Providers sit behind an `IProvider` interface (`include/Engine/AI/AI.hpp`, `src/Engine/AI/Providers.cpp`), so another
+one is a request builder, a response parser and one `ProviderId` value.
+
+With it on, an **AI Assistant** panel appears under the Explorer. Drag its title to dock it elsewhere, right-click to close it
+(File > Panels brings it back). Each request sends your messages plus the Flyengine docs
+(`docs/`, compiled into the editor) and the project name and selected object names. Replies can contain code blocks:
+`fly-console` blocks hold console commands and `fly-script:Name.cpp` blocks hold C++ scripts. Nothing runs by itself:
+a bar above the message box counts what the newest reply would change ("3 Changes", one per script or console block) and
+**Apply** on its right does all of it at once: it saves the scripts to `<project>/Scripts/` and compiles them once, and runs the
+console commands (one Ctrl+Z undoes a block; `fcloud` commands are refused). The bar then says "3 Changes applied!" and goes away
+until the next reply has changes; hover it to see which scripts are new and which replace an existing one (a replaced script comes
+back with Discard). Each block then shows its result: compiled (press Play to run it) or the compiler errors, with a **Send errors to
+AI** button that asks the model for a corrected file.
+The model is given `fly.hpp` and the sample scripts as well as the docs, so it writes against the real script API.
+
+**Attachments.** The **+** menu has *Attach file...* (a text or code file, up to 200 KB) and *Attach image...* (png, jpg, bmp, gif, tga or
+psd). Attachments wait above the message box with a preview (x removes one) and go out with the next message, up to six at a time.
+A file is put into the message as a fenced block; an image is sent as an image (scaled down to 1568 px and re-encoded when it is
+larger than that), so use a model that can see images. The chat is saved with the files' text, but an image is not stored: when you
+reopen the chat the model is told an image was there and is no longer available.
+
+**Build.** With **Build** on, the AI changes the scene with console commands, and the console now has the commands to do it:
+`spawn <Cube|Sphere|Cylinder|Wedge>`, `water`, `terrain`, `city`, `node <Object> <PointLight|SpotLight|SurfaceLight|Decal|Texture>`,
+`delnode`, `union`, `separate`, `prefab`, `delete`, `clone` and `rename` (see `docs/guide/ConsoleCommands.md`). A spawned object is
+anchored unless `Anchored=false`; names are unique; nothing is created if a property in the line is wrong. The AI is told the names
+already in the scene with every request. One block can build a whole structure, and Ctrl+Z undoes its objects (and their lights,
+decals and textures) as one step. Water, terrain and cities are not in the undo history, the same as when you insert them by hand:
+delete them instead. They are made in edit mode only. The console cannot import meshes, sculpt or paint terrain, edit city roads,
+group objects or build visual scripts.
+
+**What the AI may do: the + button.** The **+** at the left of the message box turns on what you want: **Script** (the AI may write
+C++ scripts) and **Build** (it may create and change things in the scene with console commands), plus **Ask me questions**
+(on by default). The chosen modes show as chips above the box and are sent with each request; a code block of a mode that is off
+is not counted by the bar and cannot be applied. With Script and Build both off, the AI only explains.
+
+**Stop.** While a reply is on its way, or being typed out, the Send button becomes **Stop** (red). It abandons the request at once (the
+connection is aborted and a late answer is ignored), leaves your message in the chat with "Stopped." and a *Try again* button, and
+while a reply is being typed out it shows the rest immediately.
+
+**Questions.** The AI can ask a multiple-choice question: it shows as a card with the options as buttons. Clicking one sends it
+as your answer, and you can also type your own. With several questions in one reply you pick an option for each, then press
+*Send answers*. Replies are typed out instead of appearing at once.
+
+**Unsaved until you save.** Like model imports, a script the AI writes is temporary: it is written so it can compile, but
+only saving the project (Ctrl+S, File > Save, Export) keeps it. The panel shows "N unsaved scripts" with a **Discard** button,
+and **Discard** on a script block puts the file back (a new file is deleted, an overwritten one is restored). Closing the editor
+without saving, or the next launch after a crash, does the same (state is kept in `<project>/.ai_pending`). A script you edited
+by hand after the AI wrote it is never removed. Scene changes from console commands are unsaved too until you save (Ctrl+Z undoes them).
+
+**Chats.** Every chat is saved on your machine as it goes: one JSON file per chat in `~/.config/flyengine/chats/`
+(owner-only, never inside a project, so never exported). The panel has two tabs, **Chat** (the open chat) and **Chats** (every saved chat as a card: click one to open it, x then Delete? to remove it);
+**+** starts a new chat. A chat is titled from its first message and is only written once it has one. Chats are plain
+text, so delete one in the list if it quotes something you don't want kept. Switching chats is disabled while a reply is
+on its way.
+
+The key is stored in `ai.cfg` in the editor config folder (`~/.config/flyengine/`, owner-only), never in a project, so it
+is not exported. `ANTHROPIC_API_KEY` overrides it. Needs the libcurl build (`FLYENGINE_ENABLE_FLYCLOUD`, on by default).
 
 ## Exporting a game
 
@@ -498,6 +574,10 @@ receive the sun's shadow map (it never did).
 
 ---
 
+## Unions
+
+Select two or more primitive parts (not imported meshes), then right-click (in the viewport or the Explorer) > **Union** > **Union** (Ctrl+Shift+G) to merge them into one solid. Every face keeps the colour of the part it came from; tick **Use global colour** in the Properties panel to paint the whole union in one colour instead. Mark a part **Negate** first and it is carved out of the union (it shows as a red ghost in the editor and never collides). **Intersect** keeps only the volume the selected parts share. **Separate** (Ctrl+Shift+U) gives the original parts back, scripts and nodes included. Unions are saved with the scene (scene format 34). See [docs/guide/Unions.md](docs/guide/Unions.md) for the details.
+
 ## Terrain collision
 
 *Basic Terrain* is solid in Play and in the Player. Starting play builds a Box3D
@@ -543,10 +623,6 @@ which then wins over the machine's for that project's player. Player flags: `--n
 ## Editor bottom panel
 
 The bottom of the editor is one panel, docked flush between the explorer and the properties
-## Unions
-
-Select two or more primitive parts (not imported meshes), then right-click (in the viewport or the Explorer) > **Union** > **Union** (Ctrl+Shift+G) to merge them into one solid. Every face keeps the colour of the part it came from; tick **Use global colour** in the Properties panel to paint the whole union in one colour instead. Mark a part **Negate** first and it is carved out of the union (it shows as a red ghost in the editor and never collides). **Intersect** keeps only the volume the selected parts share. **Separate** (Ctrl+Shift+U) gives the original parts back, scripts and nodes included. Unions are saved with the scene (scene format 34). C++ scripts can make them too (`fly::Union`, `fly::Intersect`, `Object::Separate`), and Visual Script has **Union** and **Separate** nodes. See [docs/guide/Unions.md](docs/guide/Unions.md) for the details.
-
 panel and above the command console, with two tabs:
 
 - **Assets** - the asset browser.

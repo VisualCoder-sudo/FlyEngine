@@ -440,3 +440,22 @@ add_dependencies(plugin_manager_test test_plugin_good test_plugin_failing)
 target_compile_definitions(plugin_manager_test PRIVATE
     GOOD_PLUGIN="$<TARGET_FILE:test_plugin_good>" FAILING_PLUGIN="$<TARGET_FILE:test_plugin_failing>")
 add_test(NAME plugin_manager COMMAND plugin_manager_test)
+
+# AI assistant: settings (off by default), request/response JSON, reply parsing and Apply safety checks. No network.
+if(FLYENGINE_ENABLE_FLYCLOUD)
+    add_executable(ai_test ai_test.cpp)
+    target_link_libraries(ai_test PRIVATE FlyEngineCore FlyRL)
+    add_test(NAME ai COMMAND ai_test WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
+
+# The AI panel against the real UI (seeded chat, growing input, chats list), writing ai_panel_*.png. Opens a window, so it is
+# not registered with ctest: build/tests/ai_panel_test [width height]
+if(FLYENGINE_ENABLE_FLYCLOUD)
+    add_executable(ai_panel_test ai_panel_test.cpp)
+    target_link_libraries(ai_panel_test PRIVATE FlyEngineCore FlyRL)
+endif()
+
+# The console's building commands (spawn / delete / clone / rename, what the AI's Build mode runs). Opens a window, so it is not
+# registered with ctest: build/tests/console_build_test
+add_executable(console_build_test console_build_test.cpp)
+target_link_libraries(console_build_test PRIVATE FlyEngineCore FlyRL)

@@ -79,6 +79,8 @@ What the editor actually does (`src/Engine/Scripts/NativeScriptHost.cpp`):
 
 - It scans `<project>/plugins/nat/*/build/` and `<project>/plugins/lib/*/build/` and loads **every** file with the
   platform extension (`.so` or `.dll`). It does not read `id.json` or `plugin.json`.
+- It then scans the same layout under the user's *global* plugins folder (`<config dir>/plugins`, see the README), so a
+  plugin installed there loads in every project. A project plugin with the same name shadows the global one.
 - The library must export `CP_GetPluginEntry` (`CP_REGISTER_PLUGIN` does this) and it must not return `NULL`.
 - The plugin is refused with *"Plugin API version newer than engine supports"* when its `api_version` is higher than
   the engine's.

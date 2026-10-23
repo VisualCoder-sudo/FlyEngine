@@ -136,7 +136,7 @@ uint32_t Mix(uint32_t a, uint32_t b) {
 }
 
 uint32_t CoordHash(int cx, int cz, int seed) {
-    return Mix((uint32_t)seed ^ 0x9e3779b9u, Mix((uint32_t)(cx * 0x1f1f1f) , (uint32_t)(cz * 0x9e3d9)) + 0x85ebca6bu);
+    return Mix((uint32_t)seed ^ 0x9e3779b9u, Mix((uint32_t)cx * 0x1f1f1fu, (uint32_t)cz * 0x9e3d9u) + 0x85ebca6bu);
 }
 
 float CoordHash01(int cx, int cz, int seed) {

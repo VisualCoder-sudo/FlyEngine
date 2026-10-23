@@ -1,4 +1,5 @@
 #include "ui_internal.hpp"
+#include "../../../include/Engine/AI/AI.hpp"
 #include "../../../include/Engine/Frontend/PluginHost.hpp"
 #include "../../../include/Engine/ExportManager.hpp"
 #include "../../../include/Engine/Platform/Platform.hpp"
@@ -8,6 +9,7 @@
 #include "Engine/U8Path.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 
 namespace ui {
@@ -94,7 +96,17 @@ static void LaunchPlayer() {
     platform::LaunchDetached(playerPath.string(), args);
 }
 
+// Back to the Project Manager: the manager starts the editor once per run, so a fresh process shows it while this one
+// closes. Nothing is saved here; the caller decides.
+static bool s_leaveAfterSave = false;
+static void LeaveToProjectManager() {
+    s_leaveAfterSave = false;
+    platform::LaunchDetached(platform::ExecutablePath(), {});
+    SetWindowShouldClose();
+}
+
 void DrawImGuiTopBar() {
+    if (s_leaveAfterSave && g_pendingFileAction == MenuAction::None) LeaveToProjectManager();   // the save has been taken
     Rectangle barRec = GetTopBarBounds();
 
     ImGui::SetNextWindowPos(ImVec2(barRec.x, barRec.y));
@@ -112,11 +124,21 @@ void DrawImGuiTopBar() {
 
     ImGui::BeginDisabled(g_playActive);
 
-    // File button (toggles a popup below it)
-    if (ImGui::Button("File", ImVec2(56.0f, 30.0f))) {
-        ImGui::OpenPopup("##FileMenu");
+    // Menu bar strip along the very top edge: plain text menus, File for now. The tool rows sit below it.
+    constexpr float kMenuBarH = 24.0f;
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 w0 = ImGui::GetWindowPos();
+        dl->AddRectFilled(w0, ImVec2(w0.x + barRec.width, w0.y + kMenuBarH), IM_COL32(18, 20, 25, 255));
+        dl->AddLine(ImVec2(w0.x, w0.y + kMenuBarH), ImVec2(w0.x + barRec.width, w0.y + kMenuBarH), IM_COL32(56, 60, 70, 255));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        ImGui::SetCursorPos(ImVec2(4.0f, 1.0f));
+        if (ImGui::Button("File", ImVec2(0.0f, kMenuBarH - 2.0f))) ImGui::OpenPopup("##FileMenu");
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
     }
-    ImGui::SameLine();
+    ImGui::SetCursorPos(ImVec2(4.0f, kMenuBarH + 4.0f));
 
     // Import button
     if (ToolTex(4)) {
@@ -162,7 +184,7 @@ void DrawImGuiTopBar() {
     ImGui::EndDisabled();
 
     for (size_t i = 0; i < pluginMenus.size(); ++i) {
-        ImGui::SetNextWindowPos(ImVec2(pluginMenuPos[i].x, barRec.y + 38.0f));
+        ImGui::SetNextWindowPos(ImVec2(pluginMenuPos[i].x, barRec.y + 38.0f + kMenuBarH));
         if (!ImGui::BeginPopup(("##PluginMenu_" + pluginMenus[i]).c_str())) continue;
         // Copy: a click may unload the plugin that owns the item.
         const std::vector<pluginhost::TopMenuItem> items = pluginhost::TopMenuItems();
@@ -173,7 +195,7 @@ void DrawImGuiTopBar() {
         ImGui::EndPopup();
     }
 
-    ImGui::SetNextWindowPos(ImVec2(modeBtnMin.x, barRec.y + 38.0f));
+    ImGui::SetNextWindowPos(ImVec2(modeBtnMin.x, barRec.y + 38.0f + kMenuBarH));
     if (haveModes && ImGui::BeginPopup("##ModeMenu")) {
         const std::string activeId = pluginhost::ActiveModeId();
         if (ImGui::MenuItem("Normal", nullptr, activeId.empty())) { pluginhost::RequestMode(""); ImGui::CloseCurrentPopup(); }
@@ -188,7 +210,7 @@ void DrawImGuiTopBar() {
     }
 
     // City menu popup, anchored under the City button
-    ImGui::SetNextWindowPos(ImVec2(cityBtnMin.x, barRec.y + 38.0f));
+    ImGui::SetNextWindowPos(ImVec2(cityBtnMin.x, barRec.y + 38.0f + kMenuBarH));
     if (ImGui::BeginPopup("##CityMenu")) {
         if (ImGui::MenuItem("New regular city")) { g_pendingFileAction = MenuAction::SpawnCity; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("New organic city")) { g_pendingFileAction = MenuAction::SpawnCityOrganic; ImGui::CloseCurrentPopup(); }
@@ -201,7 +223,8 @@ void DrawImGuiTopBar() {
     }
 
     // File menu popup, anchored under the File button
-    ImGui::SetNextWindowPos(ImVec2(barRec.x + 4.0f, barRec.y + 38.0f));
+    bool openLeave = false;
+    ImGui::SetNextWindowPos(ImVec2(barRec.x + 4.0f, barRec.y + kMenuBarH));
     if (ImGui::BeginPopup("##FileMenu")) {
         if (ImGui::MenuItem("Save", "Ctrl+S")) { g_pendingFileAction = MenuAction::Save; ImGui::CloseCurrentPopup(); }
         if (ImGui::MenuItem("Save as")) { g_pendingFileAction = MenuAction::SaveAs; ImGui::CloseCurrentPopup(); }
@@ -211,6 +234,7 @@ void DrawImGuiTopBar() {
         ImGui::Separator();
         if (ImGui::BeginMenu("Panels")) {
             for (int i = 0; i < kPanelCount; ++i) {
+                if (i == (int)PanelId::AI && !(ai::GetSettings().enabled && ai::Available())) continue;   // only listed while the AI is on
                 bool shown = IsPanelVisible(static_cast<PanelId>(i));
                 if (ImGui::MenuItem(PanelName(static_cast<PanelId>(i)), nullptr, &shown)) SetPanelVisible(static_cast<PanelId>(i), shown);
             }
@@ -219,12 +243,32 @@ void DrawImGuiTopBar() {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Tutorial")) { OpenTutorial(); ImGui::CloseCurrentPopup(); }
+        if (ImGui::MenuItem("Projects...")) { openLeave = true; ImGui::CloseCurrentPopup(); }
+        if (ImGui::MenuItem("Manage Plugins...")) { g_prefsCategory = 3; g_showPreferences = true; ImGui::CloseCurrentPopup(); }   // Preferences > Plugins: local and global
         if (ImGui::MenuItem("Preferences")) { g_showPreferences = true; ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();
     }
 
+    if (openLeave) ImGui::OpenPopup("Back to Projects?");
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Back to Projects?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Close this project and return to the Project Manager?");
+        ImGui::TextDisabled("Changes you have not saved are lost.");
+        ImGui::Spacing();
+        if (ImGui::Button("Save and go", ImVec2(120.0f, 26.0f))) {
+            g_pendingFileAction = MenuAction::Save;
+            s_leaveAfterSave = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Don't save", ImVec2(120.0f, 26.0f))) { ImGui::CloseCurrentPopup(); LeaveToProjectManager(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 26.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
     // Transform tool buttons (row 2)
-    ImGui::SetCursorPos(ImVec2(75.0f, 45.0f));
+    ImGui::SetCursorPos(ImVec2(75.0f, 45.0f + kMenuBarH));
     constexpr const char* toolNames[] = { "Select", "Move", "Scale", "Rotate" };
     constexpr TransformTool toolEnums[] = { TransformTool::Select, TransformTool::Move, TransformTool::Scale, TransformTool::Rotate };
     for (int i = 0; i < 4; ++i) {
@@ -319,7 +363,7 @@ void DrawImGuiTopBar() {
 
     // Play in Player button (launches standalone player), right-aligned next to Play
     {
-        ImGui::SetCursorPos(ImVec2(barRec.width - 210.0f, 15.0f));
+        ImGui::SetCursorPos(ImVec2(barRec.width - 210.0f, 15.0f + kMenuBarH));
         if (ImGui::Button("Play in Player", ImVec2(115.0f, 30.0f))) {
             LaunchPlayer();
         }
@@ -331,7 +375,7 @@ void DrawImGuiTopBar() {
         const char* playLabel = g_playActive ? "Stop" : "Play";
         ImVec4 playCol = theme::Vec(g_playActive ? theme::DANGER : theme::SUCCESS);
         ImGui::PushStyleColor(ImGuiCol_Button, playCol);
-        ImGui::SetCursorPos(ImVec2(barRec.width - 85.0f, 15.0f));
+        ImGui::SetCursorPos(ImVec2(barRec.width - 85.0f, 15.0f + kMenuBarH));
         if (ImGui::Button(playLabel, ImVec2(70.0f, 30.0f))) {
             g_playTogglePending = true;
         }

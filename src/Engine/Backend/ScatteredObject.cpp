@@ -1026,7 +1026,7 @@ void ScatteredObject::QueueNodeSurfaces() const {
                    (unsigned char)(std::clamp(n.tint[2], 0.0f, 1.0f) * 255.0f + 0.5f), (unsigned char)(std::clamp(1.0f - n.transparency, 0.0f, 1.0f) * 255.0f + 0.5f) };
         if (!n.texturePath.empty()) {
             bool pending = false;
-            s.texture = textureManager::GetGPUTextureAsync(n.texturePath, pending);   // id 0 while it loads: the checker shows
+            s.texture = textureManager::GetGPUTextureAsync(n.texturePath, pending);   // id 0 while it loads: the plain default shows
         }
         gfx::QueueNodeSurface(s);
     }

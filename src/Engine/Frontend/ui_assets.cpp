@@ -557,11 +557,10 @@ void PumpAssetBrowserDialogs() {
         const std::string& projectDir = ::project::GetCurrentProject().path;
         if (!projectDir.empty()) {
             for (auto* obj : g_selection) {
-                if (obj && obj->HasModel()) {
-                    obj->SetTexturePath(
-                        textureManager::RegisterTexture(picked, obj->GetModelPath()),
-                        projectDir);
-                }
+                if (!obj) continue;
+                const std::string rel = obj->HasModel() ? textureManager::RegisterTexture(picked, obj->GetModelPath())
+                                                        : textureManager::ImportPartTexture(picked, projectDir);
+                if (!rel.empty()) obj->SetTexturePath(rel, projectDir);
             }
         }
     }

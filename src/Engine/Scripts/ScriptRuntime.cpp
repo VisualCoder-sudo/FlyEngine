@@ -15,9 +15,18 @@
 #include "../../../include/Graphics/Vfs.hpp"
 #include "../../../include/Engine/GameUI.hpp"
 #include "../../../include/Engine/Navigation.hpp"
+#include "../../../include/Terrain/Water/WaterBody.hpp"
+#include "../../../include/Terrain/TerrainRegistry.hpp"
+#include "../../../include/Terrain/TerrainEditor.hpp"
+#include "../../../include/CityGen/City.hpp"
+#include "../../../include/CityGen/CityEditor.hpp"
+#include "../../../include/Engine/Backend/ObjectNode.hpp"
+#include "../../../include/Engine/Frontend/ProjectManager.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <cstring>
+#include <cmath>
+#include <cctype>
 #include <sstream>
 
 namespace {
@@ -137,6 +146,289 @@ ScatteredObject* ScriptRuntime::CreateObject(const std::string& shapeName, bool 
         if (sim && !deferSpawn) sim->SpawnBodyForObject(raw);
     }
     return raw;
+}
+
+// ---- water and terrain ----
+
+namespace {
+bool ParseNumber(const std::string& s, float& out) {
+    char* end = nullptr;
+    const float v = std::strtof(s.c_str(), &end);
+    if (end == s.c_str() || *end != '\0' || !std::isfinite(v)) return false;
+    out = v;
+    return true;
+}
+
+// "(a, b[, c[, d]])" -> up to four numbers.
+bool ParseNumberList(const std::string& s, std::vector<float>& out) {
+    std::string t = s;
+    while (!t.empty() && (t.front() == ' ' || t.front() == '(')) t.erase(t.begin());
+    while (!t.empty() && (t.back() == ' ' || t.back() == ')')) t.pop_back();
+    out.clear();
+    std::stringstream ss(t);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        float v;
+        while (!part.empty() && part.front() == ' ') part.erase(part.begin());
+        while (!part.empty() && part.back() == ' ') part.pop_back();
+        if (!ParseNumber(part, v)) return false;
+        out.push_back(v);
+    }
+    return !out.empty() && out.size() <= 4;
+}
+
+std::string LowerKey(std::string k) {
+    for (char& c : k) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return k;
+}
+}  // namespace
+
+bool ScriptRuntime::EnvironmentNameTaken(const std::string& name) const {
+    for (WaterBody* w : WaterBody::GetInstances()) if (w && w->alive && w->GetName() == name) return true;
+    return terrain::GetTerrainRegistry().NameExists(name) || city::GetCityRegistry().NameExists(name);
+}
+
+std::string ScriptRuntime::CreateWater(const std::string& name, const PropList& props) {
+    if (isPlaying) return "Stop the game first: water, terrain and cities are made in edit mode";
+    if (!engine) return "No scene is loaded";
+    Vector3 pos = { 0, 0, 0 };
+    Vector3 size = { 100.0f, 1.0f, 100.0f };
+    float height = 0.0f, transparency = -1.0f;
+    int playerCollision = -1;
+    Color color = { 0, 100, 200, 180 };
+    std::vector<float> n;
+    for (const auto& [rawKey, value] : props) {
+        const std::string key = LowerKey(rawKey);
+        if (key == "position" || key == "size") {
+            if (!ParseNumberList(value, n) || n.size() != 3) return rawKey + ": expected (x, y, z)";
+            (key == "position" ? pos : size) = Vector3{ n[0], n[1], n[2] };
+        } else if (key == "height") {
+            if (!ParseNumber(value, height)) return "Height: expected a number";
+        } else if (key == "transparency") {
+            if (!ParseNumber(value, transparency) || transparency < 0.0f || transparency > 1.0f) return "Transparency: expected 0..1";
+        } else if (key == "playercollision") {
+            bool b;
+            if (!ParseBool(value, b)) return "PlayerCollision: expected true or false";
+            playerCollision = b ? 1 : 0;
+        } else if (key == "color") {
+            if (!ParseNumberList(value, n) || (n.size() != 3 && n.size() != 4)) return "Color: expected (r, g, b) or (r, g, b, a)";
+            for (float c : n) if (c < 0.0f || c > 255.0f) return "Color: channels are 0..255";
+            color = { (unsigned char)n[0], (unsigned char)n[1], (unsigned char)n[2], (unsigned char)(n.size() == 4 ? n[3] : 180.0f) };
+        } else {
+            return "Unknown water property '" + rawKey + "' (Position, Size, Height, Color, Transparency, PlayerCollision)";
+        }
+    }
+    size.x = std::clamp(size.x, 1.0f, 20000.0f);
+    size.z = std::clamp(size.z, 1.0f, 20000.0f);
+    auto water = std::make_unique<WaterBody>(pos, size, height, color);
+    water->SetName(name);
+    if (transparency >= 0.0f) water->SetTransparency(transparency);
+    if (playerCollision >= 0) water->SetPlayerCollision(playerCollision != 0);
+    engine->AddEntity(std::move(water));
+    return {};
+}
+
+std::string ScriptRuntime::CreateTerrain(const std::string& name, const PropList& props) {
+    if (isPlaying) return "Stop the game first: water, terrain and cities are made in edit mode";
+    if (!engine) return "No scene is loaded";
+    Vector3 pos = { 0, 0, 0 };
+    float width = 1000.0f, depth = 1000.0f, height = 0.0f, hills = 0.0f;
+    int seed = 1337;
+    std::vector<float> n;
+    for (const auto& [rawKey, value] : props) {
+        const std::string key = LowerKey(rawKey);
+        if (key == "position") {
+            if (!ParseNumberList(value, n) || n.size() != 3) return "Position: expected (x, y, z)";
+            pos = { n[0], n[1], n[2] };
+        } else if (key == "size") {
+            if (!ParseNumberList(value, n) || n.size() != 2) return "Size: expected (width, depth)";
+            width = n[0]; depth = n[1];
+            if (width < 50.0f || depth < 50.0f || width > 4000.0f || depth > 4000.0f) return "Size: width and depth are 50..4000 metres";
+        } else if (key == "height") {
+            if (!ParseNumber(value, height)) return "Height: expected a number";
+        } else if (key == "hills") {
+            if (!ParseNumber(value, hills) || hills < 0.0f || hills > 500.0f) return "Hills: expected 0..500 (metres)";
+        } else if (key == "seed") {
+            float f;
+            if (!ParseNumber(value, f) || std::fabs(f) > 2.0e9f) return "Seed: expected a whole number below 2 billion";
+            seed = static_cast<int>(f);
+        } else {
+            return "Unknown terrain property '" + rawKey + "' (Position, Size, Height, Hills, Seed)";
+        }
+    }
+    auto t = std::make_unique<terrain::Terrain>(pos, width, depth, 256, 65);
+    t->CreateBlank(height);
+    if (hills > 0.0f) {
+        terrain::NoiseParams np;
+        np.amplitude = hills;
+        np.scale = 0.01f * 1000.0f / std::max(width, depth) * 2.0f;   // bigger terrain, longer hills
+        np.seed = seed;
+        t->GenerateFromNoise(np);
+    }
+    t->SetPhysicsMode(terrain::PhysicsMode::Heightfield);
+    if (sim) t->SetPhysicsSimulation(sim);
+    auto& registry = terrain::GetTerrainRegistry();
+    t->SetName(name);
+    registry.Register(t.get());
+    engine->AddEntity(std::move(t));
+    const project::Info& proj = project::GetCurrentProject();
+    if (!proj.path.empty()) registry.WriteFile(proj.path + "/terrain.terrain");
+    return {};
+}
+
+std::string ScriptRuntime::DeleteEnvironment(const std::string& name) {
+    if (isPlaying) return {};
+    for (WaterBody* w : WaterBody::GetInstances()) {
+        if (w && w->alive && w->GetName() == name) {
+            if (ui::GetSelectedWater() == w) ui::SetSelectedWater(nullptr);
+            if (engine) engine->RemoveEntity(w);
+            return "water";
+        }
+    }
+    auto& registry = terrain::GetTerrainRegistry();
+    if (terrain::Terrain* t = registry.GetByName(name)) {
+        if (terrain::GetTerrainEditorState().selectedTerrainLegacy == t) terrain::HandleTerrainSelection(t, false);
+        registry.Unregister(t);
+        t->alive = false;
+        const project::Info& proj = project::GetCurrentProject();
+        if (!proj.path.empty()) registry.WriteFile(proj.path + "/terrain.terrain");
+        return "terrain";
+    }
+    if (city::City* c = city::GetCityRegistry().GetByName(name)) {
+        city::SetActiveCity(nullptr);
+        city::GetCityRegistry().Unregister(c);
+        c->alive = false;
+        return "city";
+    }
+    return {};
+}
+
+bool ScriptRuntime::RenameEnvironment(const std::string& from, const std::string& to) {
+    if (city::City* c = city::GetCityRegistry().GetByName(from)) { c->SetName(to); return true; }
+    for (WaterBody* w : WaterBody::GetInstances())
+        if (w && w->alive && w->GetName() == from) { w->SetName(to); return true; }
+    if (terrain::Terrain* t = terrain::GetTerrainRegistry().GetByName(from)) {
+        t->SetName(to);
+        const project::Info& proj = project::GetCurrentProject();
+        if (!proj.path.empty()) terrain::GetTerrainRegistry().WriteFile(proj.path + "/terrain.terrain");
+        return true;
+    }
+    return false;
+}
+
+std::string ScriptRuntime::CreateCity(const std::string& name, const PropList& props) {
+    if (isPlaying) return "Stop the game first: water, terrain and cities are made in edit mode";
+    if (!engine) return "No scene is loaded";
+    Vector2 origin = { 0, 0 };
+    city::CityParams params;
+    std::vector<float> n;
+    for (const auto& [rawKey, value] : props) {
+        const std::string key = LowerKey(rawKey);
+        float f;
+        if (key == "position") {
+            if (!ParseNumberList(value, n) || n.size() != 2) return "Position: expected (x, z)";
+            origin = { n[0], n[1] };
+        } else if (key == "grid") {
+            if (!ParseNumberList(value, n) || n.size() != 2 || n[0] < 2 || n[1] < 2 || n[0] > 64 || n[1] > 64) return "Grid: expected (x, z) blocks, 2..64";
+            params.gridX = (int)n[0]; params.gridZ = (int)n[1];
+        } else if (key == "cellsize") {
+            if (!ParseNumber(value, f) || f < 15.0f || f > 200.0f) return "CellSize: expected 15..200 metres";
+            params.cellSize = f;
+        } else if (key == "organic") {
+            bool b;
+            if (!ParseBool(value, b)) return "Organic: expected true or false";
+            params.organic = b;
+        } else if (key == "seed") {
+            if (!ParseNumber(value, f) || std::fabs(f) > 2.0e9f) return "Seed: expected a whole number below 2 billion";
+            params.seed = (int)f;
+        } else {
+            return "Unknown city property '" + rawKey + "' (Position, Grid, CellSize, Organic, Seed)";
+        }
+    }
+    auto c = std::make_unique<city::City>();
+    c->SetName(name);
+    c->GetParams() = params;
+    c->GenerateGrid(origin);
+    city::City* raw = c.get();
+    city::GetCityRegistry().Register(raw);
+    engine->AddEntity(std::move(c));
+    return {};
+}
+
+std::string ScriptRuntime::AddNode(ScatteredObject* obj, const std::string& typeName, const PropList& props) {
+    if (!obj) return "No such object";
+    const std::string t = LowerKey(typeName);
+    ObjectNodeType type;
+    if (t == "pointlight" || t == "point") type = ObjectNodeType::PointLight;
+    else if (t == "spotlight" || t == "spot") type = ObjectNodeType::SpotLight;
+    else if (t == "surfacelight" || t == "surface") type = ObjectNodeType::SurfaceLight;
+    else if (t == "decal") type = ObjectNodeType::Decal;
+    else if (t == "texture") type = ObjectNodeType::Texture;
+    else return "Unknown node type '" + typeName + "' (PointLight, SpotLight, SurfaceLight, Decal or Texture)";
+    ObjectNode node = MakeNode(type);
+    std::vector<float> v;
+    for (const auto& [rawKey, value] : props) {
+        const std::string key = LowerKey(rawKey);
+        float f;
+        bool b;
+        if (key == "name") {
+            if (value.empty() || value.size() > 64) return "Name: 1..64 characters";
+            node.name = value;
+        } else if (key == "enabled" || key == "shadows") {
+            if (!ParseBool(value, b)) return rawKey + ": expected true or false";
+            (key == "enabled" ? node.enabled : node.castShadows) = b;
+        } else if (key == "face") {
+            const std::string fv = LowerKey(value);
+            static const char* faces[] = { "front", "back", "left", "right", "top", "bottom" };
+            int idx = -1;
+            for (int i = 0; i < 6; ++i) if (fv == faces[i]) idx = i;
+            if (idx < 0) return "Face: Front, Back, Left, Right, Top or Bottom";
+            node.face = static_cast<NodeFace>(idx);
+        } else if (key == "falloff") {
+            const std::string fv = LowerKey(value);
+            if (fv == "linear") node.falloff = LightFalloff::Linear;
+            else if (fv == "inversesquare") node.falloff = LightFalloff::InverseSquare;
+            else return "Falloff: Linear or InverseSquare";
+        } else if (key == "color" || key == "tint") {
+            if (!ParseNumberList(value, v) || v.size() != 3) return rawKey + ": expected (r, g, b) with channels 0..255";
+            for (float c : v) if (c < 0.0f || c > 255.0f) return rawKey + ": channels are 0..255";
+            float* dst = key == "color" ? node.color : node.tint;
+            for (int i = 0; i < 3; ++i) dst[i] = v[i] / 255.0f;
+        } else if (key == "brightness") {
+            if (!ParseNumber(value, f) || f < 0.0f || f > 100.0f) return "Brightness: expected 0..100";
+            node.brightness = f;
+        } else if (key == "range") {
+            if (!ParseNumber(value, f) || f <= 0.0f || f > 1000.0f) return "Range: expected 0..1000 metres";
+            node.range = f;
+        } else if (key == "angle") {
+            if (!ParseNumber(value, f) || f <= 0.0f || f > 89.0f) return "Angle: expected 1..89 degrees";
+            node.angle = f;
+        } else if (key == "transparency") {
+            if (!ParseNumber(value, f) || f < 0.0f || f > 1.0f) return "Transparency: expected 0..1";
+            node.transparency = f;
+        } else if (key == "texture") {
+            if (value.find("..") != std::string::npos || (!value.empty() && (value[0] == '/' || value[0] == '\\' || value.find(':') != std::string::npos)))
+                return "Texture: use a path inside the project (for example Textures/brick.png)";
+            node.texturePath = value;
+        } else if (key == "tile" || key == "offset") {
+            if (!ParseNumberList(value, v) || v.size() != 2) return rawKey + ": expected (x, y)";
+            if (key == "tile" && (v[0] <= 0.0f || v[1] <= 0.0f)) return "Tile: sizes must be above 0";
+            float* dst = key == "tile" ? node.studsPerTile : node.offset;
+            dst[0] = v[0]; dst[1] = v[1];
+        } else {
+            return "Unknown node property '" + rawKey + "' (Name, Enabled, Face, Color, Brightness, Range, Angle, Falloff, Shadows, Texture, Tint, Transparency, Tile, Offset)";
+        }
+    }
+    obj->nodes.push_back(node);
+    return {};
+}
+
+std::string ScriptRuntime::RemoveNode(ScatteredObject* obj, const std::string& nodeName) {
+    if (!obj) return "No such object";
+    for (size_t i = 0; i < obj->nodes.size(); ++i) {
+        if (obj->nodes[i].name == nodeName) { obj->nodes.erase(obj->nodes.begin() + (long)i); return {}; }
+    }
+    return "'" + obj->GetName() + "' has no node named '" + nodeName + "'";
 }
 
 void ScriptRuntime::FinishCreate(ScatteredObject* obj)

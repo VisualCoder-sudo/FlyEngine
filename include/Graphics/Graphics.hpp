@@ -27,7 +27,7 @@ Matrix ComposeTRS(Vector3 scale, Matrix rotation, Vector3 position);
 Shader& GetLitShader();
 Shader& GetRoadShader(); // lit shader with a baked depth bias (roads win against the ground plane)
 Model& GetShapeModel(ShapeType type); // fits in a 1x1x1 box; scale it via the model's transform
-Texture2D GetDefaultTexture();        // procedural checker texture, used when an object has none of its own
+Texture2D GetDefaultTexture();        // plain white texture, used when an object has none of its own
 
 // Instanced city buildings: draws `count` unit building meshes from the
 // transform buffer at `start` tinted `tint`, using the instanced variant of
@@ -146,7 +146,7 @@ struct NodeSurface {
     Vector2 metresPerTile{ 4.0f, 4.0f };
     Vector2 offset{};                   // in tiles
     Color tint = WHITE;                 // a = opacity
-    Texture2D texture{};                // id 0: the checker texture
+    Texture2D texture{};                // id 0: the plain white default texture
 };
 void QueueNodeSurface(const NodeSurface& surface);
 void DrawNodeSurfaces();                // draws and clears the queue

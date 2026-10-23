@@ -359,6 +359,7 @@ bool WindowShouldClose(void) {
     return !c.windowOpen || c.shouldClose;
 }
 
+void SetWindowShouldClose(void) { Core().shouldClose = true; }
 bool IsWindowReady(void) { return Core().windowOpen; }
 bool IsWindowFullscreen(void) { return Core().windowOpen && sapp_is_fullscreen(); }
 bool IsWindowFocused(void) { return Core().windowOpen && rli::g_windowFocused; }
