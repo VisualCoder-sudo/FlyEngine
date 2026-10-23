@@ -253,6 +253,20 @@ int main() {
     for (int f = 0; f < 4; f++) engine.StepFrame(1.0f / 60.0f);
     CHECK(uo->GetCollider().hulls.size() > 0 || uo->GetCollider().tris.size() > 0);
 
+    // FLY_UNION_SHOT=<file.png>: render a union beside a plain cube for a look (not part of the pass/fail).
+    if (const char* shot = std::getenv("FLY_UNION_SHOT")) {
+        Add(engine, objs, { 0, -0.5f, 0 }, { 40, 1, 40 }, { 150, 150, 150, 255 });
+        Add(engine, objs, { -4, 1, 0 }, { 2, 2, 2 }, { 40, 90, 200, 255 });
+        std::vector<std::unique_ptr<ScatteredObject>> sp;
+        sp.push_back(Part({ 3, 1, 0 }, { 2, 2, 2 }, { 40, 90, 200, 255 }));
+        sp.push_back(Part({ 4, 2, 1 }, { 2, 2, 2 }, { 200, 60, 40, 255 }));
+        sp.push_back(Part({ 4.5f, 1, -1 }, { 1.5f, 3, 1.5f }, { 60, 200, 80, 255 }, ShapeType::Cylinder));
+        auto su = ScatteredObject::MakeUnion(std::move(sp), { UnionMode::Add, UnionMode::Add, UnionMode::Add });
+        if (su) { objs.push_back(su.get()); engine.AddEntity(std::move(su)); }
+        for (int f = 0; f < 8; f++) engine.StepFrame(1.0f / 60.0f);
+        TakeScreenshot(shot);
+    }
+
     std::printf(g_fail ? "union_test: %d FAILED\n" : "union_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

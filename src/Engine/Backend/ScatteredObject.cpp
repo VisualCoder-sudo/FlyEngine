@@ -733,11 +733,28 @@ bool ScatteredObject::RebuildUnionMesh(Vector3* outCenter) {
             // Unit-space normal of a surface that gets stretched by `ext`: n * ext.
             Vector3 n = Vector3Normalize({ (float)(soup.nrm[s * 3 + 0] * ext.x), (float)(soup.nrm[s * 3 + 1] * ext.y), (float)(soup.nrm[s * 3 + 2] * ext.z) });
             mesh.normals[i * 3 + 0] = n.x; mesh.normals[i * 3 + 1] = n.y; mesh.normals[i * 3 + 2] = n.z;
-            mesh.texcoords[i * 2 + 0] = (float)(soup.pos[s * 3 + 0] - mid.x); mesh.texcoords[i * 2 + 1] = (float)(soup.pos[s * 3 + 2] - mid.z);
             const uint32_t col = soup.color[s];
             mesh.colors[i * 4 + 0] = (unsigned char)(col & 0xFF); mesh.colors[i * 4 + 1] = (unsigned char)((col >> 8) & 0xFF);
             mesh.colors[i * 4 + 2] = (unsigned char)((col >> 16) & 0xFF); mesh.colors[i * 4 + 3] = 255;
             mesh.indices[i] = (unsigned short)i;
+        }
+        // Texture coordinates: each triangle is projected along its dominant axis and spans 0..1 across the union,
+        // like the primitives' faces do (so a texture or the default checker stretches with the object's size).
+        for (size_t t = 0; t + 2 < count; t += 3) {
+            const Vector3 a = { mesh.vertices[t * 3], mesh.vertices[t * 3 + 1], mesh.vertices[t * 3 + 2] };
+            const Vector3 b = { mesh.vertices[(t + 1) * 3], mesh.vertices[(t + 1) * 3 + 1], mesh.vertices[(t + 1) * 3 + 2] };
+            const Vector3 c = { mesh.vertices[(t + 2) * 3], mesh.vertices[(t + 2) * 3 + 1], mesh.vertices[(t + 2) * 3 + 2] };
+            const Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+            const float ax = fabsf(n.x), ay = fabsf(n.y), az = fabsf(n.z);
+            for (size_t k = 0; k < 3; ++k) {
+                const float* v = &mesh.vertices[(t + k) * 3];   // unit space, -0.5..0.5
+                float u, w;
+                if (ax >= ay && ax >= az) { u = v[2]; w = v[1]; }
+                else if (ay >= az)        { u = v[0]; w = v[2]; }
+                else                      { u = v[0]; w = v[1]; }
+                mesh.texcoords[(t + k) * 2 + 0] = u + 0.5f;
+                mesh.texcoords[(t + k) * 2 + 1] = w + 0.5f;
+            }
         }
         unionVertexColors[(size_t)mi].assign(mesh.colors, mesh.colors + count * 4);
         if (useGlobalColor) memset(mesh.colors, 255, count * 4);
