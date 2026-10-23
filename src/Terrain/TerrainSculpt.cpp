@@ -30,7 +30,7 @@ inline float BrushFalloffLinear(float distance, float radius) {
 // ============================================================================
 
 static uint32_t TerrainHash(int x, int y, int seed) {
-    uint32_t h = (uint32_t)(x * 374761393 + y * 668265263) ^ (uint32_t)(seed * 2654435761u);
+    uint32_t h = ((uint32_t)x * 374761393u + (uint32_t)y * 668265263u) ^ ((uint32_t)seed * 2654435761u); // unsigned: no signed-overflow UB
     h = (h ^ (h >> 13)) * 1274126177u;
     h ^= (h >> 16);
     return h;
@@ -200,6 +200,45 @@ static void RunErosionOnRegion(float* heights, int w, int d, float cellSize,
     for (size_t i = 0; i < count; i++) heights[i] = cur[i];
 }
 
+// Heightmap samples on a chunk border are duplicated: global sample k*(res-1)
+// is local index 0 of chunk k AND local index res-1 of chunk k-1. Erosion works
+// on a global grid, so every write must hit all owners or the chunks crack apart.
+// float -> int without UB for NaN / huge values (grid coords are clamped afterwards).
+static int SafeGridInt(float v) {
+    if (!(v > -1.0e9f)) return -1000000000;
+    if (v > 1.0e9f) return 1000000000;
+    return (int)v;
+}
+
+static float ReadGlobalSample(const std::vector<TerrainChunk>& all, int gridW, int gridD, int stride, int x, int z) {
+    int cx = std::min(x / stride, gridW - 1), cz = std::min(z / stride, gridD - 1);
+    if (cx < 0 || cz < 0) return 0.0f;
+    const TerrainChunk& c = all[(size_t)cz * gridW + cx];
+    int lx = x - cx * stride, lz = z - cz * stride;
+    size_t i = (size_t)lz * c.resolution + lx;
+    return i < c.heightmap.size() ? c.heightmap[i] : 0.0f;
+}
+
+template <class F>
+static void ForEachGlobalSampleOwner(std::vector<TerrainChunk>& all, int gridW, int gridD, int stride, int x, int z, F f) {
+    int cx = std::min(x / stride, gridW - 1), cz = std::min(z / stride, gridD - 1);
+    if (cx < 0 || cz < 0) return;
+    int lx = x - cx * stride, lz = z - cz * stride;
+    int xs[2] = { cx, -1 }, lxs[2] = { lx, stride };
+    int zs[2] = { cz, -1 }, lzs[2] = { lz, stride };
+    if (lx == 0 && cx > 0) xs[1] = cx - 1;
+    if (lz == 0 && cz > 0) zs[1] = cz - 1;
+    for (int i = 0; i < 2; i++) {
+        if (xs[i] < 0) continue;
+        for (int j = 0; j < 2; j++) {
+            if (zs[j] < 0) continue;
+            TerrainChunk& c = all[(size_t)zs[j] * gridW + xs[i]];
+            size_t idx = (size_t)lzs[j] * c.resolution + lxs[i];
+            if (idx < c.heightmap.size()) f(c, idx);
+        }
+    }
+}
+
 // Apply erosion to a world-space rectangular region across all chunks.
 void ApplyErosionToRegion(Terrain& terrain, float minWX, float minWZ, float maxWX, float maxWZ,
                                   const TerrainBrush& brush) {
@@ -210,18 +249,16 @@ void ApplyErosionToRegion(Terrain& terrain, float minWX, float minWZ, float maxW
 
     const TerrainChunk& refChunk = allChunks[0];
     const float cellSize = refChunk.worldSize / (refChunk.resolution - 1);
-    const float halfWorldW = terrain.size.x * 0.5f;
-    const float halfWorldD = terrain.size.z * 0.5f;
 
     // World -> terrain-local grid coordinates
-    int gx0 = (int)std::floor((minWX - (terrain.center.x - halfWorldW)) / cellSize);
-    int gz0 = (int)std::floor((minWZ - (terrain.center.z - halfWorldD)) / cellSize);
-    int gx1 = (int)std::ceil((maxWX - (terrain.center.x - halfWorldW)) / cellSize);
-    int gz1 = (int)std::ceil((maxWZ - (terrain.center.z - halfWorldD)) / cellSize);
+    int gx0 = SafeGridInt(std::floor((minWX - refChunk.bounds.min.x) / cellSize));
+    int gz0 = SafeGridInt(std::floor((minWZ - refChunk.bounds.min.z) / cellSize));
+    int gx1 = SafeGridInt(std::ceil((maxWX - refChunk.bounds.min.x) / cellSize));
+    int gz1 = SafeGridInt(std::ceil((maxWZ - refChunk.bounds.min.z) / cellSize));
 
     // Clamp to terrain grid
-    int totalW = terrain.gridWidth * (refChunk.resolution - 1);
-    int totalD = terrain.gridDepth * (refChunk.resolution - 1);
+    int totalW = terrain.gridWidth * (refChunk.resolution - 1) + 1; // global sample count
+    int totalD = terrain.gridDepth * (refChunk.resolution - 1) + 1;
     gx0 = std::clamp(gx0, 0, totalW - 1);
     gz0 = std::clamp(gz0, 0, totalD - 1);
     gx1 = std::clamp(gx1, 0, totalW - 1);
@@ -244,24 +281,8 @@ void ApplyErosionToRegion(Terrain& terrain, float minWX, float minWZ, float maxW
     std::vector<float> buf((size_t)rw * rd);
     for (int z = pz0; z <= pz1; z++) {
         for (int x = px0; x <= px1; x++) {
-            // Find which chunk this grid cell belongs to
-            int chunkGX = x / (refChunk.resolution - 1);
-            int chunkGZ = z / (refChunk.resolution - 1);
-            int localX = x % (refChunk.resolution - 1);
-            int localZ = z % (refChunk.resolution - 1);
-
-            // Find the chunk
-            const TerrainChunk* chunk = nullptr;
-            for (auto& c : allChunks) {
-                if ((int)c.chunkCoord.x == chunkGX && (int)c.chunkCoord.y == chunkGZ) {
-                    chunk = &c;
-                    break;
-                }
-            }
-            if (!chunk) continue;
-
-            float h = chunk->heightmap[(size_t)localZ * chunk->resolution + localX];
-            buf[(size_t)(z - pz0) * rw + (x - px0)] = h;
+            buf[(size_t)(z - pz0) * rw + (x - px0)] =
+                ReadGlobalSample(allChunks, terrain.gridWidth, terrain.gridDepth, refChunk.resolution - 1, x, z);
         }
     }
 
@@ -278,41 +299,21 @@ void ApplyErosionToRegion(Terrain& terrain, float minWX, float minWZ, float maxW
     // Run erosion
     RunErosionOnRegion(buf.data(), rw, rd, cellSize, es, es.iterations);
 
-    // Write back to chunks with brush falloff blending
-    // Compute brush center in grid coordinates
-    float brushCX = (brush.radius > 0) ? (minWX + maxWX) * 0.5f : 0; // fallback
-    float brushCZ = (brush.radius > 0) ? (minWZ + maxWZ) * 0.5f : 0;
-    // Actually use the brush center passed to the function... but we don't have it here.
-    // For region erosion (Generate tab), we use uniform weight (no falloff).
-    // For brush erosion, this function won't be called directly; instead the brush
-    // path in ApplyBrush will handle falloff blending.
-
-    // For now, write back uniformly (for Generate tab Erode Region/All)
+    // Region erosion (Generate tab) writes back uniformly, no brush falloff.
     for (int z = gz0; z <= gz1; z++) {
         for (int x = gx0; x <= gx1; x++) {
-            int chunkGX = x / (refChunk.resolution - 1);
-            int chunkGZ = z / (refChunk.resolution - 1);
-            int localX = x % (refChunk.resolution - 1);
-            int localZ = z % (refChunk.resolution - 1);
-
-            TerrainChunk* chunk = nullptr;
-            for (auto& c : allChunks) {
-                if ((int)c.chunkCoord.x == chunkGX && (int)c.chunkCoord.y == chunkGZ) {
-                    chunk = &c;
-                    break;
-                }
-            }
-            if (!chunk) continue;
-
             float newH = buf[(size_t)(z - pz0) * rw + (x - px0)];
-            float& h = chunk->heightmap[(size_t)localZ * chunk->resolution + localX];
-            h = std::clamp(newH, TerrainSculptAccess::MinHeight(terrain), TerrainSculptAccess::MaxHeight(terrain));
-            chunk->dirty = true;
-            chunk->physicsDirty = true;
+            if (!std::isfinite(newH)) continue;
+            ForEachGlobalSampleOwner(allChunks, terrain.gridWidth, terrain.gridDepth, refChunk.resolution - 1, x, z,
+                [&](TerrainChunk& c, size_t idx) {
+                    c.heightmap[idx] = std::clamp(newH, TerrainSculptAccess::MinHeight(terrain), TerrainSculptAccess::MaxHeight(terrain));
+                    c.dirty = true;
+                    c.physicsDirty = true;
+                });
         }
     }
 
-    TerrainSculptAccess::OnHeightmapChanged(terrain)();
+    if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(terrain)) onChanged();
     TerrainSculptAccess::NeedsPhysicsRebuild(terrain) = true;
 }
 
@@ -323,7 +324,7 @@ static void ApplyErosionBrush(Terrain& terrain,
                                const TerrainBrush& brush,
                                float strength,
                                float dt) {
-    if (chunks.empty()) return;
+    if (chunks.empty() || !(brush.radius > 0.0f) || !std::isfinite(brush.radius)) return;
 
     // Find world-space bounds of all affected chunks (expanded by brush radius)
     float minWX = FLT_MAX, minWZ = FLT_MAX, maxWX = -FLT_MAX, maxWZ = -FLT_MAX;
@@ -342,18 +343,18 @@ static void ApplyErosionBrush(Terrain& terrain,
 
     // Convert to grid coordinates
     auto& allChunks = TerrainSculptAccess::GetChunks(terrain);
+    if (allChunks.empty()) return;
     const TerrainChunk& refChunk = allChunks[0];
     const float cellSize = refChunk.worldSize / (refChunk.resolution - 1);
-    const float halfWorldW = terrain.size.x * 0.5f;
-    const float halfWorldD = terrain.size.z * 0.5f;
+    if (!(cellSize > 0.0f) || !std::isfinite(cellSize)) return;
 
-    int gx0 = (int)std::floor((minWX - (terrain.center.x - halfWorldW)) / cellSize);
-    int gz0 = (int)std::floor((minWZ - (terrain.center.z - halfWorldD)) / cellSize);
-    int gx1 = (int)std::ceil((maxWX - (terrain.center.x - halfWorldW)) / cellSize);
-    int gz1 = (int)std::ceil((maxWZ - (terrain.center.z - halfWorldD)) / cellSize);
+    int gx0 = SafeGridInt(std::floor((minWX - refChunk.bounds.min.x) / cellSize));
+    int gz0 = SafeGridInt(std::floor((minWZ - refChunk.bounds.min.z) / cellSize));
+    int gx1 = SafeGridInt(std::ceil((maxWX - refChunk.bounds.min.x) / cellSize));
+    int gz1 = SafeGridInt(std::ceil((maxWZ - refChunk.bounds.min.z) / cellSize));
 
-    int totalW = terrain.gridWidth * (refChunk.resolution - 1);
-    int totalD = terrain.gridDepth * (refChunk.resolution - 1);
+    int totalW = terrain.gridWidth * (refChunk.resolution - 1) + 1; // global sample count
+    int totalD = terrain.gridDepth * (refChunk.resolution - 1) + 1;
     gx0 = std::clamp(gx0, 0, totalW - 1);
     gz0 = std::clamp(gz0, 0, totalD - 1);
     gx1 = std::clamp(gx1, 0, totalW - 1);
@@ -376,22 +377,8 @@ static void ApplyErosionBrush(Terrain& terrain,
     std::vector<float> buf((size_t)rw * rd);
     for (int z = pz0; z <= pz1; z++) {
         for (int x = px0; x <= px1; x++) {
-            int chunkGX = x / (refChunk.resolution - 1);
-            int chunkGZ = z / (refChunk.resolution - 1);
-            int localX = x % (refChunk.resolution - 1);
-            int localZ = z % (refChunk.resolution - 1);
-
-            const TerrainChunk* chunk = nullptr;
-            for (auto& c : allChunks) {
-                if ((int)c.chunkCoord.x == chunkGX && (int)c.chunkCoord.y == chunkGZ) {
-                    chunk = &c;
-                    break;
-                }
-            }
-            if (!chunk) continue;
-
-            float h = chunk->heightmap[(size_t)localZ * chunk->resolution + localX];
-            buf[(size_t)(z - pz0) * rw + (x - px0)] = h;
+            buf[(size_t)(z - pz0) * rw + (x - px0)] =
+                ReadGlobalSample(allChunks, terrain.gridWidth, terrain.gridDepth, refChunk.resolution - 1, x, z);
         }
     }
 
@@ -411,8 +398,8 @@ static void ApplyErosionBrush(Terrain& terrain,
 
     // Write back to chunks with brush falloff blending
     // Convert brush center to grid coordinates
-    float brushGX = (center.x - (terrain.center.x - halfWorldW)) / cellSize;
-    float brushGZ = (center.y - (terrain.center.z - halfWorldD)) / cellSize;
+    float brushGX = (center.x - refChunk.bounds.min.x) / cellSize;
+    float brushGZ = (center.y - refChunk.bounds.min.z) / cellSize;
     float pixelRadiusGrid = brush.radius / cellSize;
 
     for (int z = gz0; z <= gz1; z++) {
@@ -422,34 +409,25 @@ static void ApplyErosionBrush(Terrain& terrain,
             float ddz = z - brushGZ;
             float dist = std::sqrt(ddx * ddx + ddz * ddz);
             float n = dist / pixelRadiusGrid;
-            if (n >= 1.0f) continue;
+            if (!(n < 1.0f)) continue;
 
             float weight = 1.0f - n * n * (3.0f - 2.0f * n); // smoothstep
             weight = std::pow(weight, 1.0f + brush.hardness * 4.0f);
-            if (weight <= 0.0f) continue;
-
-            int chunkGX = x / (refChunk.resolution - 1);
-            int chunkGZ = z / (refChunk.resolution - 1);
-            int localX = x % (refChunk.resolution - 1);
-            int localZ = z % (refChunk.resolution - 1);
-
-            TerrainChunk* chunk = nullptr;
-            for (auto& c : allChunks) {
-                if ((int)c.chunkCoord.x == chunkGX && (int)c.chunkCoord.y == chunkGZ) {
-                    chunk = &c;
-                    break;
-                }
-            }
-            if (!chunk) continue;
+            if (!(weight > 0.0f)) continue;
 
             float newH = buf[(size_t)(z - pz0) * rw + (x - px0)];
-            float& h = chunk->heightmap[(size_t)localZ * chunk->resolution + localX];
-            float before = h;
-            h = std::clamp(before + (newH - before) * weight,
-                          TerrainSculptAccess::MinHeight(terrain),
-                          TerrainSculptAccess::MaxHeight(terrain));
-            chunk->dirty = true;
-            chunk->physicsDirty = true;
+            if (!std::isfinite(newH)) continue;
+            // Blend from the (shared-edge consistent) read value so every owner gets the same result.
+            float before = ReadGlobalSample(allChunks, terrain.gridWidth, terrain.gridDepth, refChunk.resolution - 1, x, z);
+            float result = std::clamp(before + (newH - before) * weight,
+                                      TerrainSculptAccess::MinHeight(terrain),
+                                      TerrainSculptAccess::MaxHeight(terrain));
+            ForEachGlobalSampleOwner(allChunks, terrain.gridWidth, terrain.gridDepth, refChunk.resolution - 1, x, z,
+                [&](TerrainChunk& c, size_t idx) {
+                    c.heightmap[idx] = result;
+                    c.dirty = true;
+                    c.physicsDirty = true;
+                });
         }
     }
 
@@ -463,7 +441,7 @@ static void ApplyErosionBrush(Terrain& terrain,
         }
     }
 
-    TerrainSculptAccess::OnHeightmapChanged(terrain)();
+    if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(terrain)) onChanged();
     TerrainSculptAccess::NeedsPhysicsRebuild(terrain) = true;
 }
 
@@ -472,6 +450,9 @@ static void ApplyErosionBrush(Terrain& terrain,
 // ============================================================================
 
 void ApplyBrush(Terrain& terrain, const TerrainBrush& brush, Vector2 center, float dt) {
+    // radius 0 / NaN would make pixelRadius 0 -> 0/0 = NaN weights written into the heightmap.
+    if (!(brush.radius > 0.0f) || !std::isfinite(brush.radius) || !std::isfinite(center.x) || !std::isfinite(center.y)) return;
+    if (!std::isfinite(dt) || !std::isfinite(brush.strength)) return;
     auto chunks = TerrainSculptAccess::GetChunksInRadius(terrain, center, brush.radius);
     
     // Push undo state for affected chunks
@@ -570,8 +551,9 @@ void ApplyBrush(Terrain& terrain, const TerrainBrush& brush, Vector2 center, flo
                             chunk->bounds.min.x + uv.x * worldSize,
                             chunk->bounds.min.z + uv.y * worldSize
                         };
-                        float u = worldPos.x / brush.noiseScale;
-                        float v = worldPos.y / brush.noiseScale;
+                        const float ns = (std::isfinite(brush.noiseScale) && std::fabs(brush.noiseScale) > 1e-4f) ? brush.noiseScale : 1.0f;
+                        float u = worldPos.x / ns;
+                        float v = worldPos.y / ns;
                         float n = TerrainFbm(u, v, brush.noiseSeed, 3, 0.5f, 2.0f) * 2.0f - 1.0f; // [-1, 1]
                         height += n * strength * dt * 0.06f * weight;
                         break;
@@ -620,14 +602,14 @@ void ApplyBrush(Terrain& terrain, const TerrainBrush& brush, Vector2 center, flo
         ApplyErosionBrush(terrain, chunks, center, brush, strength, dt);
     }
     
-    TerrainSculptAccess::OnHeightmapChanged(terrain)();
+    if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(terrain)) onChanged();
     TerrainSculptAccess::NeedsPhysicsRebuild(terrain) = true;
 }
 
 void RampTerrain(Terrain& terrain, Vector2 start, Vector2 end, float startHeight, float endHeight) {
     Vector2 dir = Vector2Subtract(end, start);
     float length = Vector2Length(dir);
-    if (length < 0.001f) return;
+    if (!(length >= 0.001f) || !std::isfinite(length)) return;
     dir = Vector2Scale(dir, 1.0f / length);
     
     float radius = length * 0.5f + 5.0f; // Ramp width
@@ -677,10 +659,16 @@ void RampTerrain(Terrain& terrain, Vector2 start, Vector2 end, float startHeight
         chunk->dirty = true;
         chunk->physicsDirty = true;
     }
+    if (!chunks.empty()) {
+        if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(terrain)) onChanged();
+        TerrainSculptAccess::NeedsPhysicsRebuild(terrain) = true;
+    }
 }
 
 void PaintLayer(Terrain& terrain, Vector2 center, float radius, float strength, int layerIndex, bool erase) {
     if (layerIndex < 0 || layerIndex >= 4) return; // Max 4 layers (RGBA)
+    if (!(radius > 0.0f) || !std::isfinite(radius) || !std::isfinite(center.x) || !std::isfinite(center.y)) return;
+    if (!std::isfinite(strength)) return;
     
     auto chunks = TerrainSculptAccess::GetChunksInRadius(terrain, center, radius);
     
@@ -732,9 +720,17 @@ void PaintLayer(Terrain& terrain, Vector2 center, float radius, float strength, 
                 int sum = 0;
                 for (int i = 0; i < 4; i++) sum += chunk->splatmap[splatIdx + i];
                 if (sum > 0) {
+                    int total = 0, maxI = 0;
                     for (int i = 0; i < 4; i++) {
                         chunk->splatmap[splatIdx + i] = (uint8_t)((chunk->splatmap[splatIdx + i] * 255) / sum);
+                        total += chunk->splatmap[splatIdx + i];
+                        if (chunk->splatmap[splatIdx + i] > chunk->splatmap[splatIdx + maxI]) maxI = i;
                     }
+                    // Integer division loses up to 3; put the remainder in the dominant channel so the sum is exactly 255.
+                    chunk->splatmap[splatIdx + maxI] = (uint8_t)(chunk->splatmap[splatIdx + maxI] + (255 - total));
+                } else {
+                    // Erasing the only layer left would leave an all-zero (black) texel: fall back to layer 0 (or 1).
+                    chunk->splatmap[splatIdx + (layerIndex == 0 ? 1 : 0)] = 255;
                 }
             }
         }
@@ -800,7 +796,7 @@ bool Terrain::Undo() {
         chunk.physicsDirty = true;
         
         TerrainSculptAccess::NeedsPhysicsRebuild(*this) = true;
-        TerrainSculptAccess::OnHeightmapChanged(*this)();
+        if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(*this)) onChanged();
     }
     
     return true;
@@ -833,7 +829,7 @@ bool Terrain::Redo() {
         chunk.physicsDirty = true;
         
         TerrainSculptAccess::NeedsPhysicsRebuild(*this) = true;
-        TerrainSculptAccess::OnHeightmapChanged(*this)();
+        if (auto& onChanged = TerrainSculptAccess::OnHeightmapChanged(*this)) onChanged();
     }
     
     return true;

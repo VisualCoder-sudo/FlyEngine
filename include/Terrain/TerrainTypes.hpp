@@ -239,9 +239,11 @@ inline int GetVertexIndex(int x, int z, int resolution) {
 
 inline Vector2 WorldToChunkUV(float worldX, float worldZ, const TerrainChunk& chunk) {
     // Convert world position to chunk-local UV [0,1]
-    float halfSize = chunk.worldSize * 0.5f;
-    float localX = worldX - (chunk.chunkCoord.x * chunk.worldSize - halfSize);
-    float localZ = worldZ - (chunk.chunkCoord.y * chunk.worldSize - halfSize);
+    // Use the chunk's real world origin (bounds.min) so this agrees with the
+    // centred layout from Terrain::CreateChunk; the old coord*size-size/2 formula
+    // was only right for a 1x1 chunk grid.
+    float localX = worldX - chunk.bounds.min.x;
+    float localZ = worldZ - chunk.bounds.min.z;
     return { localX / chunk.worldSize, localZ / chunk.worldSize };
 }
 

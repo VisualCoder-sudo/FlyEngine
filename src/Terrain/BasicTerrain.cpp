@@ -71,7 +71,7 @@ int BasicTerrain::s_shaderCloudShadowLoc = -1;
 int BasicTerrain::s_shaderCloudShadowTexLoc = -1;
 
 BasicTerrain::BasicTerrain(int w, int d, float s, float maxH, float texTile)
-    : width(w), depth(d), scale(s), maxHeight(maxH), textureTiling(texTile) {
+    : width(std::clamp(w, 2, 8192)), depth(std::clamp(d, 2, 8192)), scale(s), maxHeight(maxH), textureTiling(texTile) {
     heightmap.assign((size_t)width * depth, 0.0f);
     meshDirty = true; ++revision;
 
@@ -905,6 +905,7 @@ void BasicTerrain::RebuildMesh() {
     if (!BuildAdaptiveMesh()) {
         BuildDenseMesh();
     }
+    if (!mesh.vertices || mesh.vertexCount <= 0) { meshDirty = false; return; }
 
     UploadMesh(&mesh, false);
 
@@ -967,8 +968,20 @@ void BasicTerrain::BuildDenseMesh() {
     if (mesh.vertices) UnloadMesh(mesh);
     mesh = { 0 };
 
-    int vertCount = width * depth;
-    int triCount = (width - 1) * (depth - 1) * 2;
+    if (width < 2 || depth < 2 || heightmap.size() < (size_t)width * (size_t)depth) return;
+
+    // raylib's index buffer is 16-bit: a mesh can address at most 65535 vertices.
+    // For grids larger than that, sample every `step`-th heightmap point (always
+    // including the last row/column) so the mesh stays valid instead of wrapping
+    // indices into garbage. The heightmap/collider keep full resolution.
+    int step = 1;
+    auto gridCount = [](int n, int st) { return (n - 1 + st - 1) / st + 1; };
+    while ((size_t)gridCount(width, step) * (size_t)gridCount(depth, step) > 65535u) step++;
+    const int mw = gridCount(width, step);
+    const int md = gridCount(depth, step);
+
+    int vertCount = mw * md;
+    int triCount = (mw - 1) * (md - 1) * 2;
 
     mesh.vertexCount = vertCount;
     mesh.triangleCount = triCount;
@@ -981,21 +994,19 @@ void BasicTerrain::BuildDenseMesh() {
     float halfW = width * scale * 0.5f;
     float halfD = depth * scale * 0.5f;
 
-    for (int z = 0; z < depth; z++) {
-        for (int x = 0; x < width; x++) {
-            size_t vi = (size_t)(z * width + x);
+    for (int mz = 0; mz < md; mz++) {
+        const int z = std::min(mz * step, depth - 1);
+        for (int mx = 0; mx < mw; mx++) {
+            const int x = std::min(mx * step, width - 1);
+            size_t hi = (size_t)z * width + x;
+            size_t vi = (size_t)mz * mw + mx;
             mesh.vertices[vi * 3 + 0] = x * scale - halfW;
-            mesh.vertices[vi * 3 + 1] = heightmap[vi];
+            mesh.vertices[vi * 3 + 1] = heightmap[hi];
             mesh.vertices[vi * 3 + 2] = z * scale - halfD;
 
             mesh.texcoords[vi * 2 + 0] = ((float)x / (width - 1)) * textureTiling;
             mesh.texcoords[vi * 2 + 1] = ((float)z / (depth - 1)) * textureTiling;
-        }
-    }
 
-    for (int z = 0; z < depth; z++) {
-        for (int x = 0; x < width; x++) {
-            size_t vi = (size_t)(z * width + x);
             Vector3 n = ComputeGridNormal(x, z);
             mesh.normals[vi * 3 + 0] = n.x;
             mesh.normals[vi * 3 + 1] = n.y;
@@ -1004,11 +1015,11 @@ void BasicTerrain::BuildDenseMesh() {
     }
 
     size_t ii = 0;
-    for (int z = 0; z < depth - 1; z++) {
-        for (int x = 0; x < width - 1; x++) {
-            unsigned short a = (unsigned short)(z * width + x);
+    for (int z = 0; z < md - 1; z++) {
+        for (int x = 0; x < mw - 1; x++) {
+            unsigned short a = (unsigned short)(z * mw + x);
             unsigned short b = (unsigned short)(a + 1);
-            unsigned short c = (unsigned short)(a + width);
+            unsigned short c = (unsigned short)(a + mw);
             unsigned short d = (unsigned short)(c + 1);
             mesh.indices[ii++] = a; mesh.indices[ii++] = c; mesh.indices[ii++] = b;
             mesh.indices[ii++] = b; mesh.indices[ii++] = c; mesh.indices[ii++] = d;

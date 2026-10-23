@@ -412,3 +412,8 @@ foreach(_t IN LISTS _fly_tests)
         set_tests_properties(${_t} PROPERTIES RESOURCE_LOCK display)
     endif()
 endforeach()
+
+# Terrain mesh/sculpt review pass: 16-bit index overflow on big grids, ctor sanitising, brush NaN guards, erosion
+# keeping shared chunk edges equal. Opens a window, so it is not registered with ctest: build/tests/terrain_mesh_test
+add_executable(terrain_mesh_test terrain_mesh_test.cpp)
+target_link_libraries(terrain_mesh_test PRIVATE FlyEngineCore FlyRL)
