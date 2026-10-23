@@ -308,6 +308,13 @@ and `on_unload` callbacks plus the engine function table (entities, input,
 physics, audio, ImGui, files, ...). The editor does not compile plugins; build
 them yourself, e.g. `cc -shared -fPIC -I<FlyEngine>/include -o build/x.so x.c`.
 
+**Plugin Manager.** Preferences > Plugins lists every plugin in `<project>/plugins/`, loaded or not:
+its `id.json` details, API version, editor modes and, for one that failed, why. Each has an Enabled
+checkbox (kept in `plugins/disabled.txt`; a disabled plugin is unloaded but not deleted), Reload,
+Show and Remove (deletes its folder, after a confirmation). *Import plugin...* copies a plugin folder
+(the one holding `id.json` and `build/`) into the project, *Import library...* installs a single
+`.so`/`.dll`, and *Rescan* picks up folders added by hand. An import never overwrites an installed plugin.
+
 API 1.1 added `ui_set_accent_color`, which re-skins the editor's accent colour
 (editor only). A plugin built against a newer API than the engine is refused.
 
