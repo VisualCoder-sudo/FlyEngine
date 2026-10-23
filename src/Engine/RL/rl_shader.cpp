@@ -123,20 +123,68 @@ const ProgramInfo* FindProgramLive(const char* name) {
     return FindProgram(name);
 }
 
-void InvalidateProgramShader(const char* name) {
-    if (!name) return;
+// A live Shader caches uniform block offsets, texture view slots and attribute
+// slots from the program it was built from. A hot-reloaded program that moved
+// any of them cannot be swapped under it (the CPU block would be written with
+// the old layout and mis-sized for sg_apply_uniforms).
+static bool LayoutCompatible(const ShaderRec& sh, const ProgramInfo& np) {
+    for (int a = 0; a < ATTR_COUNT; ++a) {
+        if (np.attrSlot(kAttribNames[a]) != sh.attrSlot[a]) return false;
+    }
+    for (int i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; ++i) {
+        if (sh.ubData[i].empty()) continue;
+        bool found = false;
+        for (const char* const* p = np.uniforms; p && p[0] && !found; p += 2) {
+            if (np.uniformblockSlot(p[0]) == i) { found = np.uniformblockSize(p[0]) == sh.ubData[i].size(); if (!found) return false; }
+        }
+        if (!found) return false;
+    }
+    size_t pairs = 0;
+    for (const char* const* p = np.uniforms; p && p[0]; p += 2) {
+        const int slot = np.uniformblockSlot(p[0]);
+        if (slot < 0 || slot >= SG_MAX_UNIFORMBLOCK_BINDSLOTS) continue;
+        const sg_glsl_shader_uniform ud = np.uniformDesc(p[0], p[1]);
+        const int off = np.uniformOffset(p[0], p[1]);
+        const int idx = FindUniform(sh, p[1]);
+        if (idx < 0) return false;
+        bool match = false;
+        for (int t = 0; t < sh.uniforms[idx].targetCount; ++t) {
+            const UniformTarget& ut = sh.uniforms[idx].targets[t];
+            if (ut.ub == slot && ut.offset == off && ut.type == (int)ud.type && ut.arrayCount == ud.array_count) match = true;
+        }
+        if (!match) return false;
+        ++pairs;
+    }
+    size_t targets = 0;
+    for (const ShaderUniform& u : sh.uniforms) if (!u.isTexture) targets += (size_t)u.targetCount;
+    if (targets != pairs) return false;
+    for (const char* const* p = np.textures; p && p[0]; ++p) {
+        const int idx = FindUniform(sh, *p);
+        if (idx < 0 || !sh.uniforms[idx].isTexture || sh.uniforms[idx].viewSlot != np.textureSlot(*p)) return false;
+    }
+    return true;
+}
+
+bool InvalidateProgramShader(const char* name) {
+    if (!name) return false;
     auto it = g_programShaders.find(name);
-    if (it == g_programShaders.end()) return;
+    if (it == g_programShaders.end()) return true;   // never built: the next load picks up the new program
     BatchFlush(); // queued draws still reference the old shader
     const ProgramInfo* prog = FindProgramLive(name);
-    if (!prog) return;
+    if (!prog) return false;
+    for (const ShaderRec& sh : Shaders()) {
+        if (sh.alive && sh.program && std::strcmp(sh.program->name, name) == 0 && !LayoutCompatible(sh, *prog)) {
+            TraceLog(LOG_WARNING, "SHADER HOTRELOAD: [%s] uniform/texture/attribute layout changed; restart to apply, keeping the previous shader", name);
+            return false;
+        }
+    }
     const sg_shader old = it->second;
     g_programShaders.erase(it);
     const sg_shader fresh = ProgramShader(prog);
     if (fresh.id == SG_INVALID_ID) {
         // The edited shader does not compile: keep drawing with the previous one rather than nothing.
         g_programShaders[name] = old;
-        return;
+        return false;
     }
     DropPipelinesForShader(old.id);
     sg_destroy_shader(old);
@@ -147,6 +195,7 @@ void InvalidateProgramShader(const char* name) {
             sh.shader = fresh;
         }
     }
+    return true;
 }
 
 std::vector<ShaderRec>& Shaders() {

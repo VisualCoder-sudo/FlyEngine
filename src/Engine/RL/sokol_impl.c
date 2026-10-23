@@ -449,7 +449,7 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
 #elif defined(SOKOL_GLCORE)
 bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst) {
     _sg_image_t* img = _sg_lookup_image(image_id);
-    if (!img || !dst) return false;
+    if (!img || !dst || width <= 0 || height <= 0) return false;
     GLuint tex = img->gl.tex[img->cmn.active_slot];
     GLuint fbo = 0;
     glGenFramebuffers(1, &fbo);
@@ -475,9 +475,12 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
 #elif defined(SOKOL_VULKAN)
 bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst) {
     _sg_image_t* img = _sg_lookup_image(image_id);
-    if (!img || !dst) return false;
+    if (!img || !dst || width <= 0 || height <= 0) return false;
+    if (width > img->cmn.width || height > img->cmn.height) return false;
     VkDevice dev = _sg.vk.dev;
-    vkDeviceWaitIdle(dev);
+    // Idle wait is needed so the image is not still being rendered to when we
+    // copy it; the queue wait below only covers our own submit.
+    if (vkDeviceWaitIdle(dev) != VK_SUCCESS) return false;
     const VkDeviceSize size = (VkDeviceSize)width * (VkDeviceSize)height * 4;
 
     VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -503,7 +506,11 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
         vkDestroyBuffer(dev, buf, 0);
         return false;
     }
-    vkBindBufferMemory(dev, buf, mem, 0);
+    if (vkBindBufferMemory(dev, buf, mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(dev, mem, 0);
+        vkDestroyBuffer(dev, buf, 0);
+        return false;
+    }
 
     VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     pci.queueFamilyIndex = _sg.vk.queue_family_index;
@@ -526,7 +533,12 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
     }
     VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &cbi);
+    if (vkBeginCommandBuffer(cmd, &cbi) != VK_SUCCESS) {
+        vkDestroyCommandPool(dev, pool, 0);
+        vkFreeMemory(dev, mem, 0);
+        vkDestroyBuffer(dev, buf, 0);
+        return false;
+    }
 
     // Keep sokol's tracked layout valid: transition back afterwards.
     const VkImageLayout layout = _sg_vk_image_layout(img->vk.cur_access);
@@ -555,16 +567,18 @@ bool flyapp_read_image_rgba8(uint32_t image_id, int width, int height, void* dst
     b.newLayout = (layout == VK_IMAGE_LAYOUT_UNDEFINED) ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, 0, 0, 0, 1, &b);
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED) img->vk.cur_access = _SG_VK_ACCESS_TEXTURE;
-    vkEndCommandBuffer(cmd);
-
-    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    vkQueueSubmit(_sg.vk.queue, 1, &si, 0);
-    vkQueueWaitIdle(_sg.vk.queue);
+    bool ok = vkEndCommandBuffer(cmd) == VK_SUCCESS;
+    if (ok) {
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ok = vkQueueSubmit(_sg.vk.queue, 1, &si, 0) == VK_SUCCESS;
+        // Only wait if the submit happened; the pool must not be destroyed while the cmd is pending.
+        if (vkQueueWaitIdle(_sg.vk.queue) != VK_SUCCESS) ok = false;
+    }
 
     void* mapped = 0;
-    bool ok = vkMapMemory(dev, mem, 0, size, 0, &mapped) == VK_SUCCESS;
+    ok = ok && vkMapMemory(dev, mem, 0, size, 0, &mapped) == VK_SUCCESS;
     if (ok) {
         memcpy(dst, mapped, (size_t)size);
         vkUnmapMemory(dev, mem);

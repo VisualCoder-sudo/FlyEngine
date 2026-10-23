@@ -679,7 +679,11 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         if (workDir.empty()) return fail("Could not create a temporary build folder.");
         cleanup.dir = workDir;
         std::string buildError;
-        basePlayer = BuildPlayerWithUserCode(project, userCode, workDir, log, [&]() { return !report(lastReported); }, buildError);
+        // Called from the compiler worker threads at once: the progress callback and lastReported need serialising.
+        std::mutex cancelMutex;
+        basePlayer = BuildPlayerWithUserCode(project, userCode, workDir, log,
+                                             [&]() { std::lock_guard<std::mutex> lock(cancelMutex); return !report(lastReported); },
+                                             buildError);
         if (basePlayer.empty()) return fail(buildError);
     }
     say("Player: " + basePlayer);
@@ -730,7 +734,8 @@ Result Run(const std::string& projectDir, const Config& cfg, const LogFn& log, c
         pack::Entry e;
         e.path = rel.generic_string();
         e.diskPath = it->path().string();
-        projectBytes += fs::file_size(it->path(), e2);
+        const std::uintmax_t fsize = fs::file_size(it->path(), e2);
+        if (!e2) projectBytes += fsize;   // an error returns uintmax_t(-1), which would wrap the total
         if (e.path == "basicterrain.bt") hasBasicTerrain = true;
         seen.insert(e.path);
         entries.push_back(std::move(e));

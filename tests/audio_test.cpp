@@ -1,5 +1,6 @@
 // The sound system (include/Engine/Audio.hpp) without a sound card: decode a WAV, mix it through a device-less
 // engine and look at the samples. No window.
+#include "test_unique.hpp"
 #include "Engine/Audio.hpp"
 #include "Engine/PackArchive.hpp"
 #include "Graphics/Vfs.hpp"
@@ -51,7 +52,7 @@ static void Peaks(uint32_t frames, float& left, float& right) {
 
 // `audio_test --device`: plays a short tone through the real sound device, to check that this machine can make sound.
 static int PlayOnDevice() {
-    const fs::path dir = fs::temp_directory_path() / "fly_audio_device";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_audio_device");
     fs::create_directories(dir);
     const std::string wav = WriteSine(dir / "tone.wav", 44100, 1.0f, 440.0f);
     if (!audio::Init()) { std::printf("no sound device\n"); return 1; }
@@ -68,7 +69,7 @@ static int PlayOnDevice() {
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--device") == 0) return PlayOnDevice();
-    const fs::path dir = fs::temp_directory_path() / "fly_audio_test";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_audio_test");
     fs::create_directories(dir);
     const std::string wav = WriteSine(dir / "tone.wav", 8000, 0.5f, 440.0f);
 

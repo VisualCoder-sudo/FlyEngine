@@ -2,6 +2,7 @@
 // picture settings are in the Explorer and visible from the first frame. Creates a project under a temporary $HOME,
 // opens it the way the editor does, and checks the lighting and the picture. Opens a window, so it is not registered
 // with ctest: build/tests/new_project_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Graphics/Atmosphere.hpp"
@@ -20,7 +21,7 @@ static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 int main() {
-    const std::filesystem::path home = std::filesystem::temp_directory_path() / "fly_new_project_test_home";
+    const std::filesystem::path home = std::filesystem::temp_directory_path() / TestUnique("fly_new_project_test_home");
     std::filesystem::remove_all(home);
     std::filesystem::create_directories(home);
     setenv("HOME", home.c_str(), 1);

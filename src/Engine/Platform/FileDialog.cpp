@@ -56,7 +56,10 @@ struct Pending {
     DialogPurpose purpose = DialogPurpose::None;
 };
 
-std::unique_ptr<Pending> g_pending;
+// Deliberately leaked: if the app exits while a dialog is still open, destroying
+// a joinable std::thread during static destruction calls std::terminate (and
+// joining would block on the modal dialog). The OS reclaims everything.
+std::unique_ptr<Pending>& g_pending = *new std::unique_ptr<Pending>();
 
 enum class Kind { Open, Save, Folder };
 
@@ -131,6 +134,13 @@ std::string WinDialog(Kind kind, const std::string& title, const std::string& st
         BROWSEINFOW bi = {};
         bi.lpszTitle = wTitle.c_str();
         bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        if (!wDir.empty()) {
+            bi.lpfn = [](HWND hwnd, UINT msg, LPARAM, LPARAM data) -> int {
+                if (msg == BFFM_INITIALIZED && data) SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, data);
+                return 0;
+            };
+            bi.lParam = (LPARAM)wDir.c_str();
+        }
         PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
         if (pidl) {
             wchar_t buf[MAX_PATH] = {0};
@@ -154,7 +164,21 @@ std::string WinDialog(Kind kind, const std::string& title, const std::string& st
         std::wstring wName = ToWide(defaultName);
         wcsncpy_s(file.data(), file.size(), wName.c_str(), _TRUNCATE);
 
+        // Default extension for Save: first extension of the first filter ("*.obj" -> "obj").
+        std::wstring wDefExt;
+        for (const FileFilter& f : filters) {
+            if (f.extensions.empty()) continue;
+            const size_t dot = f.extensions.find("*.");
+            if (dot == std::string::npos) break;
+            size_t e = dot + 2, n = e;
+            while (n < f.extensions.size() && f.extensions[n] != ' ' && f.extensions[n] != ';') ++n;
+            std::string ext = f.extensions.substr(e, n - e);
+            if (ext != "*") wDefExt = ToWide(ext);
+            break;
+        }
+
         OPENFILENAMEW ofn = {};
+        if (kind == Kind::Save && !wDefExt.empty()) ofn.lpstrDefExt = wDefExt.c_str();
         ofn.lStructSize = sizeof(ofn);
         ofn.lpstrFilter = wf.c_str();
         ofn.lpstrFile = file.data();

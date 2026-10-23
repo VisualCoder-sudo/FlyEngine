@@ -1,6 +1,7 @@
 // peicon::ReplaceExeIcon on a synthetic PE: a header plus a .rsrc section holding two 32-bit icon slots (16 and 32 px)
 // and their group. Checks the slots are overwritten with the resized picture, nothing else in the file changes and the
 // length is kept; and that files that are not usable players are refused. No window.
+#include "test_unique.hpp"
 #include "Engine/PeIcon.hpp"
 
 #include <cstdio>
@@ -65,7 +66,7 @@ static std::vector<uint8_t> Slurp(const fs::path& p) {
 }
 
 int main() {
-    const fs::path dir = fs::temp_directory_path() / "fly_pe_icon_test";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_pe_icon_test");
     fs::remove_all(dir); fs::create_directories(dir);
 
     std::vector<uint8_t> src(64 * 64 * 4);

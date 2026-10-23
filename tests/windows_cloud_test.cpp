@@ -3,6 +3,7 @@
 //   - the exported game's file name for Windows reserved device names,
 //   - FlyCloudModule's pure helpers: tokenising, server URL cleanup, version check, push exclusions,
 //     the response size cap and config load/save.
+#include "test_unique.hpp"
 #include "Engine/ExportManager.hpp"
 #include "Engine/Platform/PlatformInternal.hpp"
 
@@ -166,7 +167,7 @@ static void TestCloudHelpers(const fs::path& dir) {
 #endif
 
 int main() {
-    const fs::path dir = fs::temp_directory_path() / "fly_windows_cloud_test";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_windows_cloud_test");
     fs::remove_all(dir);
     fs::create_directories(dir);
 

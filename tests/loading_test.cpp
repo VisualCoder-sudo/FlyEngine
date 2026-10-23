@@ -1,6 +1,7 @@
 // The loading screens of the editor and the player: settings (kept per machine, and per project for the player),
 // progress rules, and pictures of both (loading_<name>.png). Opens a window, so it is not registered with ctest:
 // build/tests/loading_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Engine/LoadingScreen.hpp"
@@ -31,7 +32,7 @@ static Color Probe(const char* path, float x0, float y0, float x1, float y1) {
 }
 
 int main() {
-    const std::filesystem::path home = std::filesystem::temp_directory_path() / "fly_loading_test_home";
+    const std::filesystem::path home = std::filesystem::temp_directory_path() / TestUnique("fly_loading_test_home");
     std::filesystem::remove_all(home);
     std::filesystem::create_directories(home);
     setenv("HOME", home.c_str(), 1);

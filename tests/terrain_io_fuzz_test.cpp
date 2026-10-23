@@ -1,6 +1,7 @@
 // Terrain file readers/importers must reject corrupt or hostile input instead of crashing, dividing by zero or
 // allocating gigabytes (corrupt headers, bad sizes, non-square RAW16, truncated blocks, NaN queries).
 // Opens a window (engine ctor), so it is not registered with ctest: build/tests/terrain_io_fuzz_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "../include/Terrain/BasicTerrain.hpp"
@@ -27,7 +28,7 @@ static void PutF32(std::string& s, float v) { s.append(reinterpret_cast<const ch
 int main() {
     Engine engine(320, 240, "terrain_io_fuzz_test", 60);
     engine.SetPlayerBuild(true);
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "flyengine_terrain_io_fuzz";
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / TestUnique("flyengine_terrain_io_fuzz");
     std::filesystem::create_directories(dir);
 
     // --- Terrain payload: a valid round trip, then corrupt headers.
