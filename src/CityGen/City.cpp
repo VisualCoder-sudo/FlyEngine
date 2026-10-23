@@ -90,6 +90,39 @@ bool operator==(const CityParams& a, const CityParams& b) {
 }
 bool operator!=(const CityParams& a, const CityParams& b) { return !(a == b); }
 
+// Pulls every numeric layout parameter into the range the generator is safe with (the editor's drag ranges, a little
+// looser). Non-finite values (NaN/inf from a corrupt file or a typed-in field) fall back to the default. The
+// generator divides by and loops over these, so unclamped values meant NaN geometry, zero-size parcels or hangs.
+void SanitizeParams(CityParams& p) {
+    const CityParams d;
+    const auto f = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::min(std::max(v, lo), hi) : def; };
+    p.gridX = std::min(std::max(p.gridX, 2), 999);
+    p.gridZ = std::min(std::max(p.gridZ, 2), 999);
+    p.cellSize = f(p.cellSize, 5.0f, 500.0f, d.cellSize);
+    p.organicStrength = f(p.organicStrength, 0.0f, 2.0f, d.organicStrength);
+    p.organicScale = f(p.organicScale, 8.0f, 1000.0f, d.organicScale);
+    p.noiseOctaves = std::min(std::max(p.noiseOctaves, 1), 8);
+    p.lanes = std::min(std::max(p.lanes, 1), 8);
+    p.laneWidth = f(p.laneWidth, 1.0f, 8.0f, d.laneWidth);
+    p.sidewalk = f(p.sidewalk, 0.0f, 12.0f, d.sidewalk);
+    p.cornerRadius = f(p.cornerRadius, 0.0f, 50.0f, d.cornerRadius);
+    p.maxGrade = f(p.maxGrade, 0.0f, 60.0f, d.maxGrade);
+    p.lodDistance = f(p.lodDistance, 0.0f, 20000.0f, d.lodDistance);
+    p.avgHeight = f(p.avgHeight, 1.0f, 500.0f, d.avgHeight);
+    p.heightVariance = f(p.heightVariance, 0.0f, 1.0f, d.heightVariance);
+    p.buildingSize = f(p.buildingSize, 1.0f, 100.0f, d.buildingSize);
+    p.buildingGap = f(p.buildingGap, 0.0f, 30.0f, d.buildingGap);
+    p.parkThreshold = f(p.parkThreshold, 0.0f, 1.0e6f, d.parkThreshold);
+    p.parkInset = f(p.parkInset, 0.0f, 50.0f, d.parkInset);
+    p.shapeVariety = f(p.shapeVariety, 0.0f, 1.0f, d.shapeVariety);
+    p.shortChance = f(p.shortChance, 0.0f, 1.0f, d.shortChance);
+    p.footprintVariety = f(p.footprintVariety, 0.0f, 0.6f, d.footprintVariety);
+    p.trafficDetailDistance = f(p.trafficDetailDistance, 0.0f, 20000.0f, d.trafficDetailDistance);
+    p.style = std::min(std::max(p.style, 0), 3);
+    p.cars = std::min(std::max(p.cars, 0), 500);
+    p.pedestrians = std::min(std::max(p.pedestrians, 0), 1000);
+}
+
 // ---------------------------------------------------------------------------
 // Small deterministic integer hash used for heights/tints (stable across
 // rebuilds for a given seed + coordinates).
@@ -1935,17 +1968,12 @@ Vector2 City::EdgeMidpoint(int i) const {
 
 void City::GenerateGrid(const Vector2& origin) {
     CityParams p = params;
-    p.gridX = Clamp(p.gridX, 2, 999);
-    p.gridZ = Clamp(p.gridZ, 2, 999);
-    p.lanes = Clamp(p.lanes, 1, 8);
-    p.cornerRadius = std::max(p.cornerRadius, 0.0f);
-    p.maxGrade = Clamp(p.maxGrade, 0.0f, 60.0f);
-    p.lodDistance = Clamp(p.lodDistance, 0.0f, 20000.0f);
+    SanitizeParams(p);
     params = p;
 
     const int nx = p.gridX + 2;
     const int nz = p.gridZ + 2;
-    const float spacing = std::max(p.cellSize, 5.0f);
+    const float spacing = p.cellSize;
 
     // Regular grid centered on the origin of the (nx-1, nz-1) cell box.
     std::vector<std::vector<Vector2>> grid(nx, std::vector<Vector2>(nz));
@@ -2498,6 +2526,17 @@ void City::LayoutBlockProcedural(Block& block) {
         nV = std::max(kMinCells, std::min(kMaxCells, nV));
         const float cellW = spanU / nU, cellD = spanV / nV;
 
+        // Roundabouts near this block: parcels keep clear of them (independent of the parcel, so found once).
+        float bx0 = 1e9f, bz0 = 1e9f, bx1 = -1e9f, bz1 = -1e9f;
+        for (const auto& v : poly) { bx0 = fminf(bx0, v.x); bx1 = fmaxf(bx1, v.x); bz0 = fminf(bz0, v.y); bz1 = fmaxf(bz1, v.y); }
+        std::vector<std::pair<Vector2, float>> rbCircles;   // roundabouts near this block: parcels keep clear of them
+        for (int ni2 = 0; ni2 < (int)nodes.size(); ni2++) {
+            const RoadNode& rn = nodes[(size_t)ni2];
+            if (!rn.junction || rn.jkind != (int)JunctionKind::Roundabout) continue;
+            const float rr = RoundaboutOuterRadius(ni2, false) + p.buildingGap;
+            if (rn.pos.x < bx0 - rr || rn.pos.x > bx1 + rr || rn.pos.y < bz0 - rr || rn.pos.y > bz1 + rr) continue;
+            rbCircles.push_back({ rn.pos, rr });
+        }
         for (int i = 0; i < nU; i++) {
             for (int j = 0; j < nV; j++) {
                 float hlu = minU + (i + 0.5f) * cellW;
@@ -2506,16 +2545,6 @@ void City::LayoutBlockProcedural(Block& block) {
                 // Footprint shrinks in steps until all four corners fit the
                 // buildable polygon, so irregular/organic blocks still yield
                 // buildings instead of dropping them when roads move.
-                float bx0 = 1e9f, bz0 = 1e9f, bx1 = -1e9f, bz1 = -1e9f;
-                for (const auto& v : poly) { bx0 = fminf(bx0, v.x); bx1 = fmaxf(bx1, v.x); bz0 = fminf(bz0, v.y); bz1 = fmaxf(bz1, v.y); }
-                std::vector<std::pair<Vector2, float>> rbCircles;   // roundabouts near this block: parcels keep clear of them
-                for (int ni2 = 0; ni2 < (int)nodes.size(); ni2++) {
-                    const RoadNode& rn = nodes[(size_t)ni2];
-                    if (!rn.junction || rn.jkind != (int)JunctionKind::Roundabout) continue;
-                    const float rr = RoundaboutOuterRadius(ni2, false) + p.buildingGap;
-                    if (rn.pos.x < bx0 - rr || rn.pos.x > bx1 + rr || rn.pos.y < bz0 - rr || rn.pos.y > bz1 + rr) continue;
-                    rbCircles.push_back({ rn.pos, rr });
-                }
                 const auto cornersIn = [&](float cu, float cv, float su, float sv) {
                     const float hx = su * 0.5f, hz = sv * 0.5f;
                     Vector2 cs[4] = {
@@ -6130,6 +6159,15 @@ bool City::WriteToStream(std::ostream& out) const {
 }
 
 bool City::ReadFromStream(std::istream& in) {
+    if (ReadFromStreamImpl(in)) return true;
+    // A parse failure must not leave a half-loaded city (some sections applied, the graph present but the
+    // rest default) that a caller might keep: drop everything that was read.
+    ClearGraph();
+    params = CityParams{};
+    return false;
+}
+
+bool City::ReadFromStreamImpl(std::istream& in) {
     // Every counted record takes at least two bytes of text, so a count larger than what is left in the stream is
     // corrupt; checking before resize/assign keeps a damaged file from asking for gigabytes (or throwing length_error).
     size_t maxCount = 8u << 20;
@@ -6183,24 +6221,26 @@ bool City::ReadFromStream(std::istream& in) {
     try { edgeCount = (size_t)std::stoull(tok); } catch (...) { return false; }
     if (!countOk(edgeCount)) return false;
     // Sanitise what the rebuild divides by or indexes with (GenerateGrid clamps the same ranges on regeneration).
-    p.lanes = Clamp(p.lanes, 1, 8);
-    if (!(p.buildingSize + p.buildingGap > 0.1f)) { p.buildingSize = std::max(p.buildingSize, 0.5f); p.buildingGap = std::max(p.buildingGap, 0.0f); }
+    SanitizeParams(p);
     params = p;
 
     edges.resize(edgeCount);
     for (size_t i = 0; i < edgeCount; i++) {
         edges[i] = RoadEdge{};
         if (!(in >> edges[i].a >> edges[i].b >> edges[i].lanes)) return false;
+        edges[i].lanes = std::clamp(edges[i].lanes, 0, 8);
     }
 
     size_t nodeCount = 0;
     if (!(in >> nodeCount) || !countOk(nodeCount)) return false;
     for (const RoadEdge& e : edges)    // BuildAdjacency indexes nodes by these
-        if (e.a < 0 || e.b < 0 || (size_t)e.a >= nodeCount || (size_t)e.b >= nodeCount) return false;
+        if (e.a < 0 || e.b < 0 || (size_t)e.a >= nodeCount || (size_t)e.b >= nodeCount || e.a == e.b) return false;   // self-loops have no direction
     nodes.resize(nodeCount);
     for (size_t i = 0; i < nodeCount; i++) {
         int boundary = 0;
         if (!(in >> nodes[i].pos.x >> nodes[i].pos.y >> boundary)) return false;
+        if (!std::isfinite(nodes[i].pos.x) || !std::isfinite(nodes[i].pos.y) ||
+            std::fabs(nodes[i].pos.x) > 1.0e6f || std::fabs(nodes[i].pos.y) > 1.0e6f) return false;   // NaN/huge coordinates poison every mesh
         nodes[i].boundary = (boundary != 0);
         nodes[i].h = 0.0f;
         nodes[i].jkind = 0;
@@ -6237,6 +6277,9 @@ bool City::ReadFromStream(std::istream& in) {
             BuildingOverride ov;
             if (!(in >> blockId >> slot >> hasH >> ov.height >> hasP >> ov.posOffset.x >> ov.posOffset.y))
                 return false;
+            if (!std::isfinite(ov.height)) ov.height = 0.5f;
+            ov.height = std::clamp(ov.height, 0.5f, 1000.0f);
+            if (!std::isfinite(ov.posOffset.x) || !std::isfinite(ov.posOffset.y)) ov.posOffset = {};
             ov.hasHeight = (hasH != 0);
             ov.hasOffset = (hasP != 0);
             buildingOverrides[OverrideKey(blockId, slot)] = ov;
@@ -6277,6 +6320,12 @@ bool City::ReadFromStream(std::istream& in) {
                     PlacedBuilding& pb = placed[i];
                     if (!(in >> pb.center.x >> pb.center.y >> pb.sizeX >> pb.sizeZ >> pb.height >> pb.angleY >> pb.colorBucket))
                         return false;
+                    if (!std::isfinite(pb.center.x) || !std::isfinite(pb.center.y)) return false;
+                    const auto sane = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+                    pb.sizeX = sane(pb.sizeX, 0.5f, 200.0f, 11.0f);
+                    pb.sizeZ = sane(pb.sizeZ, 0.5f, 200.0f, 11.0f);
+                    pb.height = sane(pb.height, 0.5f, 500.0f, 14.0f);
+                    pb.angleY = sane(pb.angleY, -1000.0f, 1000.0f, 0.0f);
                 }
             } else if (tag == "SIGNALS") {
                 size_t sc = 0;
@@ -6291,6 +6340,10 @@ bool City::ReadFromStream(std::istream& in) {
                         ph.mask = (uint8_t)mk;
                         phs.push_back(ph);
                     }
+                    for (SignalPhase& ph : phs) ph.duration = std::isfinite(ph.duration) ? std::clamp(ph.duration, 1.0f, 600.0f) : 9.0f;
+                    ye = std::isfinite(ye) ? std::clamp(ye, 0.0f, 30.0f) : 1.5f;
+                    ar = std::isfinite(ar) ? std::clamp(ar, 0.0f, 30.0f) : 1.0f;
+                    of = std::isfinite(of) ? std::clamp(of, -10000.0f, 10000.0f) : 0.0f;
                     if (idx < nodes.size()) { nodes[idx].yellow = ye; nodes[idx].allRed = ar; nodes[idx].sigOffset = of; nodes[idx].phases = phs; }
                 }
             } else if (tag == "EDGET") {
@@ -6299,6 +6352,7 @@ bool City::ReadFromStream(std::istream& in) {
                 for (size_t i = 0; i < ec; i++) {
                     size_t idx = 0; float sl = 0; unsigned ta = 0, tb = 0;
                     if (!(in >> idx >> sl >> ta >> tb)) return false;
+                    sl = std::isfinite(sl) ? Clamp(sl, 0.0f, 60.0f) : 0.0f;
                     if (idx < edges.size()) { edges[idx].speedLimit = sl; edges[idx].turnA = (uint16_t)ta; edges[idx].turnB = (uint16_t)tb; }
                 }
             } else if (tag == "LIFE") {
@@ -6313,7 +6367,7 @@ bool City::ReadFromStream(std::istream& in) {
                 params.furniture = fu != 0;
                 params.cars = std::clamp(ca, 0, 500);
                 params.pedestrians = std::clamp(pe, 0, 1000);
-                params.trafficDetailDistance = std::max(td, 0.0f);
+                params.trafficDetailDistance = std::isfinite(td) ? std::clamp(td, 0.0f, 20000.0f) : 150.0f;
                 params.leftHandTraffic = lht != 0;
             } else if (tag == "CARCOL") {
                 int all = 0; size_t nc = 0;
@@ -6326,7 +6380,7 @@ bool City::ReadFromStream(std::istream& in) {
                     CarColor c;
                     c.name = nm == "-" ? "" : nm;
                     c.color = Color{ (unsigned char)std::clamp(r, 0, 255), (unsigned char)std::clamp(g, 0, 255), (unsigned char)std::clamp(b, 0, 255), 255 };
-                    c.weight = std::max(w, 0.0f); c.other = ot != 0;
+                    c.weight = std::isfinite(w) ? std::clamp(w, 0.0f, 1.0e6f) : 0.0f; c.other = ot != 0;
                     tab.push_back(c);
                 }
                 params.carColorAll = all != 0;
@@ -6337,6 +6391,8 @@ bool City::ReadFromStream(std::istream& in) {
                 for (size_t i = 0; i < nr; i++) {
                     size_t idx = 0; float isl = 0, rg = 0; int sp = 1, co = 0;
                     if (!(in >> idx >> isl >> rg >> sp >> co)) return false;
+                    isl = std::isfinite(isl) && isl > 0.0f ? Clamp(isl, 1.5f, 30.0f) : 0.0f;
+                    rg = std::isfinite(rg) && rg > 0.0f ? Clamp(rg, 3.0f, 20.0f) : 0.0f;
                     if (idx < nodes.size()) { nodes[idx].rbIsland = isl; nodes[idx].rbRing = rg; nodes[idx].rbSplitters = sp != 0; nodes[idx].rbConcrete = co != 0; }
                 }
             } else if (tag == "TRANSIT") {
@@ -6346,6 +6402,7 @@ bool City::ReadFromStream(std::istream& in) {
                 for (BusStop& bs : busStops) {
                     std::string nm;
                     if (!(in >> bs.pos.x >> bs.pos.y >> bs.heading.x >> bs.heading.y >> nm)) return false;
+                    if (!std::isfinite(bs.pos.x) || !std::isfinite(bs.pos.y) || !std::isfinite(bs.heading.x) || !std::isfinite(bs.heading.y)) return false;
                     if (nm == "-") nm.clear();
                     for (char& ch : nm) if (ch == '_') ch = ' ';
                     bs.name = nm;
@@ -6384,7 +6441,10 @@ bool City::ReadFromStream(std::istream& in) {
                     if (nm == "-") nm.clear();
                     for (char& ch : nm) if (ch == '_') ch = ' ';
                     d.name = nm;
-                    d.radius = std::max(d.radius, 1.0f);
+                    d.radius = std::isfinite(d.radius) ? std::clamp(d.radius, 1.0f, 100000.0f) : 120.0f;
+                    d.peak = std::isfinite(d.peak) ? std::clamp(d.peak, 0.0f, 20.0f) : 1.0f;
+                    if (!std::isfinite(d.pos.x) || !std::isfinite(d.pos.y)) return false;
+                    d.kind = std::clamp(d.kind, 0, 2);
                     d.style = std::clamp(d.style, -1, 3);
                 }
             } else if (tag == "DPAINT") {
@@ -6443,7 +6503,7 @@ bool City::ReadFromStream(std::istream& in) {
                 for (size_t i = 0; i < hc; i++) {
                     float h = 0.0f;
                     if (!(in >> h)) return false;
-                    if (i < nodes.size()) nodes[i].h = h;
+                    if (i < nodes.size()) nodes[i].h = std::isfinite(h) ? Clamp(h, -200.0f, 500.0f) : 0.0f;
                 }
             } else if (tag == "EDGEP") {
                 size_t pc = 0;
@@ -6453,7 +6513,10 @@ bool City::ReadFromStream(std::istream& in) {
                     if (!(in >> idx >> w >> sw >> type >> br >> cb >> mk >> bk)) return false;
                     if (idx >= edges.size()) continue;
                     RoadEdge& e = edges[idx];
-                    e.width = w; e.sidewalk = sw; e.type = type; e.bridge = br != 0; e.curbH = cb; e.markings = mk != 0; e.bank = bk;
+                    const auto fin = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };   // same limits as SetEdgeProps
+                    e.width = fin(w, 0.0f, 12.0f, 0.0f); e.sidewalk = (sw < 0.0f || !std::isfinite(sw)) ? -1.0f : std::min(sw, 12.0f);
+                    e.type = std::clamp(type, 0, 4); e.bridge = br != 0; e.curbH = fin(cb, 0.0f, 1.0f, 0.0f);
+                    e.markings = mk != 0; e.bank = fin(bk, -20.0f, 20.0f, 0.0f);
                 }
             } else {
                 in.clear();

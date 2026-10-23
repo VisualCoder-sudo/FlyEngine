@@ -137,6 +137,9 @@ struct CityParams {
 bool operator==(const CityParams& a, const CityParams& b);
 bool operator!=(const CityParams& a, const CityParams& b);
 
+// Clamps every numeric layout parameter into a range the generator is safe with; non-finite values reset to defaults.
+void SanitizeParams(CityParams& p);
+
 // One step of a traffic-signal cycle. `mask` has one bit per compass sector of the arriving road
 // (bit 0 = road to the east of the junction, 1 = north-east, 2 = north, ... counter-clockwise).
 struct SignalPhase {
@@ -516,9 +519,10 @@ public:
     // Serialization (text). Name is included so the same payload works for
     // both the .city sidecar blocks and the in-memory undo snapshots.
     bool WriteToStream(std::ostream& out) const;
-    bool ReadFromStream(std::istream& in);
+    bool ReadFromStream(std::istream& in);   // on failure the city is left empty, never half-loaded
 
 private:
+    bool ReadFromStreamImpl(std::istream& in);
     void ClearGraph();
     void ComputeBlocks();   // fills blocks from the graph faces
     void LayoutBuildings(); // fills per-block building boxes (parks first)
