@@ -53,7 +53,8 @@ bool IsPolygonSimple(const std::vector<Vector2>& poly) {
 
 Vector2 OrganicWarp(const Vector2& p, float strength, float scale,
                     int octaves, int seed) {
-    if (strength <= 0.0f || scale <= 0.0f) return p;
+    if (!(strength > 0.0f) || !(scale > 0.0f) || !std::isfinite(strength) || !std::isfinite(scale)) return p;   // also rejects NaN
+    octaves = std::min(std::max(octaves, 1), 16);
     Vector2 q = Vector2Scale(p, 1.0f / scale);
     float nx = WaterNoise::FBM2D(q.x, q.y, octaves, 0.5f, 2.0f, seed);
     float nz = WaterNoise::FBM2D(q.y, q.x, octaves, 0.5f, 2.0f, seed ^ 0x5bf03635);
@@ -205,7 +206,7 @@ bool InsetPolygon(const std::vector<Vector2>& poly, float d,
                   std::vector<Vector2>& out) {
     out.clear();
     const int n = (int)poly.size();
-    if (n < 3 || d < 0.0f) return false;
+    if (n < 3 || !(d >= 0.0f) || !std::isfinite(d)) return false;   // negative, NaN or infinite offsets
 
     auto dir = [](const Vector2& a, const Vector2& b) {
         Vector2 v = Vector2Subtract(b, a);
@@ -248,7 +249,7 @@ bool InsetPolygon(const std::vector<Vector2>& poly, float d,
         }
     }
 
-    if (PolygonArea(out) < 1e-3f || !IsPolygonSimple(out)) {
+    if (!(PolygonArea(out) >= 1e-3f) || !IsPolygonSimple(out)) {   // !(>=) also rejects NaN results
         out.clear();
         return false;
     }
@@ -388,7 +389,8 @@ std::vector<Vector2> SampleQuadBezier(Vector2 a, Vector2 c, Vector2 b, float spa
     const float off = chord > 1e-4f ? std::fabs(ab.x * ac.y - ab.y * ac.x) / chord : Vector2Length(ac);
     if (off < 0.5f) return { a, b };
     const float len = Vector2Distance(a, c) + Vector2Distance(c, b);
-    const int n = std::max(4, (int)std::ceil(len / std::max(spacing, 0.5f)));
+    if (!std::isfinite(len)) return { a, b };
+    const int n = (int)std::min(std::max(4.0, std::ceil((double)len / std::max((double)spacing, 0.5))), 2048.0);   // bounded: huge/NaN input must not allocate gigabytes
     std::vector<Vector2> out;
     out.reserve(n + 1);
     for (int i = 0; i <= n; ++i) {

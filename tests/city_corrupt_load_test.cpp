@@ -2,6 +2,9 @@
 // nodes, a lying sidecar block size. Also: destroying a City removes it from the registry. No window needed
 // (every case is rejected before any mesh is built).
 #include "../include/CityGen/City.hpp"
+#include "../include/CityGen/CityGeometry.hpp"
+#include <cmath>
+#include <limits>
 
 #include <cstdio>
 #include <fstream>
@@ -36,6 +39,41 @@ int main() {
     CHECK(!Reads("1\n0 5 1\n2\n0 0 0\n1 0 0\n"));         // edge b=5 but only 2 nodes
     CHECK(!Reads("1\n-1 0 1\n2\n0 0 0\n1 0 0\n"));        // negative node index
     CHECK(!Reads("0\n99999999999\n"));                    // node count
+    CHECK(!Reads("1\n0 0 1\n2\n0 0 0\n1 0 0\n"));         // self-loop edge
+    CHECK(!Reads("1\n0 1 1\n2\n0 0 0\n1e30 0 0\n"));      // absurd node coordinate
+    CHECK(!Reads("1\n0 1 1\n2\n0 0 0\n-1e9 0 0\n"));
+    {   // a failed parse leaves the city empty, not half-loaded
+        City c;
+        std::istringstream in(std::string(kHead) + "1\n0 1 1\n2\n0 0 0\n1 0 0\nBLOCKS 0 1\nOVERRIDES 0\nSIGNALS 1\n0 1.5 1 0 1\n");
+        CHECK(!c.ReadFromStream(in));
+        CHECK(c.GetNodes().empty() && c.GetEdges().empty());
+    }
+    {   // SanitizeParams: NaN/inf/huge values land in safe ranges
+        const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+        CityParams p;
+        p.cellSize = nan; p.laneWidth = inf; p.sidewalk = -5; p.buildingSize = 0; p.buildingGap = nan;
+        p.avgHeight = nan; p.organicStrength = nan; p.noiseOctaves = 1000000; p.gridX = -4; p.gridZ = 1 << 30;
+        p.parkInset = -5.0f; p.heightVariance = 99;
+        SanitizeParams(p);
+        CHECK(std::isfinite(p.cellSize) && p.cellSize >= 5.0f);
+        CHECK(std::isfinite(p.laneWidth) && p.laneWidth <= 8.0f);
+        CHECK(p.sidewalk == 0.0f && p.buildingSize >= 1.0f && std::isfinite(p.buildingGap));
+        CHECK(std::isfinite(p.avgHeight) && std::isfinite(p.organicStrength));
+        CHECK(p.noiseOctaves <= 8 && p.gridX == 2 && p.gridZ == 999);
+        CHECK(p.parkInset == 0.0f && p.heightVariance == 1.0f);
+    }
+    {   // geometry helpers reject NaN instead of returning NaN polygons / allocating gigabytes
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        std::vector<Vector2> sq = { {0,0}, {10,0}, {10,10}, {0,10} }, out;
+        CHECK(!citygeom::InsetPolygon(sq, nan, out));
+        CHECK(citygeom::InsetPolygon(sq, 1.0f, out));
+        auto pts = citygeom::SampleQuadBezier({0,0}, {1e30f, 1e30f}, {10,0}, 1.0f);
+        CHECK(pts.size() <= 2049);
+        pts = citygeom::SampleQuadBezier({0,0}, {5,5}, {10,0}, 0.0f);
+        CHECK(pts.size() <= 2049);
+        Vector2 w = citygeom::OrganicWarp({1,1}, nan, 40.0f, 3, 1);
+        CHECK(std::isfinite(w.x) && std::isfinite(w.y));
+    }
     {
         City c;
         std::istringstream in("99999999999\nabc");        // name length
