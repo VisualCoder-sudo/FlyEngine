@@ -781,13 +781,40 @@ static constexpr MenuAction kSpawnMenuActions[kSpawnMenuItemCount] = {
     MenuAction::SpawnWater, MenuAction::SpawnBasicTerrain, MenuAction::ImportTerrain
 };
 
+// The "Union" submenu of the viewport's object menu. kind: 0 Union, 1 Intersect, 2 Negate/Un-negate, 3 Separate.
+// Empty when nothing in it applies to the selection (the row is then left out).
+struct UnionMenuEntry { const char* label; int kind; };
+static std::vector<UnionMenuEntry> UnionMenuEntries() {
+    std::vector<UnionMenuEntry> e;
+    if (CanUnionSelection()) { e.push_back({ "Union", 0 }); e.push_back({ "Intersect", 1 }); }
+    if (!g_selection.empty() && g_selection.front() && !g_selection.front()->IsUnion() && !g_selection.front()->HasModel())
+        e.push_back({ g_selection.front()->negate ? "Un-negate" : "Negate", 2 });
+    if (CanSeparateSelection()) e.push_back({ "Separate", 3 });
+    return e;
+}
+static void RunUnionMenuEntry(int kind) {
+    switch (kind) {
+        case 0: RequestUnion(UnionRequest::Union); break;
+        case 1: RequestUnion(UnionRequest::Intersect); break;
+        case 3: RequestUnion(UnionRequest::Separate); break;
+        case 2: {
+            PushUndo();
+            const bool cut = !g_selection.front()->negate;
+            for (auto* o : g_selection) if (o && !o->IsUnion() && !o->HasModel()) { o->negate = cut; o->canCollide = !cut; }
+            break;
+        }
+    }
+}
+constexpr float kUnionSubWidth = 150.0f;
+
 static void GetContextMenuBounds(Rectangle& mainRec, Rectangle& subRec) {
     auto screenW = static_cast<float>(GetScreenWidth());
     auto screenH = static_cast<float>(GetScreenHeight());
 
     if (g_isObjectTarget) {
         constexpr float mainWidth = 180.0f;
-        constexpr float mainHeight = 64.0f;
+        const auto unionEntries = UnionMenuEntries();
+        const float mainHeight = 64.0f + (unionEntries.empty() ? 0.0f : 31.0f);
 
         float x = g_menuPos.x;
         float y = g_menuPos.y;
@@ -797,6 +824,11 @@ static void GetContextMenuBounds(Rectangle& mainRec, Rectangle& subRec) {
 
         mainRec = { x, y, mainWidth, mainHeight };
         subRec = { 0.0f, 0.0f, 0.0f, 0.0f };
+        if (!unionEntries.empty()) {
+            const float subHeight = (float)unionEntries.size() * 30.0f + 8.0f;
+            const float subX = (x + mainWidth + kUnionSubWidth > screenW) ? (x - kUnionSubWidth) : (x + mainWidth);
+            subRec = { subX, y, kUnionSubWidth, subHeight };
+        }
     } else {
         constexpr float mainWidth = 200.0f;
         // Water's menu is just the Delete row; everything else keeps the two-row height.
@@ -1010,15 +1042,29 @@ MenuAction ProcessContextMenu() {
     bool inSub = CheckCollisionPointRec(mouse, subRec);
 
     if (g_isObjectTarget) {
+        const auto unionEntries = UnionMenuEntries();
+        const float rowOffset = unionEntries.empty() ? 0.0f : 31.0f;
+        // The Union row opens its submenu; the other rows close it.
+        if (!unionEntries.empty()) {
+            if ((inMain && mouse.y < mainRec.y + 32.0f) || (g_showSubMenu && inSub)) g_showSubMenu = true;
+            else if (inMain) g_showSubMenu = false;
+        }
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             MarkUIClickConsumed();
+            if (!unionEntries.empty() && g_showSubMenu && inSub) {
+                const int idx = static_cast<int>((mouse.y - subRec.y - 4.0f) / 30.0f);
+                CloseContextMenu();
+                if (idx >= 0 && idx < (int)unionEntries.size()) RunUnionMenuEntry(unionEntries[(size_t)idx].kind);
+                return MenuAction::None;
+            }
+            if (rowOffset > 0.0f && inMain && mouse.y < mainRec.y + 32.0f) return MenuAction::None;   // the Union row itself
             CloseContextMenu();
             if (!inMain) return MenuAction::None;
-            // Top row (y below menu top) = toggle transform space; bottom row = delete.
-            const float topItemBottom = mainRec.y + 31.0f;
-            if (mouse.y < topItemBottom) return MenuAction::ToggleTransformSpace;
+            // Row after the optional Union row = toggle transform space; bottom row = delete.
+            if (mouse.y < mainRec.y + rowOffset + 31.0f) return MenuAction::ToggleTransformSpace;
             return MenuAction::DeleteObject;
         }
+        return MenuAction::None;
     }
     if (g_isWaterTarget) {
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -1097,12 +1143,39 @@ static void DrawContextMenuInternal(Rectangle mainRec, Rectangle subRec, bool is
         DrawRectangleRounded(bodyRec, 0.12f, 4, bgCol);
         DrawRectangleLinesEx(bodyRec, 1.0f, borderDraw);
 
+        const auto unionEntries = UnionMenuEntries();
+        const float rowOffset = unionEntries.empty() ? 0.0f : 31.0f;
+        if (!unionEntries.empty()) {
+            Rectangle rowUnion = { bodyRec.x + 2.0f, bodyRec.y + 2.0f, bodyRec.width - 4.0f, 29.0f };
+            const bool hoverUnion = CheckCollisionPointRec(mouse, rowUnion);
+            if (hoverUnion || showSubMenu) DrawDropdownBox(rowUnion, true, anim);
+            DrawTextArial("Union", rowUnion.x + 8.0f, rowUnion.y + 7.0f, 14.0f, Fade(theme::TEXT, anim));
+            DrawTextArial("▶", rowUnion.x + rowUnion.width - 20.0f, rowUnion.y + 7.0f, 12.0f,
+                          showSubMenu ? Fade(theme::TEXT, anim) : Fade(theme::TEXT_MUTED, anim));
+            if (hoverUnion) MarkHand();
+            if (showSubMenu) {
+                Rectangle subShadow = { subRec.x + 3.0f, subRec.y + 3.0f + dy, subRec.width, subRec.height };
+                DrawRectangleRec(subShadow, shadowCol);
+                Rectangle subBody = { subRec.x, subRec.y + dy, subRec.width, subRec.height };
+                DrawRectangleRounded(subBody, 0.12f, 4, bgCol);
+                DrawRectangleLinesEx(subBody, 1.0f, borderDraw);
+                for (size_t i = 0; i < unionEntries.size(); ++i) {
+                    Rectangle itemRec = { subBody.x + 4.0f, subBody.y + 4.0f + (float)i * 30.0f, subBody.width - 8.0f, 26.0f };
+                    const bool itemHovered = CheckCollisionPointRec(mouse, itemRec);
+                    if (itemHovered) DrawDropdownBox(itemRec, true, anim);
+                    DrawTextArial(unionEntries[i].label, itemRec.x + 10.0f, itemRec.y + 4.0f, 14.0f,
+                                  Fade(itemHovered ? theme::TEXT : theme::TEXT_MUTED, anim));
+                    if (itemHovered) MarkHand();
+                }
+            }
+        }
+
         const char* spaceLabel = g_transformLocalSpace ? "Local" : "World";
         char spaceText[64];
         snprintf(spaceText, sizeof(spaceText), "Transform space: %s", spaceLabel);
 
-        Rectangle itemTop = { bodyRec.x + 2.0f, bodyRec.y + 2.0f, bodyRec.width - 4.0f, 29.0f };
-        Rectangle itemBot = { bodyRec.x + 2.0f, bodyRec.y + 2.0f + 31.0f, bodyRec.width - 4.0f, 29.0f };
+        Rectangle itemTop = { bodyRec.x + 2.0f, bodyRec.y + 2.0f + rowOffset, bodyRec.width - 4.0f, 29.0f };
+        Rectangle itemBot = { bodyRec.x + 2.0f, bodyRec.y + 2.0f + 31.0f + rowOffset, bodyRec.width - 4.0f, 29.0f };
         bool hoverTop = CheckCollisionPointRec(mouse, itemTop);
         bool hoverBot = CheckCollisionPointRec(mouse, itemBot);
 
