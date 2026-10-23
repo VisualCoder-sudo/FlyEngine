@@ -566,17 +566,25 @@ void BuildObjectMenu(ScatteredObject* obj) {
     // Insert > Script attaches another script to the object right-clicked on.
     s_menuItems.push_back(MakeInsertMenu(singleSel ? obj : nullptr));
     if (g_selection.size() >= 2) AddMenu("Group", [] { GroupSelectedObjects(); }, true, "Ctrl+G");
-    // Solid modelling: Union merges the parts (Negate parts are carved out), Intersect keeps the shared volume.
-    if (CanUnionSelection()) {
-        AddMenu("Union", [] { RequestUnion(UnionRequest::Union); }, false, "Ctrl+Shift+G");
-        AddMenu("Intersect", [] { RequestUnion(UnionRequest::Intersect); }, false);
-    }
-    if (CanSeparateSelection()) AddMenu("Separate", [] { RequestUnion(UnionRequest::Separate); }, false, "Ctrl+Shift+U");
-    if (obj && !obj->IsUnion() && !obj->HasModel()) {
-        const bool cut = !obj->negate;
-        AddMenu(cut ? "Negate" : "Un-negate", [cut] {
-            ForEachSelected([cut](ScatteredObject* o) { if (!o->HasModel()) { o->negate = cut; o->canCollide = !cut; } });
-        });
+    // Union > Union / Intersect / Negate / Separate. Union merges the parts (Negate parts are carved out),
+    // Intersect keeps the shared volume.
+    {
+        MenuItem unionMenu{ "Union", nullptr, {} };
+        auto sub = [&](const char* label, std::function<void()> fn, const char* shortcut = nullptr) {
+            unionMenu.sub.push_back({ label, std::move(fn), {}, false, shortcut });
+        };
+        if (CanUnionSelection()) {
+            sub("Union", [] { RequestUnion(UnionRequest::Union); }, "Ctrl+Shift+G");
+            sub("Intersect", [] { RequestUnion(UnionRequest::Intersect); });
+        }
+        if (obj && !obj->IsUnion() && !obj->HasModel()) {
+            const bool cut = !obj->negate;
+            unionMenu.sub.push_back({ cut ? "Negate" : "Un-negate", [cut] {
+                ForEachSelected([cut](ScatteredObject* o) { if (!o->HasModel() && !o->IsUnion()) { o->negate = cut; o->canCollide = !cut; } });
+            }, {}, true, nullptr });
+        }
+        if (CanSeparateSelection()) sub("Separate", [] { RequestUnion(UnionRequest::Separate); }, "Ctrl+Shift+U");
+        if (!unionMenu.sub.empty()) s_menuItems.push_back(std::move(unionMenu));
     }
     AddMenu("Duplicate", [] { RequestDuplicate(); }, false, "Ctrl+D");
     if (obj && obj->parentModel) AddMenu("Ungroup", [obj] { UngroupModelContaining(obj); }, true, "Ctrl+U");
