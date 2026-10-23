@@ -105,6 +105,16 @@ bool PluginLoader_Validate(PluginLoader* loader, const char* plugin_path, char**
         return false;
     }
     
+    // Plugin must not need a newer CPluginAPI than this engine provides
+    if (VersionCompat_CheckAPI(id->cplugin_api_version, CP_API_VERSION_STRING) != 0) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "CPluginAPIVersion '%s' is not supported by this engine (API %s)", id->cplugin_api_version, CP_API_VERSION_STRING);
+        if (error_out) *error_out = strdup(buf);
+        PluginIdentity_Free(id);
+        PluginManifest_Free(manifest);
+        return false;
+    }
+
     // Validate identity vs manifest
     bool valid = PluginIdentity_Validate(id, manifest, &error);
     if (!valid && error_out && error) *error_out = error;

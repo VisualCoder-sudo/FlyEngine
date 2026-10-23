@@ -349,9 +349,22 @@ void ReloadModule(const std::string& module) {
         info.uniformDesc = reinterpret_cast<sg_glsl_shader_uniform (*)(const char*, const char*)>(uDesc);
         info.textureSlot = reinterpret_cast<int (*)(const char*)>(texSlot);
         info.attrSlot = reinterpret_cast<int (*)(const char*)>(attrSlot);
+        const ProgramInfo* prevLive = FindProgramLive(e.original->name);
+        const ProgramInfo prev = prevLive ? *prevLive : *e.original;
         SetProgramOverride(e.original->name, info);
-        InvalidateProgramShader(e.original->name);
+        if (!InvalidateProgramShader(e.original->name)) {
+            // Rejected: restore the previous program so later loads stay consistent with the shader still in use.
+            SetProgramOverride(e.original->name, prev);
+            continue;
+        }
         ++swapped;
+    }
+    if (swapped == 0) {
+#if defined(_WIN32)
+        FreeLibrary((HMODULE)handle);
+#else
+        dlclose(handle);
+#endif
     }
     if (swapped > 0) {
         g_keepAlive.push_back(handle);

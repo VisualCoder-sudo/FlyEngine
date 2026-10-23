@@ -2,6 +2,7 @@
 // mixed output measured with a device-less audio engine. A wall between the fan and the listener muffles it; remove the
 // wall and the sound opens up; destroy the fan and its sound stops. Needs a display (the engine opens a window); not
 // registered with ctest: build/tests/sound_rays_engine_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Engine/Audio.hpp"
@@ -37,7 +38,7 @@ static void WriteTone(const std::filesystem::path& path, uint32_t rate, float se
 
 int main() {
     namespace fs = std::filesystem;
-    const fs::path proj = fs::temp_directory_path() / "fly_sound_rays_proj";
+    const fs::path proj = fs::temp_directory_path() / TestUnique("fly_sound_rays_proj");
     fs::create_directories(proj);
     WriteTone(proj / "hum.wav", 48000, 2.0f, 6000.0f);   // a high hum: what a wall takes away
 

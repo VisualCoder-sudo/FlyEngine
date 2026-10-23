@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include "Graphics/Vfs.hpp"
@@ -216,7 +217,7 @@ struct DebugStats {
         for (double v : frameTimeHistory) sum += v;
         frameTimeAvg = frameTimeHistory.empty() ? 0 : sum / frameTimeHistory.size();
         
-        fps = (int)(1000.0 / frameTimeMs);
+        fps = frameTimeMs > 0.001 ? (int)(1000.0 / frameTimeMs) : 0;   // a 0 ms frame would be inf, and (int)inf is UB
         fpsHistory.push_back(fps);
         if (fpsHistory.size() > HISTORY_SIZE) fpsHistory.pop_front();
         
@@ -292,7 +293,7 @@ struct DebugStats {
             gap(6);
             section("RENDERING");
             line(SKYBLUE, 13, "Draw Calls:  %d", drawCalls);
-            line(WHITE, 13, "Triangles:   %d  (%.2f K)", trianglesRendered, trianglesRendered / 1000);
+            line(WHITE, 13, "Triangles:   %d  (%.2f K)", trianglesRendered, trianglesRendered / 1000.0);   // %.2f needs a double: an int here is UB and prints garbage
             line(WHITE, 13, "Meshes:      %d", meshesRendered);
             // These two are distinct resources touched this frame, and they come
             // from the engine's own draw sites rather than from inside raylib,
@@ -632,9 +633,13 @@ static bool ParseResolution(const std::string& s, int& outW, int& outH) {
     auto pos = s.find('x');
     if (pos == std::string::npos) return false;
     try {
-        outW = std::stoi(s.substr(0, pos));
-        outH = std::stoi(s.substr(pos + 1));
-        return outW > 0 && outH > 0;
+        // Parse into locals: a bad height must not leave a half-applied width behind.
+        const int w = std::stoi(s.substr(0, pos));
+        const int h = std::stoi(s.substr(pos + 1));
+        if (w <= 0 || h <= 0) return false;
+        outW = w;
+        outH = h;
+        return true;
     } catch (...) {
         return false;
     }
@@ -670,7 +675,10 @@ static PlayerOptions ParseArgs(int argc, char* argv[]) {
         } else if (arg == "--logfile") {
             if (i + 1 < argc) opts.logFile = argv[++i];
         } else if (arg == "--fixed-dt") {
-            if (i + 1 < argc) opts.fixedDt = std::max(0.0f, static_cast<float>(std::atof(argv[++i])));
+            if (i + 1 < argc) {
+                const float dt = static_cast<float>(std::atof(argv[++i]));
+                opts.fixedDt = (std::isfinite(dt) && dt > 0.0f) ? std::min(dt, 1.0f) : 0.0f;   // "inf"/"nan" would freeze or corrupt the simulation
+            }
         } else if (arg == "--automation") {
             if (i + 1 < argc) opts.automationFile = argv[++i];
         } else if (arg == "--maxmem4G") {
@@ -869,13 +877,17 @@ int main(int argc, char* argv[]) {
 
     // Auto-detect project from working directory if not specified
     if (opts.projectPath.empty() && !embedded) {
-        fs::path cwd = fs::current_path();
+        std::error_code cwdEc;
+        fs::path cwd = fs::current_path(cwdEc);
         // Check if CWD or parent contains a .flyproj file
         fs::path projDir = cwd;
         bool found = false;
-        for (int i = 0; i < 3 && !found; ++i) {
-            for (auto& entry : fs::directory_iterator(projDir)) {
-                if (entry.is_regular_file() && entry.path().extension() == ".flyproj") {
+        for (int i = 0; i < 3 && !found && !cwdEc; ++i) {
+            // error_code forms: an unreadable folder (or a cwd deleted under us) must not throw out of main
+            std::error_code itEc;
+            for (fs::directory_iterator it(projDir, itEc), end; !itEc && it != end; it.increment(itEc)) {
+                std::error_code fileEc;
+                if (it->is_regular_file(fileEc) && it->path().extension() == ".flyproj") {
                     found = true;
                     break;
                 }

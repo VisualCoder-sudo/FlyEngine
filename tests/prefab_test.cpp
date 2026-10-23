@@ -1,5 +1,6 @@
 // A group saved as a prefab spawns again with its objects, nested groups and flags, pivot moved to the target.
 // Opens a window (it needs an Engine), so it is not registered with ctest: build/tests/prefab_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Engine/Backend/ScenePersistence.hpp"
@@ -48,7 +49,7 @@ int main() {
     models.push_back(std::move(root));
     models.push_back(std::move(inner));
 
-    const std::string path = (std::filesystem::temp_directory_path() / "prefab_test" / "House.flyprefab").string();
+    const std::string path = (std::filesystem::temp_directory_path() / TestUnique("prefab_test") / "House.flyprefab").string();
     CHECK(SavePrefabToFile(*rootPtr, path, ""));
     CHECK(models.size() == 2 && rootPtr->children.size() == 1);   // saving leaves the scene alone
 

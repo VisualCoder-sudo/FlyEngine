@@ -5,6 +5,7 @@
 #include "../../include/Engine/Plugin/PluginIdentityValidator.h"
 #include "../../include/Engine/Plugin/PluginManifest.h"
 #include "VersionCompat.h"
+#include "../../include/Engine/Plugin/CPluginAPI.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -20,7 +21,7 @@ static void set_error(char** error_out, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char* buf = NULL;
-    vasprintf(&buf, fmt, args);
+    if (vasprintf(&buf, fmt, args) < 0) buf = NULL;   // buf is undefined after a failed vasprintf
     va_end(args);
     *error_out = buf;
 }
@@ -58,7 +59,7 @@ static ValidatorError check_date_format(const char* date, char** error_out) {
     if (date[4] != '-' || date[7] != '-') return VALIDATOR_ERR_INVALID_DATE_FORMAT;
     for (int i = 0; i < 10; i++) {
         if (i == 4 || i == 7) continue;
-        if (!isdigit(date[i])) return VALIDATOR_ERR_INVALID_DATE_FORMAT;
+        if (!isdigit((unsigned char)date[i])) return VALIDATOR_ERR_INVALID_DATE_FORMAT;
     }
     return VALIDATOR_OK;
 }
@@ -90,6 +91,14 @@ ValidatorError PluginIdentityValidator_Validate(
         return err;
     }
     
+    // Plugin must not need a newer CPluginAPI than this engine provides
+    if (VersionCompat_CheckAPI(id->cplugin_api_version, CP_API_VERSION_STRING) != 0) {
+        set_error(error_out, "CPluginAPIVersion '%s' is not supported by this engine (API %s)",
+                  id->cplugin_api_version, CP_API_VERSION_STRING);
+        PluginIdentity_Free(id);
+        return VALIDATOR_ERR_API_VERSION_MISMATCH;
+    }
+
     // Check date format
     err = check_date_format(id->date_created, error_out);
     if (err != VALIDATOR_OK) {

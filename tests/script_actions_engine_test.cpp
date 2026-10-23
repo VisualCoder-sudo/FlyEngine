@@ -1,6 +1,7 @@
 // The scripting API (FlyNative_*, what fly.hpp calls) against the real engine: create, clone, rename, destroy, forces,
 // raycast, keys, text. Needs a display (the engine opens a window); not registered with ctest:
 // build/tests/script_actions_engine_test
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine.hpp"
 #include "Engine/Backend/PhysicsSimulation.hpp"
@@ -111,7 +112,7 @@ int main() {
     // player the Engine installed, the mixer. Skipped (not failed) on a machine with no sound device.
     {
         namespace fs = std::filesystem;
-        const fs::path proj = fs::temp_directory_path() / "fly_play_sound_proj";
+        const fs::path proj = fs::temp_directory_path() / TestUnique("fly_play_sound_proj");
         fs::create_directories(proj / "assets" / "audio");
         {   // 0.5 s of 8 kHz mono 16-bit silence-free tone
             const uint32_t frames = 4000, dataBytes = frames * 2, riff = 36 + dataBytes, fmt = 16, rate = 8000, byteRate = 16000;

@@ -1,5 +1,6 @@
 // Imported sounds (include/Engine/Backend/AudioAssets.hpp): copied into assets/audio once, deduplicated by content,
 // kept while the saved project mentions them, deleted when nothing does or when they were never saved. No window.
+#include "test_unique.hpp"
 #include "Engine/Backend/AudioAssets.hpp"
 
 #include <algorithm>
@@ -32,7 +33,7 @@ static int FilesIn(const fs::path& dir) {
 }
 
 int main() {
-    const fs::path root = fs::temp_directory_path() / "fly_audio_assets_test";
+    const fs::path root = fs::temp_directory_path() / TestUnique("fly_audio_assets_test");
     std::error_code ec;
     fs::remove_all(root, ec);
     const fs::path proj = root / "proj", outside = root / "outside";

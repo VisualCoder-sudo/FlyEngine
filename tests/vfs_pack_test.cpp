@@ -1,5 +1,6 @@
 // The export archive: pack files onto the end of an executable, mount it, read everything back (also through
 // raylib's file functions), reject damage, and read from several threads at once. No window.
+#include "test_unique.hpp"
 #include "raylib.h"
 #include "Engine/PackArchive.hpp"
 #include "Graphics/Vfs.hpp"
@@ -30,7 +31,7 @@ static std::vector<uint8_t> TextBytes(size_t n) {
 }
 
 int main() {
-    const fs::path dir = fs::temp_directory_path() / "fly_vfs_pack_test";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_vfs_pack_test");
     fs::remove_all(dir);
     fs::create_directories(dir);
 

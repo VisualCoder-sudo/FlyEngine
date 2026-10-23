@@ -43,6 +43,8 @@ const ProgramInfo* FindProgramLive(const char* name);
 
 // Drops the cached sg_shader for `name` (destroying it) so the next
 // LoadProgram()/ProgramShader() call rebuilds it from FindProgramLive().
-void InvalidateProgramShader(const char* name);
+// Returns false (keeping the old shader) if the new program does not compile or
+// changed the uniform/texture/attribute layout live Shaders were built with.
+bool InvalidateProgramShader(const char* name);
 
 } // namespace rli

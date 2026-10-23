@@ -1,6 +1,7 @@
 // Export for another OS from a prebuilt player: a Windows x86-64 target on a non-Windows machine appends the data to
 // a ready-made FlyPlayer.exe. Uses a stand-in executable with a valid PE header; checks target discovery, the
 // wrong-kind-of-player guard, the script/plugin restriction, the .exe output and that the archive reads back. No window.
+#include "test_unique.hpp"
 #include "Engine/ExportManager.hpp"
 #include "Graphics/Vfs.hpp"
 
@@ -29,7 +30,7 @@ static void WriteFakePe(const fs::path& file, unsigned machine, unsigned charact
 }
 
 int main() {
-    const fs::path dir = fs::temp_directory_path() / "fly_export_windows_test";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_export_windows_test");
     fs::remove_all(dir);
     fs::create_directories(dir);
 

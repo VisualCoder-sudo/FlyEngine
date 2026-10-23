@@ -417,7 +417,7 @@ static bool get_png_dimensions(const char* path, int* width, int* height) {
     while (!feof(f)) {
         unsigned char len_bytes[4];
         if (fread(len_bytes, 1, 4, f) != 4) break;
-        uint32_t chunk_len = (len_bytes[0] << 24) | (len_bytes[1] << 16) | (len_bytes[2] << 8) | len_bytes[3];
+        uint32_t chunk_len = ((uint32_t)len_bytes[0] << 24) | ((uint32_t)len_bytes[1] << 16) | ((uint32_t)len_bytes[2] << 8) | len_bytes[3];
         
         unsigned char type_bytes[4];
         if (fread(type_bytes, 1, 4, f) != 4) break;
@@ -425,8 +425,11 @@ static bool get_png_dimensions(const char* path, int* width, int* height) {
         if (type_bytes[0] == 'I' && type_bytes[1] == 'H' && type_bytes[2] == 'D' && type_bytes[3] == 'R') {
             unsigned char dim_bytes[8];
             if (fread(dim_bytes, 1, 8, f) == 8) {
-                *width = (dim_bytes[0] << 24) | (dim_bytes[1] << 16) | (dim_bytes[2] << 8) | dim_bytes[3];
-                *height = (dim_bytes[4] << 24) | (dim_bytes[5] << 16) | (dim_bytes[6] << 8) | dim_bytes[7];
+                // unsigned arithmetic: a byte >= 0x80 shifted into bit 31 of an int is UB; sizes above INT_MAX are clamped
+                uint32_t w32 = ((uint32_t)dim_bytes[0] << 24) | ((uint32_t)dim_bytes[1] << 16) | ((uint32_t)dim_bytes[2] << 8) | dim_bytes[3];
+                uint32_t h32 = ((uint32_t)dim_bytes[4] << 24) | ((uint32_t)dim_bytes[5] << 16) | ((uint32_t)dim_bytes[6] << 8) | dim_bytes[7];
+                *width = w32 > 0x7FFFFFFFu ? 0x7FFFFFFF : (int)w32;
+                *height = h32 > 0x7FFFFFFFu ? 0x7FFFFFFF : (int)h32;
                 fclose(f);
                 return true;
             }
@@ -587,6 +590,13 @@ static PluginInfo* scan_plugin_dir(const char* base_path, const char* type_dir, 
     return info;
 }
 
+static bool plugin_name_taken(const PluginList* list, const char* name) {
+    for (int i = 0; i < list->count; i++) {
+        if (strcmp(list->plugins[i].identity.name, name) == 0) return true;
+    }
+    return false;
+}
+
 static void scan_type_dir(const char* base_path, const char* type_dir, PluginType type, PluginList* list) {
     char full_path[1024];
     snprintf(full_path, sizeof(full_path), "%s/%s", base_path, type_dir);
@@ -597,7 +607,12 @@ static void scan_type_dir(const char* base_path, const char* type_dir, PluginTyp
     // Directory iteration (FindFirstFile on Windows, opendir/readdir elsewhere)
 #define FLY_ADD_PLUGIN(NAME) do { \
         PluginInfo* info = scan_plugin_dir(base_path, type_dir, (NAME)); \
-        if (info) { \
+        if (info && plugin_name_taken(list, info->identity.name)) { \
+            fprintf(stderr, "[plugins] duplicate plugin id '%s' in %s/%s: ignored\n", info->identity.name, type_dir, (NAME)); \
+            PluginIdentity_Free(&info->identity); \
+            PluginManifest_Free(&info->manifest); \
+            free(info); \
+        } else if (info) { \
             if (list->count >= list->capacity) { \
                 list->capacity = list->capacity ? list->capacity * 2 : 8; \
                 list->plugins = realloc(list->plugins, list->capacity * sizeof(PluginInfo)); \

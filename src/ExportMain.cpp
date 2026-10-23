@@ -17,7 +17,10 @@ int main(int argc, char** argv) {
         return argc < 2 ? 1 : 0;
     }
     const std::string projectDir = argv[1];
-    exporter::Config cfg = exporter::LoadConfig(projectDir, std::filesystem::path(projectDir).filename().string());
+    // "proj/" has an empty filename(); take the last real component so the default exe name is not "Game".
+    std::filesystem::path projPath(projectDir);
+    if (!projPath.has_filename()) projPath = projPath.parent_path();
+    exporter::Config cfg = exporter::LoadConfig(projectDir, projPath.filename().string());
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         bool bad = false;
@@ -36,7 +39,7 @@ int main(int argc, char** argv) {
             const std::string s = next();
             char* end = nullptr;
             const long v = std::strtol(s.c_str(), &end, 10);
-            if (!bad && (s.empty() || *end || v < 0)) { std::fprintf(stderr, "flyexport: bad --fps '%s'\n", s.c_str()); bad = true; }
+            if (!bad && (s.empty() || *end || v < 0 || v > 1000)) { std::fprintf(stderr, "flyexport: bad --fps '%s'\n", s.c_str()); bad = true; }
             else cfg.fpsCap = (int)v;
         }
         else if (a == "--size") {

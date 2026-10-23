@@ -1,4 +1,5 @@
 // Snap steps persist to the per-user config dir and load back.
+#include "test_unique.hpp"
 #include "../src/Engine/Frontend/ui_internal.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -8,7 +9,7 @@
 
 int main() {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "fly_snap_test_home";
+    const fs::path dir = fs::temp_directory_path() / TestUnique("fly_snap_test_home");
     fs::remove_all(dir);
     setenv("XDG_CONFIG_HOME", dir.c_str(), 1);
     unsetenv("APPDATA");

@@ -7,6 +7,7 @@
 #include "Engine/Platform/Platform.hpp"
 #include "Engine/Platform/PlatformInternal.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -129,8 +130,10 @@ ProcessResult RunProcessCapture(const std::string& exe,
                                 int timeoutMs) {
     ProcessResult result;
 
+    // O_CLOEXEC: another thread spawning at the same time (file dialog + script
+    // build) must not inherit our write end, or we would never see EOF.
     int fds[2];
-    if (::pipe(fds) != 0) {
+    if (::pipe2(fds, O_CLOEXEC) != 0) {
         result.error = std::string("pipe failed: ") + ErrnoText();
         return result;
     }
@@ -168,36 +171,44 @@ ProcessResult RunProcessCapture(const std::string& exe,
     result.launched = true;
 
     // Drain until EOF, honouring the timeout. poll() rather than a bare read()
-    // so a silent child cannot spin the CPU.
-    const int64_t deadlineMs =
-        timeoutMs > 0 ? static_cast<int64_t>(timeoutMs) : -1;
-    int64_t waitedMs = 0;
+    // so a silent child cannot spin the CPU. Elapsed time is measured with a
+    // real clock (a chatty child wakes poll() early), and the post-EOF wait for
+    // the child is non-blocking so a child that closed stdout but keeps running
+    // still times out.
+    const auto t0 = std::chrono::steady_clock::now();
     char buf[4096];
     bool timedOut = false;
+    bool eof = false;
 
     for (;;) {
-        struct pollfd pfd{fds[0], POLLIN, 0};
-        const int pollTimeout = 50;
-        const int pr = ::poll(&pfd, 1, pollTimeout);
-        if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
-            for (;;) {
-                const ssize_t n = ::read(fds[0], buf, sizeof(buf));
-                if (n > 0) { result.output.append(buf, static_cast<size_t>(n)); continue; }
-                if (n == 0) { /* EOF */ }
-                break; // EAGAIN or error
-            }
-            if (pfd.revents & (POLLHUP | POLLERR)) {
-                // Child closed its end; confirm it really exited.
-                int status = 0;
-                if (::waitpid(pid, &status, 0) == pid) {
-                    result.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-                    pid = 0;
+        if (!eof) {
+            struct pollfd pfd{fds[0], POLLIN, 0};
+            const int pr = ::poll(&pfd, 1, 50);
+            if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+                for (;;) {
+                    const ssize_t n = ::read(fds[0], buf, sizeof(buf));
+                    if (n > 0) { result.output.append(buf, static_cast<size_t>(n)); continue; }
+                    if (n == 0) eof = true;
+                    break; // EOF, EAGAIN or error
                 }
+                if (pfd.revents & POLLERR) eof = true;
+            }
+        } else {
+            ::usleep(5000);
+        }
+        if (eof) {
+            int status = 0;
+            const pid_t w = ::waitpid(pid, &status, WNOHANG);
+            if (w == pid) {
+                result.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+                pid = 0;
                 break;
             }
+            if (w < 0 && errno != EINTR) { pid = 0; break; }
         }
-        waitedMs += pollTimeout;
-        if (deadlineMs > 0 && waitedMs >= deadlineMs) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if (timeoutMs > 0 && elapsed >= timeoutMs) {
             timedOut = true;
             ::kill(pid, SIGKILL);
             break;

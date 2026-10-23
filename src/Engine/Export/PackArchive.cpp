@@ -40,6 +40,7 @@ bool ReadWholeFile(const std::string& path, std::vector<uint8_t>& out) {
     std::ifstream in(U8Path(path), std::ios::binary | std::ios::ate);
     if (!in) return false;
     const std::streamsize size = in.tellg();
+    if (size < 0) return false;   // directory/unseekable: avoids resize(SIZE_MAX) throwing with the output FILE still open
     in.seekg(0);
     out.resize((size_t)size);
     return size == 0 || (bool)in.read((char*)out.data(), size);

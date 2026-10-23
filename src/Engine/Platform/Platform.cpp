@@ -353,9 +353,12 @@ bool ReadAll(const std::string& path, std::vector<unsigned char>& out) {
     std::ifstream in(U8Path(path), std::ios::binary | std::ios::ate);
     if (!in) return false;
     const std::streamsize size = in.tellg();
+    if (size < 0) return false;   // directory or unseekable: tellg() == -1 would resize() to ~SIZE_MAX and throw
     in.seekg(0);
     out.resize((size_t)size);
-    return size == 0 || (bool)in.read((char*)out.data(), size);
+    if (size == 0) return true;
+    if (!in.read((char*)out.data(), size)) { out.clear(); return false; }
+    return true;
 }
 
 std::vector<std::string> ListDir(const std::string& dir) {
