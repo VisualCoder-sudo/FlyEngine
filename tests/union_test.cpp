@@ -249,6 +249,52 @@ int main() {
         }
     }
 
+    // --- curved parts: inclusion-exclusion on the meshes' volumes (A + B = A u B + A n B), rotated parts included ---
+    {
+        auto meshVolume = [](ScatteredObject& o) {
+            const Model& m = o.GetModel();
+            const Vector3 sz = *o.GetSizePtr();
+            double v = 0.0;
+            for (int mi = 0; mi < m.meshCount; ++mi) {
+                const Mesh& mesh = m.meshes[mi];
+                for (int t = 0; t + 2 < mesh.vertexCount; t += 3) {
+                    const float* a = &mesh.vertices[t * 3];
+                    const float* b = &mesh.vertices[(t + 1) * 3];
+                    const float* c = &mesh.vertices[(t + 2) * 3];
+                    v += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+                }
+            }
+            return v * sz.x * sz.y * sz.z;
+        };
+        auto pair = [&](UnionMode mode, bool curved) {
+            std::vector<std::unique_ptr<ScatteredObject>> p;
+            p.push_back(Part({ 0, 0, 0 }, { 3, 2, 3 }, { 200, 50, 50, 255 }, curved ? ShapeType::Cylinder : ShapeType::Cube));
+            p.push_back(Part({ 0.8f, 0.3f, 0.4f }, { 2.5f, 2.5f, 2.5f }, { 50, 50, 200, 255 }, curved ? ShapeType::Sphere : ShapeType::Cube));
+            *p[1]->GetRotationPtr() = { 20.0f, 35.0f, 10.0f };
+            auto u = ScatteredObject::MakeUnion(std::move(p), { mode == UnionMode::Intersect ? UnionMode::Intersect : UnionMode::Add,
+                                                                  mode == UnionMode::Negate ? UnionMode::Negate : (mode == UnionMode::Intersect ? UnionMode::Intersect : UnionMode::Add) });
+            return u ? meshVolume(*u) : 0.0;
+        };
+        for (bool curved : { false, true }) {
+            std::vector<std::unique_ptr<ScatteredObject>> a, b;
+            a.push_back(Part({ 0, 0, 0 }, { 3, 2, 3 }, WHITE, curved ? ShapeType::Cylinder : ShapeType::Cube));
+            b.push_back(Part({ 0, 0, 0 }, { 3, 2, 3 }, WHITE, curved ? ShapeType::Cylinder : ShapeType::Cube));
+            std::vector<std::unique_ptr<ScatteredObject>> sphere;
+            sphere.push_back(Part({ 0.8f, 0.3f, 0.4f }, { 2.5f, 2.5f, 2.5f }, WHITE, curved ? ShapeType::Sphere : ShapeType::Cube));
+            *sphere[0]->GetRotationPtr() = { 20.0f, 35.0f, 10.0f };
+            auto ua = ScatteredObject::MakeUnion(std::move(b), { UnionMode::Add });
+            auto ub = ScatteredObject::MakeUnion(std::move(sphere), { UnionMode::Add });
+            CHECK(ua && ub);
+            if (!ua || !ub) continue;
+            const double va = meshVolume(*ua), vb = meshVolume(*ub);
+            const double vu = pair(UnionMode::Add, curved), vi = pair(UnionMode::Intersect, curved), vd = pair(UnionMode::Negate, curved);
+            CHECK(va > 0 && vb > 0 && vi > 0);
+            CHECK(Near(va + vb, vu + vi, 0.02 * (va + vb)));   // inclusion-exclusion
+            CHECK(Near(va - vi, vd, 0.02 * va));               // A minus B = A - (A n B)
+            CHECK(vu >= std::max(va, vb) - 1e-3 && vu <= va + vb + 1e-3);
+        }
+    }
+
     // --- the union is drawn and is a solid in physics terms ---------------------------------------------------------
     for (int f = 0; f < 4; f++) engine.StepFrame(1.0f / 60.0f);
     CHECK(uo->GetCollider().hulls.size() > 0 || uo->GetCollider().tris.size() > 0);

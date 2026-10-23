@@ -738,20 +738,24 @@ bool ScatteredObject::RebuildUnionMesh(Vector3* outCenter) {
             mesh.colors[i * 4 + 2] = (unsigned char)((col >> 16) & 0xFF); mesh.colors[i * 4 + 3] = 255;
             mesh.indices[i] = (unsigned short)i;
         }
-        // Texture coordinates: each triangle is projected along its dominant axis and spans 0..1 across the union,
-        // like the primitives' faces do (so a texture or the default checker stretches with the object's size).
+        // Texture coordinates: each triangle is projected along its dominant axis, at one texture repeat per 2 m
+        // (what a plain 2 m cube shows), so every part of a union has the same cell size instead of one stretch
+        // across the whole solid. Like any object, the texture then scales with the union's size.
+        constexpr float kMetresPerRepeat = 2.0f;
+        const float sx = (float)ext.x / kMetresPerRepeat, sy = (float)ext.y / kMetresPerRepeat, sz = (float)ext.z / kMetresPerRepeat;
         for (size_t t = 0; t + 2 < count; t += 3) {
             const Vector3 a = { mesh.vertices[t * 3], mesh.vertices[t * 3 + 1], mesh.vertices[t * 3 + 2] };
             const Vector3 b = { mesh.vertices[(t + 1) * 3], mesh.vertices[(t + 1) * 3 + 1], mesh.vertices[(t + 1) * 3 + 2] };
             const Vector3 c = { mesh.vertices[(t + 2) * 3], mesh.vertices[(t + 2) * 3 + 1], mesh.vertices[(t + 2) * 3 + 2] };
+            // The face's direction in metres: unit space is stretched by ext, so weigh the normal by 1/ext.
             const Vector3 n = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
-            const float ax = fabsf(n.x), ay = fabsf(n.y), az = fabsf(n.z);
+            const float ax = fabsf(n.x) / sx, ay = fabsf(n.y) / sy, az = fabsf(n.z) / sz;
             for (size_t k = 0; k < 3; ++k) {
                 const float* v = &mesh.vertices[(t + k) * 3];   // unit space, -0.5..0.5
                 float u, w;
-                if (ax >= ay && ax >= az) { u = v[2]; w = v[1]; }
-                else if (ay >= az)        { u = v[0]; w = v[2]; }
-                else                      { u = v[0]; w = v[1]; }
+                if (ax >= ay && ax >= az) { u = v[2] * sz; w = v[1] * sy; }
+                else if (ay >= az)        { u = v[0] * sx; w = v[2] * sz; }
+                else                      { u = v[0] * sx; w = v[1] * sy; }
                 mesh.texcoords[(t + k) * 2 + 0] = u + 0.5f;
                 mesh.texcoords[(t + k) * 2 + 1] = w + 0.5f;
             }
