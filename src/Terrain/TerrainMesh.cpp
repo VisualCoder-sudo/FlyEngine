@@ -1,6 +1,7 @@
 #include "../../include/Terrain/TerrainMesh.hpp"
 #include "raylib.h"
 #include "raymath.h"
+#include <algorithm>
 #include <cfloat>
 #include <vector>
 #include <cmath>
@@ -11,9 +12,24 @@ namespace terrain {
 // Mesh Generation
 // ============================================================================
 
-Mesh GenerateTerrainMesh(const float* heightmap, int resolution, float scale, float minHeight, float maxHeight) {
+Mesh GenerateTerrainMesh(const float* heightmap, int srcResolution, float srcScale, float minHeight, float maxHeight) {
     Mesh mesh = {0};
-    
+    if (!heightmap || srcResolution < 2) return mesh;
+
+    // raylib meshes use 16-bit indices (max 65535 vertices). For a source grid
+    // too big to index (res > 255), sample every `step`-th point (last row/col
+    // always included) so indices never wrap into garbage.
+    int step = 1;
+    auto gridCount = [](int n, int st) { return (n - 1 + st - 1) / st + 1; };
+    while ((long long)gridCount(srcResolution, step) * gridCount(srcResolution, step) > 65535LL) step++;
+    const int resolution = gridCount(srcResolution, step);
+    const float scale = srcScale * step;
+    auto H = [&](int x, int z) {
+        x = std::min(x * step, srcResolution - 1);
+        z = std::min(z * step, srcResolution - 1);
+        return heightmap[(size_t)z * srcResolution + x];
+    };
+
     int vertexCount = resolution * resolution;
     int triangleCount = (resolution - 1) * (resolution - 1) * 2;
     int indexCount = triangleCount * 3;
@@ -22,61 +38,61 @@ Mesh GenerateTerrainMesh(const float* heightmap, int resolution, float scale, fl
     mesh.vertexCount = vertexCount;
     mesh.triangleCount = triangleCount;
     
-    mesh.vertices = (float*)MemAlloc(vertexCount * 3 * sizeof(float));
-    mesh.normals = (float*)MemAlloc(vertexCount * 3 * sizeof(float));
-    mesh.texcoords = (float*)MemAlloc(vertexCount * 2 * sizeof(float));
-    mesh.tangents = (float*)MemAlloc(vertexCount * 4 * sizeof(float)); // Tangents for normal mapping
-    mesh.indices = (unsigned short*)MemAlloc(indexCount * sizeof(unsigned short));
+    mesh.vertices = (float*)MemAlloc((size_t)vertexCount * 3 * sizeof(float));
+    mesh.normals = (float*)MemAlloc((size_t)vertexCount * 3 * sizeof(float));
+    mesh.texcoords = (float*)MemAlloc((size_t)vertexCount * 2 * sizeof(float));
+    mesh.tangents = (float*)MemAlloc((size_t)vertexCount * 4 * sizeof(float)); // Tangents for normal mapping
+    mesh.indices = (unsigned short*)MemAlloc((size_t)indexCount * sizeof(unsigned short));
     
-    float halfSize = (resolution - 1) * scale * 0.5f;
-    float heightRange = maxHeight - minHeight;
+    // Real world extent covered by the last sample (may be shorter than step*scale).
+    float halfSize = (srcResolution - 1) * srcScale * 0.5f;
     
     // Generate vertices
     for (int z = 0; z < resolution; z++) {
         for (int x = 0; x < resolution; x++) {
-            int idx = (z * resolution + x) * 3;
-            int uvIdx = (z * resolution + x) * 2;
-            int tanIdx = (z * resolution + x) * 4;
+            size_t idx = ((size_t)z * resolution + x) * 3;
+            size_t uvIdx = ((size_t)z * resolution + x) * 2;
             
-            float wx = (x * scale) - halfSize;
-            float wz = (z * scale) - halfSize;
-            float h = heightmap[z * resolution + x];
+            float wx = (std::min(x * step, srcResolution - 1) * srcScale) - halfSize;
+            float wz = (std::min(z * step, srcResolution - 1) * srcScale) - halfSize;
             
-            // Position
             mesh.vertices[idx + 0] = wx;
-            mesh.vertices[idx + 1] = h;
+            mesh.vertices[idx + 1] = H(x, z);
             mesh.vertices[idx + 2] = wz;
             
-            // UV
-            mesh.texcoords[uvIdx + 0] = (float)x / (resolution - 1);
-            mesh.texcoords[uvIdx + 1] = (float)z / (resolution - 1);
+            mesh.texcoords[uvIdx + 0] = (float)std::min(x * step, srcResolution - 1) / (srcResolution - 1);
+            mesh.texcoords[uvIdx + 1] = (float)std::min(z * step, srcResolution - 1) / (srcResolution - 1);
         }
     }
     
     // Compute normals and tangents
     for (int z = 0; z < resolution; z++) {
         for (int x = 0; x < resolution; x++) {
-            int idx = (z * resolution + x) * 3;
-            int tanIdx = (z * resolution + x) * 4;
+            size_t idx = ((size_t)z * resolution + x) * 3;
+            size_t tanIdx = ((size_t)z * resolution + x) * 4;
             
-            // Normal from heightmap neighbors
-            float hL = (x > 0) ? heightmap[z * resolution + (x - 1)] : heightmap[z * resolution + x];
-            float hR = (x < resolution - 1) ? heightmap[z * resolution + (x + 1)] : heightmap[z * resolution + x];
-            float hD = (z > 0) ? heightmap[(z - 1) * resolution + x] : heightmap[z * resolution + x];
-            float hU = (z < resolution - 1) ? heightmap[(z + 1) * resolution + x] : heightmap[z * resolution + x];
+            float hC = H(x, z);
+            float hL = (x > 0) ? H(x - 1, z) : hC;
+            float hR = (x < resolution - 1) ? H(x + 1, z) : hC;
+            float hD = (z > 0) ? H(x, z - 1) : hC;
+            float hU = (z < resolution - 1) ? H(x, z + 1) : hC;
             
             Vector3 normal = {
-                (hL - hR) * scale,
+                (hL - hR),
                 2.0f * scale,
-                (hD - hU) * scale
+                (hD - hU)
             };
-            normal = Vector3Normalize(normal);
+            // (Height deltas are NOT multiplied by scale: the old code scaled x/z and y
+            // alike, so slope was independent of cell size.) Degenerate (zero/NaN scale or heights) -> straight up, never NaN.
+            float len = Vector3Length(normal);
+            if (!(len > 1e-20f) || !std::isfinite(len)) normal = { 0.0f, 1.0f, 0.0f };
+            else normal = Vector3Scale(normal, 1.0f / len);
             
             mesh.normals[idx + 0] = normal.x;
             mesh.normals[idx + 1] = normal.y;
             mesh.normals[idx + 2] = normal.z;
             
-            // Tangent (for normal mapping) - along X axis
+            // Tangent (for normal mapping) - along X axis, orthogonalised against the normal
             Vector3 tangent = { 1.0f, 0.0f, 0.0f };
             Vector3 bitangent = Vector3CrossProduct(normal, tangent);
             bitangent = Vector3Normalize(bitangent);
@@ -90,21 +106,19 @@ Mesh GenerateTerrainMesh(const float* heightmap, int resolution, float scale, fl
         }
     }
     
-    // Generate indices (triangle strip would be more efficient, but use triangles for simplicity)
-    int indexIdx = 0;
+    // Generate indices
+    size_t indexIdx = 0;
     for (int z = 0; z < resolution - 1; z++) {
         for (int x = 0; x < resolution - 1; x++) {
-            int a = z * resolution + x;
-            int b = z * resolution + x + 1;
-            int c = (z + 1) * resolution + x;
-            int d = (z + 1) * resolution + x + 1;
+            unsigned short a = (unsigned short)(z * resolution + x);
+            unsigned short b = (unsigned short)(a + 1);
+            unsigned short c = (unsigned short)(a + resolution);
+            unsigned short d = (unsigned short)(c + 1);
             
-            // Triangle 1
             mesh.indices[indexIdx++] = a;
             mesh.indices[indexIdx++] = c;
             mesh.indices[indexIdx++] = b;
             
-            // Triangle 2
             mesh.indices[indexIdx++] = b;
             mesh.indices[indexIdx++] = c;
             mesh.indices[indexIdx++] = d;

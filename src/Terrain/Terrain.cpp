@@ -30,13 +30,24 @@ static Camera3D* g_drawCamera = nullptr;
 // Construction / Destruction
 // ============================================================================
 
-Terrain::Terrain(Vector3 center_, float width, float depth, int chunkSize, int chunkResolution)
-    : center(center_), size({width, 1.0f, depth}), chunkWorldSize((float)chunkSize), chunkResolution(chunkResolution | 1) {
-    // Ensure resolution is power of 2 + 1
-    if ((chunkResolution & (chunkResolution - 1)) != 0) {
-        chunkResolution = 65;
-    }
-    
+// Validate a chunk resolution: must be 2^k + 1 (matches the loader's 1025 cap).
+// GenerateTerrainMesh downsamples when res*res would overflow 16-bit indices.
+static int SanitizeChunkResolution(int res) {
+    if (res < 3 || res > 1025) return 65;
+    int n = res - 1;
+    if ((n & (n - 1)) != 0) return 65;
+    return res;
+}
+
+Terrain::Terrain(Vector3 center_, float width, float depth, int chunkSize, int chunkRes)
+    : center(center_),
+      size({std::isfinite(width) && width > 0.0f ? std::min(width, 100000.0f) : 1000.0f, 1.0f,
+            std::isfinite(depth) && depth > 0.0f ? std::min(depth, 100000.0f) : 1000.0f}),
+      chunkWorldSize(chunkSize > 0 ? (float)chunkSize : 256.0f),
+      chunkResolution(SanitizeChunkResolution(chunkRes)) {
+    // Bound the chunk count (a tiny chunk size on a big terrain would allocate without limit).
+    while (std::ceil((double)size.x / chunkWorldSize) * std::ceil((double)size.z / chunkWorldSize) > 16384.0)
+        chunkWorldSize *= 2.0f;
     InitializeChunks();
     LoadTerrainShader();
     needsFullRebuild = true;
@@ -295,8 +306,11 @@ TerrainChunk* Terrain::GetChunkAt(float worldX, float worldZ) {
     float localX = worldX - center.x + size.x * 0.5f;
     float localZ = worldZ - center.z + size.z * 0.5f;
     
-    int gx = (int)floorf(localX / chunkWorldSize);
-    int gz = (int)floorf(localZ / chunkWorldSize);
+    float fgx = floorf(localX / chunkWorldSize);
+    float fgz = floorf(localZ / chunkWorldSize);
+    if (!(fgx >= 0.0f && fgx < (float)gridWidth && fgz >= 0.0f && fgz < (float)gridDepth)) return nullptr; // also rejects NaN
+    int gx = (int)fgx;
+    int gz = (int)fgz;
     
     if (gx < 0 || gx >= gridWidth || gz < 0 || gz >= gridDepth) return nullptr;
     return &chunks[gz * gridWidth + gx];
@@ -308,6 +322,8 @@ const TerrainChunk* Terrain::GetChunkAt(float worldX, float worldZ) const {
 
 std::vector<TerrainChunk*> Terrain::GetChunksInRadius(Vector2 center, float radius) {
     std::vector<TerrainChunk*> result;
+    if (!std::isfinite(radius) || !std::isfinite(center.x) || !std::isfinite(center.y) || radius < 0.0f) return result;
+    radius = std::min(radius, 1.0e6f);
     float r2 = radius * radius;
     
     // Find chunk range
