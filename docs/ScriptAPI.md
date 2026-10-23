@@ -149,7 +149,7 @@ if (arch) {
 }
 ```
 
-Not yet: Visual Script nodes for unions (the editor and C++ scripts only).
+Visual Script has the same: see the **Union** and **Separate** nodes in [Visual Script](guide/VisualScript.md#objects-and-world).
 
 ## Prefabs
 

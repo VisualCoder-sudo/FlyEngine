@@ -365,6 +365,22 @@ bool ScriptRuntime::SetObjectProperty(ScatteredObject* target, const std::string
         target->canCollide = value;
         return true;
     }
+    if (prop == "Negate") {   // a cutter: carved out of a union, not drawn in play, never collides
+        bool value;
+        if (!ParseBool(rhs, value)) { outError = "'" + rhs + "' is not a valid boolean (true/false)"; return false; }
+        if (target->HasModel() || target->IsUnion()) { outError = "Only a primitive can be a cutter (Negate)"; return false; }
+        target->negate = value;
+        target->canCollide = !value;
+        if (isPlaying) RebuildBody(target);
+        return true;
+    }
+    if (prop == "UseGlobalColor") {   // a union painted in one colour (its Color) instead of each part's own
+        bool value;
+        if (!ParseBool(rhs, value)) { outError = "'" + rhs + "' is not a valid boolean (true/false)"; return false; }
+        if (!target->IsUnion()) { outError = "UseGlobalColor only applies to a union"; return false; }
+        target->SetUseGlobalColor(value);
+        return true;
+    }
     if (prop == "CollisionAccuracy") {
         pcoll::CollisionAccuracy acc;
         if (!pcoll::ParseCollisionAccuracy(rhs, acc)) {
@@ -405,6 +421,8 @@ bool ScriptRuntime::GetObjectProperty(ScatteredObject* target, const std::string
     if (prop == "Transparency") { std::snprintf(b, sizeof(b), "%g", target->GetTransparency()); out = b; return true; }
     if (prop == "Anchored") { out = target->anchored ? "true" : "false"; return true; }
     if (prop == "CanCollide") { out = target->canCollide ? "true" : "false"; return true; }
+    if (prop == "Negate") { out = target->negate ? "true" : "false"; return true; }
+    if (prop == "UseGlobalColor") { out = target->IsUnion() && target->useGlobalColor ? "true" : "false"; return true; }
     return false;
 }
 

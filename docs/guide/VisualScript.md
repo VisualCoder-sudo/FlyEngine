@@ -79,6 +79,8 @@ Keys offered: Space, Enter, W, A, S, D, Q, E, R, F, Up, Down, Left, Right, 1, 2,
 | Create Object | Makes a new object of a chosen shape. *Then* continues; *Setup* runs a chain on the new object **before** it gets its physics body, so it appears configured. In a Setup chain, an empty target means the new object. |
 | Clone | Copies an object. Its *Setup* output works like Create Object's. |
 | Destroy | Removes an object. |
+| Union | Merges objects into one solid and removes the parts. **Do** picks *Union* (parts marked Negate are carved out) or *Intersect* (keeps only the volume the parts share); **Name** names the result (default *Union*); **Part 1** is the node's target and **+ Add Part** adds more (an empty part is skipped). Primitives only (cube, sphere, cylinder, wedge). Each face keeps its part's colour. If it cannot be built the log says so and nothing changes; the flow continues either way. See [Unions](Unions.md). |
+| Separate | Takes a union apart: it is removed and the objects it was made from come back, with their original names. |
 | Teleport | Moves an object to `(x, y, z)`. |
 | Set Velocity, Add Force, Add Impulse | Motion. *Add Force* is a steady push (use every frame); *Add Impulse* is a one-time kick. |
 | Run Script | Starts the C++ script attached to an object. |
@@ -132,7 +134,7 @@ Vectors are written as text, `"(x, y, z)"`.
 
 - **Target** is an object path such as `Workspace/Group1/Cube`, or a world group. The editor has a target browser that
   lists the scene's groups and loose objects. Paths with `#2` suffixes pick duplicates by number.
-- Change/Get Property properties: `Color`, `Position`, `Size`, `Rotation`, `Transparency`, `Anchored`, `CanCollide`, `Mass`.
+- Change/Get Property properties: `Color`, `Position`, `Size`, `Rotation`, `Transparency`, `Anchored`, `CanCollide`, `Mass`, and for [unions](Unions.md) `Negate` (a primitive becomes a cutter: not drawn in play, never collides, carved out of a union it is made part of) and `UseGlobalColor` (a union is drawn in its own colour instead of each part's; unions only).
 - **Set World Property** groups and properties:
 
 | Group | Properties |

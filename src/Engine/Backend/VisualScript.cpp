@@ -549,6 +549,8 @@ const char* TypeName(NodeType t) {
         case NodeType::Raycast: return "Raycast";
         case NodeType::CreateObject: return "Create Object";
         case NodeType::Destroy: return "Destroy";
+        case NodeType::Union: return "Union";
+        case NodeType::Separate: return "Separate";
         case NodeType::Clone: return "Clone";
         case NodeType::SetVelocity: return "Set Velocity";
         case NodeType::AddForce: return "Add Force";
@@ -640,6 +642,8 @@ const char* NodeHelp(NodeType t) {
         case NodeType::UIRemove: return "Takes a UI item off the screen. An empty id removes all of them.";
         case NodeType::CreateObject: return "Makes a new object of a chosen shape. The Setup output configures it before it appears.";
         case NodeType::Destroy: return "Removes an object from the scene.";
+        case NodeType::Union: return "Merges objects into one solid and removes the parts; each face keeps its part's colour. Parts marked Negate are carved out of the result. Intersect keeps only the volume the parts share. Primitives only (cube, sphere, cylinder, wedge).";
+        case NodeType::Separate: return "Takes a union apart: it is removed and the objects it was made from come back.";
         case NodeType::Clone: return "Makes a copy of an object. The Setup output configures the copy before it appears.";
         case NodeType::Teleport: return "Moves an object straight to a position, as (x, y, z).";
         case NodeType::RunScript: return "Starts the script that is attached to an object.";
@@ -681,7 +685,7 @@ const char* NodeHelp(NodeType t) {
 }
 
 const std::vector<std::string>& ObjectProperties() {
-    static const std::vector<std::string> p = { "Color", "Position", "Size", "Rotation", "Transparency", "Anchored", "CanCollide", "Mass" };
+    static const std::vector<std::string> p = { "Color", "Position", "Size", "Rotation", "Transparency", "Anchored", "CanCollide", "Mass", "Negate", "UseGlobalColor" };
     return p;
 }
 const std::vector<std::string>& WorldGroups() {
@@ -1513,6 +1517,40 @@ void Emit(ScriptRuntime& rt, int gi, int fromId, int pin) {
                     else rt.SetObjectProperty(obj, n->type == NodeType::SetVelocity ? "Velocity" : "Position", vec, error);
                     if (!error.empty()) ui::Log("[script] %s", error.c_str());
                 }
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::Union: {
+                // The first part is the target, the others are the extra rows; an empty slot is skipped.
+                std::vector<std::string> paths{ n->target };
+                for (const auto& e : n->extra) paths.push_back(e.first);
+                std::vector<ScatteredObject*> parts;
+                bool ok = true;
+                for (const std::string& path : paths) {
+                    if (path.empty()) continue;
+                    ScatteredObject* part = FindTarget(rt, path);
+                    if (!part) { ui::Log("[script] No object '%s'", TargetName(path).c_str()); ok = false; }
+                    else if (std::find(g_setupObjects.begin(), g_setupObjects.end(), part) != g_setupObjects.end()) {
+                        ui::Log("[script] '%s' is still being set up: union it afterwards", TargetName(path).c_str());
+                        ok = false;
+                    } else parts.push_back(part);
+                }
+                if (ok) {
+                    ScatteredObject* made = parts.size() >= 2 ? rt.UnionObjects(parts, n->prop == "Intersect") : nullptr;
+                    if (!made) ui::Log("[script] Can't %s these objects (needs two or more primitives; no imported meshes or unions; something must be left)",
+                                       n->prop == "Intersect" ? "intersect" : "union");
+                    else if (!n->value.empty()) made->SetName(n->value);
+                }
+                stack.push_back({ n->id, 0 });
+                break;
+            }
+            case NodeType::Separate: {
+                ScatteredObject* obj = FindTarget(rt, n->target);
+                std::vector<ScatteredObject*> back;
+                if (!obj) ui::Log("[script] No object '%s'", TargetName(n->target).c_str());
+                else if (std::find(g_setupObjects.begin(), g_setupObjects.end(), obj) != g_setupObjects.end())
+                    ui::Log("[script] '%s' is still being set up: separate it afterwards", TargetName(n->target).c_str());
+                else if (!rt.SeparateUnion(obj, back)) ui::Log("[script] '%s' is not a union", TargetName(n->target).c_str());
                 stack.push_back({ n->id, 0 });
                 break;
             }

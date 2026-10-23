@@ -30,6 +30,7 @@ ImVec2 g_menuCanvasPos(0, 0);
 char g_search[64] = "";
 std::string g_browsePath;      // folder shown in the target picker, e.g. "Workspace/Group1"
 int g_pickerNode = 0;
+int g_pickerSlot = 0;          // which object slot of that node the picker fills (a Union node has several)
 int g_soundNode = 0;           // Play Sound node waiting for the system file dialog
 std::string g_soundBrowse;     // folder shown in the project file browser, relative to the project
 
@@ -53,6 +54,7 @@ ImU32 HeaderColor(NodeType t) {
         case NodeType::CodeSnippet: return IM_COL32(60, 60, 70, 255);
         case NodeType::CreateObject: case NodeType::Destroy: case NodeType::Clone: case NodeType::SetVelocity:
         case NodeType::AddForce: case NodeType::AddImpulse: case NodeType::Teleport: case NodeType::RunScript:
+        case NodeType::Union: case NodeType::Separate:
             return IM_COL32(40, 95, 170, 255);
         case NodeType::SetVariable: return IM_COL32(40, 130, 140, 255);
         default: if (IsPure(t)) return IM_COL32(40, 110, 130, 255); break;
@@ -83,7 +85,7 @@ int BodyRows(NodeType t) {
         case NodeType::Print: case NodeType::Delay: case NodeType::Branch:
         case NodeType::Sequence: case NodeType::Repeat:
         case NodeType::GetVariable: case NodeType::Not:
-        case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: return 1;
+        case NodeType::Destroy: case NodeType::RunScript: case NodeType::OnKey: case NodeType::SetVolume: case NodeType::Separate: return 1;
         case NodeType::GamepadButtonDown: case NodeType::GamepadAxis: case NodeType::OnGamepadButton: return 1;
         case NodeType::PlaySound: return 7;   // File, Volume, Object, Range, Loop, Muffle, Echo
         case NodeType::StopSound: return 2;   // File, Object
@@ -118,6 +120,7 @@ int BodyRows(NodeType t) {
 
 // A Change node grows by two rows (property, value) per extra property, plus a row for the "+ New Property" button.
 int BodyRows(const Node& n) {
+    if (n.type == NodeType::Union) return 2 + 1 + static_cast<int>(n.extra.size()) + 1;   // Operation, Name, the parts, "+ Add Part"
     return n.type == NodeType::Change ? 3 + 2 * static_cast<int>(n.extra.size()) + 1 : BodyRows(n.type);
 }
 
@@ -150,6 +153,7 @@ bool MultiOut(const Node& n) { return OutputCount(n.type, &n) > 1; }
 float NodeWidth(const Node& n) {
     if (n.type == NodeType::CodeSnippet) return 400.0f;
     if (n.type == NodeType::Change) return 10.0f + 60.0f + TargetButtonW(n) + 14.0f;
+    if (n.type == NodeType::Union) return 240.0f;
     return BodyRows(n) ? 190.0f : 130.0f;
 }
 
@@ -160,7 +164,7 @@ float NodeHeight(const Node& n) {
 }
 
 bool IsBoolProp(const std::string& p) {
-    return p == "Anchored" || p == "CanCollide" || p == "GlobalShadows" || p == "Grid" || p == "Wireframe";
+    return p == "Anchored" || p == "CanCollide" || p == "Negate" || p == "UseGlobalColor" || p == "GlobalShadows" || p == "Grid" || p == "Wireframe";
 }
 bool IsVecProp(const std::string& p) { return p == "Position" || p == "Size" || p == "Rotation"; }
 
@@ -583,6 +587,53 @@ void ObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     if (g_pickerNode == n.id) DrawTargetPopup(n, scene, true);
 }
 
+// One part of a Union node: a button that opens the scene picker for that slot (slot 0 is the node's target, slot k the
+// extra row k - 1), and an x that drops an extra part. Returns true when the x was pressed.
+bool PartRow(Node& n, ImVec2 o, int row, int slot, std::string& path, const SceneListing& scene) {
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
+    ImGui::PushID(slot);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Part %d", slot + 1);
+    ImGui::SetCursorScreenPos(ImVec2(x + 60.0f, y));
+    const size_t cut = path.find_last_of('/');
+    const std::string label = path.empty() ? std::string("Pick object...") : path.substr(cut == std::string::npos ? 0 : cut + 1);
+    const bool removable = slot > 0;
+    if (ImGui::Button((label + "##part").c_str(), ImVec2(NodeWidth(n) - 80.0f - (removable ? 28.0f : 0.0f), 0))) {
+        g_browsePath.clear();
+        g_pickerNode = n.id;
+        g_pickerSlot = slot;
+        ImGui::OpenPopup("##vsTarget");
+    }
+    if (g_pickerNode == n.id && g_pickerSlot == slot) DrawTargetPopup(n, scene, true, &path);
+    bool remove = false;
+    if (removable) {
+        ImGui::SameLine(0.0f, 4.0f);
+        remove = ImGui::Button("x##rm", ImVec2(24.0f, 0.0f));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this part");
+    }
+    ImGui::PopID();
+    return remove;
+}
+
+// The Union node: what to do, the name of the result, then the parts (Part 1 is the node's target) and "+ Add Part".
+void DrawUnionBody(Node& n, ImVec2 o, const SceneListing& scene) {
+    static const std::vector<std::string> kModes = { "Union", "Intersect" };
+    if (n.prop != "Union" && n.prop != "Intersect") n.prop = "Union";
+    ComboRow(n, o, 0, "Do", n.prop, kModes);
+    StrRow(n, o, 1, "Name", n.value, "##name");
+    PartRow(n, o, 2, 0, n.target, scene);
+    int removeExtra = -1;
+    for (int k = 0; k < static_cast<int>(n.extra.size()); ++k)
+        if (PartRow(n, o, 3 + k, k + 1, n.extra[k].first, scene)) removeExtra = k;
+    if (removeExtra >= 0) RemoveExtraProperty(n.id, removeExtra);
+    const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + (3 + static_cast<int>(n.extra.size())) * kRowH;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushID("addpart");
+    if (ImGui::Button("+ Add Part", ImVec2(NodeWidth(n) - 20.0f, 0.0f))) n.extra.emplace_back("", "");
+    ImGui::PopID();
+}
+
 // The object a sound comes from (the "object" option): a button that opens the scene picker, and a clear button. Empty = a flat sound.
 void SoundObjectRow(Node& n, ImVec2 o, int row, const SceneListing& scene) {
     const float x = o.x + n.x + 10.0f, y = o.y + n.y + kHeaderH + 6.0f + row * kRowH;
@@ -870,7 +921,8 @@ void DrawNodeBody(Node& n, ImVec2 o, const SceneListing& scene) {
             ComboRow(n, o, 0, "Shape", n.prop, ShapeNames());
             StrRow(n, o, 1, "Name", n.value, "##name");
             break;
-        case NodeType::Destroy: case NodeType::RunScript: ObjectRow(n, o, 0, scene); break;
+        case NodeType::Destroy: case NodeType::RunScript: case NodeType::Separate: ObjectRow(n, o, 0, scene); break;
+        case NodeType::Union: DrawUnionBody(n, o, scene); break;
         case NodeType::Clone:
             ObjectRow(n, o, 0, scene);
             StrRow(n, o, 1, "New name", n.value, "##name");
@@ -1302,7 +1354,7 @@ void DrawEditor(const SceneListing& scene) {
                     NodeType::UIButton, NodeType::UISlider, NodeType::UIToggle, NodeType::OnUIClick, NodeType::SetMouseFree } },
             { "Navigation", { NodeType::NavBuild, NodeType::NavMoveTo, NodeType::NavNext, NodeType::NavRandomPoint, NodeType::NavReady } },
             { "Audio", { NodeType::PlaySound, NodeType::StopSound, NodeType::SetVolume } },
-            { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
+            { "Objects", { NodeType::CreateObject, NodeType::Destroy, NodeType::Clone, NodeType::Union, NodeType::Separate, NodeType::Teleport, NodeType::RunScript, NodeType::ObjectExists } },
             { "Physics", { NodeType::SetVelocity, NodeType::AddForce, NodeType::AddImpulse, NodeType::Raycast } },
             { "Variables", { NodeType::SetVariable, NodeType::AddToVariable, NodeType::GetVariable, NodeType::GetProperty } },
             { "Math", { NodeType::Add, NodeType::Sub, NodeType::Mul, NodeType::Div, NodeType::MathFunc, NodeType::Clamp,

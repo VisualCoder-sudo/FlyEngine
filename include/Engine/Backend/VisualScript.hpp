@@ -89,6 +89,11 @@ enum class NodeType {
     NavNext = 70,       // value node: From (target), To (value) -> the next corner to walk to as (x, y, z), "" if no way
     NavRandomPoint = 71,// value node: Center (target), Radius (value) -> a random walkable point, "" if none
     NavReady = 72,      // value node: true once NavBuild has made a map
+    // Unions (solid modelling, see ScatteredObject::MakeUnion). Primitive parts only.
+    Union = 73,         // exec: merges objects into one solid. target = the first part, extra[i].first = the other parts' paths
+                        // (extra[i].second unused), prop = "Union" (parts marked Negate are carved out) or "Intersect"
+                        // (keeps the shared volume), value = optional name for the result. The parts are removed
+    Separate = 74,      // exec: target = a union; it is removed and its original parts come back
     Count_
 };
 

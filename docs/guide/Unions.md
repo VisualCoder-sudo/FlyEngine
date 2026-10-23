@@ -100,7 +100,12 @@ falls and lands like any other object. Mass is automatic from the union's boundi
 
 C++ scripts can make and take apart unions too: `fly::Union(parts)`, `fly::Intersect(parts)`, `Object::Separate()`,
 `SetNegate` and `SetUseGlobalColor`. The rules are the same as in the editor; see [Unions in the script API](../ScriptAPI.md#unions)
-for the list and an example. Visual Script has no union nodes yet.
+for the list and an example.
+
+Visual Script has the same through two nodes, **Union** (with a *Do* choice of Union or Intersect, a name for the result
+and a list of parts) and **Separate**, plus the `Negate` and `UseGlobalColor` properties on the Change and Get Property
+nodes. See [Visual Script](VisualScript.md#objects-and-world). A typical graph: Change `VsCut.Negate = true`, Union
+(`VsA`, `VsB`, `VsCut`, name `Arch`), then Change `Arch.UseGlobalColor = true`.
 
 ## Saving, undo, duplicate, prefabs
 
@@ -119,6 +124,7 @@ If a union somehow rebuilds empty on load, the scene still loads, the parts are 
 | `include/Engine/Backend/Csg.hpp`, `src/Engine/Backend/Csg.cpp` | Pure geometry, no raylib. `Evaluate` builds a whole union in one pass from convex parts (Add / Negate / Intersect); `Union`, `Subtract`, `Intersect` are the classic BSP booleans for any closed solid. Polygons carry a colour. |
 | `include/Engine/Backend/ScatteredObject.hpp`, `.cpp` | `MakeUnion`, `RebuildUnionMesh`, `TakeUnionParts`, `SetUseGlobalColor`, `negate`, `UnionPart` / `UnionMode`. The mesh is built here and owned by the object (`ownsProceduralMesh`), not shared. |
 | `src/Engine/Frontend/ScenePersistence.cpp` | The v34 fields: `negate`, `isUnion`, then for a union `useGlobalColor`, part count and one nested object record per part (with its mode). |
+| `src/Engine/Backend/VisualScript.cpp`, `src/Engine/Frontend/VisualScriptEditor.cpp` | The Visual Script side: node types `Union` (73) and `Separate` (74) (the parts are the node's target plus its extra rows), their run code, the Part rows with a picker per slot, and the `Negate` / `UseGlobalColor` properties. |
 | `src/Engine/Scripts/ScriptRuntime.cpp`, `src/Engine/Backend/FlyScriptApi.cpp`, `ScriptingSDK/include/fly.hpp` | The script side: `UnionObjects` / `SeparateUnion` (they register physics bodies while playing), the `FlyNative_Union*` functions, the appended `FlyApi` members and the `fly::` wrappers. |
 | `src/Engine/Frontend/ObjectInteractionManager.cpp` | `ApplyUnionRequest`: Union, Intersect and Separate run here because it owns the engine and the object list. |
 | `src/Engine/Frontend/ui.cpp`, `ui_explorer.cpp`, `ui_properties.cpp` | The viewport and Explorer Union dropdowns (`UnionMenuEntries`, `RequestUnion`), the properties rows and the row icon. |
@@ -138,6 +144,6 @@ and the one-pass evaluator on boxes (volumes, surface area, touching and identic
 subtract / intersect of cubes and of a cylinder with a rotated sphere (inclusion-exclusion on mesh volumes); per-face
 colours and the global colour switch; save/load, scenes from before format 34, snapshot restore and clone; Separate with a
 moved, stretched and turned union; timing of a 13-part stress union; physics (a dropped union lands, rays pass through a
-Negate hole and through a free cutter). The script API is covered by `tests/fly_actions_test.cpp` (wrappers against a fake table, and an engine without the union functions) and `tests/script_actions_engine_test.cpp` (the real engine: union, ray through the hole, separate, intersect, stale and unsupported inputs).
+Negate hole and through a free cutter). The script API is covered by `tests/fly_actions_test.cpp` (wrappers against a fake table, and an engine without the union functions) and `tests/script_actions_engine_test.cpp` (the real engine: union, ray through the hole, separate, intersect, stale and unsupported inputs, and a Visual Script graph that unions, recolours and separates). The nodes' behaviour with a stubbed runtime (parts in order, names, refusals, save and load) is in `tests/visual_script_test.cpp`.
 
 Set `FLY_UNION_SHOT=<file.png>` to also render a union next to a plain cube for a visual check.

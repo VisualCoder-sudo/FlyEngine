@@ -52,6 +52,9 @@ std::string g_rayHit;                           // what RayCastName returns
 std::vector<std::string> g_rays;                // "origin|dir|dist"
 std::vector<std::string> g_snippetsStarted;     // class names handed to StartSnippet
 bool g_snippetsKnown = true;
+std::vector<std::string> g_unionCalls;          // UnionObjects: "union|intersect:<part>:<part>..."
+std::vector<std::string> g_separated;           // SeparateUnion targets
+bool g_unionOk = true;                          // false makes the fake runtime refuse to build / separate
 std::map<std::string, std::vector<std::string>> g_snippetInputs;    // what the node handed the snippet
 std::map<std::string, std::vector<std::string>> g_snippetOutputs;   // what the "snippet" set (tests seed these)
 
@@ -80,6 +83,7 @@ void ResetStubs() {
     g_createDeferred.clear(); g_finished.clear(); g_logAtFinish.clear(); g_cloneDeferred = false;
     g_destroyed = g_cloned = g_scriptsStarted = 0;
     g_snippetsStarted.clear(); g_snippetsKnown = true; g_snippetInputs.clear(); g_snippetOutputs.clear();
+    g_unionCalls.clear(); g_separated.clear(); g_unionOk = true;
     g_names.clear(); g_rayHit.clear();
     g_keyPressed = -1; g_keyHeld = -1; g_masterVolume = -1.0f; g_drawTextCalls = 0; g_played.clear(); g_requests.clear(); g_stopped.clear();
     vscript::SetSoundPlayer(nullptr);
@@ -130,6 +134,19 @@ void ScriptRuntime::DestroyObject(ScatteredObject*) { ++g_destroyed; }
 ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject*, bool defer) {
     ++g_cloned; g_cloneDeferred = defer;
     return reinterpret_cast<ScatteredObject*>(&g_objects[1]);
+}
+ScatteredObject* ScriptRuntime::UnionObjects(const std::vector<ScatteredObject*>& parts, bool intersect) {
+    std::string call = intersect ? "intersect" : "union";
+    for (ScatteredObject* p : parts) call += std::string(":") + ObjectName(p);
+    g_unionCalls.push_back(call);
+    return g_unionOk ? reinterpret_cast<ScatteredObject*>(&g_objects[2]) : nullptr;
+}
+bool ScriptRuntime::SeparateUnion(ScatteredObject* u, std::vector<ScatteredObject*>& out) {
+    g_separated.push_back(ObjectName(u));
+    if (!g_unionOk) return false;
+    out.push_back(reinterpret_cast<ScatteredObject*>(&g_objects[0]));
+    out.push_back(reinterpret_cast<ScatteredObject*>(&g_objects[1]));
+    return true;
 }
 bool ScriptRuntime::AddForce(ScatteredObject*, const std::string& vec, bool impulse, std::string&) {
     g_forces.push_back(std::string(impulse ? "impulse " : "force ") + vec);
@@ -918,6 +935,125 @@ static void TestCloneSetup() {
     CHECK(g_cloneDeferred && g_cloned == 1);
     CHECK(g_sets.size() == 1 && g_sets[0].object == "Ball" && g_sets[0].prop == "Anchored");   // the copy, not the original
     CHECK(g_finished.size() == 1 && Logged("cloned"));
+}
+
+// ---------------------------------------------------------------- union nodes
+
+// Union: the target and the extra rows are the parts, in order; the result gets the node's name.
+static void TestUnionNode() {
+    Fresh();
+    const int s = Add(NodeType::Start), u = Add(NodeType::Union), p = Add(NodeType::Print);
+    N(u).target = "Workspace/Cube"; N(u).extra.emplace_back("Workspace/Ball", ""); N(u).value = "Pair"; N(u).prop = "Union";
+    N(p).value = "after";
+    Link_(s, u); Link_(u, p);
+    Run(RT());
+    CHECK(g_unionCalls.size() == 1 && g_unionCalls[0] == "union:Cube:Ball");
+    CHECK(g_names[&g_objects[2]] == "Pair");   // the result is named
+    CHECK(Logged("after"));                    // and the flow goes on
+
+    Fresh();   // Intersect, no name: the result keeps the engine's default name
+    const int s2 = Add(NodeType::Start), i = Add(NodeType::Union);
+    N(i).target = "Workspace/Cube"; N(i).extra.emplace_back("Workspace/Ball", ""); N(i).prop = "Intersect";
+    Link_(s2, i);
+    Run(RT());
+    CHECK(g_unionCalls.size() == 1 && g_unionCalls[0] == "intersect:Cube:Ball");
+    CHECK(g_names.find(&g_objects[2]) == g_names.end());
+}
+
+static void TestUnionNodeRefusals() {
+    {   // a part that is not in the scene: nothing is built, the flow goes on
+        Fresh();
+        const int s = Add(NodeType::Start), u = Add(NodeType::Union), p = Add(NodeType::Print);
+        N(u).target = "Workspace/Cube"; N(u).extra.emplace_back("Workspace/Ghost", "");
+        N(p).value = "after";
+        Link_(s, u); Link_(u, p);
+        Run(RT());
+        CHECK(g_unionCalls.empty() && Logged("No object") && Logged("Ghost") && Logged("after"));
+    }
+    {   // empty slots are skipped; one part is not a union
+        Fresh();
+        const int s = Add(NodeType::Start), u = Add(NodeType::Union);
+        N(u).target = "Workspace/Cube"; N(u).extra.emplace_back("", "");
+        Link_(s, u);
+        Run(RT());
+        CHECK(g_unionCalls.empty() && Logged("Can't union"));
+    }
+    {   // an empty slot in the middle is skipped, the other parts still merge
+        Fresh();
+        const int s = Add(NodeType::Start), u = Add(NodeType::Union);
+        N(u).target = "Workspace/Cube"; N(u).extra.emplace_back("", ""); N(u).extra.emplace_back("Workspace/Ball", "");
+        Link_(s, u);
+        Run(RT());
+        CHECK(g_unionCalls.size() == 1 && g_unionCalls[0] == "union:Cube:Ball");
+    }
+    {   // the runtime refuses (imported mesh, nothing left, ...): logged, nothing renamed, the flow goes on
+        Fresh();
+        g_unionOk = false;
+        const int s = Add(NodeType::Start), u = Add(NodeType::Union), p = Add(NodeType::Print);
+        N(u).target = "Workspace/Cube"; N(u).extra.emplace_back("Workspace/Ball", ""); N(u).value = "Pair"; N(u).prop = "Intersect";
+        N(p).value = "after";
+        Link_(s, u); Link_(u, p);
+        Run(RT());
+        CHECK(g_unionCalls.size() == 1 && Logged("Can't intersect") && g_names.empty() && Logged("after"));
+    }
+    {   // an object still being set up is not unioned (it has no body yet)
+        Fresh();
+        const int s = Add(NodeType::Start), c = Add(NodeType::CreateObject), u = Add(NodeType::Union);
+        N(u).target = kNewObjectTarget; N(u).extra.emplace_back("Workspace/Cube", "");
+        Link_(s, c); Link_(c, u, 1);
+        Run(RT());
+        CHECK(g_unionCalls.empty() && Logged("still being set up"));
+    }
+}
+
+static void TestSeparateNode() {
+    Fresh();
+    const int s = Add(NodeType::Start), sep = Add(NodeType::Separate), p = Add(NodeType::Print);
+    N(sep).target = "Workspace/Cube"; N(p).value = "after";
+    Link_(s, sep); Link_(sep, p);
+    Run(RT());
+    CHECK(g_separated.size() == 1 && g_separated[0] == "Cube" && Logged("after") && !Logged("not a union"));
+
+    Fresh();   // not a union / not there
+    g_unionOk = false;
+    const int s2 = Add(NodeType::Start), a = Add(NodeType::Separate), b = Add(NodeType::Separate);
+    N(a).target = "Workspace/Cube"; N(b).target = "Workspace/Ghost";
+    Link_(s2, a); Link_(a, b);
+    Run(RT());
+    CHECK(g_separated.size() == 1 && Logged("not a union") && Logged("No object"));
+}
+
+// The union nodes keep their parts through save and load, and the new object properties are offered.
+static void TestUnionNodesRoundTrip() {
+    Fresh();
+    const int u = Add(NodeType::Union), sep = Add(NodeType::Separate);
+    N(u).target = "Workspace/Cube"; N(u).prop = "Intersect"; N(u).value = "Pair";
+    N(u).extra.emplace_back("Workspace/Ball", ""); N(u).extra.emplace_back("Workspace/Group1/Crate", "");
+    N(sep).target = "Workspace/Pair";
+    const std::string text = SaveAll();
+    Clear();
+    std::istringstream in(text);
+    Load(in);
+    CHECK(Count() == 1);
+    const Node* lu = nullptr; const Node* ls = nullptr;
+    for (const Node& n : Active().nodes) { if (n.type == NodeType::Union) lu = &n; if (n.type == NodeType::Separate) ls = &n; }
+    CHECK(lu && lu->target == "Workspace/Cube" && lu->prop == "Intersect" && lu->value == "Pair");
+    CHECK(lu && lu->extra.size() == 2 && lu->extra[0].first == "Workspace/Ball" && lu->extra[1].first == "Workspace/Group1/Crate");
+    CHECK(ls && ls->target == "Workspace/Pair");
+    CHECK(OutputCount(NodeType::Union) == 1 && DataInputCount(NodeType::Union) == 0 && !IsPure(NodeType::Union));
+    const auto& props = ObjectProperties();
+    CHECK(std::find(props.begin(), props.end(), "Negate") != props.end() && std::find(props.begin(), props.end(), "UseGlobalColor") != props.end());
+}
+
+// A Change node sets Negate / UseGlobalColor like any other property.
+static void TestChangeNegate() {
+    Fresh();
+    const int s = Add(NodeType::Start), c = Add(NodeType::Change);
+    N(c).target = "Workspace/Cube"; N(c).prop = "Negate"; N(c).value = "true";
+    N(c).extra.emplace_back("UseGlobalColor", "true");
+    Link_(s, c);
+    Run(RT());
+    CHECK(g_sets.size() == 2 && g_sets[0].prop == "Negate" && g_sets[0].value == "true" && g_sets[1].prop == "UseGlobalColor");
 }
 
 static void TestObjectActionOnMissingTarget() {
@@ -2267,7 +2403,8 @@ int main() {
         { "ChangeExtrasInSetup", TestChangeExtrasInSetup }, { "ChangeValueFromWire", TestChangeValueFromWire },
         { "SetWorld", TestSetWorld }, { "GetProperty", TestGetProperty }, { "ObjectActions", TestObjectActions },
         { "CreateObjectSetup", TestCreateObjectSetup }, { "CreateObjectWithoutSetup", TestCreateObjectWithoutSetup },
-        { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup },
+        { "AutoApplyRules", TestAutoApplyRules }, { "NewObjectOutsideSetup", TestNewObjectOutsideSetup }, { "NestedSetup", TestNestedSetup }, { "CloneSetup", TestCloneSetup }, { "UnionNode", TestUnionNode }, { "UnionNodeRefusals", TestUnionNodeRefusals }, { "SeparateNode", TestSeparateNode },
+        { "UnionNodesRoundTrip", TestUnionNodesRoundTrip }, { "ChangeNegate", TestChangeNegate },
         { "ObjectActionOnMissingTarget", TestObjectActionOnMissingTarget }, { "VectorFromWire", TestVectorFromWire },
         { "Raycast", TestRaycast }, { "ShowText", TestShowText },
         { "ShowTextReplaceClearAndStop", TestShowTextReplaceClearAndStop }, { "Sound", TestSound }, { "SoundOptions", TestSoundOptions }, { "StopSoundLink", TestStopSoundLink }, { "StopSoundAutoLink", TestStopSoundAutoLink }, { "SoundWithoutBackend", TestSoundWithoutBackend },

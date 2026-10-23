@@ -172,6 +172,48 @@ int main() {
         FlyNative_DestroyObject(back[2]);
     }
 
+    // Visual Script: Union and Separate nodes, and the Negate / UseGlobalColor properties, through the real runtime.
+    {
+        const unsigned long long va = FlyNative_CreateObject("Cube"), vb = FlyNative_CreateObject("Cube"), vc = FlyNative_CreateObject("Sphere");
+        FlyNative_SetName(va, "VsA"); FlyNative_SetName(vb, "VsB"); FlyNative_SetName(vc, "VsCut");
+        FlyNative_SetPosition(va, 60, 3, 0); FlyNative_SetPosition(vb, 61, 3, 0); FlyNative_SetPosition(vc, 60.5f, 3, 0);
+        FlyNative_SetSize(vc, 0.8f, 8.0f, 0.8f);
+
+        vscript::Clear();
+        vscript::NewScript("UnionNodes");
+        const int start = vscript::AddNode(vscript::NodeType::Start, 0, 0).id;
+        const int cutter = vscript::AddNode(vscript::NodeType::Change, 100, 0).id;
+        const int merge = vscript::AddNode(vscript::NodeType::Union, 200, 0).id;
+        const int paint = vscript::AddNode(vscript::NodeType::Change, 300, 0).id;
+        vscript::Find(cutter)->target = "Workspace/VsCut"; vscript::Find(cutter)->prop = "Negate"; vscript::Find(cutter)->value = "true";
+        vscript::Node* u = vscript::Find(merge);
+        u->target = "Workspace/VsA"; u->prop = "Union"; u->value = "VsArch";
+        u->extra.emplace_back("Workspace/VsB", ""); u->extra.emplace_back("Workspace/VsCut", "");
+        vscript::Find(paint)->target = "Workspace/VsArch"; vscript::Find(paint)->prop = "UseGlobalColor"; vscript::Find(paint)->value = "true";
+        vscript::Connect(start, cutter); vscript::Connect(cutter, merge); vscript::Connect(merge, paint);
+        const size_t beforeVs = objs.size();
+        vscript::Run(rt);
+        const unsigned long long arch = FlyNative_FindObject("VsArch");
+        CHECK(arch != 0 && FlyNative_UnionPartCount(arch) == 3);
+        CHECK(FlyNative_GetUseGlobalColor(arch) == 1);                              // the Change node after the Union reached the new object
+        CHECK(objs.size() == beforeVs - 3 + 1);
+        CHECK(FlyNative_FindObject("VsA") == 0 && FlyNative_FindObject("VsCut") == 0);   // the parts are gone
+
+        vscript::Clear();
+        vscript::NewScript("SeparateNode");
+        const int s2 = vscript::AddNode(vscript::NodeType::Start, 0, 0).id;
+        const int sep = vscript::AddNode(vscript::NodeType::Separate, 100, 0).id;
+        vscript::Find(sep)->target = "Workspace/VsArch";
+        vscript::Connect(s2, sep);
+        vscript::Run(rt);
+        CHECK(FlyNative_FindObject("VsArch") == 0);
+        const unsigned long long ra = FlyNative_FindObject("VsA"), rb = FlyNative_FindObject("VsB"), rc = FlyNative_FindObject("VsCut");
+        CHECK(ra && rb && rc && FlyNative_GetNegate(rc) == 1);                       // back, the cutter still a cutter
+        CHECK(objs.size() == beforeVs);
+        FlyNative_DestroyObject(ra); FlyNative_DestroyObject(rb); FlyNative_DestroyObject(rc);
+        vscript::Clear();
+    }
+
     // Keys, text, sound, volume and time must at least be safe with nothing pressed / no audio backend.
     CHECK(FlyNative_KeyDown("W") == 0 && FlyNative_KeyPressed("Space") == 0 && FlyNative_KeyDown("NoSuchKey") == 0);
     CHECK(FlyNative_KeyDown(nullptr) == 0);
