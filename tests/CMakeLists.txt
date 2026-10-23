@@ -417,3 +417,19 @@ endforeach()
 # keeping shared chunk edges equal. Opens a window, so it is not registered with ctest: build/tests/terrain_mesh_test
 add_executable(terrain_mesh_test terrain_mesh_test.cpp)
 target_link_libraries(terrain_mesh_test PRIVATE FlyEngineCore FlyRL)
+
+# Plugin Manager (NativeScriptHost: load, disable/enable, import, remove, rescan, hot reload). No window: the host is
+# built without an Engine. The fixture plugins are real shared libraries so dlopen/dlclose are exercised.
+add_library(test_plugin_good MODULE plugin_fixtures/fixture_plugin.c)
+add_library(test_plugin_failing MODULE plugin_fixtures/fixture_plugin.c)
+target_compile_definitions(test_plugin_failing PRIVATE FIXTURE_FAIL_LOAD=1)
+foreach(t test_plugin_good test_plugin_failing)
+    target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    set_target_properties(${t} PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/plugin_fixtures)
+endforeach()
+add_executable(plugin_manager_test plugin_manager_test.cpp)
+target_link_libraries(plugin_manager_test PRIVATE FlyEngineCore FlyRL)
+add_dependencies(plugin_manager_test test_plugin_good test_plugin_failing)
+target_compile_definitions(plugin_manager_test PRIVATE
+    GOOD_PLUGIN="$<TARGET_FILE:test_plugin_good>" FAILING_PLUGIN="$<TARGET_FILE:test_plugin_failing>")
+add_test(NAME plugin_manager COMMAND plugin_manager_test)

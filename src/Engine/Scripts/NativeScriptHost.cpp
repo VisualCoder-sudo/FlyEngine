@@ -772,7 +772,7 @@ bool NativeScriptHost::ReloadPlugin(const std::string& pluginName) {
             break;
         }
     }
-    if (!plugin) return false;
+    if (!plugin || !plugin->enabled) return false;   // a disabled plugin stays unloaded until it is enabled
     
     ui::LogAlways("[NativeScriptHost] Reloading plugin: %s", pluginName.c_str());
     
