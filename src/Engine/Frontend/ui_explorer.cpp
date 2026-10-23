@@ -1030,7 +1030,7 @@ void DrawObjectRow(ScatteredObject* obj, int depth) {
     const bool scriptOpen = hasChildren && s_scriptClosed.count(obj) == 0;
     RowDesc d;
     d.id = obj;
-    d.icon = ROWICON_OBJECT;
+    d.icon = obj->IsUnion() ? ROWICON_UNION : ROWICON_OBJECT;
     d.label = label.c_str();
     d.selected = obj->isSelected;
     d.depth = depth;

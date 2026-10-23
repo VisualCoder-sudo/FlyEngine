@@ -223,7 +223,7 @@ void Init() {
     }
 
     constexpr const char* rowIconNames[ROWICON_COUNT] = { "cube.png", "water.png", "terrain.png", "script.png", "explorericons/Group.png",
-                                                         "explorericons/Light.png", "explorericons/Decal.png", "explorericons/Texture.png" };
+                                                         "explorericons/Light.png", "explorericons/Decal.png", "explorericons/Texture.png", "multicubes.png" };
     for (int i = 0; i < ROWICON_COUNT; ++i) {
         Image img = LoadEditorIcon(rowIconNames[i]);
         if (img.data != nullptr) {
