@@ -44,7 +44,7 @@ purpose, do not delete), `curl/`, `imgui/`, `extern/*`, `src/Engine/Backend/{cgl
 | `LoadingScreen.cpp` | Editor and player loading screens. |
 | `FrameStats.cpp`, `TechnicalTools.cpp` | Frame timing, memory tracker, physics debug visualiser, debug tools. `TechnicalTools.cpp` is large (about 4000 lines). |
 | `Audio.cpp` | miniaudio playback, 3D sound. |
-| `Backend/` | Scene objects and non-UI services: `ScatteredObject`, `ModelImport`, `FbxModel`, `ModelAnimator`, `CharacterController`, `VisualScript`, `FlyScriptApi` (the `FlyNative_*` functions), `Automation`, `Benchmark`, `CrashReporter`, `AudioAssets`, `SoundRays`, `fcloudint` (FlyCloud). |
+| `Backend/` | Scene objects and non-UI services: `ScatteredObject`, `Csg` (solid-modelling booleans behind unions), `ModelImport`, `FbxModel`, `ModelAnimator`, `CharacterController`, `VisualScript`, `FlyScriptApi` (the `FlyNative_*` functions), `Automation`, `Benchmark`, `CrashReporter`, `AudioAssets`, `SoundRays`, `fcloudint` (FlyCloud). |
 | `Frontend/` | Editor: `ui.cpp` and the `ui_*.cpp` panels, `ObjectInteractionManager`, `ProjectManager`, `ScenePersistence`, `UndoSystem`, `VisualScriptEditor`, `PluginHost`, `ExportDialog`. `ui_internal.hpp` is the shared private header. |
 | `Scripts/` | `NativeScriptHost`, `ScriptRuntime`, `ScriptCompiler`, `ScriptDiagnostics`, `ScriptLauncher` (open scripts in an external editor), `CommandConsole`, `CPluginAPI.cpp` (plugin function table). |
 | `Export/` | `ExportManager`, `PackArchive`, `PeIcon`. |
@@ -120,4 +120,4 @@ C code shared with the CLI tools: `ManifestParser.c`, `PluginLoader.c`, `PluginI
 `tests/CMakeLists.txt` registers them. See [Maintenance.md](Maintenance.md#testing) for how to run each kind.
 Groups by name prefix: `city_*` (city generation), `terrain_*`, `water`, `audio_*`, `game_ui_*`, `navigation_*`,
 `script_*`, `pbr`, `prefab`, `explorer_tree`, `version_compat`, `rl_smoke`, `sky`, `loading`, `new_project`,
-`play_snapshot`. `tests/automation/` holds `--automation` scripts for FlyPlayer.
+`play_snapshot`, `union` (CSG unions, see [guide/Unions.md](guide/Unions.md)). `tests/automation/` holds `--automation` scripts for FlyPlayer.

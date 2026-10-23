@@ -70,6 +70,7 @@ inline void SnippetOutput(const char* snippet, int pin, const std::string& value
 // they existed has a shorter function table: reads give 0 / "", actions do nothing.
 namespace detail {
 inline bool HaveActions() { return Api()->size >= offsetof(FlyApi, TimeSincePlay) + sizeof(void*); }
+inline bool HaveUnions() { return Api()->size >= offsetof(FlyApi, GetUseGlobalColor) + sizeof(void*); }
 }
 
 // Seconds since the previous frame.
@@ -175,6 +176,29 @@ public:
     // A push; call it every frame for a steady one. AddImpulse is a sudden kick, once.
     void AddForce(Vec3 v)   { if (detail::HaveActions()) detail::Api()->AddForce(m_handle, v.x, v.y, v.z); }
     void AddImpulse(Vec3 v) { if (detail::HaveActions()) detail::Api()->AddImpulse(m_handle, v.x, v.y, v.z); }
+    // Unions (solid modelling, like the editor's Union dropdown); on an engine from before them these do nothing.
+    // IsUnion / UnionPartCount: a union holds the parts it was made from. Separate() removes it and gives the parts back
+    // (this handle becomes invalid). SetNegate marks a primitive as a cutter: not drawn in play, never collides, and
+    // carved out of a union it is made part of. SetUseGlobalColor (unions only): off = each face keeps its part's
+    // colour, on = the whole union is drawn in the object's own colour.
+    bool IsUnion() const { return UnionPartCount() > 0; }
+    int UnionPartCount() const { return detail::HaveUnions() ? detail::Api()->UnionPartCount(m_handle) : 0; }
+    std::vector<Object> Separate() {
+        std::vector<Object> parts;
+        if (!detail::HaveUnions()) return parts;
+        const int n = detail::Api()->UnionPartCount(m_handle);
+        if (n <= 0) return parts;
+        std::vector<FlyHandle> raw((size_t)n, 0);
+        const int got = detail::Api()->SeparateUnion(m_handle, raw.data(), n);
+        for (int i = 0; i < got && i < n; ++i) parts.emplace_back(raw[(size_t)i]);
+        m_handle = 0;
+        return parts;
+    }
+    bool IsNegate() const { return detail::HaveUnions() && detail::Api()->GetNegate(m_handle) != 0; }
+    bool SetNegate(bool on) { return detail::HaveUnions() && detail::Api()->SetNegate(m_handle, on ? 1 : 0) != 0; }
+    bool UseGlobalColor() const { return detail::HaveUnions() && detail::Api()->GetUseGlobalColor(m_handle) != 0; }
+    bool SetUseGlobalColor(bool on) { return detail::HaveUnions() && detail::Api()->SetUseGlobalColor(m_handle, on ? 1 : 0) != 0; }
+
     // Starts the script attached to the object (or the named script class), like the Run Script node.
     bool StartScript(const char* typeName = nullptr) {
         return detail::HaveActions() && detail::Api()->StartObjectScript(m_handle, typeName) != 0;
@@ -512,6 +536,26 @@ inline Object Spawn(const std::string& file, Vec3 position) {
     return detail::HavePrefabs() ? Object(detail::Api()->SpawnPrefab(file.c_str(), position.x, position.y, position.z)) : Object();
 }
 }
+
+// ---- unions ----------------------------------------------------------------
+
+namespace detail {
+inline Object MakeUnion(const std::vector<Object>& parts, int mode) {
+    if (!HaveUnions() || parts.size() < 2) return {};
+    std::vector<FlyHandle> raw;
+    raw.reserve(parts.size());
+    for (const Object& o : parts) raw.push_back(o.Handle());
+    return Object(Api()->UnionObjects(raw.data(), (int)raw.size(), mode));
+}
+}
+
+// Merges primitive parts (cube, sphere, cylinder, wedge) into one solid object, like the editor's Union command. The
+// parts are removed (their handles become invalid) and the new object is returned; faces keep their part's colour. A
+// part with SetNegate(true) is carved out of the result. Returns an invalid Object, and changes nothing, when it cannot
+// be built: fewer than two parts, an imported mesh or a union among them, or nothing left after the cuts.
+inline Object Union(const std::vector<Object>& parts) { return detail::MakeUnion(parts, 0); }
+// Like Union, but keeps only the volume all the parts share.
+inline Object Intersect(const std::vector<Object>& parts) { return detail::MakeUnion(parts, 1); }
 
 // ---- in-game UI ------------------------------------------------------------
 

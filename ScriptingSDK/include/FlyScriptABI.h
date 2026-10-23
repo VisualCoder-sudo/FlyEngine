@@ -227,6 +227,16 @@ typedef struct FlyApi {
     /* Moving on the navigation map. Added after the mouse: fly.hpp checks `size` first. */
     short     (*NavLineClear)(const float* from3, const float* to3);   /* 1 if an agent at `from` can walk straight to `to` without leaving the map */
     short     (*NavMoveAlong)(const float* from3, const float* delta3, float* out3);   /* moves over walkable ground, sliding along walls; out is on the map (y = ground). 0 = no ground near `from` (out = from + delta) */
+
+    /* Unions (solid modelling). Added after navigation movement: fly.hpp checks `size` first. Only primitive parts (cube,
+     * sphere, cylinder, wedge) can be unioned. */
+    FlyHandle (*UnionObjects)(const FlyHandle* parts, int count, int mode);   /* merges 2+ parts into one object and removes them; mode 0 = union (parts marked Negate are carved out), 1 = intersect (keeps the shared volume). 0 if it cannot be built (an imported mesh, a union, nothing left, ...) and then nothing changes */
+    int       (*SeparateUnion)(FlyHandle h, FlyHandle* out, int maxOut);      /* removes the union and puts its original parts back; returns how many parts there are (out gets up to maxOut handles); 0 if h is not a union */
+    int       (*UnionPartCount)(FlyHandle h);                                 /* parts in the union; 0 for an ordinary object */
+    short     (*SetNegate)(FlyHandle h, short on);                            /* marks a primitive as a cutter (not drawn in play, never collides); 1 if applied */
+    short     (*GetNegate)(FlyHandle h);
+    short     (*SetUseGlobalColor)(FlyHandle h, short on);                    /* union only: paint the whole union in the object's colour instead of each part's own; 1 if applied */
+    short     (*GetUseGlobalColor)(FlyHandle h);
 } FlyApi;
 
 /* What GetEnvironment / SetEnvironment read and write. Append only. */

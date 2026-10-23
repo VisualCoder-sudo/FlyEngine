@@ -36,7 +36,7 @@ folder copied into new projects.
 Text stream: signature, version, object count, then one record per object, followed by version-gated trailing
 sections (model groups, Visual Script graph from v24, and so on).
 
-- **Version constant:** `kSceneFormatVersion` in `include/Engine/Backend/ScenePersistence.hpp` (currently **33**).
+- **Version constant:** `kSceneFormatVersion` in `include/Engine/Backend/ScenePersistence.hpp` (currently **34**).
   The editor writer, the editor reader and `FlyPlayer`'s loader (`kMaxSceneVersion` in `ProjectManager.cpp`) all use it.
   Never hard-code a second copy: that exact mistake made FlyPlayer reject v33 scenes and fall through the world
   (see [PBR.md](PBR.md) §5).
@@ -52,7 +52,10 @@ sections (model groups, Visual Script graph from v24, and so on).
 - Model paths are stored relative to the project folder (`baseDir`) so folders stay portable.
 
 Version landmarks confirmed in code: v24 Visual Script graph, v26 model-tree extras, v29 baseplate as an ordinary
-object, v33 PBR (`metallic roughness r g b emissiveStrength useModelMaterial` appended per object). Other `version >= N`
+object, v33 PBR (`metallic roughness r g b emissiveStrength useModelMaterial` appended per object), v34 unions (appended
+after the PBR fields: `negate isUnion`; for a union also `useGlobalColor partCount`, then per part a line with its mode
+(0 Add, 1 Negate, 2 Intersect) followed by that part's own full object record, recursively; the union's mesh is not
+stored, `RebuildUnionMesh` rebuilds it on load; see [guide/Unions.md](guide/Unions.md)). Other `version >= N`
 gates (18, 19, 23, 25, 30, ...) are in `ScenePersistence.cpp`; grep for them before changing the section they guard.
 
 ## Terrain

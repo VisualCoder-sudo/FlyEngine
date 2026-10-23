@@ -667,8 +667,10 @@ std::unique_ptr<ScatteredObject> ScatteredObject::MakeUnion(std::vector<std::uni
     }
     Vector3 center;
     if (!u->RebuildUnionMesh(&center)) return nullptr;
-    // The parts were in world space: re-express them relative to the union's centre.
+    // The parts were in world space: re-express them relative to the union's centre, and build the mesh again
+    // from exactly the numbers that are saved, so reloading the scene (or an undo step) gives the same mesh.
     for (UnionPart& p : u->unionParts) *p.obj->GetPosPtr() = Vector3Subtract(*p.obj->GetPosPtr(), center);
+    if (!u->RebuildUnionMesh()) return nullptr;
     u->pos = center;
     u->size = u->unionBaseSize;
     return u;
@@ -676,24 +678,16 @@ std::unique_ptr<ScatteredObject> ScatteredObject::MakeUnion(std::vector<std::uni
 
 bool ScatteredObject::RebuildUnionMesh(Vector3* outCenter) {
     if (unionParts.empty()) return false;
-    csg::Polys result;
-    bool started = false;
+    // Every part is a convex primitive, so the whole solid is evaluated in one pass (see csg::Evaluate).
+    std::vector<csg::ConvexPart> convex;
+    convex.reserve(unionParts.size());
     for (UnionPart& p : unionParts) {
-        if (p.mode != UnionMode::Add) continue;
-        csg::Polys polys = PartPolygons(*p.obj);
-        result = started ? csg::Union(result, polys) : std::move(polys);
-        started = true;
+        csg::ConvexPart c;
+        c.polys = PartPolygons(*p.obj);
+        c.mode = p.mode == UnionMode::Negate ? csg::Mode::Negate : (p.mode == UnionMode::Intersect ? csg::Mode::Intersect : csg::Mode::Add);
+        convex.push_back(std::move(c));
     }
-    for (UnionPart& p : unionParts) {
-        if (p.mode != UnionMode::Negate || !started) continue;
-        result = csg::Subtract(result, PartPolygons(*p.obj));
-    }
-    for (UnionPart& p : unionParts) {
-        if (p.mode != UnionMode::Intersect) continue;
-        csg::Polys polys = PartPolygons(*p.obj);
-        result = started ? csg::Intersect(result, polys) : std::move(polys);
-        started = true;
-    }
+    const csg::Polys result = csg::Evaluate(convex);
     const csg::Bounds bounds = csg::BoundsOf(result);
     const csg::TriSoup soup = csg::Triangulate(result);
     if (!bounds.valid || soup.TriangleCount() == 0) return false;

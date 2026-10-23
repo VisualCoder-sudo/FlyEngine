@@ -90,6 +90,7 @@ fly::Object crate = fly::Object::Create("Cube");    // "Cube", "Sphere", "Cylind
 | Look | `Color/SetColor` (`fly::Color3`, 0-255), `Transparency/SetTransparency` |
 | Physics flags | `Anchored/SetAnchored`, `CanCollide/SetCanCollide`, `Mass/SetMass`, `GetCollisionAccuracy/SetCollisionAccuracy` (`Box`, `Hull`, `Default`, `Precise`) |
 | Lifetime | `Destroy()` (the handle is invalid afterwards), `Clone()`, `Name()`, `SetName()` |
+| Unions | `IsUnion()`, `UnionPartCount()`, `Separate()`, `SetNegate/IsNegate`, `SetUseGlobalColor/UseGlobalColor`; free functions `fly::Union(parts)` and `fly::Intersect(parts)`. See [Unions in the script API](../ScriptAPI.md#unions) |
 | Scripts | `StartScript(typeName = nullptr)`, `StopScript()`: start the object's attached script or a named one |
 
 New scene objects start **anchored**, which makes physics treat them as static (`ScatteredObject.hpp`); the samples call

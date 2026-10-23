@@ -29,6 +29,19 @@ Polys Union(const Polys& a, const Polys& b);
 Polys Subtract(const Polys& a, const Polys& b);
 Polys Intersect(const Polys& a, const Polys& b);
 
+// A whole union in one pass, for convex parts only (every engine primitive is convex). The solid is
+//   (inside any Add part, or every Intersect part when there are no Add parts) and outside every Negate part
+//   and inside every Intersect part.
+// Each part's faces are cut only by the parts they overlap, so this splits far less than folding the parts in
+// one boolean at a time, and the result does not depend on the order of the parts. Where two parts have a face
+// in the same place, the earlier part's face is kept.
+enum class Mode { Add, Negate, Intersect };
+struct ConvexPart {
+    Polys polys;
+    Mode mode = Mode::Add;
+};
+Polys Evaluate(const std::vector<ConvexPart>& parts);
+
 // Flat triangle list for upload: 3 vertices per triangle.
 struct TriSoup {
     std::vector<float> pos;        // xyz per vertex

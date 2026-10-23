@@ -606,7 +606,9 @@ bool ReadObjectRecord(std::istream& file, int version, const std::string& baseDi
                 if (!ReadObjectRecord(file, version, baseDir, part, deferredModels)) return false;
                 object->UnionParts().push_back({ std::move(part), (UnionMode)mode });
             }
-            if (!object->RebuildUnionMesh()) return false;
+            // An empty result (should not happen: it was not empty when made) keeps the parts, so Separate still
+            // recovers them, rather than failing the whole scene.
+            if (!object->RebuildUnionMesh()) ui::LogAlways("[scene] union '%s' came out empty; its parts are kept (use Separate)", object->GetName().c_str());
         }
     }
 

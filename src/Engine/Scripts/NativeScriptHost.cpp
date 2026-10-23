@@ -252,6 +252,13 @@ FlyApi MakeScriptApi() {
     a.MouseOverUI = FlyNative_MouseOverUI;
     a.NavLineClear = FlyNative_NavLineClear;
     a.NavMoveAlong = FlyNative_NavMoveAlong;
+    a.UnionObjects = FlyNative_UnionObjects;
+    a.SeparateUnion = FlyNative_SeparateUnion;
+    a.UnionPartCount = FlyNative_UnionPartCount;
+    a.SetNegate = FlyNative_SetNegate;
+    a.GetNegate = FlyNative_GetNegate;
+    a.SetUseGlobalColor = FlyNative_SetUseGlobalColor;
+    a.GetUseGlobalColor = FlyNative_GetUseGlobalColor;
     return a;
 }
 

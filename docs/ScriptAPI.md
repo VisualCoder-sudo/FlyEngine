@@ -121,6 +121,36 @@ body.SetVelocity({ v.x, body.Velocity().y, v.z });
 - `ShowDebug()` draws the squares (green, orange at the edges) and the last path in the 3D view. Use it to see why a bot will not go somewhere.
 - Not yet: doors and other changes while playing (bake again), off-mesh links such as jumps and ladders, crowds avoiding each other, and a Visual Script node.
 
+## Unions
+
+Solid modelling from a script, the same as the editor's **Union** dropdown (see [guide/Unions.md](guide/Unions.md)). Only primitive parts (cube, sphere, cylinder, wedge) can be unioned.
+
+- `Object fly::Union(parts)`: merges two or more objects into one solid and removes the parts (their handles become invalid). Every face keeps its part's colour. A part marked `SetNegate(true)` is carved out of the result. Returns an invalid `Object`, with nothing changed, when it cannot be built: fewer than two parts, a stale handle, the same part twice, an imported mesh or an existing union among them, or nothing left after the cuts.
+- `Object fly::Intersect(parts)`: like `Union`, but keeps only the volume all the parts share.
+- `Object::Separate()`: removes a union and returns its original parts as a `std::vector<Object>` (names, scripts and nodes restored, placed where the union now is); the union's handle becomes invalid. Empty if the object is not a union.
+- `Object::IsUnion()`, `UnionPartCount()`.
+- `Object::SetNegate(bool)` / `IsNegate()`: marks a primitive as a cutter. A cutter is not drawn in play and never collides, so make it a cutter before you union it (or leave it as an invisible helper). `SetNegate` turns `CanCollide` off or on with it.
+- `Object::SetUseGlobalColor(bool)` / `UseGlobalColor()` (unions only): off, every face keeps its part's colour; on, the whole union is drawn in the object's own `Color()`.
+- All of these do nothing (and return false / invalid / empty) on an engine from before unions: check `Object::IsValid()` on the result.
+
+Made while playing, the union gets a physics body and is removed again when play stops, like any object a script creates. Its collider is built from the merged mesh with **Default** accuracy; set `SetCollisionAccuracy(CollisionAccuracy::Precise)` when you need a carved hole to be a real hole for rays and bodies (a hull collider fills it).
+
+```cpp
+fly::Object post = fly::Object::Create("Cube");
+fly::Object beam = fly::Object::Create("Cube");
+fly::Object hole = fly::Object::Create("Cylinder");
+post.SetColor({ 200, 60, 40 });  beam.SetColor({ 40, 90, 200 });
+hole.SetNegate(true);
+fly::Object arch = fly::Union({ post, beam, hole });   // post and beam keep their colours; the hole is cut through
+if (arch) {
+    arch.SetCollisionAccuracy(fly::CollisionAccuracy::Precise);
+    arch.SetUseGlobalColor(true);                       // or paint it all one colour
+    arch.SetColor({ 120, 120, 120 });
+}
+```
+
+Not yet: Visual Script nodes for unions (the editor and C++ scripts only).
+
 ## Prefabs
 
 Save a group in the editor: right-click it in the Explorer > **Save as Prefab**. It is written to `assets/Prefabs/<name>.flyprefab` (nested groups, scripts and flags included). Drag the file from the Assets panel into the viewport to place a copy.

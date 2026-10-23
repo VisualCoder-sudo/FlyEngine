@@ -469,6 +469,51 @@ unsigned long long FlyNative_CloneObject_Impl(unsigned long long h) {
     auto* obj = Resolve(h);
     return (rt && obj) ? MakeHandle(rt->CloneObject(obj)) : 0;
 }
+unsigned long long FlyNative_UnionObjects_Impl(const unsigned long long* parts, int count, int mode) {
+    ScriptRuntime* rt = ActiveRuntime();
+    if (!rt || !parts || count < 2 || count > 4096) return 0;
+    std::vector<ScatteredObject*> objs;
+    for (int i = 0; i < count; ++i) {
+        ScatteredObject* o = Resolve(parts[i]);
+        if (!o) return 0;   // a stale handle: build nothing rather than a union of the rest
+        objs.push_back(o);
+    }
+    return MakeHandle(rt->UnionObjects(objs, mode == 1));
+}
+int FlyNative_SeparateUnion_Impl(unsigned long long h, unsigned long long* out, int maxOut) {
+    ScriptRuntime* rt = ActiveRuntime();
+    ScatteredObject* u = Resolve(h);
+    std::vector<ScatteredObject*> made;
+    if (!rt || !u || !rt->SeparateUnion(u, made)) return 0;
+    for (int i = 0; out && i < maxOut && i < (int)made.size(); ++i) out[i] = MakeHandle(made[(size_t)i]);
+    return (int)made.size();
+}
+int FlyNative_UnionPartCount_Impl(unsigned long long h) {
+    auto* o = Resolve(h);
+    return o && o->IsUnion() ? (int)o->UnionParts().size() : 0;
+}
+short FlyNative_SetNegate_Impl(unsigned long long h, short on) {
+    auto* o = Resolve(h);
+    if (!o || o->HasModel() || o->IsUnion()) return 0;
+    o->negate = on != 0;
+    o->canCollide = !o->negate;
+    if (ScriptRuntime* rt = ActiveRuntime()) rt->RebuildBody(o);
+    return 1;
+}
+short FlyNative_GetNegate_Impl(unsigned long long h) {
+    auto* o = Resolve(h);
+    return o && o->negate ? 1 : 0;
+}
+short FlyNative_SetUseGlobalColor_Impl(unsigned long long h, short on) {
+    auto* o = Resolve(h);
+    if (!o || !o->IsUnion()) return 0;
+    o->SetUseGlobalColor(on != 0);
+    return 1;
+}
+short FlyNative_GetUseGlobalColor_Impl(unsigned long long h) {
+    auto* o = Resolve(h);
+    return o && o->IsUnion() && o->useGlobalColor ? 1 : 0;
+}
 const char* FlyNative_GetName_Impl(unsigned long long h) {
     static thread_local std::string name;
     auto* obj = Resolve(h);
@@ -778,6 +823,13 @@ FLY_API void FlyNative_SnippetSetOutput(const char* snippet, int pin, const char
 }
 
 FLY_API void FlyNative_DestroyObject(unsigned long long h) { FLY_TRY { impl::FlyNative_DestroyObject_Impl(h); } FLY_CATCH() }
+FLY_API unsigned long long FlyNative_UnionObjects(const unsigned long long* parts, int count, int mode) { FLY_TRY { return impl::FlyNative_UnionObjects_Impl(parts, count, mode); } FLY_CATCH(return 0;) }
+FLY_API int FlyNative_SeparateUnion(unsigned long long h, unsigned long long* out, int maxOut) { FLY_TRY { return impl::FlyNative_SeparateUnion_Impl(h, out, maxOut); } FLY_CATCH(return 0;) }
+FLY_API int FlyNative_UnionPartCount(unsigned long long h) { FLY_TRY { return impl::FlyNative_UnionPartCount_Impl(h); } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_SetNegate(unsigned long long h, short on) { FLY_TRY { return impl::FlyNative_SetNegate_Impl(h, on); } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_GetNegate(unsigned long long h) { FLY_TRY { return impl::FlyNative_GetNegate_Impl(h); } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_SetUseGlobalColor(unsigned long long h, short on) { FLY_TRY { return impl::FlyNative_SetUseGlobalColor_Impl(h, on); } FLY_CATCH(return 0;) }
+FLY_API short FlyNative_GetUseGlobalColor(unsigned long long h) { FLY_TRY { return impl::FlyNative_GetUseGlobalColor_Impl(h); } FLY_CATCH(return 0;) }
 FLY_API unsigned long long FlyNative_CloneObject(unsigned long long h) { FLY_TRY { return impl::FlyNative_CloneObject_Impl(h); } FLY_CATCH(return 0;) }
 FLY_API const char* FlyNative_GetName(unsigned long long h) { FLY_TRY { return impl::FlyNative_GetName_Impl(h); } FLY_CATCH(return "";) }
 FLY_API void FlyNative_SetName(unsigned long long h, const char* name) { FLY_TRY { impl::FlyNative_SetName_Impl(h, name); } FLY_CATCH() }

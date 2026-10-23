@@ -11,6 +11,7 @@ files explain how the code is organised and how to change it safely.
 | [FileFormats.md](FileFormats.md) | You are touching anything that is saved or loaded, or bumping a version. |
 | [Maintenance.md](Maintenance.md) | You are building, testing, adding a feature (recipes), updating a dependency, or hunting a regression. Also lists hazards. |
 | [PBR.md](PBR.md) | Materials, sky reflections, scene-format v33 and the bug it caused. Contains the known-failing-tests list. |
+| [guide/Unions.md](guide/Unions.md) | Unions: merge parts into one solid, Negate/Intersect, global colour, Separate, and how they are saved and built. |
 | [ScriptAPI.md](ScriptAPI.md) | Gameplay additions in `fly.hpp` (casts, joints, particles, tween, UI, ...). |
 | [FirstGame.md](FirstGame.md), [ArenaShooter.md](ArenaShooter.md) | Tutorials for game authors. |
 | [../BUGS.md](../BUGS.md) | Bug-hunt report: what was fixed and what is still open. |

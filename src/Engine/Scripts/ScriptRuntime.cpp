@@ -211,6 +211,52 @@ ScatteredObject* ScriptRuntime::CloneObject(ScatteredObject* source, bool deferS
     return raw;
 }
 
+ScatteredObject* ScriptRuntime::UnionObjects(const std::vector<ScatteredObject*>& sources, bool intersect)
+{
+    if (!objectsPtr || !engine || sources.size() < 2) return nullptr;
+    for (size_t i = 0; i < sources.size(); ++i) {
+        const ScatteredObject* s = sources[i];
+        if (!s || s->IsUnion() || s->HasModel()) return nullptr;
+        if (std::find(sources.begin(), sources.begin() + (long)i, s) != sources.begin() + (long)i) return nullptr;   // the same part twice
+    }
+    // The union is built from copies, so a result that comes out empty leaves the scene as it was.
+    std::vector<std::unique_ptr<ScatteredObject>> parts;
+    std::vector<UnionMode> modes;
+    for (ScatteredObject* s : sources) {
+        parts.push_back(s->Clone());
+        modes.push_back(intersect ? UnionMode::Intersect : (s->negate ? UnionMode::Negate : UnionMode::Add));
+    }
+    std::unique_ptr<ScatteredObject> made = ScatteredObject::MakeUnion(std::move(parts), modes);
+    if (!made) return nullptr;
+    ScatteredObject* raw = made.get();
+    objectsPtr->push_back(raw);
+    engine->AddEntity(std::move(made));
+    if (isPlaying) {
+        playCreatedObjects.push_back(raw);
+        if (sim) sim->SpawnBodyForObject(raw);
+    }
+    for (ScatteredObject* s : sources) DestroyObject(s);
+    return raw;
+}
+
+bool ScriptRuntime::SeparateUnion(ScatteredObject* unionObject, std::vector<ScatteredObject*>& out)
+{
+    if (!unionObject || !unionObject->IsUnion() || !objectsPtr || !engine) return false;
+    if (sim) sim->RemoveObject(unionObject);   // its body goes before its mesh does
+    for (std::unique_ptr<ScatteredObject>& part : unionObject->TakeUnionParts()) {
+        ScatteredObject* raw = part.get();
+        objectsPtr->push_back(raw);
+        engine->AddEntity(std::move(part));
+        if (isPlaying) {
+            playCreatedObjects.push_back(raw);
+            if (sim) sim->SpawnBodyForObject(raw);
+        }
+        out.push_back(raw);
+    }
+    DestroyObject(unionObject);
+    return true;
+}
+
 bool ScriptRuntime::AddForce(ScatteredObject* obj, const std::string& vec, bool impulse, std::string& outError)
 {
     Vector3 v;

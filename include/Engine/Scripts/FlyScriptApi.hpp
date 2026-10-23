@@ -163,6 +163,13 @@ FLY_API short FlyNative_NavRandomPoint(const float* center3, float radius, float
 FLY_API void  FlyNative_NavDebug(short on);
 FLY_API short FlyNative_NavLineClear(const float* from3, const float* to3);
 FLY_API short FlyNative_NavMoveAlong(const float* from3, const float* delta3, float* out3);
+FLY_API unsigned long long FlyNative_UnionObjects(const unsigned long long* parts, int count, int mode);
+FLY_API int   FlyNative_SeparateUnion(unsigned long long h, unsigned long long* out, int maxOut);
+FLY_API int   FlyNative_UnionPartCount(unsigned long long h);
+FLY_API short FlyNative_SetNegate(unsigned long long h, short on);
+FLY_API short FlyNative_GetNegate(unsigned long long h);
+FLY_API short FlyNative_SetUseGlobalColor(unsigned long long h, short on);
+FLY_API short FlyNative_GetUseGlobalColor(unsigned long long h);
 FLY_API int   FlyNative_UIGetState(const char* id);
 FLY_API void  FlyNative_GetMousePosition(float* out2);
 FLY_API void  FlyNative_SetMouseFree(short free);

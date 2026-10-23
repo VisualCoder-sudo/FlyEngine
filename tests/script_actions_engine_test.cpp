@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 static int g_fail = 0;
@@ -96,6 +97,80 @@ int main() {
     CHECK(FlyNative_GetName(b)[0] == '\0');
     FlyNative_DestroyObject(b);   // twice: harmless
     FlyNative_DestroyObject(0);
+
+    // Unions: merge parts during play, with physics, colours and separate; stale and unsupported inputs are refused.
+    {
+        const unsigned long long p1 = FlyNative_CreateObject("Cube");
+        const unsigned long long p2 = FlyNative_CreateObject("Cube");
+        const unsigned long long cut = FlyNative_CreateObject("Sphere");
+        CHECK(p1 && p2 && cut);
+        FlyNative_SetName(p1, "PartA");
+        FlyNative_SetName(p2, "PartB");
+        FlyNative_SetPosition(p1, 30, 3, 0);
+        FlyNative_SetPosition(p2, 31, 3, 0);
+        FlyNative_SetPosition(cut, 30.5f, 3, 0);
+        FlyNative_SetSize(cut, 0.8f, 8.0f, 0.8f);
+        CHECK(FlyNative_SetNegate(cut, 1) == 1 && FlyNative_GetNegate(cut) == 1);
+        CHECK(FlyNative_GetNegate(p1) == 0);
+        CHECK(FlyNative_UnionPartCount(p1) == 0 && FlyNative_SetUseGlobalColor(p1, 1) == 0);   // not a union
+
+        const size_t beforeUnion = objs.size();
+        const unsigned long long bad[2] = { p1, 0 };
+        CHECK(FlyNative_UnionObjects(bad, 2, 0) == 0 && objs.size() == beforeUnion);   // a bad handle: nothing happens
+        const unsigned long long one[1] = { p1 };
+        CHECK(FlyNative_UnionObjects(one, 1, 0) == 0);                                  // a union needs two parts
+        const unsigned long long twice[2] = { p1, p1 };
+        CHECK(FlyNative_UnionObjects(twice, 2, 0) == 0 && objs.size() == beforeUnion);
+        CHECK(FlyNative_UnionObjects(nullptr, 3, 0) == 0);
+
+        const unsigned long long parts[3] = { p1, p2, cut };
+        const unsigned long long u = FlyNative_UnionObjects(parts, 3, 0);
+        CHECK(u != 0);
+        CHECK(objs.size() == beforeUnion - 3 + 1);                                     // three parts gone, one union in
+        CHECK(FlyNative_FindObject("PartA") == 0 && FlyNative_GetName(p1)[0] == '\0');   // the sources' handles are stale
+        CHECK(FlyNative_UnionPartCount(u) == 3);
+        CHECK(FlyNative_UnionObjects(parts, 3, 0) == 0);                                // stale handles are refused
+        CHECK(FlyNative_SetUseGlobalColor(u, 1) == 1 && FlyNative_GetUseGlobalColor(u) == 1);
+        CHECK(FlyNative_SetUseGlobalColor(u, 0) == 1 && FlyNative_GetUseGlobalColor(u) == 0);
+        const unsigned long long unionAndPart[2] = { u, FlyNative_CreateObject("Cube") };
+        CHECK(FlyNative_UnionObjects(unionAndPart, 2, 0) == 0);                          // a union cannot be a part
+        FlyNative_DestroyObject(unionAndPart[1]);
+
+        // It is a solid body now: a ray down through the carved hole misses it, one beside the hole hits it.
+        for (int i = 0; i < 3; i++) sim.Update(1.0f / 60.0f);
+        FlyNative_SetPosition(u, 30.5f, 3, 0);
+        FlyNative_SetAnchored(u, 1);
+        FlyNative_SetCollisionAccuracy(u, 3);   // Precise: a hull collider would fill the hole
+        for (int i = 0; i < 3; i++) sim.Update(1.0f / 60.0f);
+        const std::string onSolid = FlyNative_Raycast(30.5f - 0.9f, 20, 0, 0, -1, 0, 100.0f);   // copied: the next call reuses the buffer
+        const std::string inHole = FlyNative_Raycast(30.5f, 20, 0, 0, -1, 0, 100.0f);
+        std::printf("union ray: beside the hole '%s', through it '%s'\n", onSolid.c_str(), inHole.c_str());
+        CHECK(onSolid == "Union");
+        CHECK(inHole != "Union");
+
+        // Separate: the parts come back (with their names), the union is gone.
+        unsigned long long back[8] = {};
+        const int n = FlyNative_SeparateUnion(u, back, 8);
+        CHECK(n == 3 && back[0] && back[1] && back[2]);
+        CHECK(FlyNative_UnionPartCount(u) == 0 && FlyNative_GetName(u)[0] == '\0');   // the union's handle is stale
+        CHECK(FlyNative_FindObject("PartA") == back[0] && FlyNative_FindObject("PartB") == back[1]);
+        CHECK(FlyNative_GetNegate(back[2]) == 1);                                       // the cutter comes back as a cutter
+        CHECK(FlyNative_SeparateUnion(u, back, 8) == 0);                                 // twice: harmless
+
+        // Intersect keeps only what two cubes share.
+        const unsigned long long i1 = back[0], i2 = back[1];
+        FlyNative_SetPosition(i1, 40, 3, 0);
+        FlyNative_SetPosition(i2, 41, 3, 0);
+        const unsigned long long both[2] = { i1, i2 };
+        const unsigned long long inter = FlyNative_UnionObjects(both, 2, 1);
+        CHECK(inter != 0);
+        float sx = 0, sy = 0, sz = 0;
+        FlyNative_GetSize(inter, &sx, &sy, &sz);
+        std::printf("intersect size %.2f %.2f %.2f\n", sx, sy, sz);
+        CHECK(sx > 0.45f && sx < 0.55f && sy > 1.4f && sy < 1.6f);   // two 1.5 m cubes one apart share a 0.5 x 1.5 x 1.5 slab
+        FlyNative_DestroyObject(inter);
+        FlyNative_DestroyObject(back[2]);
+    }
 
     // Keys, text, sound, volume and time must at least be safe with nothing pressed / no audio backend.
     CHECK(FlyNative_KeyDown("W") == 0 && FlyNative_KeyPressed("Space") == 0 && FlyNative_KeyDown("NoSuchKey") == 0);

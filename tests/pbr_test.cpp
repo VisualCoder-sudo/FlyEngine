@@ -120,9 +120,9 @@ int main() {
             std::stringstream v33;
             CHECK(SaveSceneToStream(v33, plain, m4, "", nullptr));
             std::string text = v33.str();
-            const std::string material = " 0 0.600000024 255 255 255 0 1\n";
+            const std::string material = " 0 0.600000024 255 255 255 0 1 0 0\n";   // + the v34 negate/union fields
             const size_t at = text.find(material);
-            CHECK(text.rfind("SIMPLE_ENGINE_BUILD 33", 0) == 0 && at != std::string::npos);
+            CHECK(text.rfind("SIMPLE_ENGINE_BUILD 34", 0) == 0 && at != std::string::npos);
             if (at != std::string::npos) {
                 text.replace(at, material.size(), "\n");
                 text.replace(0, 22, "SIMPLE_ENGINE_BUILD 32");

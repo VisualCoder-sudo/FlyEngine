@@ -105,6 +105,12 @@ public:
     // Visual-script object actions. Vectors use console syntax "(x, y, z)"; failures fill outError.
     void DestroyObject(ScatteredObject* obj);                 // scene list, physics body and engine entity
     ScatteredObject* CloneObject(ScatteredObject* source, bool deferSpawn = false);   // copy added to the scene; null if impossible
+    // Unions (see ScatteredObject::MakeUnion). UnionObjects merges 2+ primitive parts into one new object and removes the
+    // parts (parts marked negate are carved out; `intersect` keeps the shared volume instead); null, and nothing changed,
+    // when it cannot be built. SeparateUnion removes a union and adds its original parts back (their handles in `out`).
+    // While playing both give the new objects physics bodies and take them out again when play stops.
+    ScatteredObject* UnionObjects(const std::vector<ScatteredObject*>& parts, bool intersect);
+    bool SeparateUnion(ScatteredObject* unionObject, std::vector<ScatteredObject*>& out);
     void RebuildBody(ScatteredObject* obj);                   // remakes the body after a size / anchored / collide change
     void FinishCreate(ScatteredObject* obj);                  // gives an object made with deferSpawn its physics body
     // Adds a prefab (.flyprefab, project-relative or absolute) to the scene with its pivot at `at`. While playing the

@@ -72,6 +72,41 @@ int main() {
     fly::PlaySound("a"); fly::SetVolume(1); fly::ShowText("t");
     CHECK(g_log.empty());
 
+    // Unions: the wrappers pass handles and modes through; an older engine ignores them.
+    FlyApi un{};
+    un.abi_version = FLY_SCRIPT_ABI_VERSION;
+    un.size = sizeof(FlyApi);
+    un.UnionObjects = [](const FlyHandle* p, int n, int mode) -> FlyHandle { Log("union:" + std::to_string(n) + ":" + std::to_string(mode) + ":" + std::to_string(p[0]) + "," + std::to_string(p[n - 1])); return 900; };
+    un.SeparateUnion = [](FlyHandle h, FlyHandle* out, int maxOut) -> int { Log("separate" + std::to_string(h)); for (int i = 0; i < 3 && i < maxOut; ++i) out[i] = 50 + (FlyHandle)i; return 3; };
+    un.UnionPartCount = [](FlyHandle h) -> int { return h == 900 ? 3 : 0; };
+    un.SetNegate = [](FlyHandle, short on) -> short { Log("negate" + std::to_string(on)); return 1; };
+    un.GetNegate = [](FlyHandle h) -> short { return h == 5; };
+    un.SetUseGlobalColor = [](FlyHandle, short on) -> short { Log("global" + std::to_string(on)); return 1; };
+    un.GetUseGlobalColor = [](FlyHandle h) -> short { return h == 900; };
+    fly::detail::Api() = &un;
+    g_log.clear();
+    fly::Object cubeA(1), cubeB(2), cubeC(3);
+    fly::Object made = fly::Union({ cubeA, cubeB, cubeC });
+    CHECK(made.Handle() == 900 && made.IsUnion() && made.UnionPartCount() == 3 && !cubeA.IsUnion());
+    CHECK(fly::Intersect({ cubeA, cubeB }).Handle() == 900);
+    CHECK(!fly::Union({ cubeA }).IsValid() && !fly::Union({}).IsValid());   // fewer than two parts: not even asked
+    CHECK(made.SetUseGlobalColor(true) && made.UseGlobalColor() && !cubeA.UseGlobalColor());
+    fly::Object cutter(5);
+    CHECK(cutter.SetNegate(true) && cutter.IsNegate() && !cubeA.IsNegate());
+    const std::vector<fly::Object> back = made.Separate();
+    CHECK(back.size() == 3 && back[0].Handle() == 50 && back[2].Handle() == 52 && !made.IsValid());
+    CHECK(fly::Object(7).Separate().empty());   // not a union: nothing to separate
+    CHECK(g_log == "union:3:0:1,3;union:2:1:1,2;global1;negate1;separate900;");
+    {   // An engine from before unions: nothing is asked, nothing breaks.
+        FlyApi before = un;
+        before.size = offsetof(FlyApi, UnionObjects);
+        fly::detail::Api() = &before;
+        g_log.clear();
+        CHECK(!fly::Union({ cubeA, cubeB }).IsValid() && !fly::Intersect({ cubeA, cubeB }).IsValid());
+        CHECK(!made.IsUnion() && cutter.IsNegate() == false && !cutter.SetNegate(true) && !cutter.SetUseGlobalColor(true));
+        CHECK(fly::Object(900).Separate().empty() && g_log.empty());
+    }
+
     // In-game UI and prefabs: calls reach the engine table with the right arguments; an older engine ignores them.
     FlyApi ui{};
     ui.abi_version = FLY_SCRIPT_ABI_VERSION;

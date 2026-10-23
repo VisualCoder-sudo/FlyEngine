@@ -68,6 +68,12 @@ SurfaceLight, Decal, Texture. Fields a kind does not use are ignored. To add a k
 `MakeNode`, the name in `ObjectNodeTypeName`, the draw path in `Graphics.cpp`, the editor UI in `ui_nodes.cpp`, and the
 save/load code with a scene-version gate (see [Maintenance.md](Maintenance.md#add-a-saved-field)).
 
+Unions: `ScatteredObject::MakeUnion` merges convex primitive parts into one object whose mesh is built by `csg::Evaluate`
+(`Backend/Csg.cpp`) and owned by the object (not in the shared model cache). The parts stay in `UnionParts()` so the
+union can be separated and saved; the mesh is rebuilt on load, on clone and on every undo/play restore. A part marked
+`negate` is a cutter. The editor operations run in `ObjectInteractionManager::ApplyUnionRequest`. Full details:
+[guide/Unions.md](guide/Unions.md).
+
 Models: `ModelImport.cpp` loads glTF/GLB, OBJ, PLY and (through `FbxModel.cpp` and `extern/ufbx`) FBX.
 `ModelAnimator.cpp` plays skeletal clips. `ModelGroup` is the editor grouping; members stay in the flat object list.
 

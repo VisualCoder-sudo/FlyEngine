@@ -31,13 +31,16 @@ sections are applied to **every** selected object, not only the primary one. Edi
 
 | Property | Meaning |
 | --- | --- |
-| Colour | The object's colour. Disabled while the game is playing. |
+| Colour | The object's colour. Disabled while the game is playing. On a [union](Unions.md) it is labelled **Global colour** and only applies while **Use global colour** is ticked. |
+| Use global colour | Unions only. Off: every face keeps its source part's colour. On: the whole union is drawn in the global colour. See [Unions](Unions.md#colour). |
+| Negate (cutter) | Primitives only. Makes the part a cutter: a translucent red ghost in the editor, never collides, not drawn in play, and carved out of a union it becomes part of. Turns **Can collide** off. See [Unions](Unions.md#negate-cutters). |
 | Anchored | When on, physics treats the object as static: gravity, forces and impulses are ignored. **New objects start anchored.** Turn it off to let an object fall. |
 | Can collide | When off, the object ignores all collisions, including the ground. |
 | Collision | Collision accuracy: **Box**, **Hull**, **Default**, **Precise**. Greyed out for plain cubes, which are always Box. |
 | Transparency | 0 is opaque, 1 is invisible. |
 | Mass | Automatic by default (derived from the object's size and shape). Typing a value switches to a manual mass; tick **Auto** to go back. Changing the size resets a manual mass to automatic. |
 | Mesh | The model file name, for imported models. |
+| Union | Unions only: how many parts it holds (the Mesh row is replaced by this). |
 | Animation | For imported models with skeletal clips: shows `current/total  name`. Click to go to the next clip, right-click for the previous, and the button beside it pauses or plays. |
 | Texture | A texture file for the object, and a **Preset** drop-down of textures that ship with the editor. Presets are copied into the project's `PresetTextures` folder so the scene saves a portable path. The **X** button clears it. |
 
@@ -142,6 +145,8 @@ flags apply to everything below it), and members stay in the flat scene list so 
 Plugins can mark a group as theirs; see [CPluginAPI](CPluginAPI.md#editor-only-features-api-11-and-12). The Explorer's
 eye and lock icons hide an object (not drawn) or lock it (cannot be picked in the viewport).
 
+Several primitives can also be merged into one solid with the **Union** dropdown; see [Unions](Unions.md).
+
 ## Object properties from code
 
 | Property | C++ (`fly::Object`) | Visual Script (Change) |
@@ -162,6 +167,7 @@ roughness and glow are not exposed to scripts in `fly::Object`.
 | File | Role |
 | --- | --- |
 | `include/Engine/Backend/ScatteredObject.hpp` | The object: transform, physics flags, `surface`, `waterInteraction`, scripts, `nodes`. `Clone()` must copy every new field or duplicate and paste drop it. |
+| `include/Engine/Backend/Csg.hpp` | The solid-modelling geometry behind [Unions](Unions.md). |
 | `include/Engine/Backend/ObjectNode.hpp` | One plain struct for every node kind; fields a kind does not use are ignored. |
 | `include/Graphics/SurfaceMaterial.hpp` | `metallic`, `roughness`, `emissive`, `emissiveStrength`. |
 | `src/Engine/Frontend/ui_properties.cpp` | The Properties panel. |
