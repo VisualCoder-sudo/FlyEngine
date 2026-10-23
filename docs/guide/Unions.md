@@ -47,8 +47,8 @@ carved out of the result:
 - the cutter's faces become the walls of the hole, in the **cutter's** colour,
 - a cutter that sticks out past the solid does not enlarge the union.
 
-Negate also has a checkbox in Properties > General (*Negate (cutter)*). Turning it on turns **Can collide** off, turning
-it off turns it back on.
+Negate is in the Union dropdown (**Negate** / **Un-negate**). Turning it on turns **Can collide** off, turning it off
+turns it back on.
 
 ## Intersect
 

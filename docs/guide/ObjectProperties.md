@@ -33,7 +33,6 @@ sections are applied to **every** selected object, not only the primary one. Edi
 | --- | --- |
 | Colour | The object's colour. Disabled while the game is playing. On a [union](Unions.md) it is labelled **Global colour** and only applies while **Use global colour** is ticked. |
 | Use global colour | Unions only. Off: every face keeps its source part's colour. On: the whole union is drawn in the global colour. See [Unions](Unions.md#colour). |
-| Negate (cutter) | Primitives only. Makes the part a cutter: a translucent red ghost in the editor, never collides, not drawn in play, and carved out of a union it becomes part of. Turns **Can collide** off. See [Unions](Unions.md#negate-cutters). |
 | Anchored | When on, physics treats the object as static: gravity, forces and impulses are ignored. **New objects start anchored.** Turn it off to let an object fall. |
 | Can collide | When off, the object ignores all collisions, including the ground. |
 | Collision | Collision accuracy: **Box**, **Hull**, **Default**, **Precise**. Greyed out for plain cubes, which are always Box. |

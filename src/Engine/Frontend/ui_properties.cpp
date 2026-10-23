@@ -385,17 +385,6 @@ void DrawObjectGeneral(ScatteredObject* obj) {
     }
     if (!obj) return;
 
-    if (!obj->HasModel()) {
-        // A cutter is carved out of a union and takes no part in the game.
-        bool cutter = obj->negate;
-        if (Check("Negate (cutter)", cutter)) {
-            auto setCutter = [&](ScatteredObject& o) { if (o.HasModel()) return; o.negate = cutter; o.canCollide = !cutter; };
-            setCutter(*obj);
-            ForOthers(setCutter);
-            Log("'%s' negate = %s", obj->GetName().c_str(), cutter ? "true" : "false");
-        }
-    }
-
     bool anchored = obj->anchored;
     if (Check("Anchored", anchored)) {
         obj->anchored = anchored;
