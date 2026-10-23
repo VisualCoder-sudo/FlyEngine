@@ -289,7 +289,10 @@ void CharacterController::UpdateKinematic(float dt) {
     // Jump buffering: queue jump input for a short time before landing
     const float JUMP_BUFFER_TIME = 0.1f;
     if (wantJump) {
+        // Consume the request: left set, it re-armed the buffer every frame, so a jump pressed in mid-air fired on
+        // whatever landing came next, however much later.
         jumpBufferTimer = JUMP_BUFFER_TIME;
+        wantJump = false;
     } else {
         jumpBufferTimer = std::max(0.0f, jumpBufferTimer - dt);
     }

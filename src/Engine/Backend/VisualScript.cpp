@@ -1218,6 +1218,7 @@ std::string Eval(ScriptRuntime& rt, int gi, const Node& n, int depth) {
             static std::mt19937 rng{ std::random_device{}() };
             double lo = num(0), hi = num(1);
             if (lo > hi) std::swap(lo, hi);
+            if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(hi - lo)) return NumStr(0.0);   // the distribution needs a finite range
             return NumStr(lo == hi ? lo : std::uniform_real_distribution<double>(lo, hi)(rng));
         }
         case NodeType::Lerp: { const double a = num(0); return NumStr(a + (num(1) - a) * num(2)); }
@@ -1345,8 +1346,10 @@ void RunSetup(ScriptRuntime& rt, int gi, int nodeId, ScatteredObject* obj) {
     g_setupObjects.pop_back();
     g_newObject = outer;
     // A Destroy aimed at an object still being set up waits until its chain has finished, so nothing uses it freed.
-    const auto doomed = std::find(g_deferredDestroy.begin(), g_deferredDestroy.end(), obj);
-    if (doomed != g_deferredDestroy.end()) { g_deferredDestroy.erase(doomed); rt.DestroyObject(obj); return; }
+    // Every queued entry for it goes (two Destroys can name one object): a stale pointer left behind would doom whatever
+    // new object is later allocated at the same address.
+    const auto doomed = std::remove(g_deferredDestroy.begin(), g_deferredDestroy.end(), obj);
+    if (doomed != g_deferredDestroy.end()) { g_deferredDestroy.erase(doomed, g_deferredDestroy.end()); rt.DestroyObject(obj); return; }
     rt.FinishCreate(obj);
 }
 

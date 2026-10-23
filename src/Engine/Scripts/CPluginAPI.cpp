@@ -41,14 +41,26 @@ static std::map<FlyEntity, ScatteredObject*> g_entityMap;
 static FlyEntity g_nextEntityHandle = 1;
 
 inline FlyEntity MakeHandle(ScatteredObject* obj) {
+    // One handle per object: every find/get_at call used to mint a new one, so the map grew by an entry per call.
+    for (const auto& [existing, mapped] : g_entityMap)
+        if (mapped == obj) return existing;
     FlyEntity h = g_nextEntityHandle++;
     g_entityMap[h] = obj;
     return h;
 }
 
+// The object behind a handle, or null once it has been deleted: the map holds raw pointers, and the editor (or another
+// plugin) can remove an object while a plugin still keeps its handle.
 inline ScatteredObject* GetObject(FlyEntity handle) {
     auto it = g_entityMap.find(handle);
-    return (it != g_entityMap.end()) ? it->second : nullptr;
+    if (it == g_entityMap.end()) return nullptr;
+    if (g_engine) {
+        bool live = false;
+        for (auto& e : g_engine->GetEntities())
+            if (e.get() == static_cast<Entity*>(it->second)) { live = true; break; }
+        if (!live) { g_entityMap.erase(it); return nullptr; }
+    }
+    return it->second;
 }
 
 inline void RemoveHandle(FlyEntity handle) {
@@ -57,8 +69,9 @@ inline void RemoveHandle(FlyEntity handle) {
 
 // Helpers
 inline Color ToColor(CP_Color c) {
-    return Color{(unsigned char)(c.r * 255), (unsigned char)(c.g * 255), 
-                 (unsigned char)(c.b * 255), (unsigned char)(c.a * 255)};
+    // Plugins hand in floats of any value (HDR, negative, NaN); an out-of-range float to unsigned char cast is UB.
+    auto channel = [](float v) { return (unsigned char)(!(v > 0.0f) ? 0.0f : (v < 1.0f ? v : 1.0f) * 255.0f); };
+    return Color{channel(c.r), channel(c.g), channel(c.b), channel(c.a)};
 }
 inline CP_Color FromColor(Color c) {
     return CP_Color{c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f};
@@ -754,10 +767,11 @@ static int api_plugin_call(const char* plugin_name, const char* func_name, void*
 // File System
 static CP_FileHandle api_fs_open(const char* path, CP_FileMode mode) {
     if (!path) return 0;
+    // Build the mode in a buffer we own: the old code strcat'ed "b" onto a string literal (a write into read-only
+    // memory, and one byte past the end) whenever CP_FILE_BINARY was set. Files were always opened binary, so still are.
     const char* c_mode = "rb";
     if (mode & CP_FILE_WRITE) c_mode = "wb";
     else if (mode & CP_FILE_APPEND) c_mode = "ab";
-    if (mode & CP_FILE_BINARY) strcat(const_cast<char*>(c_mode), "b");  // Simplified
     FILE* f = fopen(path, c_mode);
     return (CP_FileHandle)(uintptr_t)f;
 }

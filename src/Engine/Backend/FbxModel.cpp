@@ -84,6 +84,12 @@ struct MeshChunk {
     void clear() { pos.clear(); nor.clear(); uv.clear(); tan.clear(); idx.clear(); lookup.clear(); }
 };
 
+// 0..1 -> 0..255, clamped: FBX colours can be HDR, negative or NaN, and an out-of-range float to unsigned char cast is UB.
+unsigned char ToByte(float f) {
+    if (!(f > 0.0f)) return 0;
+    return f >= 1.0f ? 255 : (unsigned char)(f * 255.0f);
+}
+
 template <typename T>
 T* CopyToCalloc(const std::vector<T>& src) {
     T* p = (T*)calloc(src.size() ? src.size() : 1, sizeof(T));
@@ -177,9 +183,9 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
         Color c = WHITE;
         const ufbx_material_map& dc = mat->fbx.diffuse_color;
         if (dc.has_value && dc.value_components >= 3) {
-            c.r = (unsigned char)(dc.value_vec3.x * 255.0f);
-            c.g = (unsigned char)(dc.value_vec3.y * 255.0f);
-            c.b = (unsigned char)(dc.value_vec3.z * 255.0f);
+            c.r = ToByte((float)dc.value_vec3.x);
+            c.g = ToByte((float)dc.value_vec3.y);
+            c.b = ToByte((float)dc.value_vec3.z);
         }
         const ufbx_texture* tex = mat->pbr.base_color.texture;
         if (!tex) tex = mat->fbx.diffuse_color.texture;
@@ -214,7 +220,7 @@ bool LoadFBXCpu(const std::string& path, FbxCpuData& result) {
             const float strength = mat->pbr.emission_factor.has_value ? (float)mat->pbr.emission_factor.value_real : 1.0f;
             const float peak = std::max({ (float)e.x, (float)e.y, (float)e.z, 0.0f });
             if (peak > 0.0f && strength > 0.0f) {
-                pbr.emissive = { (unsigned char)(e.x / peak * 255.0f), (unsigned char)(e.y / peak * 255.0f), (unsigned char)(e.z / peak * 255.0f), 255 };
+                pbr.emissive = { ToByte((float)e.x / peak), ToByte((float)e.y / peak), ToByte((float)e.z / peak), 255 };
                 pbr.emissiveStrength = peak * strength;
             }
         }
