@@ -15,6 +15,7 @@
 
 #include "../Backend/Entity.hpp"
 
+#include <set>
 #include <string>
 #include <vector>
 #include <memory>
@@ -22,6 +23,9 @@
 #include <future>
 
 #include "../Plugin/CPluginAPI.h"
+extern "C" {
+#include "../Plugin/PluginManifest.h"
+}
 #include "FlyScriptABI.h"
 #include "ScriptCompiler.hpp"
 
@@ -49,6 +53,14 @@ struct PluginModule {
     bool loaded = false;
     bool loadFailed = false;
     std::string errorMessage;
+
+    // Plugin Manager. A disabled plugin keeps its record (so the panel can list it and turn it back on) but has no
+    // library loaded. The metadata comes from the plugin folder's id.json when there is one.
+    bool enabled = true;
+    std::string dir;           // <project>/plugins/<type>/<name>
+    std::string type;          // "nat" or "lib"
+    std::string displayName, version, publisher, description, category, declaredApi;
+    bool hasIdentity = false;
 };
 
 // Host manages all loaded plugins and the project's game scripts.
@@ -82,6 +94,18 @@ public:
     void UnloadPlugin(const std::string& pluginName);
     bool ReloadPlugin(const std::string& pluginName);
     void CheckHotReload();
+
+    // Plugin Manager: turn a plugin off/on without deleting it (remembered in <project>/plugins/disabled.txt), and
+    // pick up plugin folders added since startup. Both are no-ops for an exported game's built-in plugins.
+    bool SetPluginEnabled(const std::string& pluginName, bool enabled);
+    // Copies a plugin into <project>/plugins/<type>/<name>/ and loads it. `source` is a plugin folder (the one holding
+    // id.json and build/) or a bare library file. Never overwrites an installed plugin.
+    struct ImportResult { bool ok = false; std::string message; };
+    ImportResult ImportPlugin(const std::string& source);
+    // Unloads a plugin and deletes its folder from <project>/plugins/. Refuses anything outside that folder.
+    ImportResult RemovePlugin(const std::string& pluginName);
+    int  RescanPlugins();   // returns how many new plugins were found
+    const std::string& GetProjectPath() const { return m_projectPath; }
 
     const std::vector<std::unique_ptr<PluginModule>>& GetPlugins() const { return plugins; }
 
@@ -177,6 +201,13 @@ private:
     float m_watchTimer = 0.0f;
     std::future<scriptCompiler::Result> m_build;
     bool m_rebuildQueued = false;
+
+    std::set<std::string> m_disabledPlugins;
+    void LoadDisabledList();
+    void SaveDisabledList() const;
+    int  ScanPluginDirs();
+    void ReadPluginIdentity(PluginModule& plugin) const;
+    void UnloadModule(PluginModule& plugin);
 
     void DispatchSceneEvent(pluginhost::SceneEvent e);
     void TickScripts(float dt);

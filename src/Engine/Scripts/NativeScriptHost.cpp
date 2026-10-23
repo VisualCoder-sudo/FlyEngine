@@ -25,6 +25,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include <set>
 #include <thread>
 #include "Engine/U8Path.hpp"
 
@@ -375,28 +376,8 @@ bool NativeScriptHost::Initialize(const std::string& projectPath) {
         }
     }
     
-    for (const auto& typeDir : {"nat", "lib"}) {
-        fs::path typePath = pluginsDir / typeDir;
-        if (!fs::exists(typePath, ec)) continue;
-        
-        for (const auto& entry : fs::directory_iterator(typePath, ec)) {
-            if (!ec && entry.is_directory()) {
-                fs::path buildDir = entry.path() / "build";
-                if (fs::exists(buildDir, ec)) {
-                    for (const auto& file : fs::directory_iterator(buildDir, ec)) {
-                        if (file.is_regular_file()) {
-                            std::string ext = file.path().extension().string();
-                            #if defined(_WIN32)
-                                if (ext == ".dll") LoadPlugin(file.path().string());
-                            #else
-                                if (ext == ".so") LoadPlugin(file.path().string());
-                            #endif
-                        }
-                    }
-                }
-            }
-        }
-    }
+    LoadDisabledList();
+    ScanPluginDirs();
     
     ui::LogAlways("[NativeScriptHost] Initialized with %zu plugins", plugins.size());
     return true;
@@ -454,61 +435,106 @@ void NativeScriptHost::Shutdown() {
     m_engine = nullptr;
 }
 
+// plugins/disabled.txt: one library name per line.
+void NativeScriptHost::LoadDisabledList() {
+    m_disabledPlugins.clear();
+    std::ifstream in(fs::path(U8Path(m_projectPath)) / "plugins" / "disabled.txt");
+    for (std::string line; std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty()) m_disabledPlugins.insert(line);
+    }
+}
+
+void NativeScriptHost::SaveDisabledList() const {
+    if (m_projectPath.empty()) return;
+    const fs::path file = fs::path(U8Path(m_projectPath)) / "plugins" / "disabled.txt";
+    std::error_code ec;
+    if (m_disabledPlugins.empty()) { fs::remove(file, ec); return; }
+    std::ofstream out(file, std::ios::trunc);
+    for (const auto& n : m_disabledPlugins) out << n << '\n';
+}
+
+// Fills the manager's display fields from the plugin folder (<dir>/id.json). A plugin without one still loads.
+void NativeScriptHost::ReadPluginIdentity(PluginModule& plugin) const {
+    const fs::path build = fs::path(U8Path(plugin.path)).parent_path();   // <dir>/build
+    plugin.dir = build.parent_path().generic_string();
+    plugin.type = build.parent_path().parent_path().filename().string();
+    plugin.displayName = plugin.name;
+
+    char* err = nullptr;
+    PluginIdentity* id = PluginIdentity_ParseFromFile((build.parent_path() / "id.json").string().c_str(), &err);
+    if (err) free(err);
+    if (!id) return;
+    auto take = [](const char* v) { return std::string(v ? v : ""); };
+    if (id->name && *id->name) plugin.displayName = id->name;
+    plugin.version = take(id->version);
+    plugin.publisher = take(id->publisher);
+    plugin.description = take(id->description);
+    plugin.category = take(id->category);
+    plugin.declaredApi = take(id->cplugin_api_version);
+    plugin.hasIdentity = true;
+    PluginIdentity_Free(id);
+}
+
+// Drops the library and everything the plugin registered; the record stays.
+void NativeScriptHost::UnloadModule(PluginModule& plugin) {
+    if (plugin.entry) pluginhost::RemoveModesOf(plugin.entry);   // before its code can go away
+    if (plugin.loaded && plugin.entry && plugin.entry->on_unload) plugin.entry->on_unload();
+    if (plugin.handle) {
+        UnloadLibrary(plugin.handle);
+        plugin.handle = nullptr;
+    }
+    plugin.entry = nullptr;   // pointed into the library
+    plugin.loaded = false;
+}
+
 bool NativeScriptHost::LoadPlugin(const std::string& pluginPath) {
     fs::path path(pluginPath);
     std::string name = path.stem().string();
     
     for (auto& p : plugins) {
         if (p->name == name) {
-            return ReloadPlugin(name);
+            return p->enabled && ReloadPlugin(name);
         }
     }
-    
-    ui::LogAlways("[NativeScriptHost] Loading plugin: %s", pluginPath.c_str());
     
     auto plugin = std::make_unique<PluginModule>();
     plugin->name = name;
     plugin->path = pluginPath;
     plugin->lastWriteTime = this->GetFileWriteTime(pluginPath);
+    ReadPluginIdentity(*plugin);
+
+    // Every failure keeps the record, so the Plugin Manager can show why it did not load.
+    auto fail = [&](const std::string& why) {
+        ui::LogAlways("[NativeScriptHost] ERROR: %s: %s", pluginPath.c_str(), why.c_str());
+        plugin->loadFailed = true;
+        plugin->errorMessage = why;
+        UnloadModule(*plugin);
+        plugins.push_back(std::move(plugin));
+        return false;
+    };
+
+    if (m_disabledPlugins.count(name)) {
+        plugin->enabled = false;
+        ui::LogAlways("[NativeScriptHost] Plugin %s is disabled", name.c_str());
+        plugins.push_back(std::move(plugin));
+        return true;
+    }
+
+    ui::LogAlways("[NativeScriptHost] Loading plugin: %s", pluginPath.c_str());
     
     plugin->handle = LoadLibrary(pluginPath);
-    if (!plugin->handle) {
-        plugin->loadFailed = true;
-        plugin->errorMessage = "Failed to load library";
-        ui::LogAlways("[NativeScriptHost] ERROR: Failed to load %s", pluginPath.c_str());
-        return false;
-    }
+    if (!plugin->handle) return fail("Failed to load library");
     
     auto get_entry = reinterpret_cast<CP_PluginEntry* (*)(void)>(GetSymbol(plugin->handle, "CP_GetPluginEntry"));
-    if (!get_entry) {
-        plugin->loadFailed = true;
-        plugin->errorMessage = "Plugin missing CP_GetPluginEntry symbol (requires new CPluginAPI)";
-        ui::LogAlways("[NativeScriptHost] ERROR: %s missing CP_GetPluginEntry", pluginPath.c_str());
-        UnloadLibrary(plugin->handle);
-        plugin->handle = nullptr;
-        return false;
-    }
+    if (!get_entry) return fail("Plugin missing CP_GetPluginEntry symbol (requires new CPluginAPI)");
     
     plugin->entry = get_entry();
-    if (!plugin->entry) {
-        plugin->loadFailed = true;
-        plugin->errorMessage = "CP_GetPluginEntry returned NULL";
-        ui::LogAlways("[NativeScriptHost] ERROR: %s CP_GetPluginEntry returned NULL", pluginPath.c_str());
-        UnloadLibrary(plugin->handle);
-        plugin->handle = nullptr;
-        return false;
-    }
+    if (!plugin->entry) return fail("CP_GetPluginEntry returned NULL");
     
     CP_API_Version engine_ver = CP_API_CURRENT_VERSION;
     CP_API_Version plugin_ver = plugin->entry->api_version;
-    if (!CP_API_VersionAtLeast(engine_ver, plugin_ver)) {
-        plugin->loadFailed = true;
-        plugin->errorMessage = "Plugin API version newer than engine supports";
-        ui::LogAlways("[NativeScriptHost] ERROR: %s API version mismatch", pluginPath.c_str());
-        UnloadLibrary(plugin->handle);
-        plugin->handle = nullptr;
-        return false;
-    }
+    if (!CP_API_VersionAtLeast(engine_ver, plugin_ver)) return fail("Plugin API version newer than engine supports");
     
     CP_Internal_SetEngine(m_engine);
     CP_Internal_SetScriptRuntime(m_runtime.get());
@@ -517,21 +543,177 @@ bool NativeScriptHost::LoadPlugin(const std::string& pluginPath) {
         pluginhost::SetLoadingOwner(plugin->entry);
         int result = plugin->entry->on_load(CP_GetEngineAPI());
         pluginhost::SetLoadingOwner(nullptr);
-        if (result != 0) {
-            plugin->loadFailed = true;
-            plugin->errorMessage = "on_load returned error code: " + std::to_string(result);
-            ui::LogAlways("[NativeScriptHost] ERROR: %s on_load failed with code %d", pluginPath.c_str(), result);
-            pluginhost::RemoveModesOf(plugin->entry);   // it may have registered before failing; those point into the library
-            UnloadLibrary(plugin->handle);
-            plugin->handle = nullptr;
-            return false;
-        }
+        if (result != 0) return fail("on_load returned error code: " + std::to_string(result));   // UnloadModule drops what it registered
     }
     
     plugin->loaded = true;
     plugins.push_back(std::move(plugin));
     ui::LogAlways("[NativeScriptHost] Loaded plugin: %s", name.c_str());
     return true;
+}
+
+bool NativeScriptHost::SetPluginEnabled(const std::string& pluginName, bool enabled) {
+    for (auto& p : plugins) {
+        if (p->name != pluginName || p->enabled == enabled) continue;
+        p->enabled = enabled;
+        if (enabled) {
+            m_disabledPlugins.erase(pluginName);
+            SaveDisabledList();
+            return ReloadPlugin(pluginName);
+        }
+        UnloadModule(*p);
+        p->loadFailed = false;
+        p->errorMessage.clear();
+        m_disabledPlugins.insert(pluginName);
+        SaveDisabledList();
+        ui::LogAlways("[NativeScriptHost] Disabled plugin: %s", pluginName.c_str());
+        return true;
+    }
+    return false;
+}
+
+// Walks plugins/{nat,lib}/*/build/*.{so,dll}. Plugins already known are left alone (LoadPlugin would reload them).
+int NativeScriptHost::ScanPluginDirs() {
+    const size_t before = plugins.size();
+    const fs::path pluginsDir = fs::path(U8Path(m_projectPath)) / "plugins";
+    std::error_code ec;
+    for (const auto& typeDir : {"nat", "lib"}) {
+        fs::path typePath = pluginsDir / typeDir;
+        if (!fs::exists(typePath, ec)) continue;
+        for (const auto& entry : fs::directory_iterator(typePath, ec)) {
+            if (ec || !entry.is_directory()) continue;
+            fs::path buildDir = entry.path() / "build";
+            if (!fs::exists(buildDir, ec)) continue;
+            for (const auto& file : fs::directory_iterator(buildDir, ec)) {
+                if (!file.is_regular_file()) continue;
+                const std::string ext = file.path().extension().string();
+                #if defined(_WIN32)
+                    if (ext != ".dll") continue;
+                #else
+                    if (ext != ".so") continue;
+                #endif
+                const std::string stem = file.path().stem().string();
+                const bool known = std::any_of(plugins.begin(), plugins.end(), [&](const auto& p) { return p->name == stem; });
+                if (!known) LoadPlugin(file.path().string());
+            }
+        }
+    }
+    return int(plugins.size() - before);
+}
+
+static bool IsPluginLibrary(const fs::path& f) {
+    const std::string ext = f.extension().string();
+#if defined(_WIN32)
+    return ext == ".dll";
+#else
+    return ext == ".so";
+#endif
+}
+
+// A folder name that is safe to create under plugins/: no separators, no "..", no leading dot.
+static bool SafePluginName(const std::string& n) {
+    if (n.empty() || n == "." || n == ".." || n[0] == '.') return false;
+    return n.find_first_of("/\\:*?\"<>|") == std::string::npos;
+}
+
+NativeScriptHost::ImportResult NativeScriptHost::ImportPlugin(const std::string& source) {
+    ImportResult r;
+    if (m_projectPath.empty()) { r.message = "No project folder: plugins cannot be imported here."; return r; }
+    std::error_code ec;
+    const fs::path src = fs::path(U8Path(source));
+    const fs::path pluginsRoot = fs::path(U8Path(m_projectPath)) / "plugins";
+
+    std::string name, type = "nat";
+    fs::path folderSrc, fileSrc;
+    if (fs::is_regular_file(src, ec)) {
+        if (!IsPluginLibrary(src)) { r.message = "Not a plugin library: " + src.filename().string(); return r; }
+        fileSrc = src;
+        name = src.stem().string();
+    } else if (fs::is_directory(src, ec)) {
+        folderSrc = src;
+        // The user may have picked the build/ folder itself.
+        if (!fs::exists(folderSrc / "id.json", ec) && folderSrc.filename() == "build" && fs::exists(folderSrc.parent_path() / "id.json", ec))
+            folderSrc = folderSrc.parent_path();
+        name = folderSrc.filename().string();
+        char* err = nullptr;
+        PluginIdentity* id = PluginIdentity_ParseFromFile((folderSrc / "id.json").string().c_str(), &err);
+        if (err) free(err);
+        if (id) {
+            if (id->name && *id->name) name = id->name;
+            if (id->type == PLUGIN_TYPE_LIB) type = "lib";
+            else if (id->type == PLUGIN_TYPE_FPC) { PluginIdentity_Free(id); r.message = "FPC script plugins are not supported by the editor."; return r; }
+            PluginIdentity_Free(id);
+        } else if (!fs::exists(folderSrc / "build", ec)) {
+            r.message = "That folder has no id.json and no build/ folder, so it does not look like a plugin.";
+            return r;
+        }
+    } else {
+        r.message = "Not found: " + source;
+        return r;
+    }
+    if (!SafePluginName(name)) { r.message = "Unusable plugin name: \"" + name + "\""; return r; }
+
+    const fs::path dest = pluginsRoot / type / name;
+    if (fs::exists(dest, ec)) { r.message = "\"" + name + "\" is already installed. Remove its folder first to replace it."; return r; }
+    if (!folderSrc.empty()) {
+        // Importing from inside the plugins folder would copy it onto itself.
+        const fs::path a = fs::weakly_canonical(folderSrc, ec), b = fs::weakly_canonical(pluginsRoot, ec);
+        if (a.generic_string().rfind(b.generic_string() + "/", 0) == 0) { r.message = "That plugin is already inside the project's plugins folder. Use Rescan."; return r; }
+    }
+
+    // Copy next to the destination and rename, so a failed copy never leaves a half-installed plugin.
+    const fs::path staging = pluginsRoot / type / (name + ".importing");
+    fs::remove_all(staging, ec);
+    fs::create_directories(staging / "build", ec);
+    if (ec) { r.message = "Could not create " + staging.string() + ": " + ec.message(); return r; }
+    if (!fileSrc.empty()) {
+        fs::copy_file(fileSrc, staging / "build" / fileSrc.filename(), ec);
+    } else {
+        fs::copy(folderSrc, staging, fs::copy_options::recursive | fs::copy_options::skip_symlinks, ec);
+    }
+    if (ec) { fs::remove_all(staging, ec); r.message = "Copy failed: " + ec.message(); return r; }
+    fs::rename(staging, dest, ec);
+    if (ec) { fs::remove_all(staging, ec); r.message = "Could not install into " + dest.string() + ": " + ec.message(); return r; }
+
+    ScanPluginDirs();
+    r.ok = true;
+    bool hasLib = false;
+    for (const auto& f : fs::directory_iterator(dest / "build", ec))
+        if (!ec && f.is_regular_file() && IsPluginLibrary(f.path())) hasLib = true;
+    r.message = hasLib ? "Imported \"" + name + "\"."
+                       : "Copied \"" + name + "\", but it has no built library in build/. Build it, then press Rescan.";
+    ui::LogAlways("[NativeScriptHost] %s", r.message.c_str());
+    return r;
+}
+
+NativeScriptHost::ImportResult NativeScriptHost::RemovePlugin(const std::string& pluginName) {
+    ImportResult r;
+    for (auto it = plugins.begin(); it != plugins.end(); ++it) {
+        if ((*it)->name != pluginName) continue;
+        std::error_code ec;
+        const fs::path dir = fs::weakly_canonical(fs::path(U8Path((*it)->dir)), ec);
+        const fs::path root = fs::weakly_canonical(fs::path(U8Path(m_projectPath)) / "plugins", ec);
+        // Only ever delete a folder that sits below plugins/<type>/.
+        if ((*it)->dir.empty() || dir.generic_string().rfind(root.generic_string() + "/", 0) != 0 || dir.parent_path().parent_path() != root) {
+            r.message = "Refusing to delete \"" + pluginName + "\": its folder is not under the project's plugins folder.";
+            return r;
+        }
+        UnloadModule(**it);
+        fs::remove_all(dir, ec);
+        if (ec) r.message = "Unloaded \"" + pluginName + "\" but could not delete " + dir.string() + ": " + ec.message();
+        else { r.ok = true; r.message = "Removed \"" + pluginName + "\"."; }
+        plugins.erase(it);
+        if (m_disabledPlugins.erase(pluginName)) SaveDisabledList();
+        ui::LogAlways("[NativeScriptHost] %s", r.message.c_str());
+        return r;
+    }
+    r.message = "No such plugin: " + pluginName;
+    return r;
+}
+
+int NativeScriptHost::RescanPlugins() {
+    if (m_projectPath.empty()) return 0;   // exported game: nothing on disk
+    return ScanPluginDirs();
 }
 
 bool NativeScriptHost::LoadStaticPlugin(const char* name, CP_PluginEntry* (*getEntry)(void)) {
