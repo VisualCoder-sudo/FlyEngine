@@ -105,6 +105,7 @@ static void TestCloudHelpers(const fs::path& dir) {
     CHECK(!FlyCloudModule::IsValidVersion("-m") && !FlyCloudModule::IsValidVersion("1.0") && !FlyCloudModule::IsValidVersion("1.0.0-beta"));
 
     CHECK(FlyCloudModule::IsSecureOrLocalUrl("https://x.example") && FlyCloudModule::IsSecureOrLocalUrl("http://localhost:8000"));
+    CHECK(!FlyCloudModule::IsSecureOrLocalUrl("http://localhost:x@evil.example") && !FlyCloudModule::IsSecureOrLocalUrl("http://localhost@evil.example"));
     CHECK(!FlyCloudModule::IsSecureOrLocalUrl("http://localhost.evil.example") && !FlyCloudModule::IsSecureOrLocalUrl("http://x.example"));
 
     // What a push must never upload, in any folder and any letter case.

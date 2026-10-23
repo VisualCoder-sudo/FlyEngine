@@ -55,8 +55,9 @@ bool ParseColor(const std::string& s, Color& out) {
     std::vector<float> nums;
     while (iss >> v) nums.push_back(v);
     if (nums.size() != 3) return false;
-    out = { static_cast<unsigned char>(nums[0]), static_cast<unsigned char>(nums[1]),
-            static_cast<unsigned char>(nums[2]), 255 };
+    // Clamp first: casting an out-of-range float (300, -5) to unsigned char is undefined behaviour.
+    auto byte = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 255.0f)); };
+    out = { byte(nums[0]), byte(nums[1]), byte(nums[2]), 255 };
     return true;
 }
 } // namespace
@@ -329,7 +330,7 @@ bool ScriptRuntime::SetObjectProperty(ScatteredObject* target, const std::string
     }
     if (prop == "Transparency") {
         float t = static_cast<float>(std::atof(rhs.c_str()));
-        if (t < 0.0f || t > 1.0f) { outError = "'" + rhs + "' is out of range (0 to 1)"; return false; }
+        if (!(t >= 0.0f && t <= 1.0f)) { outError = "'" + rhs + "' is out of range (0 to 1)"; return false; }
         target->SetTransparency(t);
         return true;
     }

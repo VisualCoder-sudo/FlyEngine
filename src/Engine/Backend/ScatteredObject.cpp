@@ -30,12 +30,15 @@ constexpr int kMaxMaterialMaps = 12;
 // bound to a map slot be freed by its owning member instead.
 void UnloadModelTextures(const Model& model, unsigned int keepId = 0) {
     if (model.materials == nullptr) return;
+    std::vector<unsigned int> freed;   // one file texture is often bound to several slots/materials: free it once
     for (int m = 0; m < model.materialCount; ++m) {
         const MaterialMap* maps = model.materials[m].maps;
         if (maps == nullptr) continue;
         for (int i = 0; i < kMaxMaterialMaps; ++i) {
             const Texture2D tex = maps[i].texture;
-            if (tex.id != 0 && tex.id != rlGetTextureIdDefault() && tex.id != keepId) {
+            if (tex.id != 0 && tex.id != rlGetTextureIdDefault() && tex.id != keepId &&
+                std::find(freed.begin(), freed.end(), tex.id) == freed.end()) {
+                freed.push_back(tex.id);
                 UnloadTexture(tex);
             }
         }
@@ -326,6 +329,7 @@ void ScatteredObject::ReleaseModel() {
         // Untrack before unloading: the tracker keys the model on its meshes
         // array, which UnloadModel is about to free.
         TechTools::MemoryTracker::Instance().UntrackModel(it->second.model);
+        UnloadModelTextures(it->second.model);   // UnloadModel leaves the file's textures on the GPU
         UnloadModel(it->second.model);
         if (it->second.anims) UnloadModelAnimations(it->second.anims, it->second.animCount);
         g_sharedModels.erase(it);
@@ -428,10 +432,11 @@ bool ScatteredObject::SetModel(const std::string& path) {
         it = g_sharedModels.emplace(key, std::move(entry)).first;
     }
 
-    ReleaseModel();   // drop the previous model only once the new one is ready
-
+    // Take the new reference BEFORE dropping the old model: when this object already holds `key` (the same file set again)
+    // the release would otherwise take the entry's count to zero, unload the model and erase `it` from under us.
     SharedModelEntry& shared = it->second;
     shared.refs++;
+    ReleaseModel();   // drop the previous model only once the new one is ready
     sharedModelKey = key;
     modelExtent = shared.extent;
     modelDiffuseFile = shared.diffuseFile;

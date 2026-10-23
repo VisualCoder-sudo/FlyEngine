@@ -16,6 +16,7 @@
 #include "raymath.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -64,6 +65,9 @@ unsigned long long MakeHandle(ScatteredObject* obj) {
     if (!obj) return 0;
     return static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(obj));
 }
+
+// A script can hand us NaN or infinity; once it is in a transform or a physics body it spreads (and the physics engine asserts).
+static bool Finite3(float x, float y, float z) { return std::isfinite(x) && std::isfinite(y) && std::isfinite(z); }
 
 // Safe string copy with bounds checking
 static void SafeStrCopy(char* dest, size_t destSize, const char* src) {
@@ -141,6 +145,7 @@ DEFINE_VEC3_GET_IMPL(AngularVelocity, obj->GetAngularVelocity())
 // ---- vec3 setters ----
 
 short FlyNative_SetPosition_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     Vector3 v{ x, y, z };
@@ -149,6 +154,7 @@ short FlyNative_SetPosition_Impl(unsigned long long h, float x, float y, float z
     return 1;
 }
 short FlyNative_SetSize_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     *obj->GetSizePtr() = Vector3{ x, y, z };
@@ -157,6 +163,7 @@ short FlyNative_SetSize_Impl(unsigned long long h, float x, float y, float z) {
     return 1;
 }
 short FlyNative_SetRotation_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     Vector3 v{ x, y, z };
@@ -165,12 +172,14 @@ short FlyNative_SetRotation_Impl(unsigned long long h, float x, float y, float z
     return 1;
 }
 short FlyNative_SetOrigin_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     *obj->GetOriginPtr() = Vector3{ x, y, z };
     return 1;
 }
 short FlyNative_SetVelocity_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     Vector3 v{ x, y, z };
@@ -179,6 +188,7 @@ short FlyNative_SetVelocity_Impl(unsigned long long h, float x, float y, float z
     return 1;
 }
 short FlyNative_SetAngularVelocity_Impl(unsigned long long h, float x, float y, float z) {
+    if (!Finite3(x, y, z)) return 0;
     auto* obj = Resolve(h);
     if (!obj) return 0;
     Vector3 v{ x, y, z };
@@ -286,8 +296,12 @@ short FlyNative_GetShadowsEnabled_Impl(void) { return gfx::IsShadowsEnabled() ? 
 void  FlyNative_SetShadowsEnabled_Impl(short on) { gfx::SetShadowsEnabled(on != 0); }
 int   FlyNative_GetShadowQuality_Impl(void) { return gfx::GetShadowQuality(); }
 void  FlyNative_SetShadowQuality_Impl(int q) { if (q < 5) q = 5; if (q > 100) q = 100; gfx::SetShadowQuality(q); }
-float FlyNative_GetAmbient_Impl(float* intensity) { *intensity = gfx::GetAmbientIntensity(); return *intensity; }
-void  FlyNative_SetAmbient_Impl(float a) { if (a < 0.0f) a = 0.0f; if (a > 2.0f) a = 2.0f; gfx::SetAmbientIntensity(a); }
+float FlyNative_GetAmbient_Impl(float* intensity) {
+    const float a = gfx::GetAmbientIntensity();
+    if (intensity) *intensity = a;   // the out-parameter is optional
+    return a;
+}
+void  FlyNative_SetAmbient_Impl(float a) { if (!std::isfinite(a)) return; if (a < 0.0f) a = 0.0f; if (a > 2.0f) a = 2.0f; gfx::SetAmbientIntensity(a); }
 float FlyNative_GetEnvironment_Impl(int what) {
     const gfx::LightingSettings& L = gfx::Lighting();
     switch (what) {
@@ -307,7 +321,7 @@ float FlyNative_GetEnvironment_Impl(int what) {
     }
 }
 void FlyNative_SetEnvironment_Impl(int what, float v) {
-    if (!(v == v)) return;      // not a number
+    if (!std::isfinite(v)) return;      // NaN or infinity
     gfx::LightingSettings& L = gfx::Lighting();
     const auto clampf = [](float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); };
     switch (what) {
@@ -332,10 +346,12 @@ short FlyNative_GetWireframe_Impl(void) { return gfx::IsWireframe() ? 1 : 0; }
 void  FlyNative_SetWireframe_Impl(short on) { gfx::SetWireframe(on != 0); }
 float FlyNative_GetFov_Impl(float* fov) {
     ScriptRuntime* rt = ActiveRuntime();
-    if (rt && fov) *fov = rt->GetCamera().fovy;
-    return fov ? *fov : 45.0f;
+    const float f = rt ? rt->GetCamera().fovy : 45.0f;
+    if (fov) *fov = f;   // optional out-parameter; the return value is the FOV either way
+    return f;
 }
 void FlyNative_SetFov_Impl(float f) {
+    if (!std::isfinite(f)) return;
     if (f < 10.0f) f = 10.0f;
     if (f > 170.0f) f = 170.0f;
     if (ScriptRuntime* rt = ActiveRuntime()) rt->GetCamera().fovy = f;
@@ -593,6 +609,7 @@ void FlyNative_GetCamera_Impl(float* out7) {
 void FlyNative_SetCamera_Impl(const float* in7) {
     ScriptRuntime* rt = ActiveRuntime();
     if (!rt || !rt->HasWorld() || !in7) return;
+    if (!Finite3(in7[0], in7[1], in7[2]) || !Finite3(in7[3], in7[4], in7[5])) return;
     Camera3D& c = rt->GetCamera();
     c.position = { in7[0], in7[1], in7[2] };
     c.target = { in7[3], in7[4], in7[5] };

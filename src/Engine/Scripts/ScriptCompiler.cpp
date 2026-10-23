@@ -293,9 +293,11 @@ Result Build(const std::string& projectFolder) {
     fs::create_directories(buildDir, ec);
     WriteCompileFlags(scriptsDir, sdkInclude);
 
+    // One compile of `srcs` into a fresh uniquely named library (`output`).
+    auto compile = [&](const std::vector<fs::path>& srcs, fs::path& output) {
     const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    const fs::path output = buildDir / (std::string(kLibPrefix) + std::to_string(stamp) + kLibExt);
+    output = buildDir / (std::string(kLibPrefix) + std::to_string(stamp) + kLibExt);
 
     platform::ProcessResult pr;
     if (cc.kind == CompilerKind::Gnu) {
@@ -313,7 +315,7 @@ Result Build(const std::string& projectFolder) {
         if (cc.isGcc) { args.push_back("-static-libgcc"); args.push_back("-static-libstdc++"); }
 #endif
         args.push_back(moduleSource.string());
-        for (const auto& s : sources) args.push_back(s.string());
+        for (const auto& s : srcs) args.push_back(s.string());
         args.push_back("-o");
         args.push_back(output.string());
         pr = platform::RunProcessCapture(cc.exe, args, kBuildTimeoutMs);
@@ -326,7 +328,7 @@ Result Build(const std::string& projectFolder) {
             "/Fo" + buildDir.string() + "\\\\",
             moduleSource.string(),
         };
-        for (const auto& s : sources) args.push_back(s.string());
+        for (const auto& s : srcs) args.push_back(s.string());
         args.push_back("/Fe" + output.string());
 
         if (cc.kind == CompilerKind::Msvc) {
@@ -349,10 +351,36 @@ Result Build(const std::string& projectFolder) {
         }
     }
 
+    return pr;
+    };
+
+    fs::path output;
+    platform::ProcessResult pr = compile(sources, output);
     result.log = pr.launched ? pr.output : pr.error;
     result.ok = pr.launched && pr.exitCode == 0 && fs::exists(output, ec);
     if (result.ok) result.libraryPath = output.string();
     result.diagnostics = ParseDiagnostics(result.log);
+
+    // One broken Code Snippet must not take every script in the project down with it. The generated snippets file lives
+    // in Scripts/.visualscript and labels its code "Code Snippet ..." (a #line directive), so when the errors name it,
+    // build again without it. Success then ships every other script; the snippet errors stay in the log and diagnostics,
+    // and the snippet nodes report "not compiled yet" when they run.
+    if (!result.ok && pr.launched && pr.exitCode != 0 &&
+        (result.log.find("Code Snippet") != std::string::npos || result.log.find("snippets.cpp") != std::string::npos)) {
+        std::vector<fs::path> withoutSnippets;
+        for (const fs::path& f : sources)
+            if (f.parent_path().filename() != ".visualscript") withoutSnippets.push_back(f);
+        if (!withoutSnippets.empty() && withoutSnippets.size() < sources.size()) {
+            fs::path retryOutput;
+            const platform::ProcessResult retry = compile(withoutSnippets, retryOutput);
+            if (retry.launched && retry.exitCode == 0 && fs::exists(retryOutput, ec)) {
+                result.ok = true;
+                result.libraryPath = retryOutput.string();
+                result.log += "\n[Code Snippets were left out of this build because they failed to compile; fix them and build again.]\n";
+                return result;
+            }
+        }
+    }
     if (!result.ok) FinishFailure(result);
     return result;
 }

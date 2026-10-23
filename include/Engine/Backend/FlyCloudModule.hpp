@@ -578,7 +578,11 @@ private:
         std::transform(u.begin(), u.end(), u.begin(), [](unsigned char c) { return (char)std::tolower(c); });
         if (u.rfind("https://", 0) == 0) return true;
         if (u.rfind("http://", 0) != 0) return false;
-        const std::string host = u.substr(7);
+        // Only the authority (up to the first / ? #) names the host. "user@host" is refused outright: in
+        // "http://localhost:x@evil.example" the real host is evil.example, whatever comes first.
+        std::string host = u.substr(7);
+        host = host.substr(0, host.find_first_of("/?#"));
+        if (host.find('@') != std::string::npos || host.find('\\') != std::string::npos) return false;
         for (const char* local : { "localhost", "127.0.0.1", "[::1]" }) {
             const std::string l = local;
             if (host.compare(0, l.size(), l) == 0 && (host.size() == l.size() || host[l.size()] == ':' || host[l.size()] == '/')) return true;

@@ -126,7 +126,8 @@ int ModelAnimator::FindClip(const char* name) const {
         // The loader's name buffer cuts long names (to cap-1 chars plus the NUL, or cap chars without one), so a stored
         // name that fills it matches any request that starts with it; a shorter one must match exactly.
         const bool maybeCut = n >= cap - 1;
-        if (std::memcmp(have, name, n) == 0 && (maybeCut ? want >= n : want == n)) return i;
+        // Length first: memcmp of n bytes must not read past a shorter request.
+        if ((maybeCut ? want >= n : want == n) && std::memcmp(have, name, n) == 0) return i;
     }
     return -1;
 }
@@ -155,6 +156,7 @@ void ModelAnimator::Advance(float dt) {
     if (!Active() || !playing_ || clip_ < 0) return;
     const float length = Duration();
     time_ += dt * speed_;
+    if (!std::isfinite(time_)) time_ = 0.0f;   // a NaN/inf dt or speed must not reach the (int) frame cast in Skin()
     if (length <= 0.0f) { dirty_ = true; return; }
     if (loop_) {
         time_ = std::fmod(time_, length);
